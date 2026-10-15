@@ -3,10 +3,15 @@ name = "line-desktop"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Software-rendered Slint sketch for a native LINE client"
+description = "Software-rendered Slint LINE client using the original crypto WASM"
+
+[features]
+ui-debug = ["slint/mcp"]
 
 [dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-software", "accessibility"] }
+line-wasm-poc = { path = ".." }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 [build-dependencies]
 slint-build = "=1.18.1"

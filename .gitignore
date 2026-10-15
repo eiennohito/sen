@@ -7,3 +7,5 @@
 /.aws/
 *.har
 *.crx
+__pycache__/
+*.pyc

@@ -2,7 +2,7 @@
 name = "line-wasm-poc"
 version = "0.1.0"
 edition = "2024"
-description = "Offline Rust host for the unmodified LINE Chrome crypto WASM"
+description = "Rust host and client adapter for the unmodified LINE Chrome crypto WASM"
 
 [workspace]
 members = ["app"]
@@ -15,3 +15,8 @@ base64 = "0.22"
 sha2 = "0.10"
 serde_json = "1"
 wasmi = { version = "0.46", default-features = false, features = ["std"] }
+aes = "0.8"
+ctr = "0.9"
+hkdf = "0.12"
+hmac = "0.12"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

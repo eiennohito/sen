@@ -1,0 +1,6 @@
+{
+  "ciphertext": "HA5ittuMOGFzkVD6xrIHfmuOkRqT7EQz+Pwf1WUa8ZmXl4Qam/g1UuCsoVuYOOrL+529EQjPyXjPFaPPOUwKEpSil0A=",
+  "generator": "Go standard library HKDF-SHA256 + AES256-CTR + HMAC-SHA256; synthetic material 0..31",
+  "material": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+  "plaintext": "Independent photo fixture: 日本語"
+}

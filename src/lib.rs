@@ -1,3 +1,4 @@
+pub mod client;
 pub mod runtime;
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};

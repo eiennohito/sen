@@ -1,24 +1,36 @@
 //! Read-only, bounded real-message decryption probe. Never persists chat data.
 use super::*;
 
-fn talk(api: &mut Api, token: &str, method: &str, args: Value) -> Result<Value> {
-    api.call(
+pub(super) fn talk(api: &mut Api, token: &str, method: &str, args: Value) -> Result<Value> {
+    let cache_key = format!("{method}:{args}");
+    let cacheable = matches!(method, "getE2EEPublicKey" | "getE2EEGroupSharedKey");
+    if cacheable && let Some(value) = api.key_cache.get(&cache_key) {
+        return Ok(value.clone());
+    }
+    let value = api.call(
         &format!("/api/talk/thrift/Talk/TalkService/{method}"),
         &args,
         token,
         "",
         0,
-    )
+    )?;
+    if cacheable {
+        if api.key_cache.len() >= 256 {
+            api.key_cache.clear();
+        }
+        api.key_cache.insert(cache_key, value.clone());
+    }
+    Ok(value)
 }
 
-struct Envelope {
-    sender: u64,
-    receiver: u64,
-    version: u64,
+pub(super) struct Envelope {
+    pub(super) sender: u64,
+    pub(super) receiver: u64,
+    pub(super) version: u64,
     ciphertext: Vec<u8>,
 }
 impl Envelope {
-    fn parse(message: &Value) -> Result<Self> {
+    pub(super) fn parse(message: &Value) -> Result<Self> {
         let chunks = message["chunks"].as_array().context("missing chunks")?;
         ensure!(chunks.len() == 5, "expected five encrypted message chunks");
         let chunks = chunks
@@ -48,7 +60,7 @@ impl Envelope {
     }
 }
 
-fn own_key(rt: &mut Runtime, state: &Value, id: u64) -> Result<u32> {
+pub(super) fn own_key(rt: &mut Runtime, state: &Value, id: u64) -> Result<u32> {
     let key = state["e2ee_keys"]
         .as_array()
         .context("missing saved E2EE keys")?
@@ -61,7 +73,7 @@ fn own_key(rt: &mut Runtime, state: &Value, id: u64) -> Result<u32> {
     Ok(ptr)
 }
 
-fn public_key(api: &mut Api, token: &str, mid: &str, id: u64) -> Result<Vec<u8>> {
+pub(super) fn public_key(api: &mut Api, token: &str, mid: &str, id: u64) -> Result<Vec<u8>> {
     let key = talk(api, token, "getE2EEPublicKey", json!([mid, 1, id]))?;
     ensure!(key["keyId"].as_u64() == Some(id), "public key ID mismatch");
     let bytes = decode(required(&key, "keyData")?)?;
@@ -69,14 +81,14 @@ fn public_key(api: &mut Api, token: &str, mid: &str, id: u64) -> Result<Vec<u8>>
     Ok(bytes)
 }
 
-fn channel(rt: &mut Runtime, key: u32, public: &[u8]) -> Result<u32> {
+pub(super) fn channel(rt: &mut Runtime, key: u32, public: &[u8]) -> Result<u32> {
     let h = rt.bytes(public);
     let ptr = rt.method("E2EEKey", "createChannel", key, &[h])?;
     rt.release(h)?;
     Ok(ptr)
 }
 
-fn decrypt(
+pub(super) fn decrypt(
     api: &mut Api,
     state: &Value,
     my_mid: &str,
@@ -267,7 +279,7 @@ mod tests {
     #[test]
     fn chrome_chunks_reassemble_independent_ciphertexts() {
         let fixture: Value =
-            serde_json::from_str(include_str!("../../../fixtures/letter-sealing-v2.json")).unwrap();
+            serde_json::from_str(include_str!("../../fixtures/letter-sealing-v2.json")).unwrap();
         for version in [1, 2] {
             let ciphertext = decode(
                 fixture[if version == 1 {

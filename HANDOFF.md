@@ -4,29 +4,61 @@ Updated 2026-10-15. Workspace: `/home/eien/work/misc/line-app`.
 
 ## User intent and next action
 
-**Latest request:** initialize a real local Git repository and sketch a Slint
-desktop app. Goals: CPU rendering, excellent IME behavior, low RAM. This is now
-a Git repo on `main`, with a verified-PoC baseline commit and a separate app
-sketch commit. No remote is configured. Sensitive state, captures, extension
-artifacts, build outputs, and machine-local agent configs are ignored.
+**Latest request:** add an icon and connect the Slint UI to the real implementation,
+including image/sticker/reaction caching. The user also pointed out Slint's MCP
+feature; it is now available as opt-in `--features ui-debug`.
 
-Run `cargo run --release -p line-desktop` for the offline desktop sketch. It has
-searchable synthetic conversations, separate in-memory drafts, and a disabled
-Send button. It does not read credentials or access LINE. Slint 1.18.1 is pinned,
-using Winit + the software renderer with GPU renderers disabled at build time.
-Accessibility is enabled. See `README.md` and `docs/app-design.md` for setup,
-architecture, integration sequence, and the IME acceptance checklist. IME is
-not yet manually verified; do not claim perfect IME support.
+The default `line-desktop` now opens the saved account on a worker thread, loads
+real conversation names and bounded recent history, decrypts through the original
+WASM, and displays private cached assets. Refresh is manual; the current history
+is capped at 50 messages. Conversation pages have a More button. Text sending is
+wired to a separate Send action; **no automated real send has been performed**.
+Enter remains owned by the multiline editor/IME. A timeout does not auto-retry or
+clear the draft. Runtime exceptions replace the WASM instance.
 
-Headless snapshot: `target/release/line-desktop --snapshot /tmp/line-preview.ppm`.
-The layout rendered correctly, including Japanese sample text. A brief local
-Wayland desktop smoke measured 37.9 MiB RSS / 23.3 MiB PSS, 0.4% CPU over five
-idle seconds, and no GPU device file descriptors. Scale was not recorded;
-these are preliminary shell measurements, not integrated-client numbers.
-Formatting, workspace tests (five CLI tests), and workspace Clippy with warnings
-denied passed. Next validate composition on the actual Fcitx5/Wayland desktop,
-then extract the verified protocol code into a shared library and wire it into
-a worker thread. Keep network/crypto work off the GUI thread.
+The original chat-bubble SVG and matching Wayland/X11 app identity are installed
+for the current user. Normal executable: `~/.local/bin/line-desktop`; launcher:
+`~/.local/share/applications/org.lineclient.Desktop.desktop`. The launcher passes
+absolute state/WASM paths. Installer: `python3 tools/install-desktop.py`; it rejects
+UI-debug builds. The installed binary reports `mcp_debug=false` via `--build-info`.
+
+Run from this repo: `cargo run --release -p line-desktop`. Use `--demo` for the
+synthetic offline UI; `--snapshot FILE.ppm` always uses synthetic data. Override
+paths with `--state FILE`, `--wasm FILE`, and `--cache-dir DIR`.
+
+Live read-only verification: `target/release/line-desktop --check-live --cache-dir
+artifacts/cache` loaded 8 chats and 68 messages across 3 chats. All 68 were readable;
+62 encrypted payloads decrypted. Twelve assets decoded: 2 avatars, 5 photos,
+3 stickers, and 2 paid-reaction images. Seven reaction instances were present.
+A second run had 24 cache hits, zero misses/downloads. No contents/IDs/keys were
+logged or saved outside the private thumbnail cache; no messages were sent.
+
+The cache defaults to `$XDG_CACHE_HOME/line-desktop` (or `~/.cache/line-desktop`),
+with hashed account directories (0700), hashed PNG filenames (0600), a 128 MiB /
+4096-file disk cap and 30-day expiry, and a 24 MiB decoded worker cache. Photos use
+OBS encrypted access tokens and verified HKDF/AES-CTR/HMAC media decryption
+(the original Chrome app does this outside the LTSM blob too). Independent Go
+media fixtures verify interoperability and modified-MAC rejection. Stickers and
+paid reactions use static frames. Standard reactions use emoji.
+
+MCP development workflow:
+`SLINT_MCP_PORT=9447 cargo run --release -p line-desktop --features ui-debug -- --demo`
+then `python3 tools/check-ui-mcp.py --screenshot /tmp/line-ui.png`.
+It binds loopback `/mcp` and includes Slint debug element IDs. The script refuses
+real-account windows. It verified selection/filtering, Japanese/emoji draft
+retention, multiline input, and disabled demo Send on Wayland at scale 1.5.
+The connected window also received real chats/messages with valid text geometry,
+without dumping text or screenshots. Real Fcitx preedit/candidate testing remains
+pending; do not claim perfect IME support. Normal builds omit MCP entirely.
+
+The repo is on `main` with no remote. Sensitive state, captures, extension
+artifacts, build outputs, caches under artifacts/, and local agent configs are
+ignored. Source extraction moved the CLI implementation to `src/client.rs`, its
+crypto adapters to `src/client/chat.rs`, and added `src/client/desktop.rs` plus
+`src/client/desktop/assets.rs`. The CLI binary is a thin wrapper. See `README.md`
+and `docs/app-design.md`. Next priorities: manual IME/send validation, token
+refresh, automatic receive/reconnect, and older-history paging. The old 38 MiB
+RSS sample below was the offline shell, not the connected account.
 
 Continue the Rust client using the original Chrome extension's crypto WASM.
 Real authentication and a real encrypted chat payload have now succeeded. The eventual goal is a native LINE client. The user
@@ -63,8 +95,9 @@ have become invalid. Do not restart implementation or repeat pairing by default.
   with the original WASM. The V2 plaintext was a 62-byte JSON object containing
   `keyMaterial` (media/file key), with no text or location. No message contents,
   identifiers, or key material were logged or saved. This verifies decryption of
-  an actual message payload; media download/decryption and text display remain
-  untested. No native UI has been demonstrated yet.
+  an actual message payload. The connected desktop verification subsequently
+  exercised real text, authenticated photo previews, stickers, and paid reactions
+  as detailed above.
 
 ## Resume commands
 
@@ -92,10 +125,9 @@ verified JSON payload. It reads credentials without rewriting them and does not
 send messages, mark them read, register keys, or persist chat data. Each candidate
 uses a fresh runtime, so a WASM exception cannot poison the next attempt.
 
-Next extend the read-only probe into useful message retrieval/text display or
-exercise media decryption. The adapter includes direct-chat and group-key paths;
-the live check verifies only the sampled successful path, not every direction,
-chat type, historical key, or content type. Token refresh is still unimplemented.
+The desktop now extends this into real message retrieval, text display, and
+media decryption. Successful samples do not cover every direction, chat type,
+historical key, or content type. Token refresh is still unimplemented.
 
 ## Sensitive local state
 
@@ -114,10 +146,14 @@ timestamps only; consult it for the latest run's stage.
 - `src/runtime.rs`: minimal WASM host, dynamic embind bindings, emval handling.
 - `src/lib.rs`: shared version/hash constants, runtime module, request signing.
 - `src/main.rs`: offline crypto/signature PoC.
-- `src/bin/line-auth.rs`: real QR flow, HTTPS via system `curl`, QR PNG via system
-  `qrencode`, kitty graphics emission, private atomic state persistence.
-- `src/bin/line-auth/chat.rs`: bounded real-message check, Chrome chunk decoding,
-  direct-chat key selection, group-key unwrapping, WASM payload decryption.
+- `src/bin/line-auth.rs`: thin CLI wrapper. `src/client.rs` contains the shared
+  transport, QR flow, state restoration, and persistence.
+- `src/client/chat.rs`: shared chunk/key adapters and bounded decryption check.
+- `src/client/desktop.rs`: account operations used by the desktop worker.
+- `src/client/desktop/assets.rs`: authenticated media retrieval, decryption, and
+  private disk/decoded-image caches.
+- `app/`: Slint GUI, worker, original app icon, offline demo, headless snapshots.
+- `tools/check-ui-mcp.py`, `tools/install-desktop.py`: UI checks and local install.
 - `fixtures/letter-sealing-v2.json`: synthetic independent crypto fixture.
 - `tools/fetch-extension.sh`, `tools/extract_extension.py`: extension acquisition.
 - `tools/generate-fixture.go`: independent fixture generator.
@@ -129,12 +165,13 @@ Normal build/check commands when network access works:
 
 ```sh
 cargo build --release --bins
-cargo test --release --bin line-auth
-cargo clippy --release --all-targets -- -D warnings
+cargo test --release --workspace
+cargo clippy --release --workspace --all-targets -- -D warnings
 cargo run --release --bin line-wasm-poc
 ```
 
-Last checks all passed: five CLI unit tests, Clippy with warnings denied, and the
+Last checks include ten workspace tests (shared protocol/cache and stale UI response handling),
+Clippy with warnings denied, MCP UI checks, real read-only checks, and the
 offline crypto PoC. Formatting was applied. The signature replay additionally
 accepts positional `WASM HAR` arguments; avoid printing HAR contents.
 

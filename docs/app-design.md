@@ -9,8 +9,9 @@ original LINE crypto blob behind the existing Rust host.
 The first window has a searchable conversation list, a message history, and a
 multiline composer. Use ordinary text, flat colors, and restrained spacing.
 Avoid animated backgrounds, blur, shadows, and continuously running timers.
-The current implementation is an offline sketch with synthetic conversations
-and drafts held in memory. No account integration or message sending is wired.
+The default application now opens the saved account, loads real chat metadata,
+decrypts recent history, and displays cached assets. Drafts remain in memory.
+`--demo` and `--snapshot` use synthetic conversations without account access.
 
 ## Rendering and input decision
 
@@ -24,8 +25,8 @@ Wayland/X11 feature flags if a smaller platform-specific build is needed.
 
 Use Slint's standard `TextEdit` for the composer and `LineEdit` for search. Do
 not replace input widgets with drawn text or intercept composition keys. Enter
-currently belongs entirely to the multiline editor/IME; Send is a separate,
-disabled button. A click on the already-selected conversation does not reset
+belongs entirely to the multiline editor/IME; Send is a separate action enabled
+for a connected account. A click on the already-selected conversation does not reset
 the editor. Committed drafts are saved when switching conversations, rather
 than rewriting the editor's text on each keystroke.
 [TextEdit reference](https://docs.slint.dev/latest/docs/slint/reference/std-widgets/views/textedit/).
@@ -56,7 +57,7 @@ If a toolkit defect blocks any check, reduce it to a standalone reproduction
 before building more messaging features. An alternative Slint backend can be
 evaluated then; keep CPU rendering and IME quality as requirements.
 
-## Planned boundary between GUI and protocol
+## Boundary between GUI and protocol
 
 ```mermaid
 flowchart LR
@@ -67,17 +68,20 @@ flowchart LR
     Worker --> State[Private session storage]
 ```
 
-This integration is planned. The sketch does not yet depend on the protocol
-crate. First move the CLI's transport, session, and message-decryption code into
-library modules without changing its verified behavior. Keep the CLI as a
-diagnostic frontend to the same library.
+The desktop and CLI now share `src/client.rs` and `src/client/chat.rs`.
+`src/client/desktop.rs` owns the account operations, and its `assets` module
+owns authenticated media retrieval and private thumbnail caching. The CLI is
+a thin frontend over the same transport, session, and WASM implementation.
 
 The GUI thread owns Slint models and text editing. One account worker owns its
 WASM runtime, tokens, key caches, and HTTPS requests. Do not move a Wasmi store
 between threads or perform curl/network work on the GUI thread. Use a bounded
-command queue, publish plain view data through `invoke_from_event_loop`, and
+command queue, publish plain view data through `upgrade_in_event_loop`, and
 discard a runtime after a WASM exception. Coalesce model updates; never ship
-private keys or credentials to the UI.
+private keys or credentials to the UI. Media keys remain in the worker too.
+Late history responses are checked against both chat ID and request generation.
+A completed send clears only its own unchanged draft, preserving newly typed
+text. Ambiguous sends are never retried automatically.
 
 Start with the verified system-curl transport behind a Rust interface. A later
 in-process transport can replace it after authentication/signature regression
@@ -108,24 +112,31 @@ Japanese, and leaving the app idle. Record window dimensions and scale factor
 with each result. A headless snapshot is not an idle desktop memory measurement.
 
 Use `ListView` for the conversation list. The sketch's short message list uses
-`ScrollView`; replace it with a virtualized, paged history before loading real
-history. Bound retained messages, decrypted media, image dimensions, and key
-caches. Decode thumbnails on demand; release images when evicted. Add no busy
-polling loop for UI refresh.
+`ScrollView`, bounded to 50 messages from the selected conversation. Replace it
+with a virtualized, paged history before increasing that limit. The worker's
+decoded thumbnails are capped at 24 MiB; the private disk cache is 128 MiB /
+4096 files, with 30-day expiry. Network and image decoding happen on the worker.
+Only selected-message rows and conversation avatars retain Slint images.
+The public-key response cache is bounded to 256 entries.
 
 ## Delivery sequence
 
-1. Finish the input and rendering acceptance checks; measure the empty shell.
-2. Extract the verified protocol library; connect saved-session status off the UI
-   thread, with explicit loading/error/account-expired states.
-3. Load bounded chat pages and decrypt text, preserving opaque API MIDs and key
-   IDs. Display real conversation names only in the app.
-4. Add `fetchOps`, deduplication, paging, and reconnection. Implement token refresh
+1. Finish the Fcitx input acceptance checks and measure the connected app.
+2. Real account loading, bounded history decryption, static asset caching, and
+   explicit encrypted sending are wired. Validate a user-initiated real send.
+3. Add `fetchOps`, deduplication, history paging, and reconnection. Implement token refresh
    before promising persistent sign-in.
-5. Add explicit encrypted text sending, with a separate Send action and clear
-   pending/sent/failed states. Never send on an IME commit.
-6. Add desktop identity, tray, notifications, and opt-in autostart. Then media
-   download/decryption and bounded thumbnail caches.
+4. Add tray, notifications, opt-in autostart, animation, and attachment sending.
+   The original icon, matching desktop identity, and user installer exist now.
+
+## Developer UI checks
+
+`--features ui-debug` enables Slint's MCP server and element debug info; setting
+`SLINT_MCP_PORT` starts it on loopback. Regular builds omit this feature, and the
+desktop installer rejects debug-server builds. `tools/check-ui-mcp.py` checks an
+offline preview, including Japanese/emoji drafts, switching, filtering, and
+Enter inserting a line. The native Wayland check ran at scale factor 1.5. This
+does not replace testing preedit and candidate windows with the real IME.
 
 Private state stays out of Git and diagnostics. Before distributing the app,
 choose the project's license and the applicable Slint license, and resolve how
