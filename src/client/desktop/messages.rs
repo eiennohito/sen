@@ -164,7 +164,14 @@ impl MessageCache {
             .iter()
             .any(|record| record.message.decryption_failed);
         for record in &page.records {
-            if !record.fingerprint.is_empty() && !record.message.decryption_failed {
+            // Legacy pages remain readable offline, but cannot satisfy a raw
+            // message lookup: their decoded records predate sender identity.
+            // Otherwise refresh reuses the anonymous record for the same raw
+            // fingerprint and can never recover the sender from the server.
+            if !record.fingerprint.is_empty()
+                && !record.message.decryption_failed
+                && !record.message.sender_id.is_empty()
+            {
                 self.remember(record.fingerprint.clone(), record.message.clone());
             }
         }
@@ -334,6 +341,49 @@ mod tests {
         fs::write(&path, changed)?;
         assert!(cache.page("chat")?.is_none());
         assert!(wrong.page("unknown")?.is_none());
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    #[test]
+    fn legacy_page_cannot_mask_sender_identity_on_refresh() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("line-message-cache-legacy-{}", std::process::id()));
+        let mut cache = MessageCache::new(&root, b"synthetic key")?;
+        let raw = json!({"id":"test-message","from":"synthetic-sender","text":"hello"});
+        let fingerprint = fingerprint(&raw);
+        let mut legacy = serde_json::to_value(message())?;
+        for field in ["sender_id", "sender_name", "sender_avatar"] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        let page = json!({"version":1,"records":[{
+            "fingerprint":fingerprint,"message":legacy
+        }]});
+        fs::write(
+            cache.path("group"),
+            cache.seal(&serde_json::to_vec(&page)?)?,
+        )?;
+
+        // Selection and refresh both read persisted history. Neither may seed
+        // a memo hit that would bypass decoding the fresh server message.
+        for _ in 0..2 {
+            let messages = cache.page("group")?.unwrap();
+            assert!(messages[0].sender_id.is_empty());
+            assert!(!messages[0].body.is_empty());
+            assert!(cache.lookup(&fingerprint).is_none());
+        }
+        let mut refreshed = message();
+        refreshed.sender_id = raw["from"].as_str().unwrap().to_owned();
+        cache.remember(fingerprint.clone(), refreshed.clone());
+        cache.store_page("group", &[refreshed])?;
+        let mut reopened = MessageCache::new(&root, b"synthetic key")?;
+        assert_eq!(
+            reopened.page("group")?.unwrap()[0].sender_id,
+            "synthetic-sender"
+        );
+        assert_eq!(
+            reopened.lookup(&fingerprint).unwrap().sender_id,
+            "synthetic-sender"
+        );
         fs::remove_dir_all(root)?;
         Ok(())
     }
