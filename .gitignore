@@ -1,0 +1,9 @@
+/target/
+/artifacts/
+/dumps/
+/.codex/
+/.claude/
+/.agents/
+/.aws/
+*.har
+*.crx

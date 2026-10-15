@@ -1,0 +1,11 @@
+{
+  "ciphertext": "Zml4ZWQtdGVzdC1zYWx0IQAAAAEAAAABAQIDBF8ayuRSe3yN4K3WhGs21XLGkGA1qJZI/gS+oidbiJPM/gW0TYAizPRnpawj7okUK/rh3IRUBb1p0fQ2KGvyoXpxo5Ajj2Q8WgF6EWXjfp2sUsjkJ/H/0gMKlQ==",
+  "ciphertext_v1": "c2FsdDEyMzTWrR4R7WVpnw8riUDRaGGHHkkb3FGxp6RjZ3Q/kJrnr9viqQvHI3laRm1yC0OjlFqZUR35+W+pxL2hGLjQpje3FuMtNhZlWJCWWPQE6iBN55xjpr76QV92GDapC0faPyI=",
+  "exported_key": "0cJ6ovYsBdF2FfHMEVRfVOE612KZ/l0472sA0x51A2+1vBcmJLyo7s0z2Q/YLA+RnY8LOTCSxwZuC6wlr8XVSn4fwDg8uHxOq5Gtx/I+1CXyEsrdBDHpSoyhN0yTSo91M9dLmwUR7Z446LSLLMNtfv31JBVz1ExpwWMGfpjwrEGWkmMhbKf5VglvB8I9uWfXaHWYYUQLIrYVcBmyBWoqc7D48OKWTzHUR6EiiohO6cpZSyd49Z6IdwAohqfcvNcFlA==",
+  "from": "uf1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6",
+  "generator": "Go standard library crypto/ecdh + crypto/aes + crypto/cipher; fixed synthetic peer private key bytes 1..32",
+  "peer_public_key": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=",
+  "plaintext": "{\"text\":\"Independent Go ciphertext -\u003e original LINE WASM: 日本語 🔐\"}",
+  "public_key": "HD1QDeKpNds53wxn2RkbhwTZo4J+aTOy3o7pGHzODkU=",
+  "to": "u8ae764e8e69e6bd4ecdd9b6ea0c40fce"
+}
