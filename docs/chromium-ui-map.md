@@ -79,6 +79,68 @@ in-page member panel. The inspector must enumerate/attach popup targets and
 survive targets closing. Do not infer that a visible per-member control is
 available to every group role; permissions and confirmations remain to map.
 
+## Everyday-use requirements — user feedback
+
+The user explicitly considers the current UX acceptable only as a proof of
+concept, not for daily messaging. Their reported problems are examples, not an
+exhaustive defect list. Audit complete workflows and their changing states,
+including keyboard, pointer, selection, scrolling, asynchronous updates, errors,
+and recovery; a static screen inventory or screenshot comparison is insufficient.
+The requirements below are user feedback and design acceptance criteria, not
+additional claims of observed Chrome behavior.
+
+### Outgoing message lifecycle and read receipts
+
+Model the sequence explicitly: send requested → waiting for server confirmation
+→ server-confirmed message → potentially later read notification. Server
+confirmation must never imply that a recipient has read the message. Lack of a
+read notification is not a send failure, and a read receipt can arrive much later.
+
+Keep per-message state rather than relying on a global “Message sent” status.
+Reconcile a local pending item with the server-assigned identity so confirmation,
+history reloads, and live operations do not create duplicates. Show pending,
+confirmed, and read states with stable placement and accessible descriptions.
+Represent definite failure separately from an ambiguous timeout; preserve the
+draft/recovery path and never automatically resend an ambiguously accepted item.
+
+The next source/live audit must trace send-response fields, operation/event
+subscription, read-receipt identities or watermarks, ordering, reconnect/catch-up,
+and persistence. Verify direct-chat versus group semantics; show reader counts
+only when supported by actual protocol evidence. Specify how opening a chat,
+visibility, scrolling, and focus affect marking incoming messages read. Do not
+emit read acknowledgements merely to inspect these flows during the audit.
+Test confirmation-before-receipt, delayed/duplicate/out-of-order receipts,
+reconnect replay, switching chats while pending, and restart reconciliation.
+Native asynchronous read-receipt handling is not implemented yet.
+
+### Message selection and copying
+
+The current native view does not allow selecting/copying message text. Provide
+mouse selection, keyboard selection/copy, and an accessible Copy action. Define
+copy behavior for multiline text, links, replies, inline emoji, and mixed media;
+preserve meaningful text and line breaks. Selection must coexist with scrolling,
+context menus, and incoming updates without being cleared by image arrivals.
+Verify cross-message selection behavior against Chrome and choose/document the
+native behavior. Copying visible message text must not require entering an editor.
+
+### Density, previews, and media presentation
+
+The user reports cramped conversation/message previews appearing on top of one
+another. Inspect both list previews and message rows at narrow widths and HiDPI:
+use clear name/preview/metadata hierarchy, appropriate line height, constrained
+preview lines, stable unread/time placement, and enough vertical separation.
+Long names, multiline previews, missing images, font fallback, and large text
+must not overlap adjacent content or obscure controls.
+
+Images and stickers currently consume too much space in their backgrounds.
+Use content-aware rows: text bubbles, image bounds/aspect ratios, transparent
+stickers, and system/date items need different presentation. Avoid a universal
+full-width or oversized bubble. Preserve sticker transparency and media aspect
+ratios, bound previews, and place timestamps/read state without an empty padded
+card around every asset. Some message types need no bubble/background at all.
+Measure spacing with mixed text/photo/sticker/reply/reaction sequences and test
+loading/error states so completed media does not cause disruptive layout jumps.
+
 ## Messages and history
 
 Live component families included messageLayout, username, textMessageContent,
@@ -202,13 +264,17 @@ Chrome owns the active login.
 
 1. Complete the unobserved flows above with Chrome, retaining privacy-safe
    structure only. Record empty/loading/error/permission states as well as
-   populated views. Measure menus, message rows, and narrow-window behavior.
+   populated views. Trace send confirmation, asynchronous read receipts, incoming
+   read acknowledgement rules, and reconnect behavior. Measure menus, message
+   rows, and narrow-window behavior; inspect selection/copy and media spacing.
 2. Build shell navigation, list hierarchy, typography, SVG icons, states, and
    spacing in the synthetic Slint preview. Friends and Groups need real models,
    search, categories, selection, and explicit account-command boundaries.
 3. Implement paged history and rich message rows, including sender, replies,
    timestamps, inline emoji, stickers, links, and reactions. Preserve viewport
-   and drafts; bound memory while browsing older pages.
+   and drafts; bound memory while browsing older pages. Include selectable text,
+   per-message sending/confirmed/read states, legible previews, and content-aware
+   media backgrounds. Treat the user-reported issues as a starting point.
 4. Add member/group/profile/settings surfaces from the evidence matrix. Keep
    actions visibly disabled until their protocol behavior is implemented.
 5. Validate screenshots at the reference size plus normal desktop sizes through

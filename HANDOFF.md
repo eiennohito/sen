@@ -26,6 +26,23 @@ Main UI was returned to Chats; the audit's settings window may remain open.
 Never send messages, change preferences/membership, dump account storage, or
 commit private UI captures while mapping.
 
+## Additional UX direction from the user
+
+The current UI is acceptable for a PoC only, not everyday use. The user's issues
+are explicitly non-exhaustive: assess full workflows and dynamic behavior, not
+just static screen coverage. Record send requested → server confirmation →
+potentially later read notification as distinct per-message states; trace the
+actual operation/read-receipt protocol and reconnect reconciliation. Confirmation
+must not imply read. Do not send messages or mark chats read just for the audit.
+
+Message text currently cannot be selected/copied. Provide normal selection,
+keyboard copy, and an accessible copy action, including rich-message semantics.
+The user reports cramped/overlapping previews and oversized image/sticker
+backgrounds. Fix density/hierarchy and use message-type-specific layout;
+transparent stickers and some other items need no bubble. Detailed requirements
+and acceptance scenarios are in `docs/chromium-ui-map.md` under everyday use.
+These are recorded requirements, not implemented fixes or verified live behavior.
+
 ## Changes in this audit session
 
 - Channel construction was a major offline CPU cost: synthetic V2 fixture,

@@ -13,6 +13,15 @@ The default application now opens the saved account, loads real chat metadata,
 decrypts recent history, and displays cached assets. Drafts remain in memory.
 `--demo` and `--snapshot` use synthetic conversations without account access.
 
+## Everyday usability gate
+
+The current sketch is a PoC, not ready for daily use. The user's issue list is
+non-exhaustive; audit interaction sequences and asynchronous state changes as
+well as appearance. See the reference map's everyday-use requirements for
+per-message send/server-confirmation/read states, selection/copy, preview
+hierarchy, and content-aware image/sticker backgrounds. A successful send call
+is not a read receipt. These requirements remain to be implemented and verified.
+
 ## Rendering and input decision
 
 Pin Slint and slint-build to 1.18.1. Disable default features and enable `std`,
