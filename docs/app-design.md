@@ -119,7 +119,28 @@ decoded thumbnails are capped at 24 MiB; the private disk cache is 128 MiB /
 Only selected-message rows and conversation avatars retain Slint images.
 The public-key response cache is bounded to 256 entries.
 
-## Delivery sequence
+## Reference audit and caching update
+
+See [chromium-ui-map.md](chromium-ui-map.md) for the 2026-10-15 live Chrome
+mapping, coverage matrix, and reconstruction sequence. That sequence takes
+priority over expanding this initial sketch without a reference. Friends,
+group management, paged history, and inline LINE emoji are still absent.
+
+Crypto channels now have a 64-entry cache keyed by conversation/key IDs and
+group sender. Resetting the WASM also resets channel pointers. Recent-message
+pages are encrypted/authenticated with keys derived from the pairing secret;
+the disk budget is 32 MiB / 256 files, separate from image-cache limits.
+A 512-message / 16 MiB decoded memo fingerprints the raw message, including
+reactions. Selection reads the cached page; Refresh explicitly fetches updates.
+There is no automatic refresh or offline account startup. Asset arrivals mutate
+only affected Slint rows, preserving list and reaction models.
+
+The synthetic release benchmark isolates channel construction: 140.15 ms per
+message rebuilding versus 4.54 ms reusing. Connected performance and memory
+must be measured after native authorization is deliberately restored. Chrome
+currently owns the login; do not run native account checks during the audit.
+
+## Earlier delivery sequence
 
 1. Finish the Fcitx input acceptance checks and measure the connected app.
 2. Real account loading, bounded history decryption, static asset caching, and

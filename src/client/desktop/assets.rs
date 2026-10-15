@@ -7,7 +7,7 @@ const DISK_LIMIT: u64 = 128 * 1024 * 1024;
 const MEMORY_LIMIT: usize = 24 * 1024 * 1024;
 const MAX_DOWNLOAD: usize = 16 * 1024 * 1024;
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Asset {
     url: String,
     pub(super) private: bool,
@@ -250,6 +250,9 @@ pub struct ImageCache {
 }
 
 impl ImageCache {
+    pub(super) fn directory(&self) -> &Path {
+        &self.directory
+    }
     pub fn new(root: &Path, account: &str) -> Result<Self> {
         let directory = root.join(format!("{:x}", Sha256::digest(account.as_bytes())));
         fs::create_dir_all(&directory)?;

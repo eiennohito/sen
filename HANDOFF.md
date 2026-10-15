@@ -2,76 +2,76 @@
 
 Updated 2026-10-15. Workspace: `/home/eien/work/misc/line-app`.
 
-## User intent and next action
+## Current task and authorization — read this first
 
-**Latest request:** add an icon and connect the Slint UI to the real implementation,
-including image/sticker/reaction caching. The user also pointed out Slint's MCP
-feature; it is now available as opt-in `--features ui-debug`.
+The user reported slow/high-CPU message loading, no message cache, rough UI,
+missing icons/inline emoji, no older history, and absent friends/group controls.
+They requested a session mapping and documenting the Chromium UI before
+recreating it. The first audit is in `docs/chromium-ui-map.md`; it distinguishes
+live evidence from source-only findings and lists remaining observation gaps.
+The Slint UI is still the initial sketch: do not claim it has been recreated.
 
-The default `line-desktop` now opens the saved account on a worker thread, loads
-real conversation names and bounded recent history, decrypts through the original
-WASM, and displays private cached assets. Refresh is manual; the current history
-is capped at 50 messages. Conversation pages have a More button. Text sending is
-wired to a separate Send action; **no automated real send has been performed**.
-Enter remains owned by the multiline editor/IME. A timeout does not auto-retry or
-clear the draft. Runtime exceptions replace the WASM instance.
+**The user logged into Chrome, invalidating native authorization. Do not run
+`line-auth status`, `--check-live`, the default native app, or pairing during the
+Chrome audit.** Preserve `artifacts/auth/session.json`. Offline `--demo`,
+`--snapshot`, tests, and synthetic WASM benchmarks are safe. Historical live
+results below predate this login and do not prove current native authorization.
 
-The original chat-bubble SVG and matching Wayland/X11 app identity are installed
-for the current user. Normal executable: `~/.local/bin/line-desktop`; launcher:
-`~/.local/share/applications/org.lineclient.Desktop.desktop`. The launcher passes
-absolute state/WASM paths. Installer: `python3 tools/install-desktop.py`; it rejects
-UI-debug builds. The installed binary reports `mcp_debug=false` via `--build-info`.
+Chrome debugging was approved on 127.0.0.1:9222. Read the browser websocket
+from `~/.config/google-chrome/DevToolsActivePort`; `/json/version` returned 404
+in this Chrome mode. Tool: `node tools/chrome-ui-map.mjs --interactive`.
+Each new connection may prompt in Chrome; keep one connection and attach popup
+targets with `:targets` / `:attach TARGETID`. Current connection has detached.
+Main UI was returned to Chats; the audit's settings window may remain open.
+Never send messages, change preferences/membership, dump account storage, or
+commit private UI captures while mapping.
 
-Run from this repo: `cargo run --release -p line-desktop`. Use `--demo` for the
-synthetic offline UI; `--snapshot FILE.ppm` always uses synthetic data. Override
-paths with `--state FILE`, `--wasm FILE`, and `--cache-dir DIR`.
+## Changes in this audit session
 
-Live read-only verification: `target/release/line-desktop --check-live --cache-dir
-artifacts/cache` loaded 8 chats and 68 messages across 3 chats. All 68 were readable;
-62 encrypted payloads decrypted. Twelve assets decoded: 2 avatars, 5 photos,
-3 stickers, and 2 paid-reaction images. Seven reaction instances were present.
-A second run had 24 cache hits, zero misses/downloads. No contents/IDs/keys were
-logged or saved outside the private thumbnail cache; no messages were sent.
+- Channel construction was a major offline CPU cost: synthetic V2 fixture,
+  20 iterations, 140.15 ms/message constructing a channel versus 4.54 ms reuse;
+  runtime initialization 170.31 ms. This is not an end-to-end speedup.
+- `Api` now caches up to 64 channels by conversation/key IDs and group sender,
+  destroys evictions, and loses all pointers on runtime reset.
+- `src/client/desktop/messages.rs` adds a fingerprinted decoded memo (512
+  messages / 16 MiB) and encrypted authenticated recent-page cache (50 per page,
+  32 MiB / 256 files, 30 days). AES-CTR/HMAC keys derive from saved login_key
+  through HKDF, with a fresh nonce per page; files0600/directories0700.
+- Selection reads a cached page; explicit Refresh and post-send fetch updates.
+  No automatic freshness or offline account startup yet. Invalid cache pages
+  fall back to the network; failed decryptions are not memoized.
+- Image arrivals update matching Slint rows/reactions rather than replacing
+  entire models. UI controls/layout have not been redesigned in this session.
+- Audit traced missing inline emoji to dropped `REPLACE.sticon` metadata and
+  documented the older-history cursor API. Neither feature is implemented yet.
 
-The cache defaults to `$XDG_CACHE_HOME/line-desktop` (or `~/.cache/line-desktop`),
-with hashed account directories (0700), hashed PNG filenames (0600), a 128 MiB /
-4096-file disk cap and 30-day expiry, and a 24 MiB decoded worker cache. Photos use
-OBS encrypted access tokens and verified HKDF/AES-CTR/HMAC media decryption
-(the original Chrome app does this outside the LTSM blob too). Independent Go
-media fixtures verify interoperability and modified-MAC rejection. Stickers and
-paid reactions use static frames. Standard reactions use emoji.
+Next: complete live mapping gaps, then reconstruct the shell/friends/group
+surfaces and rich paged history against the evidence matrix. Keep the user in
+Chrome until that audit is finished; native reauthorization needs coordination.
 
-MCP development workflow:
-`SLINT_MCP_PORT=9447 cargo run --release -p line-desktop --features ui-debug -- --demo`
-then `python3 tools/check-ui-mcp.py --screenshot /tmp/line-ui.png`.
-It binds loopback `/mcp` and includes Slint debug element IDs. The script refuses
-real-account windows. It verified selection/filtering, Japanese/emoji draft
-retention, multiline input, and disabled demo Send on Wayland at scale 1.5.
-The connected window also received real chats/messages with valid text geometry,
-without dumping text or screenshots. Real Fcitx preedit/candidate testing remains
-pending; do not claim perfect IME support. Normal builds omit MCP entirely.
+## Existing app and tooling
 
-The repo is on `main` with no remote. Sensitive state, captures, extension
-artifacts, build outputs, caches under artifacts/, and local agent configs are
-ignored. Source extraction moved the CLI implementation to `src/client.rs`, its
-crypto adapters to `src/client/chat.rs`, and added `src/client/desktop.rs` plus
-`src/client/desktop/assets.rs`. The CLI binary is a thin wrapper. See `README.md`
-and `docs/app-design.md`. Next priorities: manual IME/send validation, token
-refresh, automatic receive/reconnect, and older-history paging. The old 38 MiB
-RSS sample below was the offline shell, not the connected account.
+The app uses Slint 1.18.1 Winit/software renderer. A worker owns networking,
+original crypto WASM, and private media caching. Normal builds omit MCP;
+`--features ui-debug` plus `SLINT_MCP_PORT=9447` enables loopback inspection.
+`tools/check-ui-mcp.py` checks synthetic selection/filter/drafts/multiline
+input. Actual Fcitx preedit/candidate acceptance is still pending.
 
-Continue the Rust client using the original Chrome extension's crypto WASM.
-Real authentication and a real encrypted chat payload have now succeeded. The eventual goal is a native LINE client. The user
-prefers retaining the official crypto blob for compatibility with future changes,
-with a small Rust host/translation layer rather than a JS runtime or reimplemented
-crypto. A debug CLI using kitty graphics for QR display is already implemented.
+The previously installed user executable/icon/launcher are from the earlier
+integration work; source changes do not update that installation automatically.
+Build with `cargo build --release -p line-desktop`, then
+`python3 tools/install-desktop.py` when an installation is wanted. The installer
+rejects MCP debug builds. Do not launch the native account during the audit.
 
-**First verify networking, then run `target/release/line-auth status`.** A real
-pairing already produced credentials and three successfully unwrapped Letter
-Sealing keys. Another QR scan should not be needed unless the saved credentials
-have become invalid. Do not restart implementation or repeat pairing by default.
+Private static image caching already covers avatars, photos, stickers, and paid
+reaction frames (128 MiB / 4096 files disk, 24 MiB decoded memory). Standard
+reactions still use Unicode substitutes; animations and custom sticker variants
+are missing. Encrypted sends are wired but no automated real send was performed.
 
-## Current verified state
+The repo has no remote. State/artifacts/captures/caches/build outputs/local
+agent configs are ignored. Preserve the official blob and state on disk.
+
+## Historical verified state (before Chrome login)
 
 - Chrome extension version fetched for this PoC: **3.7.2**. Its unmodified WASM is
   `artifacts/line-3.7.2/ltsm.wasm`, 2,254,973 bytes, SHA-256
@@ -99,9 +99,10 @@ have become invalid. Do not restart implementation or repeat pairing by default.
   exercised real text, authenticated photo previews, stickers, and paid reactions
   as detailed above.
 
-## Resume commands
+## Historical resume commands — native auth currently invalid
 
-Run from the workspace. An HTTP response of any status from this connectivity
+Do not run the native authenticated commands below during the Chrome audit.
+The following records the previous workflow. An HTTP response of any status from this connectivity
 probe establishes DNS/TLS/HTTPS connectivity; the gateway root need not return 200.
 
 ```sh

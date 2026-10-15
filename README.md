@@ -53,6 +53,31 @@ This renders through Slint's software renderer without creating a desktop window
 It checks layout and text rendering, not desktop input methods or window behavior.
 Snapshots always use synthetic conversations, even without `--demo`.
 
+## Message cache and performance
+
+Selecting a previously loaded chat uses its encrypted recent-page cache. Click
+Refresh to retrieve new messages; automatic updates are not implemented.
+The client still needs valid authentication to start, so cached pages do not
+provide offline startup. The current native session was invalidated when the
+user logged into Chrome; do not re-pair without coordinating that login.
+
+Recent pages use authenticated encryption (AES-256-CTR plus HMAC-SHA256), with
+separate keys derived from the saved pairing secret using HKDF. Pages contain
+at most 50 messages, have a 32 MiB / 256-file disk budget and 30-day expiry,
+and live under the account cache's `messages-v1` directory. A 512-message /
+16 MiB decoded memo avoids decrypting unchanged messages during Refresh.
+Ciphertext/reaction changes invalidate entries; corrupt pages are discarded.
+Clear the account cache to remove both message pages and image previews.
+
+Crypto channels are reused with a 64-entry bound and reset with the WASM runtime.
+An offline synthetic benchmark measured 140.15 ms/message rebuilding a channel
+versus 4.54 ms reusing one; this is a crypto-stage measurement, not a measured
+full-app speedup. Run `cargo run --release --bin line-wasm-poc -- --bench`.
+
+The [Chromium UI map](docs/chromium-ui-map.md) records the live reference,
+missing features, rich-message decoding gaps, history protocol, and reconstruction
+sequence. The current UI remains an initial sketch.
+
 ## Image cache
 
 Avatars, static sticker frames, photo previews, and paid-reaction images use an

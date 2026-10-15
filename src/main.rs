@@ -302,18 +302,68 @@ fn export_test_key(wasm: &[u8], path: &str) -> Result<()> {
     println!("Wrote synthetic test key to {path}");
     Ok(())
 }
+fn benchmark(wasm: &[u8]) -> Result<()> {
+    use std::time::Instant;
+    const COUNT: u32 = 20;
+    let started = Instant::now();
+    let mut rt = Runtime::new(wasm)?;
+    println!(
+        "runtime_init_ms={:.2}",
+        started.elapsed().as_secs_f64() * 1000.0
+    );
+    let mids = Mids::synthetic(&mut rt)?;
+    let fixture = fixture()?;
+    let ciphertext = fixture_bytes(&fixture, "ciphertext")?;
+    let expected = fixture["plaintext"]
+        .as_str()
+        .context("fixture text")?
+        .as_bytes();
+    let started = Instant::now();
+    for _ in 0..COUNT {
+        let (key, channel) = fixture_channel(&mut rt, &fixture)?;
+        let plaintext = channel_crypt(&mut rt, "decryptV2", channel, &mids, &ciphertext, None, 42)?;
+        ensure!(plaintext == expected, "benchmark fixture mismatch");
+        rt.destroy("E2EEChannel", channel)?;
+        rt.destroy("Curve25519Key", key)?;
+    }
+    println!(
+        "new_channel_each_message_ms={:.2}",
+        started.elapsed().as_secs_f64() * 1000.0 / f64::from(COUNT)
+    );
+    let (key, channel) = fixture_channel(&mut rt, &fixture)?;
+    let started = Instant::now();
+    for _ in 0..COUNT {
+        let plaintext = channel_crypt(&mut rt, "decryptV2", channel, &mids, &ciphertext, None, 42)?;
+        ensure!(plaintext == expected, "benchmark fixture mismatch");
+    }
+    println!(
+        "reused_channel_message_ms={:.2}",
+        started.elapsed().as_secs_f64() * 1000.0 / f64::from(COUNT)
+    );
+    rt.destroy("E2EEChannel", channel)?;
+    rt.destroy("Curve25519Key", key)?;
+    println!("Offline synthetic fixture only; no session or network access.");
+    Ok(())
+}
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "Usage: line-wasm-poc [WASM [HAR]]\n       line-wasm-poc --export-test-key OUTPUT_JSON [WASM]"
+            "Usage: line-wasm-poc [WASM [HAR]]\n       line-wasm-poc --export-test-key OUTPUT_JSON [WASM]\n       line-wasm-poc --bench [WASM]"
         );
         return Ok(());
     }
     let export = args.first().is_some_and(|s| s == "--export-test-key");
-    let wasm = if export { args.get(2) } else { args.first() }
-        .map(String::as_str)
-        .unwrap_or(DEFAULT_WASM);
+    let bench = args.first().is_some_and(|s| s == "--bench");
+    let wasm = if export {
+        args.get(2)
+    } else if bench {
+        args.get(1)
+    } else {
+        args.first()
+    }
+    .map(String::as_str)
+    .unwrap_or(DEFAULT_WASM);
     let bytes = fs::read(wasm)
         .with_context(|| format!("read {wasm}; run tools/extract_extension.py first"))?;
     let hash = format!("{:x}", Sha256::digest(&bytes));
@@ -323,6 +373,10 @@ fn main() -> Result<()> {
     );
     if export {
         return export_test_key(&bytes, args.get(1).context("missing output filename")?);
+    }
+    if bench {
+        ensure!(args.len() <= 2, "usage: line-wasm-poc --bench [WASM]");
+        return benchmark(&bytes);
     }
     ensure!(args.len() <= 2, "usage: line-wasm-poc [WASM [HAR]]");
     println!("LINE Chrome {VERSION}, unmodified WASM SHA-256 {hash}");

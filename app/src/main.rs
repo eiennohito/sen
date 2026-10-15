@@ -57,6 +57,7 @@ impl View {
                 account::Command::Messages {
                     id: self.current.clone(),
                     generation: self.generation,
+                    refresh: false,
                 },
             );
         }
@@ -175,35 +176,50 @@ impl View {
                     pixels.width,
                     pixels.height,
                 ));
-                let mut changed = false;
                 for row in &mut self.rows {
                     if row.avatar_key == key {
                         row.avatar = image.clone();
-                        changed = true;
                     }
                 }
-                if changed {
-                    self.filter(ui);
+                let chats = ui.get_chats();
+                if let Some(rows) = chats.as_any().downcast_ref::<VecModel<ChatRow>>() {
+                    for index in 0..rows.row_count() {
+                        if let Some(mut row) = rows.row_data(index)
+                            && row.avatar_key == key
+                        {
+                            row.avatar = image.clone();
+                            rows.set_row_data(index, row);
+                        }
+                    }
                 }
-                let mut changed = false;
-                for row in &mut self.messages {
+                let messages = ui.get_messages();
+                for (index, row) in self.messages.iter_mut().enumerate() {
+                    let mut changed = false;
                     if row.image_key == key {
                         row.picture = image.clone();
                         row.has_picture = true;
                         changed = true;
                     }
-                    let mut reactions: Vec<_> = row.reactions.iter().collect();
-                    for reaction in &mut reactions {
-                        if reaction.image_key == key {
-                            reaction.picture = image.clone();
-                            reaction.has_picture = true;
-                            changed = true;
+                    if let Some(reactions) = row
+                        .reactions
+                        .as_any()
+                        .downcast_ref::<VecModel<ReactionRow>>()
+                    {
+                        for index in 0..reactions.row_count() {
+                            if let Some(mut reaction) = reactions.row_data(index)
+                                && reaction.image_key == key
+                            {
+                                reaction.picture = image.clone();
+                                reaction.has_picture = true;
+                                reactions.set_row_data(index, reaction);
+                            }
                         }
                     }
-                    row.reactions = ModelRc::new(VecModel::from(reactions));
-                }
-                if changed {
-                    ui.set_messages(ModelRc::new(VecModel::from(self.messages.clone())));
+                    if changed
+                        && let Some(rows) = messages.as_any().downcast_ref::<VecModel<MessageRow>>()
+                    {
+                        rows.set_row_data(index, row.clone());
+                    }
                 }
             }
             account::Update::Sent {
@@ -392,6 +408,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     account::Command::Messages {
                         id: view.current.clone(),
                         generation: view.generation,
+                        refresh: true,
                     },
                 );
             }
@@ -497,5 +514,36 @@ mod tests {
             },
         );
         assert_eq!(ui.get_chat_subtitle(), "current history");
+
+        // Asset arrivals preserve the list model and unrelated reaction models.
+        let reactions = Rc::new(VecModel::from(vec![ReactionRow {
+            image_key: "reaction".into(),
+            ..Default::default()
+        }]));
+        view.messages = vec![MessageRow {
+            image_key: "photo".into(),
+            reactions: ModelRc::from(reactions.clone()),
+            ..Default::default()
+        }];
+        let messages = Rc::new(VecModel::from(view.messages.clone()));
+        ui.set_messages(ModelRc::from(messages.clone()));
+        for key in ["photo", "reaction"] {
+            view.update(
+                &ui,
+                account::Update::Image {
+                    key: key.into(),
+                    pixels: line_wasm_poc::client::desktop::assets::Pixels {
+                        width: 1,
+                        height: 1,
+                        rgba: vec![255; 4],
+                    }
+                    .into(),
+                },
+            );
+        }
+        assert!(messages.row_data(0).unwrap().has_picture);
+        assert!(reactions.row_data(0).unwrap().has_picture);
+        assert_eq!(ui.get_messages(), ModelRc::from(messages));
+        assert_eq!(view.messages[0].reactions, ModelRc::from(reactions));
     }
 }

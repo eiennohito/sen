@@ -3,6 +3,7 @@ use super::{chat, *};
 use std::{collections::HashMap, sync::Arc};
 
 pub mod assets;
+mod messages;
 use assets::{Asset, ImageCache};
 
 #[derive(Clone)]
@@ -13,14 +14,14 @@ pub struct Chat {
     pub avatar: Option<Asset>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Reaction {
     pub label: String,
     pub count: usize,
     pub asset: Option<Asset>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: String,
     pub body: String,
@@ -45,6 +46,7 @@ pub struct Client {
     sequence: u64,
     request_seq: u32,
     cache: ImageCache,
+    messages: messages::MessageCache,
 }
 
 impl Client {
@@ -65,6 +67,10 @@ impl Client {
         let profile = api.profile(access(&state)?)?;
         let my_mid = required(&profile, "mid")?.to_owned();
         let cache = ImageCache::new(cache_root, &my_mid)?;
+        let messages = messages::MessageCache::new(
+            cache.directory(),
+            &decode(required(&state, "login_key")?)?,
+        )?;
         let sequence = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         Ok(Self {
             api,
@@ -82,6 +88,7 @@ impl Client {
             sequence,
             request_seq: (sequence % 1_000_000_000) as u32,
             cache,
+            messages,
         })
     }
 
@@ -184,6 +191,15 @@ impl Client {
     }
 
     pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
+        if let Ok(Some(messages)) = self.messages.page(chat_mid) {
+            return Ok(messages);
+        }
+        self.refresh_messages(chat_mid)
+    }
+
+    pub fn refresh_messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
+        // Prime fingerprints from valid persisted history before fetching updates.
+        let _ = self.messages.page(chat_mid);
         let data = self.talk("getRecentMessagesV2", json!([chat_mid, 50]))?;
         let messages = data.as_array().context("missing recent messages")?;
         let mut messages: Vec<_> = messages.iter().take(50).map(|m| self.message(m)).collect();
@@ -193,10 +209,16 @@ impl Client {
                 .then_with(|| a.id.len().cmp(&b.id.len()))
                 .then_with(|| a.id.cmp(&b.id))
         });
+        // A cache write failure must not hide successfully fetched messages.
+        let _ = self.messages.store_page(chat_mid, &messages);
         Ok(messages)
     }
 
     fn message(&mut self, raw: &Value) -> Message {
+        let fingerprint = messages::fingerprint(raw);
+        if let Some(message) = self.messages.lookup(&fingerprint) {
+            return message;
+        }
         let mut data = raw.clone();
         let encrypted = raw["chunks"].as_array().is_some_and(|c| !c.is_empty());
         let mut failed = false;
@@ -255,7 +277,7 @@ impl Client {
                 _ => None,
             }
         };
-        Message {
+        let message = Message {
             id: data["id"].as_str().unwrap_or_default().into(),
             body,
             timestamp_ms: data["createdTime"]
@@ -268,7 +290,11 @@ impl Client {
             reactions: reactions(&data["reactions"]),
             encrypted,
             decryption_failed: failed,
+        };
+        if !message.decryption_failed {
+            self.messages.remember(fingerprint, message.clone());
         }
+        message
     }
 
     pub fn image(&mut self, asset: &Asset) -> Result<Arc<assets::Pixels>> {

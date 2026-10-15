@@ -26,6 +26,7 @@ pub enum Command {
     Messages {
         id: String,
         generation: u64,
+        refresh: bool,
     },
     Send {
         id: String,
@@ -132,7 +133,15 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                             generation: None,
                         }),
                     },
-                    Command::Messages { id, generation } => match client.messages(&id) {
+                    Command::Messages {
+                        id,
+                        generation,
+                        refresh,
+                    } => match if refresh {
+                        client.refresh_messages(&id)
+                    } else {
+                        client.messages(&id)
+                    } {
                         Ok(messages) => publish(Update::Messages {
                             id,
                             generation,
@@ -158,7 +167,11 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                                 generation,
                                 text,
                             });
-                            pending = Some(Command::Messages { id, generation });
+                            pending = Some(Command::Messages {
+                                id,
+                                generation,
+                                refresh: true,
+                            });
                         }
                         Err(error) => publish(Update::Error {
                             message: format!(

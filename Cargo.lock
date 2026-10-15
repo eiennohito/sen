@@ -2510,6 +2510,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "image",
+ "serde",
  "serde_json",
  "sha2",
  "wasmi",

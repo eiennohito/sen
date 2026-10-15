@@ -202,13 +202,39 @@ fn curl_request(
 struct Api {
     rt: Runtime,
     key_cache: std::collections::HashMap<String, Value>,
+    channels: std::collections::HashMap<String, (u32, u64)>,
+    channel_tick: u64,
 }
 impl Api {
     fn new(wasm: &[u8]) -> Result<Self> {
         Ok(Self {
             rt: Runtime::new(wasm)?,
             key_cache: Default::default(),
+            channels: Default::default(),
+            channel_tick: 0,
         })
+    }
+    fn cached_channel(&mut self, key: &str) -> Option<u32> {
+        self.channel_tick += 1;
+        let entry = self.channels.get_mut(key)?;
+        entry.1 = self.channel_tick;
+        Some(entry.0)
+    }
+    fn cache_channel(&mut self, key: String, channel: u32) -> Result<()> {
+        const MAX_CHANNELS: usize = 64;
+        if self.channels.len() >= MAX_CHANNELS {
+            let oldest = self
+                .channels
+                .iter()
+                .min_by_key(|(_, (_, tick))| tick)
+                .map(|(key, _)| key.clone())
+                .context("oldest channel")?;
+            let (pointer, _) = self.channels.remove(&oldest).context("cached channel")?;
+            self.rt.destroy("E2EEChannel", pointer)?;
+        }
+        self.channel_tick += 1;
+        self.channels.insert(key, (channel, self.channel_tick));
+        Ok(())
     }
     fn call(
         &mut self,
