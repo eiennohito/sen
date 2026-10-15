@@ -10,7 +10,8 @@ The first window has a searchable conversation list, a message history, and a
 multiline composer. Use ordinary text, flat colors, and restrained spacing.
 Avoid animated backgrounds, blur, shadows, and continuously running timers.
 The default application now opens the saved account, loads real chat metadata,
-decrypts recent history, and displays cached assets. Drafts remain in memory.
+decrypts recent history, and displays cached assets. Drafts and unresolved
+submissions persist in encrypted private storage beside the saved session.
 `--demo` and `--snapshot` use synthetic conversations without account access.
 
 ## Everyday usability gate
@@ -34,10 +35,13 @@ Wayland/X11 feature flags if a smaller platform-specific build is needed.
 
 Use Slint's standard `TextEdit` for the composer and `LineEdit` for search. Do
 not replace input widgets with drawn text or intercept composition keys. Enter
-belongs entirely to the multiline editor/IME; Send is a separate action enabled
-for a connected account. A click on the already-selected conversation does not reset
-the editor. Committed drafts are saved when switching conversations, rather
-than rewriting the editor's text on each keystroke.
+inserts a newline or commits IME input. Ctrl+Enter invokes the same action as
+Send when enabled, outside IME composition; repeated keypresses do not resubmit.
+The pinned Winit event observer tracks native preedit without consuming IME
+events, since standard TextEdit does not expose composition state. Send is
+enabled for a connected account. A click on the already-selected conversation does not reset
+the editor. Committed draft changes are sent to a coalescing storage worker without rewriting
+the editor. Switching chats also saves the current text and editor scroll offset.
 [TextEdit reference](https://docs.slint.dev/latest/docs/slint/reference/std-widgets/views/textedit/).
 
 Winit-backed Slint has preedit and commit handling; this is a capability, not a
@@ -89,8 +93,12 @@ command queue, publish plain view data through `upgrade_in_event_loop`, and
 discard a runtime after a WASM exception. Coalesce model updates; never ship
 private keys or credentials to the UI. Media keys remain in the worker too.
 Late history responses are checked against both chat ID and request generation.
-A completed send clears only its own unchanged draft, preserving newly typed
-text. Ambiguous sends are never retried automatically.
+Submission saves a durable pending item before queueing a network command,
+then clears the submitted editor. Confirmation updates the item by local ID;
+it never clears newer text or changes focus. Known server IDs reconcile to
+that same row identity on refresh. Ambiguous sends remain unresolved across
+restart and are never retried automatically. Recovery appends text deliberately
+without overwriting a newer draft.
 
 Start with the verified system-curl transport behind a Rust interface. A later
 in-process transport can replace it after authentication/signature regression
@@ -125,7 +133,7 @@ Use `ListView` for the conversation list. The sketch's short message list uses
 with a virtualized, paged history before increasing that limit. The worker's
 decoded thumbnails are capped at 24 MiB; the private disk cache is 128 MiB /
 4096 files, with 30-day expiry. Network and image decoding happen on the worker.
-Only selected-message rows and conversation avatars retain Slint images.
+Conversation avatars and up to eight bounded conversation views retain Slint images.
 The public-key response cache is bounded to 256 entries.
 
 ## Reference audit and caching update
@@ -165,9 +173,58 @@ currently owns the login; do not run native account checks during the audit.
 `SLINT_MCP_PORT` starts it on loopback. Regular builds omit this feature, and the
 desktop installer rejects debug-server builds. `tools/check-ui-mcp.py` checks an
 offline preview, including Japanese/emoji drafts, switching, filtering, and
-Enter inserting a line. The native Wayland check ran at scale factor 1.5. This
+Enter inserting a line. `--scenarios` also exercises simulated pointer scrolling,
+selection/clipboard, a delayed arrival burst, media completion, and an uncertain
+outgoing item. The native Wayland check ran at scale factor 1.5. This
 does not replace testing preedit and candidate windows with the real IME.
 
 Private state stays out of Git and diagnostics. Before distributing the app,
 choose the project's license and the applicable Slint license, and resolve how
 users obtain the proprietary crypto artifact; the current repo does not bundle it.
+
+
+## UX implementation checkpoint — 2026-10-15
+
+See [ux-acceptance.md](ux-acceptance.md) for the current verification log and
+remaining release gates. The main pane now has a narrow Back transition,
+independent history/editor scrolling, a fixed history scrollbar gutter, compact
+selectable message text, stable thumbnail geometry, and a Latest control.
+Per-chat reading offsets survive navigation; a message anchor compensates for
+layout changes while reading. Model edits insert/remove rows by identity and
+geometry-changing worker events wait until scrollbar release. No animation or
+idle polling timer was added. OS pointer/drag, scaling, and IME verification
+remain separate gates.
+
+`desktop-state` beside the session holds durable state in an authenticated
+encrypted envelope, with a separate HKDF domain from cached messages. The
+pairing secret partitions accounts; it stays in the storage worker. Ordinary
+changes coalesce for at most 150 ms; submission and normal quit flush explicitly.
+Opening damaged state fails visibly rather than replacing old drafts. Failed
+writes disable submission and offer Retry saving. This does not yet provide
+offline account startup or authorize pairing/read receipts.
+
+
+Authentication recovery is an explicit native flow: failed startup retains its
+command receiver; Retry reconnects, while Sign in again requires Start sign-in
+before creating a pairing session. The existing CLI and native UI share the
+pairing implementation. Native callbacks carry QR pixels and PINs in memory,
+without terminal output or QR files. Cancellation is checked between bounded
+requests and before session installation. Successful validated pairing backs up
+the previous session, atomically installs the new one, resets visible account
+state, opens the new pairing's draft store, and reconnects. Old drafts stay in
+their original encrypted namespace; no automatic account migration occurs.
+
+
+Conversation presentation now sorts loaded rows by latest activity with stable
+canonical IDs; pending items have durable timestamps and join server history in
+chronological order. Pointer-held list updates defer until release, and list
+preview/name/image bounds are explicit. Avatars get an alpha circle mask before
+UI delivery because the software renderer ignores rounded clip radii. Message
+text uses a read-only native selection widget with zero cursor width.
+
+Photo previews have fixed image bounds and separate metadata. The photo viewer
+requests the original object via the account worker, uses the same authenticated
+media decryption, and keeps decoded originals outside the thumbnail cache. Its
+request identity rejects stale completion, while close drops original pixels.
+Source images remain subject to encoded/decoded/dimension limits. Native font
+controls now live in Settings rather than the conversation-list footer.

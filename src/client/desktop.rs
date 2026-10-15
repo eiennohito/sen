@@ -5,12 +5,14 @@ use std::{collections::HashMap, sync::Arc};
 pub mod assets;
 mod messages;
 use assets::{Asset, ImageCache};
+pub use messages::LocalStateStore;
 
 #[derive(Clone)]
 pub struct Chat {
     pub id: String,
     pub title: String,
     pub preview: String,
+    pub timestamp_ms: i64,
     pub avatar: Option<Asset>,
 }
 
@@ -24,6 +26,12 @@ pub struct Reaction {
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Message {
     pub id: String,
+    #[serde(default)]
+    pub sender_id: String,
+    #[serde(default)]
+    pub sender_name: String,
+    #[serde(default)]
+    pub sender_avatar: Option<Asset>,
     pub body: String,
     pub timestamp_ms: i64,
     pub outgoing: bool,
@@ -117,8 +125,8 @@ impl Client {
         let boxes = response["messageBoxes"]
             .as_array()
             .context("missing message boxes")?;
-        self.more_chats = response["hasNext"].as_bool().unwrap_or(false);
-        self.chat_cursor = boxes
+        let more_chats = response["hasNext"].as_bool().unwrap_or(false);
+        let chat_cursor = boxes
             .last()
             .and_then(|c| c["id"].as_str())
             .map(str::to_owned);
@@ -175,23 +183,47 @@ impl Client {
             let avatar = info
                 .and_then(|v| v["picturePath"].as_str())
                 .and_then(Asset::avatar);
-            let preview = entry["lastMessages"]
-                .as_array()
-                .and_then(|v| v.first())
-                .map(|m| self.message(m).body)
-                .unwrap_or_default();
+            let last = entry["lastMessages"].as_array().and_then(|messages| {
+                messages.iter().max_by(|a, b| {
+                    message_timestamp(a)
+                        .cmp(&message_timestamp(b))
+                        .then_with(|| {
+                            message_id_cmp(
+                                a["id"].as_str().unwrap_or_default(),
+                                b["id"].as_str().unwrap_or_default(),
+                            )
+                        })
+                })
+            });
+            let timestamp_ms = last.map(message_timestamp).unwrap_or(0);
+            let preview = last.map(|m| self.message(m).body).unwrap_or_default();
             chats.push(Chat {
                 id,
                 title,
                 preview,
+                timestamp_ms,
                 avatar,
             });
         }
+        // Commit pagination only after all dependent metadata requests succeed.
+        // A retry must request the same boundary instead of silently skipping it.
+        self.more_chats = more_chats;
+        self.chat_cursor = chat_cursor;
         Ok(chats)
     }
 
     pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
-        if let Ok(Some(messages)) = self.messages.page(chat_mid) {
+        if let Ok(Some(mut messages)) = self.messages.page(chat_mid) {
+            // Old cache pages predate sender identity. Refresh these rather
+            // than silently showing anonymous group messages indefinitely.
+            if !is_user(chat_mid)
+                && messages.iter().any(|m| m.sender_id.is_empty())
+                && let Ok(refreshed) = self.refresh_messages(chat_mid)
+            {
+                return Ok(refreshed);
+            }
+            self.resolve_senders(chat_mid, &mut messages);
+            sort_messages(&mut messages);
             return Ok(messages);
         }
         self.refresh_messages(chat_mid)
@@ -203,15 +235,63 @@ impl Client {
         let data = self.talk("getRecentMessagesV2", json!([chat_mid, 50]))?;
         let messages = data.as_array().context("missing recent messages")?;
         let mut messages: Vec<_> = messages.iter().take(50).map(|m| self.message(m)).collect();
-        messages.sort_by(|a, b| {
-            a.timestamp_ms
-                .cmp(&b.timestamp_ms)
-                .then_with(|| a.id.len().cmp(&b.id.len()))
-                .then_with(|| a.id.cmp(&b.id))
-        });
+        self.resolve_senders(chat_mid, &mut messages);
+        sort_messages(&mut messages);
         // A cache write failure must not hide successfully fetched messages.
         let _ = self.messages.store_page(chat_mid, &messages);
         Ok(messages)
+    }
+
+    fn resolve_senders(&mut self, chat_mid: &str, messages: &mut [Message]) {
+        if is_user(chat_mid) {
+            return;
+        }
+        let mut users: Vec<_> = messages
+            .iter()
+            .filter(|m| {
+                !m.outgoing && is_user(&m.sender_id) && !self.contacts.contains_key(&m.sender_id)
+            })
+            .map(|m| m.sender_id.clone())
+            .collect();
+        users.sort();
+        users.dedup();
+        // Sender lookup is bounded to this page and must never hide otherwise
+        // readable history on a contact/transport failure.
+        if !users.is_empty()
+            && let Ok(response) = self.talk(
+                "getContactsV2",
+                json!([{"targetUserMids":users,"neededContactCalendarEvents":[]},0]),
+            )
+            && let Some(contacts) = response["contacts"].as_object()
+        {
+            for (mid, contact) in contacts {
+                self.contacts
+                    .insert(mid.clone(), contact["contact"].clone());
+            }
+        }
+        for message in messages.iter_mut().filter(|m| !m.outgoing) {
+            if let Some(contact) = self.contacts.get(&message.sender_id) {
+                message.sender_name = contact_name(contact).unwrap_or("Unknown member").to_owned();
+                message.sender_avatar = contact["picturePath"].as_str().and_then(Asset::avatar);
+            } else if message.sender_name.is_empty() {
+                message.sender_name = if message.sender_id.is_empty() {
+                    "Unknown sender".into()
+                } else {
+                    format!(
+                        "Member · {}",
+                        message
+                            .sender_id
+                            .chars()
+                            .rev()
+                            .take(6)
+                            .collect::<String>()
+                            .chars()
+                            .rev()
+                            .collect::<String>()
+                    )
+                };
+            }
+        }
     }
 
     fn message(&mut self, raw: &Value) -> Message {
@@ -265,7 +345,7 @@ impl Client {
                 13 => meta["displayName"].as_str().unwrap_or("Contact").to_owned(),
                 14 => meta["FILE_NAME"].as_str().unwrap_or("File").to_owned(),
                 15 => "Location".into(),
-                _ => "Message".into(),
+                _ => "Unsupported message · this content cannot be displayed yet".into(),
             }
         };
         let image = if failed {
@@ -278,13 +358,16 @@ impl Client {
             }
         };
         let message = Message {
-            id: data["id"].as_str().unwrap_or_default().into(),
-            body,
-            timestamp_ms: data["createdTime"]
+            sender_id: data["from"].as_str().unwrap_or_default().to_owned(),
+            sender_name: String::new(),
+            sender_avatar: None,
+            id: data["id"]
                 .as_str()
-                .and_then(|v| v.parse().ok())
-                .or_else(|| data["createdTime"].as_i64())
-                .unwrap_or(0),
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+                .unwrap_or_else(|| format!("unavailable-{fingerprint}")),
+            body,
+            timestamp_ms: message_timestamp(&data),
             outgoing: data["from"].as_str() == Some(&self.my_mid),
             image,
             reactions: reactions(&data["reactions"]),
@@ -301,6 +384,12 @@ impl Client {
         if let Some(pixels) = self.cache.read(asset)? {
             return Ok(pixels);
         }
+        self.authorize_media(asset)?;
+        let data = asset.fetch(self.obs_access.as_deref())?;
+        self.cache.store(asset, &data)
+    }
+
+    fn authorize_media(&mut self, asset: &Asset) -> Result<()> {
         if asset.private && self.obs_access.is_none() {
             let result = self.talk("acquireEncryptedAccessToken", json!([2]))?;
             let text = result.as_str().context("invalid media access response")?;
@@ -312,8 +401,14 @@ impl Client {
                 .context("missing media access token")?;
             self.obs_access = Some(token.into());
         }
-        let data = asset.fetch(self.obs_access.as_deref())?;
-        self.cache.store(asset, &data)
+        Ok(())
+    }
+    /// Fetch the source file rather than enlarging the bounded thumbnail.
+    pub fn original_image(&mut self, asset: &Asset) -> Result<Arc<assets::Pixels>> {
+        let original = asset.original().context("original image unavailable")?;
+        self.authorize_media(&original)?;
+        let data = original.fetch(self.obs_access.as_deref())?;
+        Ok(Arc::new(assets::original_pixels(&data)?))
     }
 
     pub fn cache_stats(&self) -> assets::CacheStats {
@@ -435,6 +530,39 @@ impl Client {
             "contentMetadata":{"e2eeVersion":version.to_string()},"chunks":chunks}),
         )
     }
+}
+
+fn contact_name(contact: &Value) -> Option<&str> {
+    contact["displayNameOverridden"]
+        .as_str()
+        .filter(|name| !name.trim().is_empty())
+        .or_else(|| {
+            contact["displayName"]
+                .as_str()
+                .filter(|name| !name.trim().is_empty())
+        })
+}
+
+fn message_timestamp(raw: &Value) -> i64 {
+    ["createdTime", "deliveredTime"]
+        .iter()
+        .find_map(|field| {
+            raw[*field]
+                .as_i64()
+                .or_else(|| raw[*field].as_str().and_then(|value| value.parse().ok()))
+                .filter(|value| *value > 0)
+        })
+        .unwrap_or(0)
+}
+fn message_id_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.len().cmp(&b.len()).then_with(|| a.cmp(b))
+}
+fn sort_messages(messages: &mut [Message]) {
+    messages.sort_by(|a, b| {
+        a.timestamp_ms
+            .cmp(&b.timestamp_ms)
+            .then_with(|| message_id_cmp(&a.id, &b.id))
+    });
 }
 
 fn is_user(mid: &str) -> bool {

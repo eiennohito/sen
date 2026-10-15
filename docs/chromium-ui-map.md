@@ -4,6 +4,12 @@ Audit date: 2026-10-15. Reference: installed LINE Chrome extension 3.7.2.
 This is a first mapping session, with explicit coverage gaps below. The native
 sketch is not a recreation of this interface yet.
 
+Use [Native messaging UX acceptance checklist](ux-acceptance.md) alongside this
+reference when implementing screens. It specifies proposed native scrolling,
+focus, navigation, sending, unread, notification, and recovery behavior, with
+interaction scenarios to verify. Observations in this map do not by themselves
+define those native behaviors.
+
 ## Evidence and privacy
 
 Live DOM inspection used Chrome's approved browser CDP connection on loopback

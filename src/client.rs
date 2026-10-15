@@ -24,6 +24,7 @@ const IMAGE_ID: u32 = 47101;
 
 mod chat;
 pub mod desktop;
+pub mod pairing;
 
 struct Options {
     command: String,
@@ -507,7 +508,7 @@ fn validate_keys(rt: &mut Runtime, state: &Value) -> Result<usize> {
     }
     Ok(keys.len())
 }
-fn status(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
+fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
     let mut state: Value =
         serde_json::from_slice(&fs::read(&opts.state).context("read saved session")?)?;
     ensure!(
@@ -535,7 +536,71 @@ fn status(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
     save_state(&opts.state, &state)?;
     progress.set("SUCCESS: saved session authenticated and E2EE keys restored")
 }
+trait LoginUi {
+    fn set(&self, stage: &str) -> Result<()>;
+    fn qr(&self, _link: &str, _png: &[u8]) -> Result<()> {
+        Ok(())
+    }
+    fn scanned(&self) -> Result<()> {
+        Ok(())
+    }
+    fn pin(&self, _pin: &str) -> Result<()> {
+        Ok(())
+    }
+    fn check(&self) -> Result<()> {
+        Ok(())
+    }
+}
+impl LoginUi for Progress {
+    fn set(&self, stage: &str) -> Result<()> {
+        Progress::set(self, stage)
+    }
+}
+struct CliLogin<'a> {
+    opts: &'a Options,
+    progress: &'a Progress,
+}
+impl CliLogin<'_> {
+    fn qr_path(&self) -> PathBuf {
+        self.opts.qr_file.clone().unwrap_or_else(|| {
+            self.opts
+                .state
+                .parent()
+                .unwrap_or(Path::new("."))
+                .join("qr.png")
+        })
+    }
+}
+impl LoginUi for CliLogin<'_> {
+    fn set(&self, stage: &str) -> Result<()> {
+        self.progress.set(stage)
+    }
+    fn qr(&self, link: &str, png: &[u8]) -> Result<()> {
+        private_write(&self.qr_path(), png)?;
+        println!(
+            "Scan with LINE on your phone and approve the login. This uses the Chrome secondary-device slot."
+        );
+        show_qr(link, png, &self.opts.display)
+    }
+    fn scanned(&self) -> Result<()> {
+        let _ = fs::remove_file(self.qr_path());
+        if self.opts.display == "kitty" {
+            print!("\x1b_Ga=d,d=I,i={IMAGE_ID},q=2;\x1b\\");
+            io::stdout().flush()?;
+        }
+        Ok(())
+    }
+    fn pin(&self, pin: &str) -> Result<()> {
+        println!("\nEnter this verification code on your phone: {pin}\n");
+        io::stdout().flush()?;
+        Ok(())
+    }
+}
 fn login(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
+    login_with(opts, wasm, &CliLogin { opts, progress })
+}
+fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
+    progress.check()?;
     ensure!(
         !opts.state.exists(),
         "session file already exists; use status or choose a new --state path"
@@ -560,15 +625,7 @@ fn login(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
     let wrapped = bytes_method(&mut api.rt, "Curve25519Key", "exportKey", key, &[])?;
     let link = callback(required(&qr, "callbackUrl")?, &public)?;
     let png = qr_png(&link)?;
-    let qr_path = opts
-        .qr_file
-        .clone()
-        .unwrap_or_else(|| parent.join("qr.png"));
-    private_write(&qr_path, &png)?;
-    println!(
-        "Scan with LINE on your phone and approve the login. This uses the Chrome secondary-device slot."
-    );
-    show_qr(&link, &png, &opts.display)?;
+    progress.qr(&link, &png)?;
     progress.set("QR ready; waiting for phone scan")?;
     let interval = qr["longPollingIntervalSec"]
         .as_u64()
@@ -581,6 +638,7 @@ fn login(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
     let started = Instant::now();
     let mut verified = false;
     for _ in 0..count {
+        progress.check()?;
         match api.qr(
             "checkQrCodeVerified",
             json!({"authSessionId":session}),
@@ -602,11 +660,8 @@ fn login(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
         }
     }
     ensure!(verified, "QR code expired before phone verification");
-    let _ = fs::remove_file(&qr_path);
-    if opts.display == "kitty" {
-        print!("\x1b_Ga=d,d=I,i={IMAGE_ID},q=2;\x1b\\");
-        io::stdout().flush()?;
-    }
+    progress.check()?;
+    progress.scanned()?;
     progress.set("QR scanned; checking device certificate")?;
     match api.qr(
         "verifyCertificate",
@@ -628,8 +683,7 @@ fn login(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
                 (4..=8).contains(&pin.len()) && pin.bytes().all(|b| b.is_ascii_digit()),
                 "invalid verification PIN format"
             );
-            println!("\nEnter this verification code on your phone: {pin}\n");
-            io::stdout().flush()?;
+            progress.pin(pin)?;
             progress.set("Waiting for phone PIN verification")?;
             api.qr(
                 "checkPinCodeVerified",
@@ -639,6 +693,7 @@ fn login(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
             )?;
         }
     }
+    progress.check()?;
     progress.set("Phone approved; requesting session credentials")?;
     let result=api.qr("qrCodeLoginV2",json!({"authSessionId":session,"systemName":"CHROMEOS","modelName":"CHROME","autoLoginIsRequired":false}),"",0)?;
     let mut token = result["tokenV3IssueResult"].clone();

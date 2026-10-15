@@ -1,203 +1,569 @@
-import { Button, LineEdit, TextEdit, ScrollView, ListView } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ScrollView, ListView, ComboBox } from "std-widgets.slint";
 
-export struct ChatRow {
-    index: int,
-    title: string,
-    preview: string,
-    initial: string,
-    avatar: image,
-    avatar-key: string,
-}
-
-export struct ReactionRow {
-    label: string,
-    image-key: string,
-    picture: image,
-    has-picture: bool,
-}
+export struct ChatRow { index: int, title: string, preview: string, initial: string, activity: string, time: string, avatar: image, avatar-key: string }
+export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
-    body: string,
-    time: string,
-    outgoing: bool,
-    image-key: string,
-    picture: image,
-    has-picture: bool,
-    reactions: [ReactionRow],
+    id: string, sticker: bool, photo: bool, sort-key: string, body: string, time: string, outgoing: bool,
+    sender-id: string, sender-name: string, sender-initial: string, sender-key: string, sender-avatar: image, has-sender-avatar: bool,
+    group-start: bool, day-label: string, clock: string,
+    image-key: string, picture: image, has-picture: bool, image-failed: bool,
+    delivery: string, delivery-detail: string, recoverable: bool, reactions: [ReactionRow],
+}
+
+// Fixed gutter and a wide pointer target. Content changes during a thumb drag
+// are deferred by the controller; wheel input is consumed even at the boundary.
+component Pane inherits Rectangle {
+    in-out property <length> offset: 0px;
+    out property <length> extent: max(0px, content.height - root.height);
+    out property <bool> dragging: thumb-touch.pressed;
+    callback scrolled();
+    clip: true;
+    public function jump(y: length) { root.offset = max(-root.extent, min(0px, y)); }
+    TouchArea {
+        scroll-event(event) => {
+            root.jump(root.offset + event.delta-y);
+            root.scrolled();
+            return accept;
+        }
+    }
+    content := Rectangle {
+        x: 0px; y: root.offset;
+        width: max(0px, root.width - 16px);
+        height: self.preferred-height;
+        @children
+    }
+    track := Rectangle {
+        x: parent.width - 16px; width: 16px; height: parent.height;
+        background: #e5ebe3;
+        visible: root.extent > 0px;
+        thumb := Rectangle {
+            x: 3px; width: 10px;
+            height: max(32px, track.height * track.height / max(1px, content.height));
+            y: (track.height - self.height) * (-root.offset / max(1px, root.extent));
+            border-radius: 5px;
+            background: thumb-touch.pressed ? #167446 : #8a9e8d;
+        }
+        thumb-touch := TouchArea {
+            property <length> start-offset;
+            property <length> start-y;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    if self.mouse-y < thumb.y || self.mouse-y > thumb.y + thumb.height {
+                        root.jump(-root.extent * (self.mouse-y / track.height));
+                        root.scrolled();
+                    }
+                    self.start-offset = root.offset;
+                    self.start-y = self.mouse-y;
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.jump(self.start-offset - (self.mouse-y - self.start-y) * root.extent / max(1px, track.height - thumb.height));
+                    root.scrolled();
+                }
+            }
+            scroll-event(event) => { root.jump(root.offset + event.delta-y); root.scrolled(); accept }
+        }
+    }
 }
 
 export component AppWindow inherits Window {
+    in-out property <bool> ime-active: false;
+    public function focus-composer() { composer.focus(); }
     title: root.demo ? "LINE · Preview" : "LINE · " + root.account-name;
     icon: @image-url("../assets/icon.svg");
-    preferred-width: 980px;
-    preferred-height: 720px;
-    min-width: 720px;
-    min-height: 520px;
+    preferred-width: 980px; preferred-height: 720px;
+    min-width: 360px; min-height: 520px;
     background: #fafbf9;
-    default-font-size: 15px;
-
+    default-font-size: root.text-size * 1px;
+    in-out property <int> text-size: 15;
     in property <[ChatRow]> chats;
     in property <[MessageRow]> messages;
-    in-out property <int> selected-chat;
+    in-out property <int> selected-chat: -1;
     in property <string> chat-title;
     in property <string> chat-subtitle;
     in-out property <string> draft;
-    callback select-chat(int);
-    callback search-changed(string);
-    callback refresh();
-    callback more();
-    callback send();
-    in property <bool> connected: false;
-    in property <bool> sending: false;
-    in property <bool> demo: false;
-    in property <bool> more-chats: false;
-    in property <bool> has-chat: false;
+    in property <bool> can-send;
+    in property <string> send-reason;
+    in-out property <bool> list-pressed;
+    property <bool> list-release-pending;
+    out property <length> chat-row-height: max(82px, root.text-size * 3.2px + 20px);
+    Timer { interval: 1ms; running: root.list-release-pending; triggered => { root.list-release-pending = false; root.release-deferred(); } }
+    in-out property <bool> settings-open;
+    in-out property <bool> viewer-open;
+    in property <image> viewer-image;
+    in property <string> viewer-status;
+    in property <string> viewer-error;
+    in property <bool> viewer-loading;
+    in-out property <string> viewer-key;
+    property <float> viewer-zoom: 1;
+    callback open-photo(string); callback photo-closed();
+    public function show-viewer(key: string) { root.viewer-open = true; root.viewer-key = key; root.viewer-zoom = 1; viewer-scroll.content-x = 0px; viewer-scroll.content-y = 0px; viewer-close.focus(); }
+    public function close-viewer() { root.viewer-open = false; history-focus.focus(); root.photo-closed(); }
+    in property <bool> connected;
+    in-out property <bool> connection-failed;
+    in-out property <bool> retrying-connection;
+    in-out property <bool> auth-open;
+    in-out property <bool> auth-busy;
+    in-out property <bool> auth-cancelling;
+    in property <image> auth-qr;
+    in property <string> auth-pin;
+    in property <string> auth-stage;
+    in property <string> auth-error;
+    callback reconnect(); callback start-sign-in(); callback cancel-sign-in();
+    public function account-ready() { root.auth-open = false; root.show-conversation = false; search.focus(); }
+    public function close-sign-in() { root.auth-open = false; sign-in-opener.focus(); }
+    public function open-sign-in() { root.auth-open = true; auth-start.focus(); }
+
+    in property <bool> sending;
+    in property <bool> demo;
+    in property <bool> more-chats;
+    in property <bool> has-chat;
+    in property <bool> loading-chats;
+    in property <bool> loading-history;
+    in property <string> history-error;
+    in property <string> list-error;
+    in property <string> storage-error;
+    in property <bool> storage-retryable;
     in property <string> status;
     in property <string> account-name;
-
-    HorizontalLayout {
-        spacing: 0;
-        Rectangle {
-            width: 280px;
+    in-out property <bool> show-conversation: false;
+    in-out property <bool> following: true;
+    in-out property <int> new-count;
+    in-out property <length> history-y <=> history.offset;
+    out property <bool> history-dragging: history.dragging;
+    changed history-dragging => { if !root.history-dragging { root.release-deferred(); } }
+    in-out property <string> query;
+    in-out property <length> list-y <=> chat-list.content-y;
+    in-out property <length> editor-y <=> composer.content-y;
+    property <length> search-list-y;
+    property <bool> searching;
+    property <int> result-focus: -1;
+    property <bool> narrow: root.width < 740px;
+    property <string> anchor-id;
+    property <length> anchor-screen-y;
+    property <bool> capture-anchor;
+    property <length> restore-y;
+    property <bool> restore-pending;
+    callback select-chat(int);
+    callback search-changed(string);
+    callback draft-edited();
+    callback refresh(); callback retry-history(); callback more(); callback send();
+    callback settings-changed(); callback retry-storage(); callback recover-message(string); callback demo-event(int); callback release-deferred();
+    public function show-history(y: length, latest: bool) {
+        root.anchor-id = "";
+        root.following = latest;
+        root.restore-y = y;
+        root.restore-pending = true;
+    }
+    public function latest() { root.following = true; root.new-count = 0; history.jump(-history.extent); root.capture-anchor = true; }
+    Timer { interval: 16ms; running: root.capture-anchor; triggered => { root.capture-anchor = false; } }
+    Timer {
+        interval: 1ms; running: root.restore-pending;
+        triggered => {
+            root.capture-anchor = true;
+            history.jump(root.following ? -history.extent : root.restore-y);
+            root.restore-pending = false;
+        }
+    }
+    draft-measure := Text {
+        visible: false; text: root.draft + "\n";
+        width: max(100px, conversation.width - 56px);
+        wrap: word-wrap; font-size: root.text-size * 1px;
+    }
+    auth-notice := Rectangle {
+        x: 0px; y: 0px; width: root.width;
+        height: root.connection-failed && !root.auth-open ? 116px : 0px;
+        visible: root.connection-failed && !root.auth-open;
+        background: #fff2dd;
+        VerticalLayout {
+            padding: 12px; spacing: 8px;
+            Text { text: root.retrying-connection ? "Reconnecting to your saved account…" : "Connection needs attention. Retry, or sign in again if your login has expired."; font-size: 14px; color: #613d1b; wrap: word-wrap; }
+            HorizontalLayout {
+                Button { text: "Retry"; accessible-label: "Retry connection"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.reconnect(); } }
+                sign-in-opener := Button { text: "Sign in again"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.open-sign-in(); } }
+            }
+        }
+    }
+    Rectangle {
+        y: auth-notice.height;
+        width: 100%; height: root.height - auth-notice.height;
+        visible: !root.auth-open && !root.settings-open && !root.viewer-open;
+        browser := Rectangle {
+            x: 0px; y: 0px;
+            height: parent.height;
+            visible: !root.narrow || !root.show-conversation;
+            width: !self.visible ? 0px : root.narrow ? root.width : 286px;
             horizontal-stretch: 0;
-            background: #f0f3ee;
+            background: #f0f3ee; clip: true;
             VerticalLayout {
-                padding: 16px;
-                spacing: 14px;
+                padding: 14px; spacing: 10px;
                 HorizontalLayout {
-                    height: 48px;
-                    spacing: 10px;
-                    Image { source: @image-url("../assets/icon.svg"); width: 34px; height: 34px; image-fit: contain; }
-                    Text { text: "LINE"; color: #167446; font-size: 25px; font-weight: 800; vertical-alignment: center; }
-                    if !root.demo: Button { text: "Refresh"; enabled: root.connected; clicked => { root.refresh(); } }
+                    height: 42px;
+                    Image { source: @image-url("../assets/icon.svg"); width: 30px; image-fit: contain; }
+                    Text { text: "Chats"; color: #167446; font-size: 23px; font-weight: 800; vertical-alignment: center; }
+                    if !root.demo: Button { text: root.loading-chats ? "Refreshing…" : "Refresh"; enabled: root.connected && !root.loading-chats; clicked => { root.refresh(); } }
                 }
-                Text { text: "Chats"; color: #253a2b; font-size: 19px; font-weight: 700; }
-                LineEdit {
-                    placeholder-text: "Find a conversation";
-                    accessible-label: "Find a conversation";
-                    edited(query) => { root.search-changed(query); }
+                Text { text: "Friends · Add friend: unavailable in this version"; color: #647367; font-size: 11px; wrap: word-wrap; }
+                HorizontalLayout {
+                    search := LineEdit {
+                        text <=> root.query;
+                        placeholder-text: "Find a conversation";
+                        accessible-label: "Find a conversation";
+                        edited(query) => {
+                            if query != "" && !root.searching { root.search-list-y = root.list-y; root.searching = true; }
+                            root.search-changed(query);
+                            root.result-focus = -1;
+                            if query == "" { root.list-y = root.search-list-y; root.searching = false; }
+                        }
+                        key-pressed(event) => {
+                            if event.text == Key.Escape && root.query != "" {
+                                root.query = ""; root.search-changed(""); root.list-y = root.search-list-y; root.result-focus = -1; root.searching = false; return accept;
+                            }
+                            if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                                root.result-focus = max(0, min(root.chats.length - 1, root.result-focus + (event.text == Key.DownArrow ? 1 : -1)));
+                                chat-list.content-y = -max(0px, root.result-focus * root.chat-row-height - chat-list.height / 2);
+                                return accept;
+                            }
+                            if event.text == Key.Return && root.result-focus >= 0 && root.result-focus < root.chats.length {
+                                root.select-chat(root.chats[root.result-focus].index); root.show-conversation = true; if root.narrow { composer.focus(); } return accept;
+                            }
+                            reject
+                        }
+                    }
+                    Button { text: "Clear"; enabled: root.query != ""; clicked => { root.query = ""; root.search-changed(""); root.list-y = root.search-list-y; root.result-focus = -1; root.searching = false; search.focus(); } }
                 }
-                ListView {
-                    for chat in root.chats: Rectangle {
-                        height: 82px;
-                        border-radius: 8px;
+                Text { text: "Searches loaded conversation names only"; color: #647367; font-size: 11px; wrap: word-wrap; }
+                if root.chats.length == 0: Text { text: root.query == "" ? "No conversations loaded" : "No loaded conversations match"; wrap: word-wrap; }
+                chat-list := ListView {
+                    horizontal-scrollbar-policy: always-off;
+                    content-width: self.visible-width;
+                    for chat[i] in root.chats: Rectangle {
+                        width: chat-list.visible-width; height: root.chat-row-height;
+                        border-radius: 6px; clip: true;
                         background: chat.index == root.selected-chat ? #dce9dc : row-touch.has-hover ? #e7ede4 : transparent;
-                        HorizontalLayout {
-                            padding: 10px;
-                            spacing: 12px;
-                            Rectangle {
-                                width: 38px;
-                                height: 38px;
-                                border-radius: 19px;
-                                background: #d0dfcf;
-                                Text { visible: chat.avatar.width == 0; text: chat.initial; color: #33583b; horizontal-alignment: center; vertical-alignment: center; }
-                                Image { source: chat.avatar; image-fit: cover; }
-                            }
-                            VerticalLayout {
-                                spacing: 5px;
-                                Text { text: chat.title; color: #253a2b; font-weight: 600; overflow: elide; }
-                                Text { text: chat.preview; color: #647367; font-size: 12px; overflow: elide; }
-                            }
+                        border-width: row-focus.has-focus || (search.has-focus && i == root.result-focus) ? 2px : 0px;
+                        border-color: #167446;
+                        Rectangle {
+                            x: 10px; y: (parent.height - 40px) / 2; width: 40px; height: 40px;
+                            border-radius: 20px; background: #d0dfcf;
+                            Text { width: 100%; height: 100%; visible: chat.avatar.width == 0; text: chat.initial; horizontal-alignment: center; vertical-alignment: center; }
+                            Image { source: chat.avatar; width: 100%; height: 100%; image-fit: contain; accessible-role: image; accessible-label: "Contact photo"; }
+                        }
+                        Rectangle {
+                            x: 60px; y: 10px; width: max(0px, parent.width - 72px); height: parent.height - 20px; clip: true;
+                            name := Text { x: 0px; y: 0px; width: max(0px, parent.width - (chat.time != "" ? 42px : 0px)); height: root.text-size * 1.5px; text: chat.title; color: #253a2b; font-weight: 600; overflow: elide; wrap: no-wrap; }
+                            Text { x: parent.width - 38px; y: 3px; width: 38px; text: chat.time; color: #647367; font-size: 11px; horizontal-alignment: right; overflow: elide; }
+                            Text { x: 0px; y: name.height + 4px; width: parent.width; height: max(0px, parent.height - self.y); text: chat.preview; color: #647367; font-size: max(12, root.text-size - 2) * 1px; wrap: no-wrap; overflow: elide; }
                         }
                         row-focus := FocusScope {
-                            accessible-role: button;
-                            accessible-label: chat.title;
+                            accessible-role: button; accessible-label: chat.title;
+                            accessible-action-default => { root.select-chat(chat.index); root.show-conversation = true; if root.narrow { composer.focus(); } }
                             key-pressed(event) => {
-                                if event.text == Key.Return || event.text == " " {
-                                    root.select-chat(chat.index);
-                                    return accept;
-                                }
-                                return reject;
+                                if event.text == Key.Return || event.text == " " { root.select-chat(chat.index); root.show-conversation = true; if root.narrow { composer.focus(); } return accept; }
+                                reject
                             }
                         }
                         row-touch := TouchArea {
-                            clicked => { row-focus.focus(); root.select-chat(chat.index); }
-                        }
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.cancel { root.list-pressed = false; root.list-release-pending = true; }
+                                else if event.button == PointerEventButton.left {
+                                    if event.kind == PointerEventKind.down { root.list-pressed = true; }
+                                    else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel { root.list-pressed = false; root.list-release-pending = true; }
+                                }
+                            }
+                            clicked => { row-focus.focus(); root.select-chat(chat.index); root.show-conversation = true; if root.narrow { composer.focus(); } } }
                     }
                 }
-                if root.more-chats: Button { text: "More conversations"; clicked => { root.more(); } }
+                if root.more-chats: Button { text: root.loading-chats ? "Loading…" : "More conversations"; enabled: !root.loading-chats; clicked => { root.more(); } }
+                if root.list-error != "": Text { text: root.list-error; color: #943824; wrap: word-wrap; }
+                if root.demo: VerticalLayout {
+                    Text { text: "Synthetic interaction scenarios"; color: #647367; font-size: 11px; }
+                    HorizontalLayout {
+                        Button { text: "History"; accessible-label: "Long history"; clicked => { root.demo-event(0); } }
+                        Button { text: "Arrivals"; accessible-label: "Receive 3"; clicked => { root.demo-event(1); } }
+                    }
+                    HorizontalLayout {
+                        Button { text: "Media"; accessible-label: "Load media"; clicked => { root.demo-event(2); } }
+                        Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { root.demo-event(3); } }
+                    }
+                }
+                if root.demo: Button { text: "Photo preview"; clicked => { root.demo-event(5); } }
+                if root.demo: Button { text: "Sticker preview"; clicked => { root.demo-event(6); } }
+                if root.demo: Button { text: "Group preview"; clicked => { root.demo-event(7); } }
+                if root.demo: Button { text: "Login recovery"; clicked => { root.demo-event(4); } }
                 Text { text: root.account-name; color: #69766b; font-size: 12px; overflow: elide; }
                 Text { text: root.status; color: #69766b; font-size: 12px; wrap: word-wrap; }
+                settings-opener := Button { text: "Settings"; clicked => { root.settings-open = true; settings-close.focus(); } }
+
             }
         }
-        Rectangle { width: 1px; background: #dce3d9; }
-        VerticalLayout {
-            spacing: 0;
+        conversation := Rectangle {
+          x: browser.width;
+          width: parent.width - self.x; height: parent.height;
+          visible: !root.narrow || root.show-conversation;
+          VerticalLayout {
+            spacing: 0px;
             Rectangle {
-                height: 88px;
-                background: #ffffff;
+                height: root.narrow ? 100px : 84px; background: #ffffff;
                 VerticalLayout {
-                    padding: 22px;
-                    spacing: 5px;
-                    Text { text: root.chat-title; color: #23362a; font-size: 20px; font-weight: 700; }
-                    Text { text: root.chat-subtitle; color: #6c786f; font-size: 12px; }
+                    padding: 14px; spacing: 5px;
+                    HorizontalLayout {
+                        if root.narrow: Button { text: "Back"; width: 84px; horizontal-stretch: 0; clicked => { root.show-conversation = false; search.focus(); } }
+                        Text { text: root.chat-title; color: #23362a; font-size: (root.text-size + 4) * 1px; font-weight: 700; overflow: elide; vertical-alignment: center; }
+                    }
+                    Text { text: root.chat-subtitle; color: #6c786f; font-size: 12px; overflow: elide; }
                 }
             }
-            Rectangle { height: 1px; background: #e2e7df; }
-            ScrollView {
+            if root.history-error != "" || root.loading-history: HorizontalLayout {
+                padding: 8px;
+                Text { text: root.loading-history ? "Loading recent messages…" : root.history-error; color: #943824; wrap: word-wrap; }
+                if !root.loading-history: Button { text: "Retry messages"; clicked => { root.retry-history(); } }
+            }
+            history := Pane {
+                history-focus := FocusScope { width: 0px; height: 0px; key-pressed(event) => { if event.text == Key.PageUp { history.jump(history.offset + history.height * 0.9); history.scrolled(); return accept; } if event.text == Key.PageDown { history.jump(history.offset - history.height * 0.9); history.scrolled(); return accept; } reject } }
+                vertical-stretch: 1;
+                scrolled => { root.capture-anchor = true; root.following = !history.dragging && history.extent + history.offset <= root.text-size * 1px; if root.following { root.new-count = 0; } }
+                changed extent => { if root.following && !history.dragging { root.restore-pending = true; } }
                 VerticalLayout {
-                    padding: 24px;
-                    spacing: 18px;
-                    for message in root.messages: HorizontalLayout {
-                        spacing: 0;
-                        if message.outgoing: Rectangle { min-width: 60px; horizontal-stretch: 1; }
+                    padding: 16px; spacing: 5px;
+                    Text { text: root.has-chat ? "Recent history · older messages are unavailable" : "Choose a conversation"; color: #69766b; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
+                    for message in root.messages: message-row := VerticalLayout {
+                        property <length> screen-y: self.y + history.offset;
+                        changed screen-y => {
+                            if root.capture-anchor && self.screen-y <= 16px && self.screen-y + self.height > 16px {
+                                root.anchor-id = message.id;
+                                root.anchor-screen-y = self.screen-y;
+                            }
+                        }
+                        changed y => {
+                            if message.id == root.anchor-id && !root.capture-anchor && !root.restore-pending && !history.dragging && !root.following {
+                                history.jump(root.anchor-screen-y - self.y);
+                            }
+                        }
+                        vertical-stretch: 0; spacing: 3px;
+                        if message.day-label != "": Text {
+                            text: message.day-label; color: #617064; font-size: 11px;
+                            height: 24px; horizontal-alignment: center; vertical-alignment: center;
+                        }
+                        HorizontalLayout {
+                        spacing: 5px;
+                        if message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
+                        if !message.outgoing && message.sender-name != "": VerticalLayout {
+                            width: 32px; spacing: 0px;
+                            Rectangle {
+                                height: 32px; visible: message.group-start;
+                                background: message.has-sender-avatar ? transparent : #dce8da; border-radius: 16px;
+                                Text { visible: !message.has-sender-avatar; text: message.sender-initial; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                                Image { width: 32px; height: 32px; source: message.sender-avatar; visible: message.has-sender-avatar; image-fit: contain; accessible-role: image; accessible-label: message.sender-name + " avatar"; }
+                            }
+                            Rectangle { vertical-stretch: 1; }
+                        }
                         VerticalLayout {
                             horizontal-stretch: 0;
-                            preferred-width: min(420px, root.width - 420px);
-                            max-width: min(420px, root.width - 420px);
-                            spacing: 5px;
+                            min-width: min(history.width - 140px, message.image-key != "" ? 200px : 72px);
+                            preferred-width: message.image-key != "" ? min(340px, history.width - 140px) : min(max(72px, min(480px, history.width - 140px)), body-measure.preferred-width + 24px);
+                            max-width: max(72px, min(480px, history.width - 140px));
+                            spacing: 3px;
+                            if message.group-start && !message.outgoing && message.sender-name != "": Text {
+                                text: message.sender-name; accessible-label: "Sender: " + message.sender-name;
+                                color: #49654e; font-size: 12px; overflow: elide;
+                            }
                             Rectangle {
-                                background: message.outgoing ? #dcefd5 : #ffffff;
-                                border-width: 1px;
-                                border-color: message.outgoing ? #d0e4c9 : #e1e7de;
-                                border-radius: 10px;
-                                VerticalLayout {
-                                    padding: 13px;
-                                    spacing: 8px;
-                                    Text { text: message.body; color: #24382a; wrap: word-wrap; }
-                                    if message.has-picture: Image {
-                                        source: message.picture;
-                                        width: min(280px, root.width - 440px);
-                                        height: min(260px, self.width * message.picture.height / max(1, message.picture.width));
-                                        image-fit: contain;
+                                background: message.sticker ? transparent : message.outgoing ? #dcefd5 : #ffffff;
+                                border-width: body.has-focus ? 2px : message.sticker ? 0px : 1px;
+                                border-color: body.has-focus ? #167446 : #d2dfcf;
+                                border-radius: 9px;
+                                height: bubble-content.preferred-height;
+                                body-measure := Text { visible: false; text: message.body; font-size: root.text-size * 1px; }
+                                bubble-content := VerticalLayout {
+                                    padding: 10px; spacing: 6px; alignment: start;
+                                    ContextMenuArea {
+                                        visible: !message.sticker || message.image-key == "";
+                                        height: self.visible ? body.preferred-height : 0px;
+                                        Menu {
+                                            MenuItem { title: "Copy selection"; activated => { body.copy(); } }
+                                            MenuItem { title: "Copy message"; activated => { body.select-all(); body.copy(); } }
+                                        }
+                                        body := TextInput {
+                                            text: message.body; read-only: true; single-line: false; text-cursor-width: 0px;
+                                            wrap: word-wrap; color: #24382a;
+                                            font-size: root.text-size * 1px;
+                                            height: self.preferred-height;
+                                            accessible-label: message.outgoing ? "Outgoing message" : "Incoming message";
+                                            selection-background-color: #9bc9a3;
+                                            changed has-focus => { if self.has-focus { root.following = false; root.capture-anchor = true; } }
+                                        }
+                                    }
+                                    if message.image-key != "": Rectangle {
+                                        // Geometry does not change when a thumbnail arrives or fails.
+                                        height: 180px;
+                                        clip: true;
+                                        Image { source: message.picture; width: 100%; height: 100%; image-fit: contain; visible: message.has-picture; accessible-role: image; accessible-label: message.photo ? "Photo preview" : "Message image"; }
+                                        if message.photo: FocusScope {
+                                            accessible-role: button; accessible-label: "Open photo";
+                                            accessible-action-default => { root.open-photo(message.image-key); }
+                                            TouchArea { mouse-cursor: pointer; clicked => { parent.focus(); root.open-photo(message.image-key); } }
+                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.open-photo(message.image-key); return accept; } reject }
+                                            Rectangle { visible: parent.has-focus; border-width: 2px; border-color: #167446; background: transparent; }
+                                            changed has-focus => { if self.has-focus && !root.viewer-open { root.following = false; } }
+                                            property <bool> restore-photo: !root.viewer-open && root.viewer-key == message.image-key;
+                                            changed restore-photo => { if self.restore-photo { self.focus(); root.viewer-key = ""; } }
+                                        }
+                                        Text { visible: !message.has-picture; text: message.image-failed ? "Preview unavailable · Refresh to retry" : message.sticker ? message.body : "Loading preview…"; color: #647367; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
                                     }
                                 }
                             }
-                            Text { text: message.time; color: #7c867d; font-size: 11px; horizontal-alignment: message.outgoing ? right : left; }
+                            if message.recoverable: Text { text: message.delivery-detail; color: #943824; font-size: 11px; wrap: word-wrap; }
+                            if message.recoverable: Button { text: "Append text to draft"; clicked => { root.recover-message(message.id); composer.focus(); } }
                             HorizontalLayout {
-                                spacing: 5px;
+                                spacing: 4px;
                                 for reaction in message.reactions: HorizontalLayout {
-                                    spacing: 3px;
                                     if reaction.has-picture: Image { source: reaction.picture; width: 24px; height: 24px; image-fit: contain; }
                                     Text { text: reaction.label; font-size: 12px; color: #526957; }
                                 }
                             }
                         }
-                        if !message.outgoing: Rectangle { min-width: 60px; horizontal-stretch: 1; }
+                        // Time appears once per sender/time group, beside the
+                        // bubble. Status has a fixed slot and never adds a row.
+                        VerticalLayout {
+                            width: message.outgoing ? 58px : 38px;
+                            spacing: 0px;
+                            Rectangle { vertical-stretch: 1; }
+                            HorizontalLayout {
+                                height: 16px; spacing: 2px;
+                                Text { text: message.group-start ? message.clock : ""; accessible-label: message.group-start ? message.time : ""; color: #617064; font-size: 10px; }
+                                if message.outgoing: Text {
+                                    width: 14px;
+                                    text: message.delivery == "Sending…" ? "…" : message.recoverable ? "!" : "✓";
+                                    accessible-label: message.delivery == "" || message.delivery == "Sent" ? "Sent · server confirmed; read status unavailable" : message.delivery;
+                                    color: message.recoverable ? #943824 : #617064; font-size: 11px;
+                                }
+                            }
+                        }
+                        if !message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
+                        }
                     }
-                    Rectangle { vertical-stretch: 1; }
                 }
             }
+            if !root.following && root.has-chat: Button { text: root.new-count > 0 ? "Latest · " + root.new-count + " new" : "Latest"; clicked => { root.latest(); } }
             Rectangle {
-                height: 180px;
+                height: min(conversation.height / 3, max(132px, draft-measure.preferred-height + 78px));
                 background: #ffffff;
                 VerticalLayout {
-                    padding: 16px;
-                    spacing: 10px;
+                    padding: 12px; spacing: 8px;
                     composer := TextEdit {
-                        text <=> root.draft;
-                        accessible-label: "Message draft";
-                        wrap: word-wrap;
-                        // Leave key handling to Slint and the input method.
-                        // Enter must commit composition or insert a newline.
+                        text <=> root.draft; enabled: root.has-chat;
+                        accessible-label: "Message draft"; wrap: word-wrap;
+                        font-size: root.text-size * 1px;
+                        edited => { root.draft-edited(); }
+                        key-pressed(event) => {
+                            if event.text == Key.Return && event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta && !root.ime-active && !root.auth-open && !root.settings-open && !root.viewer-open {
+                                if root.can-send && !event.repeat { root.send(); }
+                                return accept;
+                            }
+                            reject
+                        }
                     }
                     HorizontalLayout {
-                        height: 32px;
-                        spacing: 12px;
-                        Text { text: root.demo ? "Drafts stay here until you close the preview." : "Enter inserts a line. Use Send to send."; color: #6c786f; font-size: 11px; vertical-alignment: center; }
-                        Button { text: root.sending ? "Sending…" : "Send"; enabled: root.connected && root.has-chat && !root.sending && root.draft != ""; width: 94px; horizontal-stretch: 0; clicked => { root.send(); } }
+                        height: 36px; spacing: 8px;
+                        Text { text: root.send-reason != "" ? root.send-reason : "Enter inserts a line. Ctrl+Enter sends."; color: #6c786f; font-size: 11px; wrap: word-wrap; vertical-alignment: center; }
+                        Button { text: "Send"; enabled: root.can-send; width: 80px; horizontal-stretch: 0; clicked => { root.send(); composer.focus(); } }
                     }
+                }
+            }
+            if root.storage-error != "": HorizontalLayout {
+                padding: 8px;
+                Text { text: root.storage-error; color: #943824; font-size: 12px; wrap: word-wrap; }
+                Button { text: "Retry saving"; enabled: root.storage-retryable; clicked => { root.retry-storage(); } }
+            }
+        }
+    }
+    }
+    Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%;
+        visible: root.auth-open; background: #fafbf9;
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.cancel-sign-in(); return accept; }
+                reject
+            }
+            VerticalLayout {
+                padding: 16px; spacing: 12px;
+                Text { text: "Sign in to LINE"; font-size: 22px; font-weight: 700; color: #167446; }
+                ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        padding-right: 16px; spacing: 12px; alignment: start;
+                        Text { text: "Use LINE on your phone to scan the QR code and approve this device. This uses the Chrome device slot and may sign Chrome out."; wrap: word-wrap; font-size: 15px; }
+                        Text { text: "Your existing session and encrypted drafts will be kept separately. They will not be moved into the new login."; wrap: word-wrap; font-size: 15px; color: #647367; }
+                        if root.auth-busy: Text { text: root.auth-stage; wrap: word-wrap; font-size: 15px; }
+                        if root.auth-qr.width > 0: Image { source: root.auth-qr; height: min(280px, root.width - 64px); image-fit: contain; accessible-label: "Scan this QR code with LINE on your phone"; }
+                        if root.auth-pin != "": Text { text: "Enter this code on your phone: " + root.auth-pin; wrap: word-wrap; font-size: 24px; font-weight: 700; }
+                        if root.auth-error != "": Text { text: root.auth-error; wrap: word-wrap; font-size: 15px; color: #943824; }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 8px;
+                    auth-start := Button { text: "Start sign-in"; enabled: !root.auth-busy; clicked => { root.start-sign-in(); } }
+                    Button { text: root.auth-cancelling ? "Cancelling…" : root.auth-busy ? "Cancel sign-in" : "Back"; enabled: !root.auth-cancelling; clicked => { root.cancel-sign-in(); } }
                 }
             }
         }
     }
+
+    Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%; visible: root.settings-open; background: #fafbf9;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { root.settings-open = false; settings-opener.focus(); return accept; } reject }
+            VerticalLayout {
+                padding: 20px; spacing: 16px; alignment: start;
+                settings-close := Button { text: "Back to chats"; clicked => { root.settings-open = false; settings-opener.focus(); } }
+                Text { text: "Settings"; font-size: 24px; font-weight: 700; }
+                Text { text: "Message text size"; }
+                ComboBox {
+                    accessible-label: "Message text size";
+                    model: ["Small", "Default", "Large", "Extra large"];
+                    current-index: root.text-size <= 13 ? 0 : root.text-size <= 15 ? 1 : root.text-size <= 18 ? 2 : 3;
+                    selected(value) => { root.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; root.settings-changed(); }
+                }
+                Text { text: "Changes apply immediately and are saved on this device."; wrap: word-wrap; color: #647367; }
+            }
+        }
+    }
+    Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%; visible: root.viewer-open; background: #18211c;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { root.close-viewer(); return accept; } reject }
+            VerticalLayout {
+                padding: 12px; spacing: 10px;
+                HorizontalLayout {
+                    viewer-close := Button { text: "Close photo"; clicked => { root.close-viewer(); } }
+                    Text { text: root.viewer-status; color: #f1f5f0; wrap: word-wrap; vertical-alignment: center; }
+                }
+                viewer-scroll := ScrollView {
+                    property <float> fit: min(self.visible-width / max(1px, root.viewer-image.width * 1px), self.visible-height / max(1px, root.viewer-image.height * 1px));
+                    content-width: max(self.visible-width, root.viewer-image.width * 1px * self.fit * root.viewer-zoom);
+                    content-height: max(self.visible-height, root.viewer-image.height * 1px * self.fit * root.viewer-zoom);
+                    Image {
+                        source: root.viewer-image;
+                        accessible-role: image; accessible-label: "Photo in viewer";
+                        width: root.viewer-image.width * 1px * viewer-scroll.fit * root.viewer-zoom;
+                        height: root.viewer-image.height * 1px * viewer-scroll.fit * root.viewer-zoom;
+                        x: (viewer-scroll.content-width - self.width) / 2; y: (viewer-scroll.content-height - self.height) / 2;
+                        image-fit: contain;
+                    }
+                }
+                if root.viewer-error != "": Text { text: root.viewer-error; wrap: word-wrap; color: #ffbdab; }
+                if root.viewer-error != "": Button { text: "Retry original"; enabled: !root.viewer-loading; clicked => { root.open-photo(root.viewer-key); } }
+                HorizontalLayout {
+                    Button { text: "−"; accessible-label: "Zoom out"; enabled: root.viewer-zoom > 1; clicked => { root.viewer-zoom = max(1, root.viewer-zoom / 1.5); } }
+                    Button { text: "+"; accessible-label: "Zoom in"; enabled: root.viewer-zoom < 12; clicked => { root.viewer-zoom = min(12, root.viewer-zoom * 1.5); } }
+                    Button { text: "Fit"; clicked => { root.viewer-zoom = 1; viewer-scroll.content-x = 0px; viewer-scroll.content-y = 0px; } }
+                    Button { text: "1:1"; accessible-label: "Original size"; clicked => { root.viewer-zoom = max(1, 1 / max(0.001, viewer-scroll.fit)); } }
+                }
+            }
+        }
+    }
+
 }

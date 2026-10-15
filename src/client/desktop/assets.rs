@@ -14,6 +14,8 @@ pub struct Asset {
     key_material: Option<String>,
     talk_meta: Option<String>,
     dimension: u32,
+    #[serde(default)]
+    original_suffix: Option<String>,
 }
 
 impl Asset {
@@ -56,6 +58,7 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 64,
+            original_suffix: None,
         })
     }
 
@@ -77,6 +80,7 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 256,
+            original_suffix: None,
         })
     }
 
@@ -91,6 +95,7 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 32,
+            original_suffix: None,
         })
     }
 
@@ -111,7 +116,41 @@ impl Asset {
             key_material: key,
             talk_meta: Some(talk_meta(id)),
             dimension: 384,
+            original_suffix: Some(
+                if meta["MEDIA_CONTENT_INFO"]
+                    .as_str()
+                    .and_then(|s| serde_json::from_str::<Value>(s).ok())
+                    .is_some_and(|v| v["category"] == "original")
+                {
+                    "/original"
+                } else {
+                    ""
+                }
+                .into(),
+            ),
         })
+    }
+
+    /// Chrome's encrypted source uses the bare OID; __ud-preview is only a thumbnail.
+    pub fn original(&self) -> Option<Self> {
+        if !self.private {
+            return None;
+        }
+        let base = self
+            .url
+            .strip_suffix("__ud-preview")
+            .or_else(|| self.url.strip_suffix("/preview"))?;
+        let mut original = self.clone();
+        original.url = format!(
+            "{base}{}",
+            if self.key_material.is_some() {
+                ""
+            } else {
+                self.original_suffix.as_deref().unwrap_or("")
+            }
+        );
+        original.dimension = 8192;
+        Some(original)
     }
 
     pub(super) fn fetch(&self, access_token: Option<&str>) -> Result<Vec<u8>> {
@@ -399,9 +438,75 @@ fn pixels(bytes: &[u8], dimension: u32) -> Result<Pixels> {
     })
 }
 
+/// Source images are decoded on demand and never put in the thumbnail cache.
+pub(super) fn original_pixels(bytes: &[u8]) -> Result<Pixels> {
+    pixels(bytes, 8192)
+}
+
+/// The software renderer doesn't round image clipping. Supply a masked square
+/// so old square cache entries also render as circular avatars.
+pub fn circular_avatar(pixels: &Pixels) -> Pixels {
+    let Some(image) = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba.clone())
+    else {
+        return Pixels {
+            width: 0,
+            height: 0,
+            rgba: Vec::new(),
+        };
+    };
+    let edge = image.width().min(image.height());
+    let square = image::imageops::crop_imm(
+        &image,
+        (image.width() - edge) / 2,
+        (image.height() - edge) / 2,
+        edge,
+        edge,
+    )
+    .to_image();
+    let mut image = image::imageops::resize(&square, 64, 64, image::imageops::FilterType::Triangle);
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let distance = ((x as f32 + 0.5 - 32.).powi(2) + (y as f32 + 0.5 - 32.).powi(2)).sqrt();
+        pixel.0[3] = (pixel.0[3] as f32 * (32. - distance).clamp(0., 1.)) as u8;
+    }
+    Pixels {
+        width: 64,
+        height: 64,
+        rgba: image.into_raw(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn original_photo_uses_source_object_and_avatar_is_a_centered_circle() -> Result<()> {
+        let encrypted = Asset::photo(
+            &json!({"id":"42", "contentMetadata":{"SID":"m","OID":"asset42","ENC_KM":"synthetic"}}),
+        )
+        .unwrap();
+        assert!(encrypted.url.ends_with("asset42__ud-preview"));
+        let original = encrypted.original().unwrap();
+        assert_eq!(original.url, "https://obs.line-apps.com/r/talk/m/asset42");
+        assert_eq!(original.key_material, encrypted.key_material);
+        assert_ne!(original.key(), encrypted.key());
+        let plain = Asset::photo(&json!({"id":"43","contentMetadata":{"MEDIA_CONTENT_INFO":"{\"category\":\"original\"}"}})).unwrap();
+        assert!(plain.original().unwrap().url.ends_with("/43/original"));
+        let image = image::RgbaImage::from_pixel(1600, 1000, image::Rgba([25, 70, 200, 255]));
+        let mut bytes = Cursor::new(Vec::new());
+        image.write_to(&mut bytes, ImageFormat::Png)?;
+        let source = original_pixels(bytes.get_ref())?;
+        assert_eq!((source.width, source.height), (1600, 1000));
+        assert_eq!(pixels(bytes.get_ref(), 384)?.width, 384);
+        let circle = circular_avatar(&source);
+        assert_eq!((circle.width, circle.height), (64, 64));
+        assert_eq!(circle.rgba[3], 0);
+        assert_eq!(circle.rgba[(32 * 64 + 32) * 4 + 3], 255);
+        assert_eq!(
+            &circle.rgba[(32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 3],
+            &[25, 70, 200]
+        );
+        Ok(())
+    }
     #[test]
     fn decrypts_independent_go_media_fixture() {
         let fixture: Value =

@@ -6,6 +6,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import json
+import sys
 
 APP_ID = "org.lineclient.Desktop"
 ROOT = Path(__file__).resolve().parent.parent
@@ -34,6 +35,9 @@ shutil.copyfile(binary, temporary)
 temporary.chmod(0o755)
 temporary.replace(destination)
 shutil.copyfile(ROOT / "app/assets/icon.svg", icon)
+# Icon loaders watch the theme root, not individual application directories.
+# Updating an existing icon otherwise leaves Plasma's cached misses intact.
+os.utime(icon.parents[2], None)
 
 def quoted(value):
     value = str(value)
@@ -47,12 +51,13 @@ command = " ".join(quoted(v) for v in (
     destination, "--state", ROOT / "artifacts/auth/session.json",
     "--wasm", ROOT / "artifacts/line-3.7.2/ltsm.wasm",
 ))
+icon_value = str(icon.resolve()).replace("\\", "\\\\")
 launcher.write_text(f"""[Desktop Entry]
 Type=Application
 Name=LINE Native
 Comment=Native messaging client
 Exec={command}
-Icon={APP_ID}
+Icon={icon_value}
 Terminal=false
 Categories=Network;InstantMessaging;
 StartupWMClass={APP_ID}
@@ -61,3 +66,16 @@ launcher.chmod(0o644)
 print(f"Installed app: {destination}")
 print(f"Installed launcher: {launcher}")
 print(f"Installed icon: {icon}")
+
+# Staging must not change the current desktop session's caches.
+if not args.destdir:
+    for candidates, arguments in (
+        (("update-desktop-database",), [str(launcher.parent)]),
+        (("kbuildsycoca6", "kbuildsycoca5"), ["--noincremental"]),
+    ):
+        executable = next((path for name in candidates if (path := shutil.which(name))), None)
+        if executable:
+            try:
+                subprocess.run([executable, *arguments], check=True, timeout=30)
+            except (OSError, subprocess.SubprocessError) as error:
+                print(f"Warning: desktop cache refresh failed: {error}", file=sys.stderr)

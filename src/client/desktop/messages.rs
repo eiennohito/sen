@@ -9,6 +9,48 @@ const DISK_LIMIT: u64 = 32 * 1024 * 1024;
 const MAX_MESSAGES: usize = 512;
 const MEMORY_LIMIT: usize = 16 * 1024 * 1024;
 
+/// Durable UI state, isolated by pairing secret and encrypted like history.
+/// Lives outside the expiring message cache so drafts are never pruned.
+pub struct LocalStateStore {
+    cipher: MessageCache,
+    path: PathBuf,
+}
+impl LocalStateStore {
+    pub fn open(root: &Path, session: &Path) -> Result<Self> {
+        let state: Value = serde_json::from_slice(&fs::read(session)?)?;
+        let secret = decode(required(&state, "login_key")?)?;
+        let directory = root
+            .join("local-state")
+            .join(format!("{:x}", Sha256::digest(&secret)));
+        fs::create_dir_all(&directory)?;
+        fs::set_permissions(root, fs::Permissions::from_mode(0o700))?;
+        fs::set_permissions(
+            directory.parent().unwrap(),
+            fs::Permissions::from_mode(0o700),
+        )?;
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        let mut state_key = [0u8; 32];
+        hkdf::Hkdf::<Sha256>::new(None, &secret)
+            .expand(b"line-native/durable-desktop-state/v1", &mut state_key)
+            .map_err(|_| anyhow::anyhow!("state key derivation failed"))?;
+        let cipher = MessageCache::new(&directory, &state_key)?;
+        Ok(Self {
+            cipher,
+            path: directory.join("desktop.state"),
+        })
+    }
+    pub fn load(&self) -> Result<Option<Vec<u8>>> {
+        match fs::read(&self.path) {
+            Ok(bytes) => Ok(Some(self.cipher.open(&bytes)?)),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+    pub fn save(&self, bytes: &[u8]) -> Result<()> {
+        private_write(&self.path, &self.cipher.seal(bytes)?)
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct Record {
     fingerprint: String,
@@ -230,6 +272,9 @@ mod tests {
     fn message() -> Message {
         Message {
             id: "test-message".into(),
+            sender_id: "synthetic-sender".into(),
+            sender_name: "葵".into(),
+            sender_avatar: None,
             body: "Private synthetic 日本語".into(),
             timestamp_ms: 1,
             outgoing: false,
@@ -257,7 +302,16 @@ mod tests {
         assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
         drop(cache);
         let mut cache = MessageCache::new(&root, b"synthetic key")?;
-        assert_eq!(cache.page("chat")?.unwrap()[0].body, message.body);
+        let restored = cache.page("chat")?.unwrap();
+        assert_eq!(restored[0].body, message.body);
+        assert_eq!(restored[0].sender_id, message.sender_id);
+        assert_eq!(restored[0].sender_name, message.sender_name);
+        let mut legacy = serde_json::to_value(&message)?;
+        for field in ["sender_id", "sender_name", "sender_avatar"] {
+            legacy.as_object_mut().unwrap().remove(field);
+        }
+        let legacy: Message = serde_json::from_value(legacy)?;
+        assert!(legacy.sender_id.is_empty() && legacy.sender_name.is_empty());
         assert!(cache.lookup("fingerprint").is_some());
         let mut revised = message.clone();
         revised.reactions.push(Reaction {

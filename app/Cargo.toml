@@ -9,9 +9,11 @@ description = "Software-rendered Slint LINE client using the original crypto WAS
 ui-debug = ["slint/mcp"]
 
 [dependencies]
-slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-software", "accessibility"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "unstable-winit-030", "renderer-software", "accessibility"] }
 line-wasm-poc = { path = ".." }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [build-dependencies]
 slint-build = "=1.18.1"
