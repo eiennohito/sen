@@ -1,0 +1,159 @@
+import { Button, LineEdit, TextEdit, ScrollView, ListView } from "std-widgets.slint";
+
+export struct ChatRow {
+    index: int,
+    title: string,
+    preview: string,
+    initial: string,
+}
+
+export struct MessageRow {
+    body: string,
+    time: string,
+    outgoing: bool,
+}
+
+export component AppWindow inherits Window {
+    title: "LINE · Preview";
+    preferred-width: 980px;
+    preferred-height: 720px;
+    min-width: 720px;
+    min-height: 520px;
+    background: #fafbf9;
+    default-font-size: 15px;
+
+    in property <[ChatRow]> chats;
+    in property <[MessageRow]> messages;
+    in-out property <int> selected-chat;
+    in property <string> chat-title;
+    in property <string> chat-subtitle;
+    in-out property <string> draft;
+    callback select-chat(int);
+    callback search-changed(string);
+
+    HorizontalLayout {
+        spacing: 0;
+        Rectangle {
+            width: 280px;
+            horizontal-stretch: 0;
+            background: #f0f3ee;
+            VerticalLayout {
+                padding: 16px;
+                spacing: 14px;
+                HorizontalLayout {
+                    height: 48px;
+                    Text { text: "LINE"; color: #167446; font-size: 25px; font-weight: 800; vertical-alignment: center; }
+                    Text { text: "Preview"; color: #69766b; horizontal-alignment: right; vertical-alignment: center; }
+                }
+                Text { text: "Chats"; color: #253a2b; font-size: 19px; font-weight: 700; }
+                LineEdit {
+                    placeholder-text: "Find a conversation";
+                    accessible-label: "Find a conversation";
+                    edited(query) => { root.search-changed(query); }
+                }
+                ListView {
+                    for chat in root.chats: Rectangle {
+                        height: 82px;
+                        border-radius: 8px;
+                        background: chat.index == root.selected-chat ? #dce9dc : row-touch.has-hover ? #e7ede4 : transparent;
+                        HorizontalLayout {
+                            padding: 10px;
+                            spacing: 12px;
+                            Rectangle {
+                                width: 38px;
+                                height: 38px;
+                                border-radius: 19px;
+                                background: #d0dfcf;
+                                Text { text: chat.initial; color: #33583b; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                            VerticalLayout {
+                                spacing: 5px;
+                                Text { text: chat.title; color: #253a2b; font-weight: 600; overflow: elide; }
+                                Text { text: chat.preview; color: #647367; font-size: 12px; overflow: elide; }
+                            }
+                        }
+                        row-focus := FocusScope {
+                            accessible-role: button;
+                            accessible-label: chat.title;
+                            key-pressed(event) => {
+                                if event.text == Key.Return || event.text == " " {
+                                    root.select-chat(chat.index);
+                                    return accept;
+                                }
+                                return reject;
+                            }
+                        }
+                        row-touch := TouchArea {
+                            clicked => { row-focus.focus(); root.select-chat(chat.index); }
+                        }
+                    }
+                }
+                Text { text: "Offline preview\nMessages are examples."; color: #69766b; font-size: 12px; }
+            }
+        }
+        Rectangle { width: 1px; background: #dce3d9; }
+        VerticalLayout {
+            spacing: 0;
+            Rectangle {
+                height: 88px;
+                background: #ffffff;
+                VerticalLayout {
+                    padding: 22px;
+                    spacing: 5px;
+                    Text { text: root.chat-title; color: #23362a; font-size: 20px; font-weight: 700; }
+                    Text { text: root.chat-subtitle; color: #6c786f; font-size: 12px; }
+                }
+            }
+            Rectangle { height: 1px; background: #e2e7df; }
+            ScrollView {
+                VerticalLayout {
+                    padding: 24px;
+                    spacing: 18px;
+                    Text { text: "TODAY"; color: #7c867d; font-size: 11px; horizontal-alignment: center; }
+                    for message in root.messages: HorizontalLayout {
+                        spacing: 0;
+                        if message.outgoing: Rectangle { min-width: 60px; horizontal-stretch: 1; }
+                        VerticalLayout {
+                            horizontal-stretch: 0;
+                            spacing: 5px;
+                            Rectangle {
+                                background: message.outgoing ? #dcefd5 : #ffffff;
+                                border-width: 1px;
+                                border-color: message.outgoing ? #d0e4c9 : #e1e7de;
+                                border-radius: 10px;
+                                VerticalLayout {
+                                    padding: 13px;
+                                    Text { text: message.body; color: #24382a; wrap: word-wrap; }
+                                }
+                            }
+                            Text { text: message.time; color: #7c867d; font-size: 11px; horizontal-alignment: message.outgoing ? right : left; }
+                        }
+                        if !message.outgoing: Rectangle { min-width: 60px; horizontal-stretch: 1; }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
+            Rectangle {
+                height: 180px;
+                background: #ffffff;
+                VerticalLayout {
+                    padding: 16px;
+                    spacing: 10px;
+                    composer := TextEdit {
+                        text <=> root.draft;
+                        accessible-label: "Message draft";
+                        wrap: word-wrap;
+                        // Leave key handling to Slint and the input method.
+                        // Enter must commit composition or insert a newline.
+                    }
+                    HorizontalLayout {
+                        height: 32px;
+                        spacing: 12px;
+                        Text { text: "Drafts stay here until you close the preview."; color: #6c786f; font-size: 11px; vertical-alignment: center; }
+                        Button { text: "Send"; enabled: false; width: 84px; horizontal-stretch: 0; }
+                    }
+                }
+            }
+        }
+    }
+}

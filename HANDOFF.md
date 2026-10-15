@@ -4,6 +4,30 @@ Updated 2026-10-15. Workspace: `/home/eien/work/misc/line-app`.
 
 ## User intent and next action
 
+**Latest request:** initialize a real local Git repository and sketch a Slint
+desktop app. Goals: CPU rendering, excellent IME behavior, low RAM. This is now
+a Git repo on `main`, with a verified-PoC baseline commit and a separate app
+sketch commit. No remote is configured. Sensitive state, captures, extension
+artifacts, build outputs, and machine-local agent configs are ignored.
+
+Run `cargo run --release -p line-desktop` for the offline desktop sketch. It has
+searchable synthetic conversations, separate in-memory drafts, and a disabled
+Send button. It does not read credentials or access LINE. Slint 1.18.1 is pinned,
+using Winit + the software renderer with GPU renderers disabled at build time.
+Accessibility is enabled. See `README.md` and `docs/app-design.md` for setup,
+architecture, integration sequence, and the IME acceptance checklist. IME is
+not yet manually verified; do not claim perfect IME support.
+
+Headless snapshot: `target/release/line-desktop --snapshot /tmp/line-preview.ppm`.
+The layout rendered correctly, including Japanese sample text. A brief local
+Wayland desktop smoke measured 37.9 MiB RSS / 23.3 MiB PSS, 0.4% CPU over five
+idle seconds, and no GPU device file descriptors. Scale was not recorded;
+these are preliminary shell measurements, not integrated-client numbers.
+Formatting, workspace tests (five CLI tests), and workspace Clippy with warnings
+denied passed. Next validate composition on the actual Fcitx5/Wayland desktop,
+then extract the verified protocol code into a shared library and wire it into
+a worker thread. Keep network/crypto work off the GUI thread.
+
 Continue the Rust client using the original Chrome extension's crypto WASM.
 Real authentication and a real encrypted chat payload have now succeeded. The eventual goal is a native LINE client. The user
 prefers retaining the official crypto blob for compatibility with future changes,
