@@ -83,6 +83,10 @@ Default session and WASM paths are `$XDG_DATA_HOME/line-desktop/session.json` an
 remain overrides. An explicit custom session path keeps sibling private state
 for compatibility. On first launch, existing repository files require an explicit
 Use existing files or Start fresh choice; credentials are never copied silently.
+`line-auth` shares these session/WASM defaults and saved desktop path choices;
+`--state` or `--wasm` uses explicit paths with XDG defaults for omitted paths.
+Private desktop state uses `$XDG_STATE_HOME/line-desktop` (normally under
+`~/.local/state`). Empty or relative XDG directories fall back to `$HOME`.
 Use `--demo` for an offline synthetic preview. Its controls exercise arrivals,
 paging, media, rich content, delivery failures and recovery without account use.
 The ordinary Send button remains disabled in this mode.
@@ -120,8 +124,11 @@ Snapshots always use synthetic conversations, even without `--demo`.
 
 If opening the saved account fails, use **Retry** to reconnect with the saved
 session or **Sign in again** to open phone-based QR/PIN sign-in inside the app.
-Pairing starts only after **Start sign-in**. It requires `curl` and `qrencode`
-and may replace Chrome's active login. Cancel clears the QR/PIN immediately;
+Pairing starts only after **Start sign-in**. It requires `curl` and may replace
+Chrome's active login. QR encoding runs in Rust, with 10-pixel modules, a
+four-module quiet zone and Low error correction. The CLI supports `--qr-file FILE`
+for PNG output and `--display ascii|none` (default `ascii` on a TTY, `none`
+otherwise). Cancel clears the QR/PIN immediately;
 an in-flight phone-verification request may need to finish before cancellation
 completes. Keep the app open to see success or a retriable error.
 
@@ -214,8 +221,11 @@ verified protocol details. The blob is not included in Git.
 
 ```sh
 cargo build --release --bins
-target/release/line-auth status
-target/release/line-auth chat-check
+# CLI defaults: $XDG_DATA_HOME/line-desktop/{session.json,ltsm.wasm}
+# (fallback $HOME/.local/share/line-desktop/), following the app's saved paths choice.
+# To use the repo session explicitly:
+target/release/line-auth status --state artifacts/auth/session.json --wasm artifacts/line-3.7.2/ltsm.wasm
+target/release/line-auth chat-check --state artifacts/auth/session.json --wasm artifacts/line-3.7.2/ltsm.wasm
 cargo run --release --bin line-wasm-poc
 ```
 

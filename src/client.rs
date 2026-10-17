@@ -1,6 +1,6 @@
 //! Debug QR pairing against the same endpoints as LINE Chrome.
-//! Rust owns protocol/state/WASM; system curl provides HTTPS and qrencode encodes PNG.
-use crate::{DEFAULT_WASM, HASH, VERSION, runtime::Runtime, sign};
+//! Rust owns protocol/state/WASM and QR encoding; system curl provides HTTPS.
+use crate::{HASH, VERSION, locations::Locations, runtime::Runtime, sign};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{
     Engine,
@@ -20,11 +20,12 @@ use std::{
 
 const BASE: &str = "https://line-chrome-gw.line-apps.com";
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
-const IMAGE_ID: u32 = 47101;
 
 mod chat;
 pub mod desktop;
 pub mod pairing;
+mod qr;
+use qr::png as qr_png;
 
 struct Options {
     command: String,
@@ -35,37 +36,55 @@ struct Options {
 }
 impl Options {
     fn parse() -> Result<Self> {
-        let mut args = env::args().skip(1);
+        Self::parse_from(env::args().skip(1), io::stdout().is_terminal(), || {
+            Locations::from_environment().map_err(anyhow::Error::msg)
+        })
+    }
+    fn parse_from(
+        mut args: impl Iterator<Item = String>,
+        terminal: bool,
+        resolve_locations: impl FnOnce() -> Result<Locations>,
+    ) -> Result<Self> {
         let command = args.next().unwrap_or_else(|| "help".into());
-        let mut out = Self {
-            command,
-            wasm: DEFAULT_WASM.into(),
-            state: "artifacts/auth/session.json".into(),
-            qr_file: None,
-            display: if io::stdout().is_terminal() {
-                "kitty"
-            } else {
-                "none"
-            }
-            .into(),
-        };
+        let mut wasm = None;
+        let mut state = None;
+        let mut qr_file = None;
+        let mut display = String::from(if terminal { "ascii" } else { "none" });
         while let Some(arg) = args.next() {
             let value = args
                 .next()
                 .with_context(|| format!("missing value for {arg}"))?;
             match arg.as_str() {
-                "--wasm" => out.wasm = value.into(),
-                "--state" => out.state = value.into(),
-                "--qr-file" => out.qr_file = Some(value.into()),
-                "--display" => out.display = value,
+                "--wasm" => wasm = Some(PathBuf::from(value)),
+                "--state" => state = Some(PathBuf::from(value)),
+                "--qr-file" => qr_file = Some(value.into()),
+                "--display" => display = value,
                 _ => bail!("unknown option {arg}"),
             }
         }
         ensure!(
-            ["kitty", "ascii", "none"].contains(&out.display.as_str()),
-            "display must be kitty, ascii, or none"
+            ["ascii", "none"].contains(&display.as_str()),
+            "display must be ascii or none"
         );
-        Ok(out)
+        if ["login", "status", "chat-check"].contains(&command.as_str())
+            && (state.is_none() || wasm.is_none())
+        {
+            let mut locations = resolve_locations()?;
+            if state.is_none() && wasm.is_none() {
+                locations
+                    .load_existing()
+                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+            }
+            state.get_or_insert(locations.session);
+            wasm.get_or_insert(locations.wasm);
+        }
+        Ok(Self {
+            command,
+            wasm: wasm.unwrap_or_default(),
+            state: state.unwrap_or_default(),
+            qr_file,
+            display,
+        })
     }
 }
 fn private_write(path: &Path, data: &[u8]) -> Result<()> {
@@ -407,65 +426,13 @@ fn callback(base: &str, public: &[u8]) -> Result<String> {
         percent_encode(&STANDARD.encode(public))
     ))
 }
-fn qr_png(text: &str) -> Result<Vec<u8>> {
-    let mut child = Command::new("qrencode")
-        .args(["-t", "PNG", "-s", "10", "-m", "4", "-o", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .context("start qrencode")?;
-    child
-        .stdin
-        .take()
-        .context("QR stdin")?
-        .write_all(text.as_bytes())?;
-    let out = child.wait_with_output()?;
-    ensure!(
-        out.status.success() && out.stdout.starts_with(b"\x89PNG\r\n\x1a\n"),
-        "QR encoding failed"
-    );
-    Ok(out.stdout)
-}
-fn kitty_png(png: &[u8], out: &mut impl Write) -> Result<()> {
-    let encoded = STANDARD.encode(png);
-    let chunks = encoded.as_bytes().chunks(4096);
-    let count = chunks.len();
-    for (i, chunk) in chunks.enumerate() {
-        let more = u8::from(i + 1 < count);
-        if i == 0 {
-            write!(
-                out,
-                "\x1b_Ga=T,f=100,t=d,i={IMAGE_ID},q=2,c=40,r=20,m={more};"
-            )?
-        } else {
-            write!(out, "\x1b_Gm={more};")?
-        }
-        out.write_all(chunk)?;
-        out.write_all(b"\x1b\\")?;
+fn show_qr(text: &str, display: &str) -> Result<()> {
+    if display == "ascii" {
+        let mut stdout = io::stdout().lock();
+        let colour = stdout.is_terminal();
+        qr::write_text(text, &mut stdout, colour)?;
     }
-    out.write_all(b"\r\n")?;
-    out.flush()?;
     Ok(())
-}
-fn show_qr(text: &str, png: &[u8], display: &str) -> Result<()> {
-    match display {
-        "kitty" => kitty_png(png, &mut io::stdout().lock()),
-        "ascii" => {
-            let mut child = Command::new("qrencode")
-                .args(["-t", "UTF8", "-m", "4"])
-                .stdin(Stdio::piped())
-                .spawn()?;
-            child
-                .stdin
-                .take()
-                .context("QR stdin")?
-                .write_all(text.as_bytes())?;
-            ensure!(child.wait()?.success(), "ASCII QR rendering failed");
-            Ok(())
-        }
-        _ => Ok(()),
-    }
 }
 fn save_state(path: &Path, state: &Value) -> Result<()> {
     private_write(path, &serde_json::to_vec_pretty(state)?)
@@ -623,14 +590,10 @@ impl LoginUi for CliLogin<'_> {
         println!(
             "Scan with LINE on your phone and approve the login. This uses the Chrome secondary-device slot."
         );
-        show_qr(link, png, &self.opts.display)
+        show_qr(link, &self.opts.display)
     }
     fn scanned(&self) -> Result<()> {
         let _ = fs::remove_file(self.qr_path());
-        if self.opts.display == "kitty" {
-            print!("\x1b_Ga=d,d=I,i={IMAGE_ID},q=2;\x1b\\");
-            io::stdout().flush()?;
-        }
         Ok(())
     }
     fn pin(&self, pin: &str) -> Result<()> {
@@ -768,7 +731,7 @@ fn run() -> Result<()> {
     let opts = Options::parse()?;
     if ["help", "--help", "-h"].contains(&opts.command.as_str()) {
         println!(
-            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display kitty|ascii|none]\n\nRequires curl; QR rendering also requires qrencode. Defaults to artifacts/auth/session.json.\nSession credentials and wrapped keys are stored in a mode-0600 debug file.\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
+            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nRequires curl. Default session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\nSaved desktop path choices are reused unless --state or --wasm is supplied.\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are stored in a mode-0600 debug file.\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
         );
         return Ok(());
     }
@@ -778,7 +741,7 @@ fn run() -> Result<()> {
         if let Some(p) = &opts.qr_file {
             private_write(p, &png)?;
         }
-        show_qr(text, &png, &opts.display)?;
+        show_qr(text, &opts.display)?;
         return Ok(());
     }
     ensure!(
@@ -814,6 +777,121 @@ pub fn cli_main() {
 mod tests {
     use super::*;
     #[test]
+    fn cli_defaults_overrides_and_display_modes() -> Result<()> {
+        let root = env::temp_dir().join(format!("line-cli-paths-{}", std::process::id()));
+        fs::create_dir_all(&root)?;
+        let mut locations = Locations {
+            session: root.join("data/session.json"),
+            wasm: root.join("data/ltsm.wasm"),
+            state: root.join("state"),
+            cache: root.join("cache"),
+            config: root.join("config/paths.json"),
+        };
+        let parse = |args: &[&str], terminal| {
+            Options::parse_from(args.iter().map(|s| (*s).into()), terminal, || {
+                Ok(locations.clone())
+            })
+        };
+        for terminal in [true, false] {
+            let opts = parse(&["status"], terminal)?;
+            assert_eq!(opts.state, locations.session);
+            assert_eq!(opts.wasm, locations.wasm);
+            assert_eq!(opts.display, if terminal { "ascii" } else { "none" });
+        }
+        let opts = parse(
+            &[
+                "login",
+                "--state",
+                "custom.json",
+                "--wasm",
+                "custom.wasm",
+                "--qr-file",
+                "custom.png",
+                "--display",
+                "none",
+            ],
+            true,
+        )?;
+        assert_eq!(opts.state, Path::new("custom.json"));
+        assert_eq!(opts.wasm, Path::new("custom.wasm"));
+        assert_eq!(opts.qr_file.as_deref(), Some(Path::new("custom.png")));
+        assert_eq!(opts.display, "none");
+        assert_eq!(
+            parse(&["status", "--display", "ascii"], false)?.display,
+            "ascii"
+        );
+        assert!(parse(&["status", "--display", "graphics"], true).is_err());
+        assert!(parse(&["status", "--state"], false).is_err());
+        locations
+            .choose(&root, true)
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        let defaults = Locations {
+            session: root.join("data/session.json"),
+            wasm: root.join("data/ltsm.wasm"),
+            ..locations.clone()
+        };
+        let parse = |args: &[&str]| {
+            Options::parse_from(args.iter().map(|s| (*s).into()), false, || {
+                Ok(defaults.clone())
+            })
+        };
+        let opts = parse(&["status"])?;
+        assert_eq!(opts.state, locations.session);
+        assert_eq!(opts.wasm, locations.wasm);
+        let opts = parse(&["status", "--state", "custom.json"])?;
+        assert_eq!(opts.state, Path::new("custom.json"));
+        assert_eq!(opts.wasm, defaults.wasm);
+        let opts = parse(&["status", "--wasm", "custom.wasm"])?;
+        assert_eq!(opts.wasm, Path::new("custom.wasm"));
+        assert_eq!(opts.state, defaults.session);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    #[test]
+    fn cli_resolves_locations_only_when_a_default_is_needed() -> Result<()> {
+        let parse = |args: &[&str]| {
+            let called = std::cell::Cell::new(false);
+            let result = Options::parse_from(args.iter().map(|s| (*s).into()), false, || {
+                called.set(true);
+                bail!("HOME must be an absolute path")
+            });
+            (result, called.get())
+        };
+        for args in [
+            vec![],
+            vec!["help"],
+            vec!["--help"],
+            vec!["-h"],
+            vec!["render-test"],
+            vec!["render-test", "--qr-file", "test.png"],
+        ] {
+            let (result, called) = parse(&args);
+            result?;
+            assert!(!called);
+        }
+        for command in ["login", "status", "chat-check"] {
+            let (result, called) =
+                parse(&[command, "--state", "custom.json", "--wasm", "custom.wasm"]);
+            let opts = result?;
+            assert!(!called);
+            assert_eq!(opts.state, Path::new("custom.json"));
+            assert_eq!(opts.wasm, Path::new("custom.wasm"));
+            for args in [
+                vec![command],
+                vec![command, "--state", "custom.json"],
+                vec![command, "--wasm", "custom.wasm"],
+            ] {
+                let (result, called) = parse(&args);
+                assert!(called);
+                assert_eq!(
+                    result.err().unwrap().to_string(),
+                    "HOME must be an absolute path"
+                );
+            }
+        }
+        Ok(())
+    }
+    #[test]
     fn curl_config_keeps_body_and_headers_in_single_values() {
         let raw = "[\"a\\b\",\"quote\\\"\",\"line\\n\"]";
         assert_eq!(
@@ -824,28 +902,6 @@ mod tests {
             quoted("first\r\nheader: secret"),
             "\"first\\r\\nheader: secret\""
         );
-    }
-    #[test]
-    fn kitty_image_chunks_roundtrip_to_original_png() {
-        let png = vec![0x42; 12000];
-        let mut out = Vec::new();
-        kitty_png(&png, &mut out).unwrap();
-        let s = String::from_utf8(out).unwrap();
-        let mut encoded = String::new();
-        let messages: Vec<_> = s.split("\x1b_G").skip(1).collect();
-        assert!(messages.len() > 1);
-        for (i, message) in messages.iter().enumerate() {
-            let (controls, data) = message.split_once(';').unwrap();
-            let data = data.split("\x1b\\").next().unwrap();
-            assert!(data.len() <= 4096 && data.len() % 4 == 0);
-            encoded.push_str(data);
-            assert!(controls.contains(if i + 1 == messages.len() {
-                "m=0"
-            } else {
-                "m=1"
-            }));
-        }
-        assert_eq!(STANDARD.decode(encoded).unwrap(), png);
     }
     #[test]
     fn qr_callback_encodes_public_key_as_query_parameter() {

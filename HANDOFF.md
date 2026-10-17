@@ -19,7 +19,10 @@ a PoC, not a daily-use or live-compatibility claim.
 **Chrome owns the secondary-device slot and native authorization is invalid.**
 Do not run the default app, `line-auth status`, `--check-live`, pairing, sends,
 read markers, or server preference changes without a new device-slot assignment.
-Preserve `artifacts/auth/session.json` and all encrypted local state. Historical
+Preserve `artifacts/auth/session.json` and all encrypted local state. CLI
+defaults use `$XDG_DATA_HOME/line-desktop/session.json` and `ltsm.wasm`
+(fallback `$HOME/.local/share/line-desktop/`) and follow the app's saved paths
+choice. Historical
 live results below do not prove current authorization.
 
 Safe build and verification commands (synthetic data only):
@@ -141,7 +144,7 @@ curl --silent --show-error --connect-timeout 10 --max-time 15 \
   --output /tmp/line-gateway-connectivity.txt \
   --write-out 'LINE gateway HTTP %{http_code}\n' \
   https://line-chrome-gw.line-apps.com/
-target/release/line-auth status
+target/release/line-auth status --state artifacts/auth/session.json --wasm artifacts/line-3.7.2/ltsm.wasm
 ```
 
 `status` reimports the saved wrapped keys into WASM, signs and sends `getProfile`
@@ -151,7 +154,8 @@ rejection, diagnose the actual response before deciding whether re-pairing is
 necessary. The current source has a sourced token-refresh adapter; these
 historical checks do not validate it.
 
-`target/release/line-auth chat-check` reads at most ten chat previews with five
+`target/release/line-auth chat-check --state artifacts/auth/session.json --wasm
+artifacts/line-3.7.2/ltsm.wasm` reads at most ten chat previews with five
 messages each, tries at most five supported candidates, and stops on the first
 verified JSON payload. It reads credentials without rewriting them and does not
 send messages, mark them read, register keys, or persist chat data. Each candidate
@@ -164,7 +168,8 @@ unverified against the account.
 
 ## Sensitive local state
 
-`artifacts/auth/session.json` contains **real access/refresh credentials and wrapped
+The explicitly selected repo session `artifacts/auth/session.json` contains
+**real access/refresh credentials and wrapped
 keys**. It is mode 0600, and its newly created parent directory is mode 0700.
 Preserve it. Do not dump it, put it into prompts/logs, commit it, or copy its
 contents into documentation. HAR files under `dumps/` are sensitive too.
@@ -304,6 +309,6 @@ spooling/proxy workarounds.
 
 If another pairing is genuinely required, `line-auth login` refuses to overwrite
 an existing state. Preserve the current state and use a different `--state` path.
-It supports `--display kitty|ascii|none`, `--qr-file`, and `--wasm`. Pairing uses
+It supports `--display ascii|none`, `--qr-file`, and `--wasm`. Pairing uses
 the Chrome secondary-device slot; this consequence was already discussed and
 authorized by the user.

@@ -1,4 +1,5 @@
 pub mod client;
+pub mod locations;
 pub mod runtime;
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};
@@ -8,6 +9,7 @@ use sha2::{Digest, Sha256};
 pub const TOKEN: &str = "wODdrvWqmdP4Zliay-iF3cz3KZcK0ekrial868apg06TXeCo7A1hIQO0ESElHg6D";
 pub const VERSION: &str = "3.7.2";
 pub const HASH: &str = "58bb4e189ab9bbd7d72ed415258da36afd50e306cb019bab75329d4f5f1b65b3";
+/// Repository path for the development harness and explicit legacy-file selection.
 pub const DEFAULT_WASM: &str = "artifacts/line-3.7.2/ltsm.wasm";
 
 pub fn sign(rt: &mut Runtime, path: &str, body: &str, access: &str) -> Result<String> {

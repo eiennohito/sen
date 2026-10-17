@@ -851,7 +851,7 @@ impl View {
                 if cancelled {
                     ui.invoke_close_sign_in();
                 } else {
-                    ui.set_auth_error("Sign-in could not complete or the QR code expired. Check your connection and that curl and qrencode are installed, then try again. Your previous local session has been kept.".into());
+                    ui.set_auth_error("Sign-in could not complete or the QR code expired. Check your connection and that curl is installed, then try again. Your previous local session has been kept.".into());
                 }
             }
             account::Update::SessionChanged => {

@@ -13,7 +13,7 @@ APP_ID = "org.lineclient.Desktop"
 ROOT = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--destdir", type=Path, help="stage bin/ and share/ under this directory instead of installing")
-parser.add_argument("--dev-paths", action="store_true", help="use repository session and WASM paths explicitly")
+parser.add_argument("--dev-paths", action="store_true", help="developer option: embed repository session and WASM paths instead of XDG defaults")
 args = parser.parse_args()
 binary = ROOT / "target/release/line-desktop"
 if not binary.is_file():

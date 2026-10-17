@@ -20,4 +20,5 @@ aes = "0.8"
 ctr = "0.9"
 hkdf = "0.12"
 hmac = "0.12"
+qrcodegen = "1.8.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }

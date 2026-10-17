@@ -77,16 +77,6 @@ pub fn sign_in(
     let probe = state.with_extension(format!("sign-in-{stamp}.check"));
     private_write(&probe, b"sign-in storage check")?;
     fs::remove_file(probe)?;
-    ensure!(
-        Command::new("qrencode")
-            .arg("-V")
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .status()
-            .context("qrencode is required for sign-in")?
-            .success(),
-        "QR renderer unavailable"
-    );
     ui.check()?;
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
     let opts = Options {
@@ -119,6 +109,43 @@ fn install_session(state: &Path, staged: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn qr_png_reaches_the_desktop_as_rgba() -> Result<()> {
+        let link = "line://au/q/synthetic?secret=synthetic&e2eeVersion=1";
+        let modules = qrcodegen::QrCode::encode_text(link, qrcodegen::QrCodeEcc::Low)?.size();
+        let png = qr_png(link)?;
+        let events = std::cell::RefCell::new(Vec::new());
+        let cancel = AtomicBool::new(false);
+        let ui = NativeLogin {
+            emit: |event| events.borrow_mut().push(event),
+            cancel: &cancel,
+        };
+        ui.qr("unused", &png)?;
+        let Event::Qr {
+            width,
+            height,
+            rgba,
+        } = events.borrow_mut().pop().unwrap()
+        else {
+            panic!("expected QR image");
+        };
+        let size = ((modules + 8) * 10) as u32;
+        assert_eq!((width, height), (size, size));
+        assert_eq!(rgba.len(), (width * height * 4) as usize);
+        let (pixels, remainder) = rgba.as_chunks::<4>();
+        assert!(remainder.is_empty());
+        assert!(
+            pixels
+                .iter()
+                .all(|pixel| matches!(pixel, [0, 0, 0, 255] | [255, 255, 255, 255]))
+        );
+        assert!(pixels.contains(&[0, 0, 0, 255]));
+        assert!(pixels.contains(&[255, 255, 255, 255]));
+        cancel.store(true, Ordering::Relaxed);
+        assert!(ui.qr("unused", &png).is_err());
+        assert!(events.borrow().is_empty());
+        Ok(())
+    }
     #[test]
     fn replacement_preserves_old_session_and_cancellation_never_pairs() -> Result<()> {
         let root = std::env::temp_dir().join(format!("line-pairing-{}", std::process::id()));

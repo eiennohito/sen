@@ -25,10 +25,7 @@ P, then the UI groups in any order. V closes the loop.
 | T4 | Image failures discard the error (`Err(_)`), blacklist the key for 300 s, and the placeholder says "Refresh to retry" while Refresh re-publishes the cached failure without a network call. | `app/src/account.rs:499`, `:516`; `app/ui/message.slint:149` | Keep the failure class (timeout, HTTP status, unsupported host, rejected OID). Retry on explicit user action. Placeholder wording must match what Retry will actually do. |
 | T5 | Reaction counts never update live: the sync decoder handles no reaction operation; counts change only when a message page is refetched. | `src/client/desktop/sync.rs` (no match for reaction) | Decode the reaction operation into an in-place row update; it is a quiet event in the attention matrix. |
 | T6 | Every reconnect (normal SSE end, ping expiry) is reported as `Reconnecting` for five attempts and the view maps that to `connection_failed`, raising the 116 px auth strip and shifting the whole shell. | `src/client/desktop/sync.rs:216`, `app/src/view.rs:553`, `app/ui/app.slint:148` | Reconnecting is a quiet header state plus a transient "Reconnected". The strip with Retry and Sign in again appears only for Offline and AuthExpired. The strip must overlay, not push. |
-| T7 | Sign-in shells out to `qrencode`, and fails if it is missing. The CLI still carries kitty terminal-graphics output. | `src/client/pairing.rs:81`, `src/client.rs:411`, `:445`, `:455` | Pure-Rust QR encoding; drop the terminal rendering from the library. |
-| T8 | `xdg-open` is spawned unguarded and never reaped. | `app/src/links.rs:155` | Reap on a helper thread. |
 | T9 | Crypto runs the Chrome WASM blob in the `wasmi` interpreter for every encrypt and decrypt; the sync thread instantiates a second runtime; the user must supply `ltsm.wasm`. | `src/runtime.rs:506` | Research item, not a session: document the key schedule, port the primitives (`aes`, `ctr`, `hkdf`, `hmac`, `sha2` are already dependencies), keep wasmi as a test oracle. |
-| T10 | Library default state path is `artifacts/auth/session.json` inside the repository; the installer's `--dev-paths` writes it into the desktop entry. | `src/client.rs:43`, `tools/install-desktop.py:55` | Library defaults follow XDG like the app does. |
 | T11 | Session credentials (refresh token, wrapped keys) are plaintext JSON at mode 0600; drafts are encrypted, credentials are not. | `src/client.rs:88`, usage text at `:771` | Same encrypted store as drafts, or the desktop secret service. |
 
 ## P — Protocol gaps
@@ -93,3 +90,11 @@ P, then the UI groups in any order. V closes the loop.
 | V4 | Demo fixtures: 1970/1/1 date divider, three-line "Synthetic profile" rows, "Synthetic submission" bubbles. The time formatter and the two-line row are not exercised. | Realistic fixtures with current timestamps. |
 | V5 | No physical verification at all (Fcitx, scrollbar drag, 100/150/200 % scale, dark theme, notifications, tray, single-instance raise) and no account verification. | A person at the desktop, then assign the device slot. |
 | V6 | `ux-acceptance.md` rows marked `yes` over the problems above: VIS3, FB1, FB3, WIN4, IN5, MSG5, RD3 (live), CMP7 (M), OS9, OUT2 (fixed slot), SH8. | Reset those rows when their fix lands; do not pre-emptively edit the history. |
+
+## Resolved
+
+| ID | Resolution |
+| --- | --- |
+| T7 | QR encoded in-process with `qrcodegen` (PNG for the app and `--qr-file`, black-on-white ANSI or plain text in the CLI); kitty output removed. Verified by independent zxing decode. |
+| T8 | Already correct at `05cd26d`: `app/src/links.rs` spawns `xdg-open` on a helper thread and waits on it. The audit row was stale. |
+| T10 | `line-auth` resolves defaults through the app's XDG `Locations` (moved to `src/locations.rs`), lazily, honouring the saved paths choice. |
