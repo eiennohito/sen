@@ -78,10 +78,6 @@ impl View {
             "Sending requires working draft storage"
         } else if !ui.get_connected() {
             "Offline · you can keep editing"
-        } else if self.current.is_empty() {
-            "Choose a conversation"
-        } else if ui.get_draft().trim().is_empty() {
-            "Write a message to enable Send"
         } else if ui.get_draft().len() > 10_000 {
             "Message exceeds 10,000 UTF-8 bytes · shorten it"
         } else if self.saved.outbox.len() >= 256 {
@@ -89,7 +85,9 @@ impl View {
         } else {
             ""
         };
-        ui.set_can_send(reason.is_empty());
+        ui.set_can_send(
+            reason.is_empty() && !self.current.is_empty() && !ui.get_draft().trim().is_empty(),
+        );
         ui.set_send_reason(reason.into());
     }
     pub(crate) fn capture(&mut self, ui: &AppWindow) {

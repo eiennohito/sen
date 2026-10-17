@@ -20,8 +20,8 @@ draft-measure := Text {
                     padding: 12px; spacing: 8px;
                     composer := DraftEditor { }
                     HorizontalLayout {
-                        height: max(36px, max(send-caption.preferred-height, send-button.preferred-height)); spacing: 8px;
-                        send-caption := Text { text: State.send-reason; color: Tokens.secondary; font-size: Tokens.time; wrap: word-wrap; vertical-alignment: center; }
+                        height: max(36px, max(send-caption.visible ? send-caption.preferred-height : 0px, send-button.preferred-height)); spacing: 8px; alignment: end;
+                        send-caption := Text { visible: State.send-reason != ""; max-width: self.visible ? parent.width : 0px; height: self.visible ? self.preferred-height : 0px; horizontal-stretch: self.visible ? 1 : 0; text: State.send-reason; color: Tokens.secondary; font-size: Tokens.time; wrap: word-wrap; vertical-alignment: center; }
                         send-button := Button { text: "Send"; enabled: State.can-send; width: 80px; horizontal-stretch: 0; clicked => { State.send(); State.focus-composer(); } }
                     }
                 }

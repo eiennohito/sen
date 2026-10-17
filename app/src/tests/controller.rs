@@ -201,11 +201,31 @@ fn controller_scenario(stop: usize) {
     let (tx, rx) = std::sync::mpsc::sync_channel(8);
     view.commands = Some(tx);
     ui.set_connected(true);
-    ui.set_draft(" \n\t".into());
-    view.submit(&ui);
-    assert!(!ui.get_can_send());
-    assert!(rx.try_recv().is_err());
+    for draft in ["", " \n\t"] {
+        ui.set_draft(draft.into());
+        view.submit(&ui);
+        assert!(!ui.get_can_send());
+        assert!(
+            ui.get_send_reason().is_empty(),
+            "empty drafts need no instruction"
+        );
+        assert!(rx.try_recv().is_err());
+    }
+    ui.set_draft("".into());
+    if stop == 2
+        && let Ok(path) = std::env::var("LINE_COMPOSER_SNAPSHOT")
+    {
+        snapshot::save(&_window, &path, (980, 720)).unwrap();
+    }
     ui.set_draft("synthetic submission 🐈".into());
+    view.send_availability(&ui);
+    assert!(ui.get_can_send());
+    assert!(ui.get_send_reason().is_empty());
+    ui.set_connected(false);
+    view.send_availability(&ui);
+    assert!(!ui.get_can_send());
+    assert!(ui.get_send_reason().starts_with("Offline"));
+    ui.set_connected(true);
     view.submit(&ui);
     assert!(ui.get_draft().is_empty());
     let account::Command::Send {

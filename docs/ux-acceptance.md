@@ -112,7 +112,7 @@ observations below do not verify the current build.
 | CMP1 | Enter inserts a newline by default; Ctrl+Enter sends; Shift+Enter always newline; "Enter sends" is a preference | yes | S M |
 | CMP2 | No shortcut fires during IME composition; Fcitx preedit, candidates, cancel, and refocus pass the app-design table | part (composition guards implemented; physical Fcitx table pending) | S P— |
 | CMP3 | Composer grows to one third of the pane then scrolls; caret and last line visible; Send stays reachable | yes | M |
-| CMP4 | Send is disabled with a visible reason for whitespace, no chat, offline, storage failure, over-size | yes | S |
+| CMP4 | Send is disabled for whitespace or no chat without instructional captions; offline, storage failure and over-size show actionable feedback | yes | S |
 | CMP5 | Switching chats keeps text, caret, selection, and scroll per chat; clicking the open chat changes nothing | yes (text, byte-offset caret/selection, scroll; unchanged-chat guard) | S M |
 | CMP6 | Drafts survive restart in private storage; nothing moves between chats or accounts | yes | S |
 | CMP7 | After submit the composer is empty, focused, and a late result cannot alter newer text | yes | S M |
