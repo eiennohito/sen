@@ -5,6 +5,7 @@ component RailButton inherits Rectangle {
     in property <image> icon;
     in property <string> label;
     in property <bool> selected;
+    in property <bool> selectable;
     in property <string> badge;
     callback activated();
     width: 48px; height: 44px;
@@ -13,7 +14,7 @@ component RailButton inherits Rectangle {
     Rectangle { x: 0px; y: 8px; width: 3px; height: parent.height - 16px; background: Tokens.accent; visible: root.selected; }
     Image { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; width: 24px; height: 24px; source: root.icon; colorize: root.selected ? Tokens.accent : Tokens.foreground; }
     if root.badge != "": Rectangle { x: parent.width - 22px; y: 0px; width: 22px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: root.badge; color: Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
-    touch := TouchArea { accessible-role: button; accessible-label: root.label; clicked => { root.activated(); } }
+    touch := TouchArea { accessible-role: button; accessible-label: root.label; accessible-item-selectable: root.selectable; accessible-item-selected: root.selected; clicked => { root.activated(); } }
 }
 
 export component Rail inherits Rectangle {
@@ -37,8 +38,8 @@ export component Rail inherits Rectangle {
             reject
         }
         Rectangle { x: State.narrow ? parent.width * root.cursor / 4 + (parent.width / 4 - 48px) / 2 : 4px; y: State.narrow ? 2px : root.cursor < 2 ? 4px + root.cursor * 48px : parent.height - (root.cursor == 2 ? 100px : 52px); width: 48px; height: 44px; background: transparent; border-color: Tokens.accent; border-width: rail-focus.has-focus ? 1px : 0px; border-radius: 8px; }
-        RailButton { x: State.narrow ? (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : 4px; label: "Chats"; badge: State.unread-conversations > 0 ? State.unread-stale ? "•" : "" + State.unread-conversations : ""; icon: @image-url("../assets/icons/chats.svg"); selected: State.section == 0; activated => { rail-focus.focus(); root.cursor = 0; root.activate(0); } }
-        RailButton { x: State.narrow ? parent.width / 4 + (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : 52px; label: "Friends"; icon: @image-url("../assets/icons/friends.svg"); selected: State.section == 1; activated => { rail-focus.focus(); root.cursor = 1; root.activate(1); } }
+        RailButton { x: State.narrow ? (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : 4px; label: "Chats"; selectable: true; badge: State.unread-conversations > 0 ? State.unread-stale ? "•" : "" + State.unread-conversations : ""; icon: @image-url("../assets/icons/chats.svg"); selected: State.section == 0; activated => { rail-focus.focus(); root.cursor = 0; root.activate(0); } }
+        RailButton { x: State.narrow ? parent.width / 4 + (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : 52px; label: "Friends"; selectable: true; icon: @image-url("../assets/icons/friends.svg"); selected: State.section == 1; activated => { rail-focus.focus(); root.cursor = 1; root.activate(1); } }
         RailButton { x: State.narrow ? parent.width / 2 + (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : parent.height - 100px; label: "Settings"; icon: @image-url("../assets/icons/settings.svg"); activated => { root.cursor = 2; root.activate(2); } }
         RailButton { x: State.narrow ? parent.width * 3 / 4 + (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : parent.height - 52px; label: "Account"; icon: @image-url("../assets/icons/account.svg"); activated => { root.cursor = 3; root.activate(3); } }
     }

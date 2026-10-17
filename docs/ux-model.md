@@ -83,7 +83,11 @@ Priorities, in order. A lower priority never overrides a higher one.
   and has a Back control in the header.
 - **Detail panel**: optional right-side, non-modal surface for a profile,
   group members, or conversation search results. It never hides the history.
-  In narrow layout it becomes a sheet.
+  At 740–1059 px a profile becomes a sheet over the conversation, preserving
+  the browser and rail. Below 740 px it covers the whole shell. The 1060 px
+  breakpoint adds a 320 px panel to the 740 px browser/conversation boundary;
+  the conversation allowance derived from that boundary is 398 px
+  (740 − 56 rail − 286 browser). Both forms sit below the connection strip.
 
 ### 3.2 Layers and when to use each
 
@@ -92,7 +96,7 @@ Priorities, in order. A lower priority never overrides a higher one.
 | Base | Shell | no | — | Rail, panes |
 | Panel | Secondary content that complements the conversation | no | Close button, Escape when focused | Profile, members, in-chat search |
 | Dialog | A decision with consequences or a short form | yes, to the main window | Explicit buttons; Escape = cancel | Leave group, logout, send file confirmation |
-| Sheet | Full-window takeover | yes | Back/Escape | Sign-in, media viewer, anything in narrow layout that would be a panel or dialog |
+| Sheet | Takeover of the conversation or whole shell | to the covered surface | Back/Escape | Profile when panes cannot fit; sign-in, media viewer, panels/dialogs in narrow layout |
 | Menu | Actions on one target | transient | Click outside, Escape, activation | Message context menu, more actions |
 | Transient | Brief status not needing action | no | Timeout or next state | "Copied", "Reconnected" |
 
@@ -100,7 +104,16 @@ Rules:
 
 - Settings is a dialog in wide layout and a sheet in narrow layout. It never
   blanks the conversation in wide layout.
-- A sheet may be used in wide layout only for sign-in and the media viewer.
+- A sheet may be used in wide layout for sign-in, the media viewer, and a
+  profile over the conversation when the conversation and panel cannot fit.
+- At 740–1059 px the profile sheet is modal only to the covered conversation:
+  its composer, history, shortcuts and read acknowledgements are blocked, and
+  covered content is hidden from accessibility. The browser and rail remain
+  available to pointer, focus and keyboard navigation. Browser shortcuts work
+  from the sheet too; destination/chat navigation closes it according to the
+  profile binding rules. Escape from anywhere closes the sheet before clearing
+  a browser search. Below 740 px the sheet is modal to the whole shell and hides
+  it from accessibility and also blocks browser shortcuts.
 - Escape closes exactly the topmost layer above base. At base, Escape in a
   search field clears the query; elsewhere it does nothing. Escape never
   closes the main window and never cancels an in-flight pairing without a

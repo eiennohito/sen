@@ -40,9 +40,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| S1 | Profile panel hides the whole browser pane below 1024 px, including at the default 980 px window. Clicking a friend removes the list you clicked in. The panel also paints over the connection strip. | `app/ui/app.slint:22`, `app/ui/layers.slint:65` | Panel narrows the conversation only; below some width it becomes a sheet (model §3.1). Panel sits below the strip. |
-| S2 | Profile panel is not bound to a destination or chat: switching to Chats, Alt+Up/Down, or any navigation leaves a stranger's profile over the conversation with the chat list hidden. | `app/src/browser.rs:4` (`browse` never closes it) | Close the panel on destination switch; close on chat switch unless it is that chat's profile. |
-| S3 | Open chat from a profile leaves `section` on Friends: Chats rail not selected, Friends list has no selection, and a friend with no history opens a blank white pane with no empty state. It also appends a synthetic chat row with no time or preview. | `app/src/browser.rs:103` | Switch to Chats, select the row, show "No messages yet" in the history. |
 | S4 | Rail "Account" button opens Settings on the Chats section; it is a duplicate of the Settings button in both wide rail and narrow bar. | `app/ui/rail.slint:26` | Open About, or remove the button. |
 | S5 | Chat-row hover is invisible: hover colour equals the pane background. | `app/ui/chats.slint:83` vs `app/ui/app.slint:172` | Distinct hover role. |
 | S6 | Settings dialog: Close button above the title, a ComboBox as section navigation, roughly 80 % empty space at 560×640. | `app/ui/layers.slint:93` | Title first, sections as a left list or tabs, size to content, Close at the bottom or as the title-row icon. |
@@ -54,6 +51,7 @@ P, then the UI groups in any order. V closes the loop.
 | S12 | Friends header rows use text glyphs "▾/▸" (also inside accessible labels); both headers render even when a section is empty. | `app/ui/friends.slint:73`, `app/src/browser.rs:58` | Icon, and omit empty sections. |
 | S13 | Friend avatar fallback shows the elided full name ("新…") instead of an initial. | `app/ui/friends.slint:76` | Use the initial like chat rows do. |
 | S14 | Narrow bottom bar has four slots for three destinations (see S4). | `app/ui/rail.slint:40` | Follows S4. |
+| S15 | Resizing from 740–1059 px to below 740 px with focus in the browser hides the shell, but the profile-sheet focus redirect does not fire, so focus can sit in a hidden control. Unverified: MCP cannot resize. `tools/check-ui-mcp.py --layers` still hard-codes the strip height (116) and rail+browser width (342). | `app/ui/app.slint` (`changed profile-sheet`), `tools/check-ui-mcp.py` | Redirect focus whenever covered content changes; read widths from the UI tree in the script. |
 
 ## M — Messages
 
@@ -73,7 +71,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| C1 | Ctrl+Enter does not send while the non-modal profile panel is open; it inserts a newline. | `app/ui/draft-editor.slint:56` | Only modal layers block it (`State.modal-open`). |
 | C2 | Chat-list load failure flips `connection_failed` and raises the auth strip with "Sign in again"; the footer text refers to a "More conversations" button that is labelled "Load more". | `app/src/view.rs:1032`, `:1036` | List failures stay in the list footer. Fix the wording. |
 | C3 | Implementation vocabulary in production strings: "Unread boundary unavailable", "Large message retained; some previews may be unavailable", "Preview unavailable · Refresh to retry", "No conversations loaded", "Reconnecting… (attempt N)". | `app/ui/conversation.slint:24`, `:97`; `app/ui/message.slint:149`; `app/ui/chats.slint:61`; `app/src/view.rs:539` | Rewrite per model §9.2. |
 | C4 | Three error strings tell the user to "Use Refresh"; the Refresh buttons are leftovers from before live sync and are the only image-retry path. The refresh icon is drawn with the arrowheads on the wrong ends. | `app/src/view.rs:765`, `:1036`; `app/ui/chats.slint:23`; `app/assets/icons/refresh.svg` | Remove manual Refresh once T2 and T4 give assets their own retry; fix or replace the icon if any refresh control survives. |
@@ -98,3 +95,7 @@ P, then the UI groups in any order. V closes the loop.
 | T8 | Already correct at `05cd26d`: `app/src/links.rs` spawns `xdg-open` on a helper thread and waits on it. The audit row was stale. |
 | T10 | `line-auth` resolves defaults through the app's XDG `Locations` (moved to `src/locations.rs`), lazily, honouring the saved paths choice. |
 | V1 | Demo scenarios moved into an F12 dialog (`app/ui/demo-scenarios.slint`); the demo shell renders as production, apart from the title hint. MCP checks pass, each flag on a fresh instance. |
+| S1 | The profile is a panel that narrows only the conversation from 1060 px (rail + browser + 398 px conversation + 320 px panel, derived from shared widths); 740–1059 px it is a sheet over the conversation with the browser kept; below 740 px a full-window sheet. Always below the connection strip. |
+| S2 | The profile closes on destination switch and on navigation to any other chat; it stays only for its own chat. |
+| S3 | Open chat switches to Chats, selects and minimally reveals the row (clamped scroll), reuses existing rows, and shows "No messages yet" for a friend with no history. |
+| C1 | Ctrl+Enter sends beside the non-modal panel; only modal layers, including the conversation sheet, block it, without inserting a newline. |

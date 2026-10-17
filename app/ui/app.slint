@@ -20,7 +20,6 @@ export component AppWindow inherits Window {
     in-out property <string> connection-status <=> State.connection-status;
     callback migration-choice(bool);
     public function go-back() { if root.narrow && root.show-conversation && !State.modal-open && !root.migration-needed { root.show-conversation = false; if root.section == 1 { root.focus-friend-search(); } else { root.focus-search(); } } }
-    property <bool> compact-detail: !root.narrow && root.profile-open && root.width < 1024px;
     in-out property <int> section <=> State.section;
     in-out property <[FriendRow]> friends <=> State.friends;
     in-out property <int> friend-result <=> State.friend-result;
@@ -45,7 +44,7 @@ export component AppWindow inherits Window {
     public function show-profile() { root.profile-open = true; State.focus-profile-close(); }
     public function close-profile() { root.profile-open = false; State.focus-friend-list(); }
     in-out property <bool> ime-active <=> State.ime-active;
-    public function focus-composer() { conversation.focus-editor(); }
+    public function focus-composer() { if root.profile-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
     public function focus-reading-before-editor() { conversation.focus-reading-before-editor(); }
     title: root.demo ? "LINE (preview · F12: scenarios)" : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
     icon: @image-url("../assets/icon.svg");
@@ -150,39 +149,45 @@ export component AppWindow inherits Window {
         height: root.connection-failed && !root.auth-open ? 116px : 0px;
         visible: root.connection-failed && !root.auth-open;
         background: Tokens.alternate-background;
-        VerticalLayout {
-            padding: 12px; spacing: 8px;
-            Text { text: root.connection-status != "" ? root.connection-status : root.retrying-connection ? "Reconnecting to your saved account…" : "Connection needs attention. Retry, or sign in again if your login has expired."; font-size: Tokens.small; color: Tokens.foreground; wrap: word-wrap; }
-            HorizontalLayout {
-                Button { text: "Retry"; accessible-label: "Retry connection"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.reconnect(); } }
-                sign-in-opener := Button { text: "Sign in again"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.open-sign-in(); } }
+        FocusScope {
+            key-pressed(event) => { State.browser-key(event) }
+            VerticalLayout {
+                padding: 12px; spacing: 8px;
+                Text { text: root.connection-status != "" ? root.connection-status : root.retrying-connection ? "Reconnecting to your saved account…" : "Connection needs attention. Retry, or sign in again if your login has expired."; font-size: Tokens.small; color: Tokens.foreground; wrap: word-wrap; }
+                HorizontalLayout {
+                    Button { text: "Retry"; accessible-label: "Retry connection"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.reconnect(); } }
+                    sign-in-opener := Button { text: "Sign in again"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.open-sign-in(); } }
+                }
             }
         }
     }
+
     shell := FocusScope {
         key-pressed(event) => { if root.demo && !State.modal-open && event.text == Key.F12 { scenarios.open(); return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: auth-notice.height;
         width: 100%; height: root.height - auth-notice.height;
         visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.profile-open) && !root.migration-needed;
-        rail := Rail { x: 0px; y: root.narrow ? parent.height - 48px : 0px; width: root.narrow ? parent.width : 56px; height: root.narrow ? 48px : parent.height; visible: !root.narrow || !root.show-conversation; }
+        rail := Rail { x: 0px; y: root.narrow ? parent.height - 48px : 0px; width: root.narrow ? parent.width : State.rail-width; height: root.narrow ? 48px : parent.height; visible: !root.narrow || !root.show-conversation; }
         browser := Rectangle {
-            x: root.narrow ? 0px : 56px; y: 0px;
+            x: root.narrow ? 0px : State.rail-width; y: 0px;
             height: parent.height - (root.narrow ? 48px : 0px);
-            visible: (!State.narrow || !State.show-conversation) && !root.compact-detail;
-            width: !self.visible ? 0px : State.narrow ? State.window-width : 286px;
+            visible: (!State.narrow || !State.show-conversation);
+            width: !self.visible ? 0px : State.narrow ? State.window-width : State.browser-width;
             horizontal-stretch: 0;
             background: Tokens.alternate-background; clip: true;
  friends-surface := Friends {}
  chats-surface := Chats {}
 }
 
-        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!root.narrow && root.profile-open ? 320px : 0px)); height: parent.height; visible: !root.narrow || root.show-conversation; }
+        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!State.profile-sheet && root.profile-open ? State.panel-width : 0px)); height: parent.height; visible: (!root.narrow || root.show-conversation) && !(root.profile-open && State.profile-sheet); }
     }
     property <length> token-base: root.text-size * 1px;
     changed token-base => { Tokens.base = root.token-base; }
     property <length> state-window-width: root.width;
     changed state-window-width => { State.window-width = root.width; }
     init => { State.window-width = root.width; Tokens.base = root.text-size * 1px; }
+    out property <length> chat-list-height: chats-surface.viewport-height;
+    public function reveal-chat(index: int) { chats-surface.reveal(index); }
     public function focus-search() { chats-surface.focus-search(); }
     public function focus-chat-list() { chats-surface.focus-list(); }
     public function focus-friend-list() { friends-surface.focus-list(); }
@@ -192,11 +197,11 @@ export component AppWindow inherits Window {
     public function focus-profile-close() { layers.focus-profile(); }
     public function focus-auth-start() { layers.focus-auth(); }
     public function focus-viewer-close() { layers.focus-viewer(); }
-    public function focus-history() { conversation.focus-history(); }
+    public function focus-history() { if root.profile-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-history(); } }
     public function focus-sign-in-opener() { sign-in-opener.focus(); }
     public function reset-viewer() { layers.reset-viewer(); }
     public function history-jump(y: length) { conversation.jump(y); }
-    layers := Layers {}
+    layers := Layers { profile-top: auth-notice.height; }
     Rectangle {
         width: 100%; height: 100%; visible: root.migration-needed; background: Tokens.background;
         VerticalLayout {

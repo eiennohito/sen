@@ -62,6 +62,7 @@ export component Conversation inherits Rectangle {
                             if State.older-failed: Button { text: "Retry older"; clicked => { State.older-retry(); } }
                         }
                     }
+                    if State.has-chat && State.messages.length == 0 && !State.loading-history && State.history-error == "": Text { text: "No messages yet"; accessible-label: self.text; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
                     for message in State.messages: Message { message: message; }
                 }
             }

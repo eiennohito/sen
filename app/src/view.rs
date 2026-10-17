@@ -145,6 +145,9 @@ impl View {
         let Some(id) = self.ids.get(index).cloned() else {
             return;
         };
+        if ui.get_profile_open() && self.profile_id != id {
+            ui.set_profile_open(false);
+        }
         if id == self.current {
             return;
         }

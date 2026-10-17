@@ -65,6 +65,7 @@ export component DemoScenarios inherits Rectangle {
                             }
                             Button { text: "Unread scenario"; clicked => { root.run(14); } }
                             Button { text: "Rich content"; clicked => { root.run(12); } }
+                            Button { text: "Long chat list"; clicked => { root.run(15); } }
                             login := Button { text: "Login recovery"; clicked => { root.run(4); } }
                             VerticalLayout {
                                 visible: State.demo-notifications; height: self.visible ? self.preferred-height : 0px;

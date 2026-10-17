@@ -238,7 +238,11 @@ if args.friends:
     call("dispatch_key_event", windowHandle=window, text="\uf701")  # Down arrow
     call("dispatch_key_event", windowHandle=window, text="\n")
     element("Friend profile", "Text")
-    assert any(item.get("accessibleLabel") == "Message draft" for item in tree()), "wide profile hid the conversation composer"
+    assert not any(item.get("accessibleLabel") == "Message draft" for item in tree()), "sheet exposed the covered composer to accessibility"
+    call("click_element", elementHandle=element("Chats", "Button")["handle"])
+    assert not any(item.get("accessibleLabel") == "Close profile" for item in tree()), "destination switch left profile open"
+    call("click_element", elementHandle=element("Friends", "Button")["handle"])
+    call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     element("Search loaded friends and groups", "TextInput")
     call("click_element", elementHandle=element("Chats", "Button")["handle"])
@@ -252,10 +256,30 @@ if args.friends:
     call("click_element", elementHandle=element("Open profile: 新しい友だち 🌸", "Button")["handle"])
     call("click_element", elementHandle=element("Open chat", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "") == "", "new friend inherited another draft"
-    call("click_element", elementHandle=element("Chats", "Button")["handle"])
+    element("No messages yet", "Text")
+    assert element("Chats", "Button").get("accessibleItemSelected") is True, "Open chat left the rail on Friends"
+    row = element("新しい友だち 🌸", "Button")
+    assert row.get("accessibleItemSelected") is True, "Open chat left the chat row unselected"
+    assert ", New, No messages yet" in row["accessibleLabel"], "new chat row lacks its empty preview/time label"
+    for label in ("葵", "Weekend plans", "Notes to self"):
+        element(label, "Button")
+    assert row["absolutePosition"]["y"] > element("葵", "Button")["absolutePosition"]["y"], "Open chat scrolled away from the first rows"
+    demo_scenario("Long chat list")
+    call("click_element", elementHandle=element("Friends", "Button")["handle"])
+    call("click_element", elementHandle=element("Open profile: 新しい友だち 🌸", "Button")["handle"])
+    call("click_element", elementHandle=element("Open chat", "Button")["handle"])
+    row = element("新しい友だち 🌸", "Button")
+    viewport = element("Conversations", "List")
+    assert row["absolutePosition"]["y"] >= viewport["absolutePosition"]["y"], "far row was not revealed"
+    assert row["absolutePosition"]["y"] + row["size"]["height"] <= viewport["absolutePosition"]["y"] + viewport["size"]["height"] + 1, "far row remained clipped"
+    assert abs(row["absolutePosition"]["y"] + row["size"]["height"] - viewport["absolutePosition"]["y"] - viewport["size"]["height"]) <= 1, "Open chat did not use the minimum scroll to reveal the far row"
+    call("click_element", elementHandle=element("Friends", "Button")["handle"])
+    call("set_element_value", elementHandle=friend_search, value="葵")
+    call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
+    call("click_element", elementHandle=element("Open chat", "Button")["handle"])
     call("click_element", elementHandle=element("葵", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == draft, "opening a new friend lost prior draft"
-    print("PASS: friend search keyboard activation, profile Escape, retained query/categories, new-chat isolation and prior draft")
+    print("PASS: friend search keyboard activation, profile Escape/destination closure, retained query/categories, Chats selection/empty state, new-chat isolation and prior draft")
 
 if args.auth_recovery:
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
@@ -299,7 +323,7 @@ if args.layers:
     call("set_element_value", elementHandle=friend_search, value="葵")
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     element("Close profile", "Button")
-    assert element("Message draft", "TextInput")["size"]["width"] >= 300, "profile made the wide conversation unusable"
+    assert not any(item.get("accessibleLabel") == "Message draft" for item in tree()), "sheet exposed the covered conversation"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert element("Friends and groups", "List").get("accessibleDescription") == "Focused friends and groups", "profile did not restore its list opener"
     call("click_element", elementHandle=element("Chats", "Button")["handle"])
@@ -335,7 +359,14 @@ if args.layers:
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert any(item.get("accessibleLabel") == "Open photo" and item.get("accessibleDescription") == "Focused" for item in tree()), "viewer did not restore the photo opener"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "layers changed the draft"
-    print("PASS: Settings modal focus, wide profile reading and focus, viewer keys/wheel/pan/loaded-photo navigation, isolated PNG export, opener restoration, draft retention")
+    demo_scenario("Login recovery")
+    call("click_element", elementHandle=element("Friends", "Button")["handle"])
+    call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
+    close = element("Close profile", "Button")
+    assert close["absolutePosition"]["y"] >= 116, "profile painted over the connection strip"
+    assert element("Search loaded friends and groups", "TextInput")["absolutePosition"]["x"] < 342, "profile hid the browser"
+    element("Retry connection", "Button")
+    print("PASS: Settings modal focus, profile reading/focus/browser/connection-strip placement, viewer keys/wheel/pan/loaded-photo navigation, isolated PNG export, opener restoration, draft retention")
 
 if args.reading:
     def reading_key(text):

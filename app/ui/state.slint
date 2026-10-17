@@ -15,13 +15,16 @@ export global State {
     changed show-conversation => { self.read-state-changed(); }
 
     in-out property <int> section: 0;
+    changed settings-open => { if self.settings-open { self.profile-open = false; } }
     in-out property <int> category: 0;
     callback filter-category();
     callback switch-chat(int);
     callback focus-chat-list();
     callback focus-friend-list();
     public function browser-key(event: KeyEvent) -> EventResult {
-        if self.modal-open || self.ime-active { return reject; }
+        if self.ime-active { return reject; }
+        if event.text == Key.Escape && self.profile-open && self.profile-sheet && !self.window-modal-open { self.close-profile(); return accept; }
+        if self.window-modal-open || (self.narrow && self.profile-open) { return reject; }
         if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
             if event.text == "f" || event.text == "F" { self.show-conversation = false; if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
             if event.text == "1" || event.text == "2" { self.browse(event.text == "1" ? 1 : 0); if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
@@ -48,6 +51,13 @@ export global State {
     in-out property <bool> loading-friends;
     in-out property <string> friends-error;
     in-out property <bool> profile-open;
+    out property <length> rail-width: 56px;
+    out property <length> browser-width: 286px;
+    out property <length> panel-width: 320px;
+    out property <length> narrow-width: 740px;
+    out property <length> conversation-min-width: self.narrow-width - self.rail-width - self.browser-width;
+    out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
+    changed profile-sheet => { if self.profile-open && self.profile-sheet { self.focus-profile-close(); } }
     in-out property <string> profile-name;
     in-out property <string> profile-id;
     in-out property <string> profile-status;
@@ -110,7 +120,8 @@ export global State {
     in-out property <bool> viewer-saving;
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
-    in-out property <bool> modal-open: self.auth-open || self.viewer-open || self.settings-open || (self.demo && self.demo-scenarios-open) || (self.narrow && self.profile-open) || self.recovery-kind != "";
+    out property <bool> window-modal-open: self.auth-open || self.viewer-open || self.settings-open || (self.demo && self.demo-scenarios-open) || self.recovery-kind != "";
+    in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.profile-open);
     callback viewer-step(int);
     callback save-photo();
     callback close-settings();
@@ -150,7 +161,7 @@ export global State {
     in-out property <length> search-list-y;
     in-out property <bool> searching;
     in-out property <int> result-focus: -1;
-    in-out property <bool> narrow: self.window-width < 740px;
+    in-out property <bool> narrow: self.window-width < self.narrow-width;
     in-out property <length> window-width;
     in-out property <length> conversation-height;
     in-out property <length> history-width;

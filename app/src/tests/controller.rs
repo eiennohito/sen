@@ -693,3 +693,64 @@ fn deferred_incoming_counts_unread_immediately_and_only_once() {
     assert_eq!(view.unread.chats["chat"].count, Some(1));
     assert_eq!(view.messages.len(), 1);
 }
+
+#[test]
+fn profile_panel_allows_send_shortcut_and_sheet_blocks_it() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        ui.set_has_chat(true);
+        ui.set_show_conversation(true);
+        ui.set_can_send(true);
+        ui.set_draft("Eligible message".into());
+        let submissions = Rc::new(std::cell::Cell::new(0));
+        let count = submissions.clone();
+        ui.on_send(move || count.set(count.get() + 1));
+        ui.show().unwrap();
+        window.set_size(slint::PhysicalSize::new(1400, 900));
+        let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(1400, 900);
+        window.draw_if_needed(|renderer| {
+            renderer.render(pixels.make_mut_slice(), 1400);
+        });
+        ui.set_profile_open(true);
+        assert!(!ui.global::<State>().get_modal_open());
+        ui.invoke_focus_composer();
+        let send = || {
+            for (text, pressed) in [
+                ("\u{11}", true),
+                ("\n", true),
+                ("\n", false),
+                ("\u{11}", false),
+            ] {
+                ui.window().dispatch_event(if pressed {
+                    slint::platform::WindowEvent::KeyPressed { text: text.into() }
+                } else {
+                    slint::platform::WindowEvent::KeyReleased { text: text.into() }
+                });
+            }
+        };
+        send();
+        assert_eq!(submissions.get(), 1);
+        assert_eq!(ui.get_draft(), "Eligible message");
+        ui.set_can_send(false);
+        send();
+        assert_eq!(submissions.get(), 1);
+        assert_eq!(ui.get_draft(), "Eligible message");
+        ui.set_can_send(true);
+        window.set_size(slint::PhysicalSize::new(980, 720));
+        slint::platform::update_timers_and_animations();
+        assert!(ui.global::<State>().get_modal_open());
+        send();
+        assert_eq!(submissions.get(), 1, "profile sheet must block submission");
+        assert_eq!(ui.get_draft(), "Eligible message");
+        if let Ok(path) = std::env::var("LINE_PROFILE_STRIP_SNAPSHOT") {
+            ui.set_connection_failed(true);
+            ui.set_profile_name("葵".into());
+            ui.set_profile_available(true);
+            snapshot::save(&window, &path, (980, 720)).unwrap();
+        }
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}

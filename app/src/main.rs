@@ -392,10 +392,12 @@ struct Options {
     demo_groups: bool,
     demo_friends: bool,
     demo_notify: bool,
+    demo_size: Option<(u32, u32)>,
     debug_background: bool,
     snapshot: Option<String>,
     snapshot_size: (u32, u32),
     snapshot_text_size: i32,
+    snapshot_profile: bool,
     check: bool,
     explicit_paths: bool,
     locations: desktop_integration::Locations,
@@ -418,10 +420,12 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
         demo_groups: false,
         demo_friends: false,
         demo_notify: false,
+        demo_size: None,
         debug_background: false,
         snapshot: None,
         snapshot_size: (980, 720),
         snapshot_text_size: 15,
+        snapshot_profile: false,
         check: false,
     };
     let mut args = std::env::args().skip(1);
@@ -466,14 +470,18 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                 out.explicit_paths = true;
             }
             "--cache-dir" => out.paths.cache = args.next().ok_or("missing cache path")?.into(),
-            "--snapshot-size" => {
+            "--snapshot-size" | "--demo-size" => {
                 let size = args.next().ok_or("missing WIDTHxHEIGHT")?;
                 let (width, height) = size.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
                 out.snapshot_size = (width.parse()?, height.parse()?);
                 if !(360..=3840).contains(&out.snapshot_size.0)
                     || !(520..=2160).contains(&out.snapshot_size.1)
                 {
-                    return Err("snapshot size outside supported bounds".into());
+                    return Err("size outside supported bounds".into());
+                }
+                if arg == "--demo-size" {
+                    out.demo = true;
+                    out.demo_size = Some(out.snapshot_size);
                 }
             }
             "--snapshot-text-size" => {
@@ -482,13 +490,17 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                     return Err("text size must be 12–24".into());
                 }
             }
+            "--snapshot-profile" => {
+                out.snapshot_profile = true;
+                out.demo = true;
+            }
             "--snapshot" => {
                 out.snapshot = Some(args.next().ok_or("missing snapshot path")?);
                 out.demo = true;
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups | --demo-friends] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
+                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups | --demo-friends] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT sets an offline preview window size.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
                 );
                 std::process::exit(0);
             }
@@ -954,9 +966,16 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.show()?;
         ui.set_text_size(options.snapshot_text_size);
         ui.set_show_conversation(!options.demo_friends);
+        if options.snapshot_profile {
+            state.borrow_mut().open_profile(&ui, "0");
+        }
         snapshot::save(&window, &path, options.snapshot_size)?;
         ui.hide()?;
     } else {
+        if let Some((width, height)) = options.demo_size {
+            ui.window()
+                .set_size(slint::LogicalSize::new(width as f32, height as f32));
+        }
         ui.show()?;
         slint::run_event_loop_until_quit()?;
         ui.hide()?;

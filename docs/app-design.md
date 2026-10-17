@@ -266,6 +266,12 @@ Enter inserting a line. `--scenarios` also exercises simulated pointer scrolling
 selection/clipboard, a delayed arrival burst, media completion, and failure
 recovery. Additional flags cover reading, layers, rich content and paged history;
 focused browser/composer scripts test their keyboard and draft invariants.
+Run `tools/check-composer-mcp.py --port PORT` against fresh wrapper instances
+at both the default `--demo` size (conversation sheet) and
+`--demo --demo-size 1400x900` (non-modal panel). `--snapshot-profile` opens a
+profile in offline headless snapshots. In the UI, `State.modal-open` includes
+the conversation sheet; `State.window-modal-open` covers only the other modal
+layers.
 The earlier native Wayland check ran at scale factor 1.5. This
 does not replace testing preedit and candidate windows with the real IME.
 

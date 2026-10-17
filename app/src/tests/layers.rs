@@ -54,7 +54,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             assert!(!ui.global::<State>().get_modal_open());
             events.borrow_mut().clear();
             notifications.borrow_mut().clear();
-            for index in 0..19 {
+            for index in 0..20 {
                 key("\u{f70f}");
                 for _ in 0..=index {
                     key("\t");
@@ -65,7 +65,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             }
             assert_eq!(
                 *events.borrow(),
-                [0, 1, 2, 10, 3, 11, 5, 6, 7, 8, 9, 14, 12, 4]
+                [0, 1, 2, 10, 3, 11, 5, 6, 7, 8, 9, 14, 12, 15, 4]
             );
             assert_eq!(*notifications.borrow(), [0, 1, 2, 3, 4]);
             ui.invoke_focus_search();
@@ -214,6 +214,102 @@ fn deferred_incoming_attention_runs_once_before_rendering() {
             ui.global::<State>().get_transient_notice().is_empty(),
             "draining replayed attention"
         );
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn profile_sheet_scopes_browser_shortcuts_and_escape() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let state = Rc::new(RefCell::new(View {
+            demo: true,
+            friends_loaded: true,
+            ..Default::default()
+        }));
+        for (index, chat) in demo::examples().into_iter().enumerate() {
+            let mut view = state.borrow_mut();
+            view.ids.push(index.to_string());
+            view.rows.push(ChatRow {
+                index: index as i32,
+                title: chat.title.into(),
+                activity: order_key(3 - index as i64).into(),
+                ..Default::default()
+            });
+            view.friends.push(FriendRow {
+                id: index.to_string().into(),
+                name: chat.title.into(),
+                ..Default::default()
+            });
+        }
+        state.borrow().filter(&ui);
+        state.borrow_mut().select(&ui, 0);
+        let weak = ui.as_weak();
+        let view = state.clone();
+        ui.on_browse(move |section| view.borrow_mut().browse(&weak.upgrade().unwrap(), section));
+        let weak = ui.as_weak();
+        let view = state.clone();
+        ui.on_switch_chat(move |delta| {
+            view.borrow_mut()
+                .switch_visible_chat(&weak.upgrade().unwrap(), delta)
+        });
+        ui.show().unwrap();
+        window.set_size(slint::PhysicalSize::new(980, 720));
+        slint::platform::update_timers_and_animations();
+        let key = |text: &str, pressed: bool| {
+            ui.window().dispatch_event(if pressed {
+                slint::platform::WindowEvent::KeyPressed { text: text.into() }
+            } else {
+                slint::platform::WindowEvent::KeyReleased { text: text.into() }
+            });
+        };
+        let modified = |modifier: &str, text: &str| {
+            key(modifier, true);
+            key(text, true);
+            key(text, false);
+            key(modifier, false);
+        };
+        state.borrow_mut().browse(&ui, 1);
+        state.borrow_mut().open_profile(&ui, "0");
+        ui.invoke_focus_friend_search();
+        modified("\u{11}", "2");
+        assert_eq!(ui.get_section(), 0);
+        assert!(!ui.get_profile_open());
+        state.borrow_mut().browse(&ui, 1);
+        ui.set_friend_query("Keep query".into());
+        state.borrow_mut().open_profile(&ui, "0");
+        ui.invoke_focus_friend_search();
+        key("\u{1b}", true);
+        key("\u{1b}", false);
+        assert!(!ui.get_profile_open());
+        assert_eq!(ui.get_friend_query(), "Keep query");
+        state.borrow_mut().open_profile(&ui, "0");
+        ui.invoke_focus_friend_search();
+        modified("\u{12}", "\u{f701}");
+        assert_eq!(ui.get_selected_chat(), 1);
+        assert!(!ui.get_profile_open());
+        state.borrow_mut().open_profile(&ui, "1");
+        window.set_size(slint::PhysicalSize::new(360, 520));
+        slint::platform::update_timers_and_animations();
+        ui.invoke_focus_profile_close();
+        modified("\u{11}", "2");
+        assert_eq!(
+            ui.get_section(),
+            1,
+            "full-window sheet must block browser shortcuts"
+        );
+        assert!(ui.get_profile_open());
+        modified("\u{11}", "\n");
+        assert!(
+            ui.get_profile_open(),
+            "Ctrl+Enter must not activate the sheet's close button"
+        );
+        key("\u{1b}", true);
+        key("\u{1b}", false);
+        assert!(!ui.get_profile_open());
+        ui.hide().unwrap();
     })
     .join()
     .unwrap();

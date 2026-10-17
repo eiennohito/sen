@@ -112,6 +112,27 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
     if !state.borrow().demo {
         return;
     }
+    if kind == 15 {
+        let mut view = state.borrow_mut();
+        for number in 0..40 {
+            let id = format!("browser-{number}");
+            if view.ids.contains(&id) {
+                continue;
+            }
+            let index = view.ids.len() as i32;
+            view.ids.push(id);
+            view.rows.push(ChatRow {
+                index,
+                title: format!("Browser friend {number:02}").into(),
+                time: "New".into(),
+                preview: "No messages yet".into(),
+                initial: "B".into(),
+                ..Default::default()
+            });
+        }
+        view.filter(ui);
+        return;
+    }
     if kind == 14 {
         let mut view = state.borrow_mut();
         let chat = view.current.clone();

@@ -5,6 +5,9 @@ impl View {
         if !(0..=1).contains(&section) {
             return;
         }
+        if ui.get_section() != section {
+            ui.set_profile_open(false);
+        }
         ui.set_section(section);
         ui.set_show_conversation(false);
         if section == 1 && !self.friends_loaded && !ui.get_loading_friends() {
@@ -117,17 +120,36 @@ impl View {
             self.rows.push(ChatRow {
                 index: index as i32,
                 title: friend.name.clone(),
+                time: "New".into(),
+                preview: "No messages yet".into(),
                 group: friend.group,
                 initial: friend.name.chars().next().unwrap_or('·').to_string().into(),
                 avatar: friend.avatar,
                 avatar_key: friend.avatar_key,
                 ..Default::default()
             });
-            self.filter(ui);
             index
         };
         ui.set_profile_open(false);
+        ui.set_section(0);
+        self.filter(ui);
+        if !(0..ui.get_chats().row_count()).any(|i| {
+            ui.get_chats()
+                .row_data(i)
+                .is_some_and(|row| row.index == index as i32)
+        }) {
+            self.query.clear();
+            ui.global::<State>().set_query("".into());
+            ui.global::<State>().set_searching(false);
+            ui.set_category(0);
+            self.filter(ui);
+        }
         self.select(ui, index);
+        let position = (0..ui.get_chats().row_count())
+            .find(|&i| ui.get_chats().row_data(i).unwrap().index == index as i32)
+            .unwrap();
+        ui.set_result_focus(position as i32);
+        ui.invoke_reveal_chat(position as i32);
         ui.set_show_conversation(true);
         ui.invoke_focus_composer();
     }
@@ -216,6 +238,151 @@ impl View {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn profile_binding_and_open_chat_selection() {
+        std::thread::spawn(|| {
+            let window = snapshot::install().unwrap();
+            let ui = create_app_window().unwrap();
+            let mut view = View {
+                demo: true,
+                friends_loaded: true,
+                ..Default::default()
+            };
+            for (index, title) in ["Friend", "Other", "Notes"].into_iter().enumerate() {
+                view.ids.push(index.to_string());
+                view.rows.push(ChatRow {
+                    index: index as i32,
+                    title: title.into(),
+                    time: "09:00".into(),
+                    preview: "Hello".into(),
+                    ..Default::default()
+                });
+                view.friends.push(FriendRow {
+                    id: index.to_string().into(),
+                    name: title.into(),
+                    ..Default::default()
+                });
+            }
+            view.friends.push(FriendRow {
+                id: "new".into(),
+                name: "New friend".into(),
+                ..Default::default()
+            });
+            view.filter(&ui);
+            ui.show().unwrap();
+            window.set_size(slint::PhysicalSize::new(980, 720));
+            slint::platform::update_timers_and_animations();
+            view.select(&ui, 0);
+            ui.set_draft("Keep my draft".into());
+            view.browse(&ui, 1);
+            view.open_profile(&ui, "0");
+            view.browse(&ui, 0);
+            assert!(!ui.get_profile_open());
+            assert_eq!(ui.get_draft(), "Keep my draft");
+            view.open_profile(&ui, "0");
+            ui.set_settings_open(true);
+            slint::platform::update_timers_and_animations();
+            assert!(!ui.get_profile_open());
+            ui.set_settings_open(false);
+            view.open_profile(&ui, "0");
+            view.select(&ui, 0);
+            assert!(
+                ui.get_profile_open(),
+                "same profile's chat must keep its panel"
+            );
+            view.switch_visible_chat(&ui, 1);
+            assert!(!ui.get_profile_open());
+            view.open_profile(&ui, "0");
+            view.select(&ui, 0);
+            assert!(
+                ui.get_profile_open(),
+                "navigating to profile's own chat keeps it"
+            );
+            view.open_profile(&ui, "1");
+            view.select(&ui, 0);
+            assert!(
+                !ui.get_profile_open(),
+                "reselecting a chat closes an unrelated profile"
+            );
+            view.browse(&ui, 1);
+            view.open_profile(&ui, "0");
+            view.start_friend_chat(&ui);
+            assert_eq!(view.ids.len(), 3, "existing chat must be reused");
+            assert_eq!(ui.get_section(), 0);
+            assert_eq!(ui.get_selected_chat(), 0);
+            view.query = "Other".into();
+            ui.global::<State>().set_query("Other".into());
+            ui.set_category(2);
+            view.filter(&ui);
+            view.browse(&ui, 1);
+            view.open_profile(&ui, "new");
+            view.start_friend_chat(&ui);
+            assert_eq!(view.current, "new");
+            assert_eq!(ui.get_section(), 0);
+            assert!(ui.get_show_conversation());
+            assert!(!ui.get_profile_open());
+            assert_eq!(ui.get_selected_chat(), 3);
+            assert_eq!(ui.get_messages().row_count(), 0);
+            assert!(!ui.get_loading_history());
+            assert!(ui.get_history_error().is_empty());
+            assert!(ui.get_draft().is_empty());
+            assert_eq!(view.saved.drafts["0"], "Keep my draft");
+            let row = ui
+                .get_chats()
+                .row_data(ui.get_result_focus() as usize)
+                .unwrap();
+            assert_eq!(row.index, 3);
+            assert_eq!(row.time, "New");
+            assert_eq!(row.preview, "No messages yet");
+            assert_eq!(
+                ui.get_list_y(),
+                0.,
+                "a visible row must not scroll the list"
+            );
+            view.open_profile(&ui, "new");
+            view.start_friend_chat(&ui);
+            assert_eq!(view.ids.len(), 4);
+            for number in 0..40 {
+                let index = view.ids.len() as i32;
+                view.ids.push(format!("filler-{number}"));
+                view.rows.push(ChatRow {
+                    index,
+                    title: format!("Middle {number:02}").into(),
+                    ..Default::default()
+                });
+            }
+            view.filter(&ui);
+            view.open_profile(&ui, "1");
+            view.start_friend_chat(&ui);
+            let height = ui.get_chat_row_height();
+            let viewport = ui.get_chat_list_height();
+            let position = ui.get_result_focus() as f32;
+            let extent = (ui.get_chats().row_count() as f32 * height - viewport).max(0.);
+            let expected = (viewport - (position + 1.) * height).max(-extent).min(0.);
+            assert!(expected < 0.);
+            assert!(
+                (ui.get_list_y() - expected).abs() < 0.1,
+                "reveal must scroll minimally and clamp: y={}, expected={expected}, viewport={viewport}, position={position}, extent={extent}",
+                ui.get_list_y()
+            );
+            view.open_profile(&ui, "1");
+            view.start_friend_chat(&ui);
+            assert!(
+                (ui.get_list_y() - expected).abs() < 0.1,
+                "a revealed row must not jump"
+            );
+            view.open_profile(&ui, "0");
+            view.start_friend_chat(&ui);
+            assert_eq!(
+                ui.get_list_y(),
+                0.,
+                "reveal must also scroll up to an offscreen row"
+            );
+            ui.hide().unwrap();
+        })
+        .join()
+        .unwrap();
+    }
     #[test]
     fn filters_metadata_and_keyboard_switch_preserve_open_draft() {
         std::thread::spawn(|| {

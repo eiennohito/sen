@@ -68,10 +68,59 @@ def demo_scenario(label):
     click(label)
 
 
-# This marker refuses to operate on an authenticated window. No test clicks Send.
+# This marker refuses an authenticated window. No test clicks Send.
+# Run once at the default demo size and once with --demo-size 1400x900.
 key('\uf70f')  # F12
 element('Synthetic interaction scenarios', 'Text')
 click('Close demo scenarios')
+click('葵')
+set_draft('Profile shortcut draft')
+window_width = call('get_element_properties', elementHandle=root)['size']['width']
+click('Friends')
+call('set_element_value', elementHandle=element('Search loaded friends and groups', 'TextInput')['handle'], value='葵')
+click('Open profile: 葵')
+editors = [item for item in tree() if item.get('accessibleLabel') == 'Message draft']
+profile_kind = 'panel' if editors else 'sheet'
+assert bool(editors) == (window_width >= 1060), 'covered composer accessibility does not match profile layout'
+if editors:
+    click('Message draft', 'TextInput')
+key('\x11', 'Press')
+key('\n')
+key('\x11', 'Release')
+element('Close profile', 'Button')
+if editors:
+    assert value() == 'Profile shortcut draft', 'Ctrl+Enter with a panel inserted a newline while Send was disabled'
+else:
+    assert not any(item.get('accessibleLabel') == 'Message history' for item in tree()), 'sheet exposed the covered history'
+if editors:
+    click('Close profile')
+else:
+    click('Search loaded friends and groups', 'TextInput')
+    key('\x1b')
+assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Escape from browser did not close the sheet/profile'
+assert value() == 'Profile shortcut draft', 'Ctrl+Enter with a sheet changed the draft'
+assert element('Search loaded friends and groups', 'TextInput').get('accessibleValue') == '葵', 'Escape cleared the browser query before closing the sheet'
+click('Friends')
+click('Open profile: 葵')
+click('Search loaded friends and groups', 'TextInput')
+key('\x11', 'Press')
+key('2')
+key('\x11', 'Release')
+assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Ctrl+2 from browser left profile open'
+assert element('Chats', 'Button').get('accessibleItemSelected') is True
+click('Friends')
+click('Open profile: 葵')
+click('Settings')
+assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Settings left the profile open'
+key('\x1b')
+click('Friends')
+click('Open profile: 葵')
+click('Search loaded friends and groups', 'TextInput')
+key('\x12', 'Press')
+key('\uf701')
+key('\x12', 'Release')
+assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Alt+Down left an unrelated profile open'
+click('Chats')
 click('葵')
 set_draft('日本語 🐈\nsecond line\n')
 click('Message draft', 'TextInput')
@@ -152,4 +201,4 @@ call('click_element', elementHandle=buttons[-1]['handle'])
 element('Unconfirmed', 'Image')  # Original remains eligible for its late echo.
 assert value() == 'Preserve while uncertain'
 assert not any(item.get('accessibleLabel') == 'Sign in again' for item in tree())
-print('PASS: S6 MCP per-chat Japanese/emoji caret-selection, unchanged-chat guard, multiline, Escape, persisted-in-session Enter sends, Shift+Enter, distinct rejection/uncertainty marks, Retry, Edit Replace/Append/Cancel, duplicate confirmation and draft preservation; physical IME remains P—')
+print('PASS: profile ' + profile_kind + ' Ctrl+Enter/Escape/destination/Alt+Down, S6 MCP per-chat Japanese/emoji caret-selection, unchanged-chat guard, multiline, Escape, persisted-in-session Enter sends, Shift+Enter, distinct rejection/uncertainty marks, Retry, Edit Replace/Append/Cancel, duplicate confirmation and draft preservation; physical IME remains P—')

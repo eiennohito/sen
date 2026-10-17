@@ -5,6 +5,7 @@ import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { Pane } from "scrollpane.slint";
 
 export component Layers inherits Rectangle {
+    in property <length> profile-top;
     property <bool> cancel-confirm <=> State.auth-cancel-confirm;
     property <int> settings-section;
     property <bool> auth-visible: State.auth-open;
@@ -62,10 +63,18 @@ export component Layers inherits Rectangle {
     }
 
     Rectangle {
-        x: State.narrow ? 0px : parent.width - 320px; width: State.narrow ? parent.width : 320px; height: 100%; visible: State.profile-open && !State.auth-open && !State.viewer-open; background: Tokens.background;
+        x: State.profile-sheet ? (State.narrow ? 0px : State.rail-width + State.browser-width) : parent.width - State.panel-width;
+        y: root.profile-top; width: State.profile-sheet ? parent.width - self.x : State.panel-width; height: parent.height - self.y;
+        visible: State.profile-open && !State.auth-open && !State.viewer-open; background: Tokens.background;
+        TouchArea { scroll-event(event) => { accept } }
         border-width: 1px; border-color: Tokens.border;
         FocusScope {
-            key-pressed(event) => { if event.text == Key.Escape { State.close-profile(); return accept; }
+            capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
+            key-pressed(event) => { if State.browser-key(event) == accept { return accept; } if event.text == Key.Escape { State.close-profile(); return accept; }
+                if State.profile-sheet && !State.narrow && event.text == Key.Tab {
+                    if event.modifiers.shift && profile-close.has-focus { if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } return accept; }
+                    if !event.modifiers.shift && profile-chat.has-focus { State.focus-settings-opener(); return accept; }
+                }
                 if State.narrow && event.text == Key.Tab {
                     if !State.profile-available { profile-close.focus(); return accept; }
                     if event.modifiers.shift && profile-close.has-focus { profile-chat.focus(); return accept; }

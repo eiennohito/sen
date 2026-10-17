@@ -6,6 +6,14 @@ import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 
 export component Chats inherits Rectangle {
+    out property <length> viewport-height: chat-list.height;
+    public function reveal(index: int) {
+        let top = index * State.chat-row-height;
+        let bottom = top + State.chat-row-height;
+        let extent = max(0px, State.chats.length * State.chat-row-height - chat-list.height);
+        let y = top + State.list-y < 0px ? -top : bottom + State.list-y > chat-list.height ? chat-list.height - bottom : State.list-y;
+        State.list-y = max(-extent, min(0px, y));
+    }
     public function focus-list() { list-focus.focus(); }
     public function move-cursor(delta: int) {
         State.result-focus = max(0, min(State.chats.length - 1, State.result-focus + delta));
@@ -102,6 +110,8 @@ for chat[i] in State.chats: Rectangle {
                             }
                         }
                         accessible-role: button;
+                        accessible-item-selectable: true;
+                        accessible-item-selected: chat.index == State.selected-chat;
                         accessible-label: chat.title + (chat.time != "" ? ", " + chat.time : "") + ", " + (chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview) + (chat.unread-unknown ? ", Unread count unavailable" : chat.unread > 0 ? ", " + chat.unread + " unread" : "") + (chat.failed ? ", Send failed" : "") + (chat.muted ? ", Muted" : "");
                         accessible-action-default => { State.result-focus = i; root.open-result(); }
                         row-touch := TouchArea {
