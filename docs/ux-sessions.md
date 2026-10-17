@@ -1,6 +1,6 @@
 # UX implementation sessions
 
-Written 2026-10-17 against commit `fc4c112`. Each session below is sized for
+Written 2026-10-17 against commit `fc4c112`; implementation completed in `d1e5db5`. Each session below is sized for
 one implementation session by an agent or a person, with explicit scope,
 files, acceptance IDs from [ux-acceptance.md](ux-acceptance.md), and a
 verification recipe. The behaviour to build is defined in
@@ -18,24 +18,34 @@ verification recipe. The behaviour to build is defined in
 3. Keep the engineering constraints of app-design.md: Slint 1.18.1 pinned,
    software renderer, no Tokio, no JavaScript, worker owns network and
    crypto, UI thread owns models, bounded command queue.
-4. Required checks before hand-off:
+4. Agent-started GUI/MCP previews must use `tools/run-ui-debug.py` on a private
+   D-Bus session and virtual KWin output. Normal user launches stay foreground.
+   Use a unique port and binary copy; retain the wrapper's reported app/scope PIDs
+   and PID-file path, and stop only that owned scope. The wrapper supplies guarded
+   `--debug-background` and refuses host-window fallback. Shell `&` alone is not
+   a focus-safety mechanism. Headless snapshots need no compositor wrapper.
+5. Required checks before hand-off:
 
    ```sh
    cargo fmt --all --check
    cargo test --release --offline --workspace
    cargo clippy --release --offline --workspace --all-targets -- -D warnings
+   cargo build --release --offline -p line-desktop
    target/release/line-desktop --demo --snapshot /tmp/ui.ppm
    target/release/line-desktop --demo-groups --snapshot /tmp/ui-small.ppm --snapshot-size 360x520 --snapshot-text-size 24
-   SLINT_MCP_PORT=9447 cargo run --release --offline -p line-desktop --features ui-debug -- --demo &
-   python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery
+   cargo build --release --offline -p line-desktop --features ui-debug
+   cp target/release/line-desktop /tmp/line-ui-debug-9447
+   python3 tools/run-ui-debug.py --binary /tmp/line-ui-debug-9447 --port 9447 --log /tmp/line-ui-9447.log -- --demo &
+   # Wait for the owned preview's MCP-ready log before checking it.
+   python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery --reading --layers --rich
    ```
 
    Convert snapshots with `magick file.ppm file.png` and look at them.
-5. Update the `Impl` and `Verified` columns of your acceptance rows and add
+6. Update the `Impl` and `Verified` columns of your acceptance rows and add
    one verification-log row. Do not write narrative follow-up sections.
-6. Scope is closed. If you find adjacent work, add it to the defect register
+7. Scope is closed. If you find adjacent work, add it to the defect register
    at the end of this file with a proposed session, and stop.
-7. Hand-off: three to ten lines in the session's "Hand-off" slot below:
+8. Hand-off: three to ten lines in the session's "Hand-off" slot below:
    what is done, what is not, what the next session must know.
 
 ## Defect register from the 2026-10-17 audit
@@ -280,7 +290,12 @@ step.
 
 **Done when.** `rg "Searches loaded|Enter inserts|No message is sent|read receipts unavailable|Refresh to update" app/ui app/src` is empty; title and rail visible in snapshots.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S3 completed in checkpoint `3639708`: icon rail and narrow bottom bar,
+compact Back, fixed LINE title, local list feedback, removed explanatory captions,
+and Settings shortcut help. Full required checks passed in the combined S1/S3
+checkpoint; inspected final normal and small snapshots and full MCP log.
+Unread on Back remains S8; history feedback overlay remains S5; physical input
+verification remains V. S4 can use shared State and the split browser components.
 
 ---
 
@@ -316,7 +331,14 @@ switches, draft marker appears after typing; snapshots.
 
 **Done when.** The acceptance rows list `S M`.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S4 implemented after `3639708`: metadata markers and outgoing prefixes,
+All/Friends/Groups filters, calendar list times/dividers, collapsible friend/group
+rows, one-stop list keyboard and guarded global browser shortcuts. Dedicated
+browser MCP and both browser controller tests pass, including narrow visible Tab
+traversal. Normal/small and dark desktop snapshots were inspected. Calendar
+boundary tests pass 2/2; collective formatting, 73 desktop/32 library tests and
+Clippy pass. Final combined MCP is logged in acceptance. Unread badge stays S8;
+Official classification awaits protocol data. No physical/account verification.
 
 ---
 
@@ -363,7 +385,16 @@ demo mode to record the URL. Snapshots with every placeholder kind in
 **Done when.** Acceptance rows read `S M`; `check-ui-mcp.py` has a
 `--reading` flag that runs the new checks.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S5 implements history focus/keys, stable recent loading/error
+strip, typed placeholders and accessible labels. Four URL/kind/label tests and
+`--reading` MCP pass on debug SHA `241b3ed17333` (01:12:05 UTC): four Tabs to
+composer, scrolling, loading geometry, URL inspection/menu copy/stub activation,
+twelve kinds and selected-body chat switch; top/bottom dark snapshots inspected.
+Slint 1.18 uses explicit surface traversal and separate underlined URL action
+runs below the selectable body; dragging an action run selects the whole body.
+MSG5 remains partial for inline styling; MSG3 for full native-menu mutation
+deferral (no toolkit open-state hook). Selection release is queued safely.
+Physical pointer/IME/default-handler checks and account use remain pending.
 
 ---
 
@@ -405,7 +436,16 @@ Uncertain render different marks and actions; a rejected send leaves
 
 **Done when.** Rows read `S M`; IME rows still `P—` and say so.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S6 implements native byte-offset caret/selection and scroll restoration,
+unchanged-chat protection, encrypted Enter-sends preference, Shift+Enter and IME
+shortcut guards, base Escape and Ctrl+Q through the normal flush/stop path.
+SVG delivery slots expose Sending/Sent/Read/Not sent/Unconfirmed; rejected Retry
+and uncertain duplicate-confirmed Resend are distinct. Edit confirms Replace or
+Append before touching a newer draft; Resend preserves the original uncertain row.
+Persisted random-seeded monotonic request sequences reconcile only protocol-validated
+own echoes, including late originals after Resend. Legacy rows without a request
+sequence cannot identify an unknown echo; no content-based guessing occurs.
+Three focused controller tests and composer MCP pass; collective checks remain. Physical IME P—.
 
 ---
 
@@ -442,7 +482,7 @@ dialog.
 
 **Done when.** SC14 passes in MCP.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S7 implements one Layers stack for Settings, profile, sign-in and viewer. Expanded private virtual-KWin MCP 9452 `--layers` passes focus restoration, profile/viewer keys, wheel zoom, pan, loaded-photo navigation, isolated PNG Save and draft retention. Physical chooser/compositor input remains unverified.
 
 ---
 
@@ -497,16 +537,15 @@ delivery, duplicate suppression after reconnect, auth-expired mapping,
 rejected versus uncertain. No account use unless authorized; if the slot
 is assigned, one read-only live-poll run for five minutes with counts only.
 
-**Hand-off.** SSE transport and bounded private worker delivery implemented with
-revision replay filtering, message-ID suppression, 30 s ping watchdog,
-cancellable subprocess cleanup, capped reconnect backoff and unauthorized-token
-refresh. Full/partial sync acknowledges loaded-scope resync before cursor advance.
-Send errors now distinguish rejected and uncertain without changing sync state;
-chat metadata runs as a follow-up after queued user work. Synthetic library tests
-cover frame/revision replay and send response classification; physical/live checks
-remain unrun. Proactive refresh and non-native full-sync categories remain scoped
-limitations documented in chromium-ui-map.md.
-
+**Hand-off.** SSE transport has bounded private delivery, replay suppression,
+30 s ping watchdog, seed/connect backoff and explicit sync state. Joined worker
+shutdown cancels, kills and reaps RPC/media/SSE children; session epochs fence old
+token events. Refresh transport outages reconnect; definite auth rejection expires.
+Persisted request sequences plus encrypted ciphertext-envelope bindings reconcile
+lost confirmations from either operation echoes or recent-page catch-up, including
+restart; no text heuristic or automatic resend is used. Synthetic transport,
+cancellation, auth and send tests pass; source-only header/refresh evidence and
+loaded-native-scope resync limits are in chromium-ui-map.md. No live/physical test.
 
 ---
 
@@ -553,7 +592,14 @@ bounded (evict pages far from the viewport; S10 asks for ranges).
 **Verification.** Synthetic tests with a fake transport: three pages, a
 failure, retry, beginning reached, no duplicates.
 
-**Hand-off.** _(empty)_
+**Hand-off.** Older commands use the sourced delivered-time/message-ID cursor,
+remove the inclusive boundary and duplicate IDs, and return an explicit end flag.
+Encrypted range pages include that flag and share the bounded 512-message/16 MiB
+memo and 32 MiB/256-page disk budget. Failed requests store no page, so Retry
+keeps the boundary. Synthetic transport tests cover three pages, failure/retry,
+cache restore, no duplicate IDs and beginning reached. S10 owns viewport ranges
+and anchor/window retention; no live older-history request was made.
+
 
 ---
 
@@ -604,7 +650,19 @@ open chat while scrolled up; controller tests for eligibility under each
 condition in model §7.2; `busctl --user monitor` shows LauncherEntry
 updates on the desktop.
 
-**Hand-off.** _(empty)_
+**Hand-off.** Server counts, persistent stale dots, row/rail/narrow Back badges,
+window title and coalesced LauncherEntry count are wired. Actual row-start
+exposure, focus/occlusion, pane visibility, loading and modal state gate reads;
+a shared atomic epoch revokes pending markers even with a full command queue.
+Unread boundaries larger than a page are discovered through bounded older
+paging; ambiguous/inconsistent boundaries stay undisclosed rather than guessed.
+The divider survives reads until leaving; exact start-exclusive read ranges
+supply receipts. Nine S8 tests plus the queue-saturation revocation test pass.
+Private virtual-compositor MCP passed synthetic scrolled arrivals, other-chat
+badges, stable anchor, Latest and persistent divider; the background launch made
+no host focus request and its owned scope was closed. No live marker or physical
+badge/desktop verification was performed.
+
 
 ---
 
@@ -644,7 +702,7 @@ with synthetic events against the real daemon on the developer's desktop.
 Controller tests for the matrix decision function (pure function: state ×
 event → actions). SC10, SC11, and the rest of SC15 on the desktop.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S9 implements quiet persisted preferences, a bounded joined D-Bus worker, per-chat replacement, two-second sound limiting, three privacy levels, activation actions/tokens and withdrawal. Pre-deferral attention and unread are processed exactly once; read exposure waits for successful worker acknowledgment. Pure matrix and isolated daemon-contract/unavailable-bus/shutdown tests pass; private virtual MCP confirms truthful unavailable-service feedback. Physical Plasma activation/token fallback, DND, lock-screen privacy and sound remain unverified.
 
 ---
 
@@ -675,7 +733,19 @@ simulated failures; MCP asserts the anchored message's y across three page
 loads and a failure; measure RSS before and after paging through 1,000
 messages and record it in app-design.md's budget section.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S10 implemented bounded rolling history: UI ≤200 rows, retained
+≤600 rows/4 MiB per view, eight total views; image/model bytes are included and
+oversized optional pixels released (one indivisible text row is a visible exception).
+Layout-only bubble geometry replaces screen-y tracking and history 1/16 ms timers;
+prepending, failures and retries preserve the anchor. Page cursor identity, newer
+range reopening, exact-boundary unread discovery, local/server aliases, pending
+outbox anchors and bounded deferred updates are integrated. SC4 MCP passes 20
+pages/1,000 messages with 20 stable anchors; RSS 62,056→71,100 KiB at Wayland 1.5.
+Targeted tests and the collective workspace suite pass (73 desktop, 32 library);
+all three private-bus desktop harnesses, formatting and Clippy pass. The final
+background-compositor SC4 rerun also passes (RSS 68,936→71,852 KiB at scale 1).
+Use `tools/run-ui-debug.py` for an owned background compositor/MCP scope; no
+native account was accessed.
 
 ---
 
@@ -687,7 +757,16 @@ items, withdrawn items. Acceptance MSG6, MSG7 full, MSG8, SC9. Depends on
 P4 and S5. Attachment sending (CMP9, OS10) is a separate later session
 because it needs the upload protocol.
 
-**Hand-off.** _(empty)_
+**Hand-off.** Rich message data feeds measured text/image runs, reply previews,
+retained-history jump/highlight/return, file name/size/Save, video/voice duration,
+contact names, system text, and withdrawn rows. File downloads are bounded to
+16 MiB and saved through the shared portal/Downloads helper off the UI thread.
+Slint 1.18 has no inline-image text object: rich messages offer Select text for
+the intact fallback body, preserving whole-message copy; cross-run drag selection
+is unavailable. Grapheme runs do not preserve cross-run ligatures/contextual shaping;
+the selectable fallback body uses normal whole-text shaping. Animated emoji use
+static assets; over 2048 runs use plain text.
+Synthetic tests/MCP and snapshot evidence are recorded in ux-acceptance.md.
 
 ---
 
@@ -698,7 +777,7 @@ Open, Mute, Quit; close-to-tray preference with its explanation; autostart
 preference writing the XDG autostart entry. Default behaviour (close quits)
 unchanged. Depends on S9.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S12 implements opt-in verified-host tray Open/Mute/Quit, close-to-tray with explicit event-loop lifetime, host-loss restoration, and atomic private managed autostart preserving custom entries. Isolated tray/menu/host-loss/autostart tests and the synthetic CloseRequested→Open→host-loss→draft→Quit lifecycle pass. Normal launches remain foreground; agent debug runs use the private virtual-KWin wrapper above, whose owned-process cleanup and stale-PID refusal pass smoke checks. Physical tray visuals remain unverified. Logout is not implemented.
 
 ---
 
@@ -721,6 +800,14 @@ acceptance log with compositor, scale, IME, and theme.
 ## Later and out of scope here
 
 Attachment sending, sticker picker, group creation and management, friend
-add/block/hide, profile editing, logout flow (WIN5), token refresh (D42),
-reaction editing, URL previews, voice and video playback. Each needs its
+add/block/hide, profile editing, logout flow (WIN5), reaction editing,
+URL previews, voice and video playback. Each needs its
 protocol trace first; create sessions for them when the above is done.
+The sourced token-refresh adapter is now part of P1; live compatibility remains
+unverified rather than an unimplemented feature.
+
+Final collective validation for `d1e5db5`: formatting, 73 desktop and 32 library
+tests, all three isolated private-bus desktop tests, and Clippy pass. Core MCP
+and SC4 pass (`/tmp/line-final-mcp.log`): 1,000 messages, 20 pages and 20 stable
+anchors; RSS 68,936→71,852 KiB at scale 1. Final wide/small snapshots inspected.
+Physical V and all current-account verification remain pending.

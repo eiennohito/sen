@@ -7,8 +7,9 @@ The protocol PoC has authenticated a real phone-paired session, restored three
 Letter Sealing keys, and decrypted a real V2 chat payload containing a media key.
 The desktop app uses the saved session to load real conversation names, recent
 messages, photos, stickers, and reactions. Text decryption uses the original
-WASM. Send encrypts text and submits it only when the user clicks the button;
-automated validation does not send messages.
+WASM. Text submission is explicit through Send or an enabled send shortcut;
+automated validation uses offline synthetic data and does not send account
+messages.
 
 The [UX model](docs/ux-model.md) defines the target behavior. Follow the
 [implementation sessions](docs/ux-sessions.md) for the remaining work and
@@ -17,16 +18,22 @@ The [UX model](docs/ux-model.md) defines the target behavior. Follow the
 
 ## Run the desktop app
 
+The normal command opens a foreground window and uses the saved account.
+Chrome currently owns its device slot; use `--demo` until native account access
+has been explicitly assigned again.
+
 ```sh
 cargo run --release -p line-desktop
 ```
 
 Search and select conversations, type into the multiline composer, and switch
-between chats to keep separate drafts. Enter inserts a line; Send is a separate
-explicit action. Drafts, text size, the selected conversation, and unresolved
-submissions survive normal restart in encrypted storage beside the saved session
-(`desktop-state/local-state/<pairing hash>/desktop.state`, directories 0700,
-file 0600). This storage is separate from the expiring message/image cache.
+between chats to keep separate text, caret, selection and editor scroll state.
+Enter inserts a line by default; Ctrl+Enter sends, and Settings has an opt-in
+Enter sends preference. Shift+Enter always inserts a line. Drafts, preferences,
+the selected conversation and unresolved submissions survive normal restart in
+account-scoped encrypted storage under `$XDG_STATE_HOME/line-desktop/local-state/`
+(default `~/.local/state/line-desktop/local-state/`, directories 0700, file 0600).
+This storage is separate from the expiring message/image cache.
 Do not remove it when clearing thumbnails. A different pairing secret uses a
 separate state directory; drafts are never migrated across accounts automatically.
 Storage errors remain visible and prevent submission until resolved.
@@ -42,30 +49,47 @@ creation, membership changes, and profile editing remain unavailable.
 Preview this flow without accessing the account with `--demo-friends`.
 `tools/check-ui-mcp.py --friends` exercises it in a running `--demo` debug UI.
 
-History follows arrivals only at latest. Scrolling or selecting message text
-pauses following; Latest resumes it. Reading and editor scroll positions are
+History follows arrivals only at latest. User scrolling or selection pauses
+following; merely focusing a message does not. Latest resumes following. Reading
+and editor scroll positions are
 kept per chat during the session, with eight bounded cached conversation views.
 Message text supports selection, Ctrl+C, and a Copy message context action without displaying an editor caret.
 Below 740 logical pixels, Back returns to the list without discarding the open
 conversation. Settings → Message text size applies immediately and retains its value.
 
-Refresh retrieves updates; the current history view is bounded to 50 recent
-messages per chat. Additional conversation pages can be loaded with More
-conversations. Conversations sort by latest activity, with identity preserved
-on refresh; messages run oldest to newest, including local pending items. Previews occupy one bounded
-line and contact photos use centered circular frames. History paging, unread
-tracking, and automatic updates are still unavailable and are not implied by the Latest control.
+The shell has an icon rail, per-destination search, All/Friends/Groups filters,
+relative times, outgoing previews, draft/failure markers and keyboard navigation.
+Ctrl+1 opens Friends, Ctrl+2 Chats, Ctrl+F focuses browser search, and Alt+Up/Down
+switches within the visible conversation list. The open chat and drafts survive
+filtering and destination changes. Below 740 logical pixels, a bottom rail and
+Back control replace the side-by-side layout.
 
-The default paths are `artifacts/auth/session.json` and
-`artifacts/line-3.7.2/ltsm.wasm`, relative to the working directory. Override them
-with `--state FILE` and `--wasm FILE`. No new pairing is needed for a valid saved
-session. Use `--demo` for the offline synthetic preview. Its History, Arrivals,
-Media, and Send state controls exercise long history, a delayed three-message
-burst, delayed thumbnail completion, and uncertain submission without account
-access. The ordinary Send button remains disabled in this mode.
+Desktop notifications and sound default to off; Settings exposes availability,
+preview privacy, sound, muted-mention exceptions and group-event preferences.
+The default preview is name only. Native desktop notification interaction remains
+a physical verification gate; offline automation uses a private bus instead of
+the user's notification daemon.
+
+The source includes SSE receive/reconnect, token-refresh, unread/read-range and
+older-history adapters. UI history is windowed to 200 rows, with bounded retained
+conversation data and encrypted range-page caching. Refresh remains available.
+These paths have synthetic coverage; live compatibility and native read markers
+remain unverified while Chrome owns the account slot. Unknown mute state is not
+shown as a known server preference.
+
+Default session and WASM paths are `$XDG_DATA_HOME/line-desktop/session.json` and
+`$XDG_DATA_HOME/line-desktop/ltsm.wasm` (normally under `~/.local/share`). Cache uses
+`$XDG_CACHE_HOME/line-desktop`. `--state FILE`, `--wasm FILE` and `--cache-dir DIR`
+remain overrides. An explicit custom session path keeps sibling private state
+for compatibility. On first launch, existing repository files require an explicit
+Use existing files or Start fresh choice; credentials are never copied silently.
+Use `--demo` for an offline synthetic preview. Its controls exercise arrivals,
+paging, media, rich content, delivery failures and recovery without account use.
+The ordinary Send button remains disabled in this mode.
 
 Install the built executable, original app icon, and desktop launcher for the
-current user (the launcher passes absolute session/WASM paths):
+current user (the launcher uses XDG defaults; `--dev-paths` explicitly selects
+repository development paths):
 
 ```sh
 cargo build --release -p line-desktop
@@ -112,14 +136,15 @@ session before validation succeeds.
 ## Message cache and performance
 
 Selecting a previously loaded chat uses its encrypted recent-page cache. Click
-Refresh to retrieve new messages; automatic updates are not implemented.
-The client still needs valid authentication to start, so cached pages do not
+Refresh to retrieve an explicit recent-page update; the SSE path handles live
+operations when authenticated. The client still needs valid authentication to start, so cached pages do not
 provide offline startup. The current native session was invalidated when the
 user logged into Chrome; do not re-pair without coordinating that login.
 
 Recent pages use authenticated encryption (AES-256-CTR plus HMAC-SHA256), with
 separate keys derived from the saved pairing secret using HKDF. Pages contain
-at most 50 messages, have a 32 MiB / 256-file disk budget and 30-day expiry,
+at most 50 messages each, including separately keyed older ranges, with a
+32 MiB / 256-file disk budget and 30-day expiry,
 and live under the account cache's `messages-v1` directory. A 512-message /
 16 MiB decoded memo avoids decrypting unchanged messages during Refresh.
 Ciphertext/reaction changes invalidate entries; corrupt pages are discarded.
@@ -151,15 +176,16 @@ Stickers and reactions do not animate yet. Media authentication is checked
 before decryption; photos use the encrypted-media token and Chrome's file
 format, which lives outside the LTSM blob in the original extension too.
 
-A read-only check through the same shared client reports counts without logging
-message contents or sending anything:
+After explicit native account authorization, a read-only check through the same
+shared client reports counts without logging message contents or sending anything:
 
 ```sh
 target/release/line-desktop --check-live --cache-dir artifacts/cache
 ```
 
 Click a photo preview (sent or received) to load the original in the photo
-viewer. Fit, zoom, 1:1, scrolling, and Escape/Close photo are available; closing
+viewer. Fit, wheel/keyboard zoom, 1:1, drag pan, Save, previous/next within loaded
+photos, and Escape/Close photo are implemented; closing
 restores the conversation and draft. Loading/failure stays in the viewer, with
 Retry original on failure. The preview is labeled as such until the original
 arrives. Originals are fetched on demand, decoded outside the thumbnail cache,
@@ -210,14 +236,25 @@ cargo test --release --workspace
 cargo clippy --release --workspace --all-targets -- -D warnings
 ```
 
-Slint MCP inspection is opt-in and disabled in normal builds:
+Slint MCP inspection is opt-in and disabled in normal builds. Agent verification
+uses a private virtual compositor so launching a preview cannot take focus from
+the user's desktop. Normal app launches remain foreground.
 
 ```sh
-cargo run --release -p line-desktop --features ui-debug -- --demo
-# To start the MCP server, set this environment variable before launching:
-SLINT_MCP_PORT=9447 cargo run --release -p line-desktop --features ui-debug -- --demo
-python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --auth-recovery --screenshot /tmp/line-ui.png
+cargo build --release --offline -p line-desktop --features ui-debug
+cp target/release/line-desktop /tmp/line-ui-debug-9447
+python3 tools/run-ui-debug.py --binary /tmp/line-ui-debug-9447 --port 9447 --log /tmp/line-ui-9447.log -- --demo
+# In another terminal:
+python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery --reading --layers --rich --screenshot /tmp/line-ui.png
 ```
+
+The wrapper requires `dbus-run-session` and `kwin_wayland`, accepts offline demo
+arguments, and supplies the guarded `--debug-background` mode. It refuses a host
+window fallback when its private scope cannot start. Use a unique MCP port,
+binary copy and log per session; the wrapper prints owned PIDs and a unique PID
+file. Stop only that scope. Run `check-browser-mcp.py` and
+`check-composer-mcp.py` against fresh owned previews; the composer check quits
+its preview. `--paging` adds the bounded 1,000-message history scenario.
 
 The server listens on `http://127.0.0.1:9447/mcp`. The feature also enables Slint
 element debug information. The UI check refuses a connected-account window,
@@ -228,17 +265,18 @@ and uncertain-send recovery. These checks do not validate OS pointer routing,
 physical scrollbar dragging, or Fcitx composition. Normal installed builds omit
 the server.
 
-Remaining limitations: token refresh, automatic live updates, older-history
-paging, animated stickers, attachment sending, and reaction editing are not
-implemented. Encrypted text sending is wired but has not been verified by an
-automated real send. Submission moves text into a durable pending outgoing item and immediately
-frees the composer for the next draft. Confirmation updates that item without
-implying read. A transport timeout leaves an uncertain outgoing item and never
-retries automatically because the message may already have reached LINE.
-Append text to draft is a deliberate recovery action; it preserves newer text
-and does not submit anything. Confirmation with a known server message ID is
-deduplicated on refresh. An uncertain submission without a server ID remains
-unresolved; identical text alone is not treated as proof of delivery.
+Remaining limits and deviations are tracked in the acceptance record: physical
+IME/compositor checks, live account compatibility, native mute sourcing,
+attachment sending, animated stickers and reaction editing remain incomplete or
+unverified. Rich messages retain intact fallback-body copy/selection through
+Select text; cross-run drag selection and contextual shaping are toolkit limits.
+
+Submission creates a durable pending item and frees the composer immediately.
+Sent does not imply Read. Definite rejection offers Retry and Edit; an uncertain
+result requires an explicit duplicate-risk confirmation before Resend. Edit
+requires a Replace/Append decision when a newer draft exists. Request identities
+and known server IDs reconcile confirmations without using identical text as
+proof of delivery. Physical Japanese composition remains a release gate.
 
 The app architecture and input acceptance checks are described in
 [docs/app-design.md](docs/app-design.md). IME acceptance must be verified on the

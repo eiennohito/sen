@@ -220,7 +220,10 @@ and that watermark in param2. It clears that chat's unread count. Receipt
 operation 55 instead advances one member's read-range endpoint (chat/member/end
 in param1/2/3); fetched ranges preserve start/end IDs and the open-end sentinel
 `1`, so group counts must be calculated for each message from distinct member
-ranges, never from a single receipt endpoint. Message IDs compare as positive
+ranges, never from a single receipt endpoint. Source coverage is start-exclusive,
+end-inclusive (`startMessageId < messageId <= endMessageId`). The initial end
+sentinel `1` covers no messages; it is preserved as an open/unadvanced range,
+never interpreted as infinity or a Read indication. Message IDs compare as positive
 decimal integers without converting them to floating point.
 
 Local exposure updates the local boundary immediately and sends the read
@@ -419,9 +422,11 @@ not belong in the shell.
 
 ## 13. Dependencies on protocol work
 
-The following are UX requirements whose data does not exist in the worker
-yet. They are tracked as protocol sessions in ux-sessions.md and block the
-UX sessions that consume them.
+The following requirements depended on missing worker data at the initial
+2026-10-17 audit. Protocol sessions P1–P4 now provide sourced adapters; their
+handoffs and ux-acceptance.md distinguish implemented and synthetic-tested paths
+from account-verified behavior. Native mute remains unknown as described in §7.1.
+The consuming UX sessions retain these dependencies.
 
 - Live events (incoming messages, receipts, reads elsewhere, group events,
   reconnect catch-up) with reconnect state.

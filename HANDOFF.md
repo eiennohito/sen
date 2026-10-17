@@ -4,13 +4,17 @@ Updated 2026-10-17. Workspace: `/home/eien/work/misc/line-app`.
 
 ## Current state and authorization — read this first
 
-The implementation plan is [docs/ux-sessions.md](docs/ux-sessions.md), starting
-with S0 documentation tidy and S1 UI modules, tokens, and system theme. Follow
-[docs/ux-model.md](docs/ux-model.md) for behavior and
-[docs/ux-acceptance.md](docs/ux-acceptance.md) for implementation and verification
-status. [docs/app-design.md](docs/app-design.md) owns engineering constraints;
-[docs/chromium-ui-map.md](docs/chromium-ui-map.md) contains reference evidence.
-The existing app is a PoC; the plan does not imply completed implementation.
+The implementation and verification record is [docs/ux-acceptance.md](docs/ux-acceptance.md),
+with session handoffs in [docs/ux-sessions.md](docs/ux-sessions.md). The current
+implementation is committed as `d1e5db5`, with browser keyboard/metadata, native
+composer state and failure handling, reading and rich content, layered surfaces,
+unread eligibility, attention services, and bounded older-history work. Read the
+individual acceptance rows for partial behavior and tested builds; this remains
+a PoC, not a daily-use or live-compatibility claim.
+
+[docs/ux-model.md](docs/ux-model.md) defines behavior;
+[docs/app-design.md](docs/app-design.md) owns engineering constraints and
+[docs/chromium-ui-map.md](docs/chromium-ui-map.md) records source evidence.
 
 **Chrome owns the secondary-device slot and native authorization is invalid.**
 Do not run the default app, `line-auth status`, `--check-live`, pairing, sends,
@@ -26,10 +30,21 @@ cargo fmt --all --check
 cargo test --release --offline --workspace
 cargo clippy --release --offline --workspace --all-targets -- -D warnings
 target/release/line-desktop --demo --snapshot /tmp/line-ui.ppm
-SLINT_MCP_PORT=9447 cargo run --release --offline -p line-desktop --features ui-debug -- --demo
+cargo build --release --offline -p line-desktop --features ui-debug
+cp target/release/line-desktop /tmp/line-ui-debug-9447
+python3 tools/run-ui-debug.py --binary /tmp/line-ui-debug-9447 --port 9447 --log /tmp/line-ui-9447.log -- --demo
 # In another terminal:
-python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery
+python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery --reading --layers --rich
 ```
+
+Agent-started GUI previews must use `tools/run-ui-debug.py`: it uses a private
+D-Bus session and virtual KWin output, with no host desktop window or focus
+request. It requires `kwin_wayland`, `dbus-run-session`, and a `ui-debug` build;
+it refuses to fall back to the host display. The guarded `--debug-background`
+flag is supplied by the wrapper, not ordinary launches. Use a unique port and
+binary copy per session; the wrapper reports its owned app/scope PIDs and a
+unique PID file. Stop only that owned scope. Normal user launches remain
+foreground. Headless `--snapshot` does not map a GUI window.
 
 Snapshots, offline demos, tests, and synthetic WASM benchmarks are safe.
 Physical IME, compositor input, scaling, and notification checks remain the
@@ -41,53 +56,36 @@ for offline UI work. If reference inspection is needed, use
 `node tools/chrome-ui-map.mjs --interactive` and preserve privacy: no account
 storage dumps, messages, preference changes, or private captures in Git.
 
-## Additional UX direction from the user
+## Current limits and next verification
 
-The current UI is acceptable for a PoC only, not everyday use. The user's issues
-are explicitly non-exhaustive: assess full workflows and dynamic behavior, not
-just static screen coverage. Record send requested → server confirmation →
-potentially later read notification as distinct per-message states; trace the
-actual operation/read-receipt protocol and reconnect reconciliation. Confirmation
-must not imply read. Do not send messages or mark chats read just for the audit.
+Physical Fcitx composition, real scrollbar dragging, compositor activation,
+100/150/200 % scale, desktop notification interactions, and connected resource
+measurements remain release gates. Synthetic input and screenshots do not satisfy
+those gates. Source-backed SSE, token refresh, read markers, receipts and older
+paging exist, but account compatibility has not been exercised after Chrome took
+the device slot. Unknown native mute state remains unknown.
 
-Message text currently cannot be selected/copied. Provide normal selection,
-keyboard copy, and an accessible copy action, including rich-message semantics.
-The user reports cramped/overlapping previews and oversized image/sticker
-backgrounds. Fix density/hierarchy and use message-type-specific layout;
-transparent stickers and some other items need no bubble. Detailed requirements
-and acceptance scenarios are in `docs/chromium-ui-map.md` under everyday use.
-These are recorded requirements, not implemented fixes or verified live behavior.
+Reading and composition preserve local text independently of delivery results.
+Sent and Read are distinct; Rejected and Unconfirmed have different recovery
+actions. Rich inline-image messages offer Select text for intact fallback-body
+selection; cross-run drag selection and contextual shaping across grapheme runs
+remain toolkit deviations. The acceptance record names the remaining limitations.
 
-## Changes in this audit session
-
-- Channel construction was a major offline CPU cost: synthetic V2 fixture,
-  20 iterations, 140.15 ms/message constructing a channel versus 4.54 ms reuse;
-  runtime initialization 170.31 ms. This is not an end-to-end speedup.
-- `Api` now caches up to 64 channels by conversation/key IDs and group sender,
-  destroys evictions, and loses all pointers on runtime reset.
-- `src/client/desktop/messages.rs` adds a fingerprinted decoded memo (512
-  messages / 16 MiB) and encrypted authenticated recent-page cache (50 per page,
-  32 MiB / 256 files, 30 days). AES-CTR/HMAC keys derive from saved login_key
-  through HKDF, with a fresh nonce per page; files0600/directories0700.
-- Selection reads a cached page; explicit Refresh and post-send fetch updates.
-  No automatic freshness or offline account startup yet. Invalid cache pages
-  fall back to the network; failed decryptions are not memoized.
-- Image arrivals update matching Slint rows/reactions rather than replacing
-  entire models. UI controls/layout have not been redesigned in this session.
-- Audit traced missing inline emoji to dropped `REPLACE.sticon` metadata and
-  documented the older-history cursor API. Neither feature is implemented yet.
-
-Next: complete live mapping gaps, then reconstruct the shell/friends/group
-surfaces and rich paged history against the evidence matrix. Keep the user in
-Chrome until that audit is finished; native reauthorization needs coordination.
+Next: finish the remaining session handoffs and collective offline checks, then
+the person-run V checks. Restore native account authorization only after the user
+explicitly assigns its device slot; no historical authorization carries forward.
 
 ## Existing app and tooling
 
-The app uses Slint 1.18.1 Winit/software renderer. A worker owns networking,
-original crypto WASM, and private media caching. Normal builds omit MCP;
-`--features ui-debug` plus `SLINT_MCP_PORT=9447` enables loopback inspection.
-`tools/check-ui-mcp.py` checks synthetic selection/filter/drafts/multiline
-input. Actual Fcitx preedit/candidate acceptance is still pending.
+The app uses Slint 1.18.1 Winit/software renderer. The account worker owns crypto
+and RPC/media work; a separate cancellable SSE thread supplies operations through a
+bounded queue. UI models stay on the UI thread; desktop bus work is separate.
+Normal builds omit MCP;
+`--features ui-debug` enables loopback inspection through the guarded private
+`tools/run-ui-debug.py` scope above; use a unique port for each owner.
+`tools/check-ui-mcp.py` checks synthetic browser, reading, media, layer and
+rich-content flows; focused browser/composer scripts cover their keyboard paths.
+Actual Fcitx preedit/candidate acceptance is still pending.
 
 The previously installed user executable/icon/launcher are from the earlier
 integration work; source changes do not update that installation automatically.
@@ -150,7 +148,8 @@ target/release/line-auth status
 with the saved token, checks that a profile MID exists, and saves `validated=true`
 only after success. It does not print profile contents or tokens. On server
 rejection, diagnose the actual response before deciding whether re-pairing is
-necessary; token refresh is not implemented.
+necessary. The current source has a sourced token-refresh adapter; these
+historical checks do not validate it.
 
 `target/release/line-auth chat-check` reads at most ten chat previews with five
 messages each, tries at most five supported candidates, and stops on the first
@@ -160,7 +159,8 @@ uses a fresh runtime, so a WASM exception cannot poison the next attempt.
 
 The desktop now extends this into real message retrieval, text display, and
 media decryption. Successful samples do not cover every direction, chat type,
-historical key, or content type. Token refresh is still unimplemented.
+historical key, or content type. Current token refresh and live receive remain
+unverified against the account.
 
 ## Sensitive local state
 
@@ -203,9 +203,9 @@ cargo clippy --release --workspace --all-targets -- -D warnings
 cargo run --release --bin line-wasm-poc
 ```
 
-Last checks include ten workspace tests (shared protocol/cache and stale UI response handling),
-Clippy with warnings denied, MCP UI checks, real read-only checks, and the
-offline crypto PoC. Formatting was applied. The signature replay additionally
+Current test totals and exact verified builds are recorded in the acceptance
+verification log. Earlier real read-only checks are historical and do not
+establish current authorization. The signature replay additionally
 accepts positional `WASM HAR` arguments; avoid printing HAR contents.
 
 If dependency downloads are still unavailable, `/tmp/line-cargo-vendor` existed at

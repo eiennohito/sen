@@ -333,3 +333,34 @@ Mute is **not a server chat flag in the inspected code**: `VT` reads
 `isMute` from user storage `messageBox[id]`, and the menu writes it through
 `Fz(np.USER,"messageBox",id)`. This cannot establish a native server mute value;
 unknown remains unknown, with native private local overrides supplied separately.
+
+The source request allocator `HO` starts from crypto-random positive 31-bit
+state, then increments. `kS` uses operation 25's reqSeq to replace the matching
+`local-{reqSeq}` item. Native reconciliation additionally persists a hash of
+the exact encrypted envelope (to/from/contentType/chunks) before transmission,
+so a different device's matching small reqSeq cannot confirm an unrelated item.
+Recent-page catch-up recovers the same binding by envelope hash even when the
+operation predates the restart revision. Bindings are retired only after the
+outbox state is durable. Legacy unresolved rows without a request identity cannot
+be guessed into a match.
+
+File download source `QO`/`zD` builds the bare OBS path: encrypted content uses
+SID/OID (defaults m/message id), legacy content uses `/r/talk/m/{messageId}`;
+ENC_KM selects authenticated media decryption and X-Talk-Meta. Native explicit
+Save fetches at most 16 MiB, supports this constructed known-host route, and
+reports failure for external DOWNLOAD_URL variants rather than trusting an
+arbitrary URL. This is source-only implementation evidence, not a live download.
+
+The source reader-count reducer explicitly rejects IDs `<= startMessageId` or
+`> endMessageId`: read coverage is **start-exclusive, end-inclusive**. The initial
+`endMessageId="1"` range is unadvanced and covers no messages; native typed
+ranges preserve this sentinel (`open_end`) and do not turn it into infinity.
+
+Chrome's unread-participation helper JO tests contentMetadata.SKIP_BADGE_COUNT
+against the literal string "true". Native decoding preserves this flag separately
+from message kind and withdrawal state: counted system rows participate, skipped
+ordinary rows do not. Legacy cached metadata is refreshed (schema version 2); if offline, cached
+text remains visible while the transient UI eligibility flag suppresses unread
+participation until authoritative metadata arrives. The synthetic UI flag is
+never written back to protocol cache. Withdrawal operations request a
+fresh chat count rather than guessing a decrement.
