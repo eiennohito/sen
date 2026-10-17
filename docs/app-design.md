@@ -183,48 +183,17 @@ choose the project's license and the applicable Slint license, and resolve how
 users obtain the proprietary crypto artifact; the current repo does not bundle it.
 
 
-## UX implementation checkpoint — 2026-10-15
+## History
 
-See [ux-acceptance.md](ux-acceptance.md) for the current verification log and
-remaining release gates. The main pane now has a narrow Back transition,
-independent history/editor scrolling, a fixed history scrollbar gutter, compact
-selectable message text, stable thumbnail geometry, and a Latest control.
-Per-chat reading offsets survive navigation; a message anchor compensates for
-layout changes while reading. Model edits insert/remove rows by identity and
-geometry-changing worker events wait until scrollbar release. No animation or
-idle polling timer was added. OS pointer/drag, scaling, and IME verification
-remain separate gates.
+- `7084301`: CPU-rendered Slint desktop sketch and IME-first engineering constraints.
+- `6261e8d`: account worker integration, static media caching, desktop identity.
+- `6c36f13`: bounded crypto channel reuse, encrypted recent-page cache, Chrome reference map.
+- `f7ab75a`: narrow navigation, reading anchors and selectable messages; encrypted
+  durable drafts/outbox; explicit authentication recovery; bounded photo viewer.
+- `d1fbaa4`: preserve group sender identity through legacy message cache loading.
+- `fc4c112`: independent friend/group browsing, profile inspection and local chat navigation.
 
-`desktop-state` beside the session holds durable state in an authenticated
-encrypted envelope, with a separate HKDF domain from cached messages. The
-pairing secret partitions accounts; it stays in the storage worker. Ordinary
-changes coalesce for at most 150 ms; submission and normal quit flush explicitly.
-Opening damaged state fails visibly rather than replacing old drafts. Failed
-writes disable submission and offer Retry saving. This does not yet provide
-offline account startup or authorize pairing/read receipts.
-
-
-Authentication recovery is an explicit native flow: failed startup retains its
-command receiver; Retry reconnects, while Sign in again requires Start sign-in
-before creating a pairing session. The existing CLI and native UI share the
-pairing implementation. Native callbacks carry QR pixels and PINs in memory,
-without terminal output or QR files. Cancellation is checked between bounded
-requests and before session installation. Successful validated pairing backs up
-the previous session, atomically installs the new one, resets visible account
-state, opens the new pairing's draft store, and reconnects. Old drafts stay in
-their original encrypted namespace; no automatic account migration occurs.
-
-
-Conversation presentation now sorts loaded rows by latest activity with stable
-canonical IDs; pending items have durable timestamps and join server history in
-chronological order. Pointer-held list updates defer until release, and list
-preview/name/image bounds are explicit. Avatars get an alpha circle mask before
-UI delivery because the software renderer ignores rounded clip radii. Message
-text uses a read-only native selection widget with zero cursor width.
-
-Photo previews have fixed image bounds and separate metadata. The photo viewer
-requests the original object via the account worker, uses the same authenticated
-media decryption, and keeps decoded originals outside the thumbnail cache. Its
-request identity rejects stale completion, while close drops original pixels.
-Source images remain subject to encoded/decoded/dimension limits. Native font
-controls now live in Settings rather than the conversation-list footer.
+Current behavior is specified by [ux-model.md](ux-model.md); implementation work
+and its verification are tracked in [ux-sessions.md](ux-sessions.md) and
+[ux-acceptance.md](ux-acceptance.md). History records delivery, not verification
+of the remaining physical desktop gates.

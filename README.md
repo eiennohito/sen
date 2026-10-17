@@ -10,6 +10,11 @@ messages, photos, stickers, and reactions. Text decryption uses the original
 WASM. Send encrypts text and submits it only when the user clicks the button;
 automated validation does not send messages.
 
+The [UX model](docs/ux-model.md) defines the target behavior. Follow the
+[implementation sessions](docs/ux-sessions.md) for the remaining work and
+[acceptance record](docs/ux-acceptance.md) for verified coverage. Read
+[HANDOFF.md](HANDOFF.md) before account use: Chrome currently owns the device slot.
+
 ## Run the desktop app
 
 ```sh

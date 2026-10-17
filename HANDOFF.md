@@ -1,30 +1,45 @@
 # LINE native client PoC: fresh-session handoff
 
-Updated 2026-10-15. Workspace: `/home/eien/work/misc/line-app`.
+Updated 2026-10-17. Workspace: `/home/eien/work/misc/line-app`.
 
-## Current task and authorization — read this first
+## Current state and authorization — read this first
 
-The user reported slow/high-CPU message loading, no message cache, rough UI,
-missing icons/inline emoji, no older history, and absent friends/group controls.
-They requested a session mapping and documenting the Chromium UI before
-recreating it. The first audit is in `docs/chromium-ui-map.md`; it distinguishes
-live evidence from source-only findings and lists remaining observation gaps.
-The Slint UI is still the initial sketch: do not claim it has been recreated.
+The implementation plan is [docs/ux-sessions.md](docs/ux-sessions.md), starting
+with S0 documentation tidy and S1 UI modules, tokens, and system theme. Follow
+[docs/ux-model.md](docs/ux-model.md) for behavior and
+[docs/ux-acceptance.md](docs/ux-acceptance.md) for implementation and verification
+status. [docs/app-design.md](docs/app-design.md) owns engineering constraints;
+[docs/chromium-ui-map.md](docs/chromium-ui-map.md) contains reference evidence.
+The existing app is a PoC; the plan does not imply completed implementation.
 
-**The user logged into Chrome, invalidating native authorization. Do not run
-`line-auth status`, `--check-live`, the default native app, or pairing during the
-Chrome audit.** Preserve `artifacts/auth/session.json`. Offline `--demo`,
-`--snapshot`, tests, and synthetic WASM benchmarks are safe. Historical live
-results below predate this login and do not prove current native authorization.
+**Chrome owns the secondary-device slot and native authorization is invalid.**
+Do not run the default app, `line-auth status`, `--check-live`, pairing, sends,
+read markers, or server preference changes without a new device-slot assignment.
+Preserve `artifacts/auth/session.json` and all encrypted local state. Historical
+live results below do not prove current authorization.
 
-Chrome debugging was approved on 127.0.0.1:9222. Read the browser websocket
-from `~/.config/google-chrome/DevToolsActivePort`; `/json/version` returned 404
-in this Chrome mode. Tool: `node tools/chrome-ui-map.mjs --interactive`.
-Each new connection may prompt in Chrome; keep one connection and attach popup
-targets with `:targets` / `:attach TARGETID`. Current connection has detached.
-Main UI was returned to Chats; the audit's settings window may remain open.
-Never send messages, change preferences/membership, dump account storage, or
-commit private UI captures while mapping.
+Safe build and verification commands (synthetic data only):
+
+```sh
+cargo build --release --offline -p line-desktop
+cargo fmt --all --check
+cargo test --release --offline --workspace
+cargo clippy --release --offline --workspace --all-targets -- -D warnings
+target/release/line-desktop --demo --snapshot /tmp/line-ui.ppm
+SLINT_MCP_PORT=9447 cargo run --release --offline -p line-desktop --features ui-debug -- --demo
+# In another terminal:
+python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery
+```
+
+Snapshots, offline demos, tests, and synthetic WASM benchmarks are safe.
+Physical IME, compositor input, scaling, and notification checks remain the
+person-only V session. Read each session's hand-off before continuing; record
+new evidence in acceptance rows and the verification log.
+
+Chrome debugging was previously approved on 127.0.0.1:9222; it is unnecessary
+for offline UI work. If reference inspection is needed, use
+`node tools/chrome-ui-map.mjs --interactive` and preserve privacy: no account
+storage dumps, messages, preference changes, or private captures in Git.
 
 ## Additional UX direction from the user
 
