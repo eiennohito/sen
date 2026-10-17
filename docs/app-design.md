@@ -244,7 +244,7 @@ users obtain the proprietary crypto artifact; the current repo does not bundle i
 - `3639708`: modular themed shell, XDG/activation integration, and sourced protocol
   foundations; later session handoffs describe the current integration worktree.
 
-Current behavior is specified by [ux-model.md](ux-model.md); implementation work
-and its verification are tracked in [ux-sessions.md](ux-sessions.md) and
+Current behavior is specified by [ux-model.md](ux-model.md); open problems are
+registered in [ux-sessions.md](ux-sessions.md) and verification in
 [ux-acceptance.md](ux-acceptance.md). History records delivery, not verification
 of the remaining physical desktop gates.

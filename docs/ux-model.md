@@ -6,7 +6,7 @@ worker, tooling, and desktop integration as of commit `fc4c112`.
 This document defines how the native LINE client behaves as a desktop
 application. [ux-acceptance.md](ux-acceptance.md) turns it into checkable
 requirements and records what is verified. [ux-sessions.md](ux-sessions.md)
-splits the remaining work into bounded implementation sessions.
+is the register of open problems found by audit, ordered for fixing.
 [app-design.md](app-design.md) owns engineering constraints (toolkit, threads,
 storage, crypto). [chromium-ui-map.md](chromium-ui-map.md) is reference
 evidence about LINE Chrome, not a specification for this app.

@@ -11,8 +11,8 @@ WASM. Text submission is explicit through Send or an enabled send shortcut;
 automated validation uses offline synthetic data and does not send account
 messages.
 
-The [UX model](docs/ux-model.md) defines the target behavior. Follow the
-[implementation sessions](docs/ux-sessions.md) for the remaining work and
+The [UX model](docs/ux-model.md) defines the target behavior. See the
+[open problems](docs/ux-sessions.md) for the remaining work and
 [acceptance record](docs/ux-acceptance.md) for verified coverage. Read
 [HANDOFF.md](HANDOFF.md) before account use: Chrome currently owns the device slot.
 

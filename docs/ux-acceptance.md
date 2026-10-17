@@ -2,7 +2,8 @@
 
 Status as of 2026-10-17, implementation commit `d1e5db5`.
 Requirements derive from [ux-model.md](ux-model.md); section numbers refer to
-it. Implementation order lives in [ux-sessions.md](ux-sessions.md).
+it. Open problems and their fix order live in [ux-sessions.md](ux-sessions.md);
+several rows below are marked `yes` over defects listed there (see its V6).
 
 ## How to read and update this file
 

@@ -5,7 +5,7 @@ Updated 2026-10-17. Workspace: `/home/eien/work/misc/line-app`.
 ## Current state and authorization — read this first
 
 The implementation and verification record is [docs/ux-acceptance.md](docs/ux-acceptance.md),
-with session handoffs in [docs/ux-sessions.md](docs/ux-sessions.md). The current
+with the audited list of open problems in [docs/ux-sessions.md](docs/ux-sessions.md). The current
 implementation is committed as `d1e5db5`, with browser keyboard/metadata, native
 composer state and failure handling, reading and rich content, layered surfaces,
 unread eligibility, attention services, and bounded older-history work. Read the
