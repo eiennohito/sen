@@ -2,24 +2,28 @@ import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.sl
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind } from "types.slint";
+import { RichFlow } from "rich-flow.slint";
 import { Pane } from "scrollpane.slint";
 
 export component Message inherits VerticalLayout {
     in property <MessageRow> message;
+    property <bool> selecting-rich: false;
 
-                        property <length> screen-y: self.y + State.history-y;
-                        changed screen-y => {
-                            if State.capture-anchor && self.screen-y <= 16px && self.screen-y + self.height > 16px {
-                                State.anchor-id = root.message.id;
-                                State.anchor-screen-y = self.screen-y;
-                            }
-                        }
-                        changed y => {
-                            if root.message.id == State.anchor-id && !State.capture-anchor && !State.restore-pending && !State.history-dragging && !State.following {
-                                State.history-jump(State.anchor-screen-y - self.y);
-                            }
-                        }
+    property <bool> system-item: root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn;
+    property <length> anchor-top: root.y + (root.system-item ? (root.message.day-label != "" ? 27px : 0px) + (root.message.id == State.unread-divider ? 31px : 0px) : message-content.y + message-column.y + message-bubble.y);
+    property <length> anchor-height: max(1px, root.height - (root.anchor-top - root.y));
+    public function report-geometry() {
+        // The history layout reserves at least 16 px before its first delegate.
+        // Initial unlaid-out values must never count as an exposed message.
+        if root.y >= 16px && root.width > 0px && root.anchor-height > 1px {
+            State.row-geometry(root.message.id, root.anchor-top, root.anchor-height);
+        }
+    }
+    changed anchor-top => { root.report-geometry(); }
+    changed anchor-height => { root.report-geometry(); }
+    init => { root.report-geometry(); }
                         vertical-stretch: 0; spacing: 3px;
+                        if root.message.id == State.unread-divider: Text { text: "Unread messages"; color: Tokens.accent; font-size: Tokens.small; horizontal-alignment: center; height: 28px; }
                         if root.message.day-label != "": Text {
                             text: root.message.day-label; color: Tokens.secondary; font-size: Tokens.time;
                             height: 24px; horizontal-alignment: center; vertical-alignment: center;
@@ -27,7 +31,9 @@ export component Message inherits VerticalLayout {
                         if root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn: Text {
                             text: root.message.body; accessible-label: root.message.accessible-label; horizontal-alignment: center; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap;
                         }
-                        if root.message.kind != MessageKind.system && root.message.kind != MessageKind.withdrawn: HorizontalLayout {
+                        message-content := HorizontalLayout {
+                        visible: !root.system-item;
+                        height: root.system-item ? 0px : self.preferred-height;
                         spacing: 5px;
                         if root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
                         if !root.message.outgoing && root.message.sender-name != "": VerticalLayout {
@@ -40,7 +46,7 @@ export component Message inherits VerticalLayout {
                             }
                             Rectangle { vertical-stretch: 1; }
                         }
-                        VerticalLayout {
+                        message-column := VerticalLayout {
                             horizontal-stretch: 0;
                             min-width: min(State.history-width - 140px, root.message.image-key != "" ? 200px : 72px);
                             preferred-width: root.message.image-key != "" ? min(340px, State.history-width - 140px) : min(max(72px, min(480px, State.history-width - 140px)), body-measure.preferred-width + 24px);
@@ -50,21 +56,37 @@ export component Message inherits VerticalLayout {
                                 text: root.message.sender-name; accessible-label: "Sender: " + root.message.sender-name;
                                 color: Tokens.secondary; font-size: Tokens.small; overflow: elide;
                             }
-                            Rectangle {
+                            message-bubble := Rectangle {
                                 background: root.message.sticker ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface;
-                                border-width: body.has-focus ? 2px : root.message.sticker ? 0px : 1px;
-                                border-color: body.has-focus ? Tokens.accent : Tokens.border;
+                                border-width: body.has-focus || State.highlight-message == root.message.id ? 2px : root.message.sticker ? 0px : 1px;
+                                border-color: body.has-focus || State.highlight-message == root.message.id ? Tokens.accent : Tokens.border;
                                 border-radius: 9px;
                                 height: bubble-content.preferred-height;
                                 body-measure := Text { visible: false; text: root.message.body; font-size: Tokens.base; }
                                 bubble-content := VerticalLayout {
                                     padding: 10px; spacing: 6px; alignment: start;
+                                    if root.message.reply-id != "": Button { text: "Reply"; accessible-label: "Jump to replied message"; clicked => { State.jump-message(root.message.reply-id); } }
+                                    if root.message.reply-id != "": Text { text: root.message.reply-preview; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
+                                    if root.message.kind == MessageKind.file: Button { text: State.file-saving && State.file-save-id == root.message.id ? "Saving…" : "Save"; enabled: !State.file-saving; clicked => { State.save-file(root.message.id); } }
+                                    if State.file-save-id == root.message.id && State.file-save-status != "": Text { text: State.file-save-status; font-size: Tokens.small; wrap: word-wrap; color: Tokens.secondary; }
+                                    if root.message.detail != "": Text { text: root.message.detail; wrap: word-wrap; font-size: Tokens.small; color: Tokens.secondary; }
+                                    if root.message.rich-runs.length > 0 && !root.selecting-rich: ContextMenuArea {
+                                        height: rich-flow.height;
+                                        Menu {
+                                            MenuItem { title: "Select text"; activated => { root.selecting-rich = true; body.focus(); } }
+                                            MenuItem { title: "Copy message"; activated => { body.select-all(); body.copy(); } }
+                                        }
+                                        rich-flow := RichFlow { accessible-role: text; accessible-label: root.message.accessible-label; text-color: root.message.outgoing ? Tokens.selection-foreground : Tokens.foreground; runs: root.message.rich-runs; message-id: root.message.id; width: parent.width; }
+                                        TouchArea { accessible-role: button; accessible-label: "Select rich message text"; accessible-description: root.message.accessible-label; accessible-action-default => { root.selecting-rich = true; body.focus(); } clicked => { root.selecting-rich = true; body.focus(); } }
+                                    }
+                                    if root.selecting-rich: Button { text: "Show emoji"; clicked => { root.selecting-rich = false; } }
                                     ContextMenuArea {
-                                        visible: !root.message.sticker || root.message.image-key == "";
+                                        visible: (!root.message.sticker || root.message.image-key == "") && (root.message.rich-runs.length == 0 || root.selecting-rich);
                                         height: self.visible ? body.preferred-height : 0px;
                                         Menu {
                                             MenuItem { title: "Copy selection"; activated => { body.copy(); } }
                                             MenuItem { title: "Copy message"; activated => { body.select-all(); body.copy(); } }
+                                            if root.message.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
                                         }
                                         body := TextInput {
                                             text: root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
@@ -75,12 +97,38 @@ export component Message inherits VerticalLayout {
                                             selection-background-color: Tokens.selection;
                                             // Explicit surface traversal is the click-only equivalent on Slint 1.18.
                                             key-pressed(event) => {
-                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else { State.focus-composer(); } return accept; }
-                                                if event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.PageUp || event.text == Key.PageDown || event.text == Key.Home || event.text == Key.End { State.focus-history(); return accept; }
+                                                if State.ime-active { return reject; }
+                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if !State.following && State.has-chat { State.focus-reading-before-editor(); } else { State.focus-composer(); } return accept; }
+                                                if State.reading-key(event) == accept { return accept; }
                                                 reject
                                             }
-                                            changed anchor-position-byte-offset => { if self.anchor-position-byte-offset != self.cursor-position-byte-offset { State.following = false; State.capture-anchor = true; } }
-                                            changed cursor-position-byte-offset => { if self.anchor-position-byte-offset != self.cursor-position-byte-offset { State.following = false; State.capture-anchor = true; } }
+                                            changed has-focus => { if !self.has-focus && State.history-interacting { State.history-interacting = false; State.release-deferred(); } }
+                                            changed anchor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else { State.release-deferred(); } }
+                                            changed cursor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else { State.release-deferred(); } }
+                                        }
+                                    }
+                                    // Keep the original body selectable as one text range.
+                                    // Slint 1.18 cannot style links inside TextInput, so URL
+                                    // actions are separate runs until the rich renderer (S11).
+                                    for link in root.message.links: ContextMenuArea {
+                                        height: link-text.preferred-height + 3px;
+                                        Menu {
+                                            MenuItem { title: link.url; enabled: false; }
+                                            MenuItem { title: "Open link"; activated => { State.open-link(link.url); } }
+                                            MenuItem { title: "Copy link"; activated => { link-copy.select-all(); link-copy.copy(); } }
+                                        }
+                                        link-text := Text { text: link.label; color: Tokens.accent; font-size: Tokens.base; wrap: word-wrap; accessible-role: button; accessible-label: "Open link " + link.url; accessible-description: link.url; accessible-action-default => { State.open-link(link.url); } }
+                                        Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.accent; }
+                                        link-copy := TextInput { visible: false; text: link.url; read-only: true; }
+                                        TouchArea {
+                                            mouse-cursor: pointer;
+                                            property <bool> dragged;
+                                            property <length> start-x;
+                                            property <length> start-y;
+                                            pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { parent.show({ x: self.mouse-x, y: self.mouse-y }); } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { self.dragged = false; self.start-x = self.mouse-x; self.start-y = self.mouse-y; } }
+                                            moved => { if self.pressed && (abs(self.mouse-x - self.start-x) > 4px || abs(self.mouse-y - self.start-y) > 4px) { self.dragged = true; body.focus(); body.select-all(); } }
+                                            clicked => { if !self.dragged { State.open-link(link.url); } }
+                                            Tooltip { Text { text: link.url; font-size: Tokens.small; color: Tokens.foreground; } }
                                         }
                                     }
                                     if root.message.image-key != "": Rectangle {
@@ -89,21 +137,36 @@ export component Message inherits VerticalLayout {
                                         clip: true;
                                         Image { source: root.message.picture; width: 100%; height: 100%; image-fit: contain; visible: root.message.has-picture; accessible-role: image; accessible-label: root.message.photo ? "Photo preview" : "Message image"; }
                                         if root.message.photo: FocusScope {
-                                            accessible-role: button; accessible-label: "Open photo";
+                                            accessible-role: button; accessible-label: "Open photo"; accessible-description: self.has-focus ? "Focused" : "";
                                             accessible-action-default => { State.open-photo(root.message.image-key); }
                                             TouchArea { mouse-cursor: pointer; clicked => { parent.focus(); State.open-photo(root.message.image-key); } }
                                             key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-photo(root.message.image-key); return accept; } reject }
                                             Rectangle { visible: parent.has-focus; border-width: 2px; border-color: Tokens.accent; background: transparent; }
                                             
-                                            property <bool> restore-photo: !State.viewer-open && State.viewer-key == root.message.image-key;
-                                            changed restore-photo => { if self.restore-photo { self.focus(); State.viewer-key = ""; } }
+                                            property <int> return-serial: State.viewer-return-serial;
+                                            changed return-serial => { if !State.viewer-open && State.viewer-return-key == root.message.image-key { self.focus(); } }
                                         }
                                         Text { visible: !root.message.has-picture; text: root.message.image-failed ? "Preview unavailable · Refresh to retry" : root.message.sticker ? root.message.body : "Loading preview…"; color: Tokens.secondary; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
                                     }
                                 }
                             }
-                            if root.message.recoverable: Text { text: root.message.delivery-detail; color: Tokens.danger; font-size: Tokens.time; wrap: word-wrap; }
-                            if root.message.recoverable: Button { text: "Append text to draft"; clicked => { State.recover-message(root.message.id); State.focus-composer(); } }
+                            if root.message.recoverable: Text { text: root.message.delivery == "Not sent" ? "Message was not sent." : "Confirmation unavailable. The message may have arrived."; color: Tokens.danger; font-size: Tokens.time; wrap: word-wrap; }
+                            if root.message.recoverable: HorizontalLayout {
+                                spacing: 8px;
+                                Button {
+                                    text: root.message.delivery == "Not sent" ? "Retry" : "Resend";
+                                    enabled: State.demo || (State.connected && State.storage-error == "");
+                                    clicked => { State.retry-message(root.message.id); }
+                                    property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "resend";
+                                    changed restore-action => { if self.restore-action { self.focus(); State.recovery-focus-id = ""; } }
+                                }
+                                Button {
+                                    text: "Edit";
+                                    clicked => { State.recover-message(root.message.id); }
+                                    property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "edit";
+                                    changed restore-action => { if self.restore-action { self.focus(); State.recovery-focus-id = ""; } }
+                                }
+                            }
                             HorizontalLayout {
                                 spacing: 4px;
                                 for reaction in root.message.reactions: HorizontalLayout {
@@ -121,11 +184,12 @@ export component Message inherits VerticalLayout {
                             HorizontalLayout {
                                 height: max(16px, Tokens.time * 1.4); spacing: 2px;
                                 Text { text: root.message.group-start ? root.message.clock : ""; accessible-label: root.message.group-start ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
-                                if root.message.outgoing: Text {
-                                    width: Tokens.time;
-                                    text: root.message.delivery == "Sending…" ? "…" : root.message.recoverable ? "!" : "✓";
-                                    accessible-label: root.message.delivery == "" || root.message.delivery == "Sent" ? "Sent · server confirmed; read status unavailable" : root.message.delivery;
-                                    color: root.message.recoverable ? Tokens.danger : Tokens.secondary; font-size: Tokens.time;
+                                if root.message.outgoing: Image {
+                                    width: 16px; height: 16px;
+                                    source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/sending.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/read.svg") : root.message.delivery == "Not sent" ? @image-url("../assets/icons/rejected.svg") : root.message.delivery == "Unconfirmed" ? @image-url("../assets/icons/uncertain.svg") : @image-url("../assets/icons/sent.svg");
+                                    accessible-role: image;
+                                    accessible-label: root.message.delivery == "Sending…" ? "Sending" : root.message.delivery == "" ? "Sent" : root.message.delivery;
+                                    colorize: root.message.recoverable ? Tokens.danger : Tokens.secondary;
                                 }
                             }
                         }

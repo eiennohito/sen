@@ -1,0 +1,301 @@
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox, CheckBox } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
+import { Pane } from "scrollpane.slint";
+
+export component Layers inherits Rectangle {
+    property <bool> cancel-confirm <=> State.auth-cancel-confirm;
+    property <int> settings-section;
+    property <bool> auth-visible: State.auth-open;
+    changed auth-visible => { if !self.auth-visible { root.cancel-confirm = false; } }
+    property <bool> approval-busy: State.auth-busy;
+    changed approval-busy => { if !self.approval-busy && root.cancel-confirm { root.cancel-confirm = false; root.focus-auth(); } }
+    Timer { interval: 5s; running: State.viewer-save-status != "" && !State.viewer-saving; triggered => { State.viewer-save-status = ""; } }
+    public function dismiss-auth() {
+        if State.auth-cancelling { return; }
+        if State.auth-busy { root.cancel-confirm = true; keep-waiting.focus(); }
+        else { State.close-sign-in(); }
+    }
+    Timer { interval: 3s; running: State.transient-notice != ""; triggered => { State.transient-notice = ""; } }
+    Rectangle {
+        x: max(12px, parent.width - self.width - 12px); y: 12px;
+        width: min(320px, parent.width - 24px); height: notice.preferred-height + 24px;
+        visible: State.transient-notice != "" && !State.modal-open;
+        background: Tokens.surface; border-width: 1px; border-color: Tokens.border; border-radius: 8px;
+        notice := Text { x: 12px; y: 12px; width: parent.width - 24px; text: State.transient-notice; wrap: word-wrap; }
+    }
+    Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%;
+        visible: State.auth-open; background: Tokens.background;
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { root.dismiss-auth(); return accept; }
+                if event.text == Key.Tab {
+                    if event.modifiers.shift && auth-start.has-focus { auth-back.focus(); return accept; }
+                    if !event.modifiers.shift && auth-back.has-focus { if State.auth-busy { auth-back.focus(); } else { auth-start.focus(); } return accept; }
+                }
+                reject
+            }
+            VerticalLayout {
+                padding: 16px; spacing: 12px;
+                Text { text: "Sign in to LINE"; font-size: Tokens.heading; font-weight: 700; color: Tokens.accent; }
+                ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        padding-right: 16px; spacing: 12px; alignment: start;
+                        Text { text: "Use LINE on your phone to scan the QR code and approve this device. This uses the Chrome device slot and may sign Chrome out."; wrap: word-wrap; font-size: Tokens.base; }
+                        Text { text: "Your existing session and encrypted drafts will be kept separately. They will not be moved into the new login."; wrap: word-wrap; font-size: Tokens.base; color: Tokens.secondary; }
+                        if State.auth-busy: Text { text: State.auth-stage; wrap: word-wrap; font-size: Tokens.base; }
+                        if State.auth-qr.width > 0: Image { source: State.auth-qr; height: min(280px, State.window-width - 64px); image-fit: contain; accessible-label: "Scan this QR code with LINE on your phone"; }
+                        if State.auth-pin != "": Text { text: "Enter this code on your phone: " + State.auth-pin; wrap: word-wrap; font-size: Tokens.heading; font-weight: 700; }
+                        if State.auth-error != "": Text { text: State.auth-error; wrap: word-wrap; font-size: Tokens.base; color: Tokens.danger; }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 8px;
+                    auth-start := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Start sign-in"; enabled: !State.auth-busy; clicked => { State.start-sign-in(); } }
+                    auth-back := Button { accessible-description: self.has-focus ? "Focused" : ""; text: State.auth-cancelling ? "Cancelling…" : State.auth-busy ? "Cancel sign-in" : "Back"; enabled: !State.auth-cancelling; clicked => { root.dismiss-auth(); } }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        x: State.narrow ? 0px : parent.width - 320px; width: State.narrow ? parent.width : 320px; height: 100%; visible: State.profile-open && !State.auth-open && !State.viewer-open; background: Tokens.background;
+        border-width: 1px; border-color: Tokens.border;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { State.close-profile(); return accept; }
+                if State.narrow && event.text == Key.Tab {
+                    if !State.profile-available { profile-close.focus(); return accept; }
+                    if event.modifiers.shift && profile-close.has-focus { profile-chat.focus(); return accept; }
+                    if !event.modifiers.shift && profile-chat.has-focus { profile-close.focus(); return accept; }
+                } reject }
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                profile-close := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Close profile"; clicked => { State.close-profile(); } }
+                Image { source: State.profile-avatar; height: 80px; image-fit: contain; }
+                Text { text: State.profile-group ? "Group profile" : "Friend profile"; color: Tokens.secondary; }
+                Text { text: State.profile-name; font-size: Tokens.heading; wrap: word-wrap; }
+                ScrollView { Text { text: State.profile-status; wrap: word-wrap; } }
+                if !State.profile-available: Text { text: "This entry is no longer in your friend/group list. Refresh Friends to update it."; wrap: word-wrap; color: Tokens.danger; }
+                profile-chat := Button { text: "Open chat"; enabled: State.profile-available; clicked => { State.start-friend-chat(); } }
+            }
+        }
+    }
+    // The overlay intercepts pointer input while the underlying shell stays visible.
+    Rectangle {
+        visible: State.settings-open || root.cancel-confirm;
+        background: Tokens.foreground.with-alpha(0.32);
+        TouchArea {}
+    }
+
+    Rectangle {
+        x: State.narrow ? 0px : (parent.width - self.width) / 2;
+        y: State.narrow ? 0px : (parent.height - self.height) / 2;
+        width: State.narrow ? parent.width : min(560px, parent.width - 48px);
+        height: State.narrow ? parent.height : min(640px, parent.height - 48px);
+        visible: State.settings-open && !State.auth-open && !State.viewer-open;
+        background: Tokens.background; border-width: 1px; border-color: Tokens.border;
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { State.close-settings(); return accept; }
+                if event.text == Key.Tab {
+                    if event.modifiers.shift && settings-close.has-focus { if root.settings-section == 0 { enter-sends.focus(); } else if root.settings-section == 1 { notification-test.focus(); } else if root.settings-section == 2 { autostart-control.focus(); } else { settings-section.focus(); } return accept; }
+                    if !event.modifiers.shift && ((root.settings-section == 0 && enter-sends.has-focus) || (root.settings-section > 2 && settings-section.has-focus) || (root.settings-section == 2 && autostart-control.has-focus) || (root.settings-section == 1 && notification-test.has-focus)) { settings-close.focus(); return accept; }
+                }
+                reject
+            }
+            VerticalLayout {
+                padding: 20px; spacing: 16px;
+                settings-close := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Close settings"; clicked => { State.close-settings(); } }
+                Text { text: "Settings"; font-size: Tokens.heading; font-weight: 700; }
+                settings-section := ComboBox {
+                    accessible-label: "Settings section";
+                    model: ["Chats", "Notifications", "Background", "Shortcuts", "About"];
+                    current-index: root.settings-section;
+                    selected(value) => { root.settings-section = value == "Chats" ? 0 : value == "Notifications" ? 1 : value == "Background" ? 2 : value == "Shortcuts" ? 3 : 4; }
+                }
+                ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    vertical-stretch: 1; min-height: 120px;
+                    VerticalLayout {
+                        padding-right: 12px; spacing: 16px; alignment: start;
+                        VerticalLayout { visible: root.settings-section == 0; height: self.visible ? self.preferred-height : 0px;
+                            spacing: 12px;
+                            Text { text: "Message text size"; }
+                            text-size := ComboBox {
+                                accessible-label: "Message text size";
+                                model: ["Small", "Default", "Large", "Extra large"];
+                                current-index: State.text-size <= 13 ? 0 : State.text-size <= 15 ? 1 : State.text-size <= 18 ? 2 : 3;
+                                selected(value) => { State.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; State.settings-changed(); }
+                            }
+                            if State.storage-error != "": Text { text: State.storage-error; wrap: word-wrap; color: Tokens.danger; }
+                            if State.storage-error != "": Button { text: "Retry saving preferences"; clicked => { State.retry-storage(); } }
+                            enter-sends := CheckBox { accessible-description: self.has-focus ? "Focused" : ""; text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
+                        }
+                        VerticalLayout { visible: root.settings-section == 1; height: self.visible ? self.preferred-height : 0px;
+                            spacing: 12px;
+                            CheckBox { text: "Desktop notifications"; checked <=> State.notifications-enabled; toggled => { State.settings-changed(); } }
+                            if State.notifications-paused: Text { text: "Notifications are paused from the tray."; wrap: word-wrap; color: Tokens.secondary; }
+                            Text { text: "Preview"; }
+                            ComboBox {
+                                accessible-label: "Notification preview";
+                                model: ["Name and text", "Name only", "New message only"];
+                                current-index: State.notification-preview;
+                                selected(value) => { State.notification-preview = value == "Name and text" ? 0 : value == "Name only" ? 1 : 2; State.settings-changed(); }
+                            }
+                            CheckBox { text: "Notification sound"; checked <=> State.notification-sound; toggled => { State.settings-changed(); } }
+                            CheckBox { text: "Mentions in muted chats"; checked <=> State.notification-mention-exception; toggled => { State.settings-changed(); } }
+                            CheckBox { text: "Group events"; checked <=> State.notification-group-events; toggled => { State.settings-changed(); } }
+                            notification-test := Button { text: "Send test notification"; clicked => { State.test-notification(); } }
+                            if !State.notification-available: Text { text: "Notification service not available"; color: Tokens.secondary; wrap: word-wrap; }
+                            if State.notification-status != "": Text { text: State.notification-status; wrap: word-wrap; }
+                            if State.demo-notifications: VerticalLayout {
+                                spacing: 8px;
+                                Text { text: "Notification preview scenarios"; wrap: word-wrap; }
+                                Button { text: "Demo inactive"; clicked => { State.demo-notification(0); } }
+                                Button { text: "Demo muted"; clicked => { State.demo-notification(1); } }
+                                Button { text: "Demo replay"; clicked => { State.demo-notification(2); } }
+                                Button { text: "Demo mention"; clicked => { State.demo-notification(3); } }
+                                Button { text: "Demo exposed"; clicked => { State.demo-notification(4); } }
+                            }
+                        }
+                        VerticalLayout {
+                            visible: root.settings-section == 2; height: self.visible ? self.preferred-height : 0px;
+                            spacing: 12px;
+                            CheckBox { text: "Keep running in background"; checked <=> State.background-mode; toggled => { State.settings-changed(); } }
+                            Text { text: "Closing LINE hides it to the desktop tray. Notifications and sync continue until you choose Quit."; wrap: word-wrap; color: Tokens.secondary; }
+                            if State.background-status != "": Text { text: State.background-status; wrap: word-wrap; color: Tokens.danger; }
+                            autostart-control := CheckBox { text: "Start LINE at login"; checked <=> State.autostart; toggled => { State.settings-changed(); } }
+                            if State.autostart-status != "": Text { text: State.autostart-status; wrap: word-wrap; color: Tokens.secondary; }
+                        }
+                        if root.settings-section == 3: Text { text: "Ctrl+Enter  Send\nEnter  Newline, or Send with Enter sends\nShift+Enter  Always newline\nEscape  Close layer or clear search\nCtrl+F  Search\nCtrl+1  Friends\nCtrl+2  Chats\nAlt+↑ / Alt+↓  Previous / next chat\nAlt+←  Back\nCtrl+Q  Quit"; wrap: word-wrap; }
+                        if root.settings-section == 4: VerticalLayout {
+                            spacing: 12px;
+                            Text { text: "LINE"; font-size: Tokens.heading; }
+                            Text { text: State.account-name; wrap: word-wrap; }
+                            Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
+                            if State.desktop-warning != "": Text { text: State.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Rectangle {
+        width: 100%; height: 100%; visible: State.viewer-open; background: Tokens.background;
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { State.close-viewer(); return accept; }
+                if event.text == "+" || event.text == "=" { root.zoom(1.25, viewport.width / 2, viewport.height / 2); return accept; }
+                if event.text == "-" { root.zoom(0.8, viewport.width / 2, viewport.height / 2); return accept; }
+                if event.text == "0" { root.fit-photo(); return accept; }
+                if event.text == "1" { root.original-photo(); return accept; }
+                if event.text == Key.LeftArrow { State.viewer-step(-1); return accept; }
+                if event.text == Key.RightArrow { State.viewer-step(1); return accept; }
+                if event.text == Key.Tab {
+                    if event.modifiers.shift && viewer-close.has-focus { original-size.focus(); return accept; }
+                    if !event.modifiers.shift && original-size.has-focus { viewer-close.focus(); return accept; }
+                }
+                reject
+            }
+            VerticalLayout {
+                padding: 12px; spacing: 10px;
+                HorizontalLayout {
+                    viewer-close := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Close photo"; clicked => { State.close-viewer(); } }
+                    Text { text: State.viewer-status; color: Tokens.foreground; wrap: word-wrap; vertical-alignment: center; }
+                }
+                HorizontalLayout {
+                    Button { text: "Previous"; enabled: State.viewer-has-previous; clicked => { State.viewer-step(-1); } }
+                    Button { text: State.viewer-saving ? "Saving…" : "Save photo"; enabled: !State.viewer-saving && !State.viewer-loading && State.viewer-error == "" && State.viewer-image.width > 0; clicked => { State.save-photo(); } }
+                    Button { text: "Next"; enabled: State.viewer-has-next; clicked => { State.viewer-step(1); } }
+                }
+                viewport := Rectangle {
+                    clip: true;
+                    property <float> fit: min(self.width / max(1px, State.viewer-image.width * 1px), self.height / max(1px, State.viewer-image.height * 1px));
+                    Image {
+                        source: State.viewer-image; accessible-role: image; accessible-label: "Photo in viewer";
+                        width: State.viewer-image.width * 1px * viewport.fit * State.viewer-zoom;
+                        height: State.viewer-image.height * 1px * viewport.fit * State.viewer-zoom;
+                        x: (parent.width - self.width) / 2 + root.pan-x;
+                        y: (parent.height - self.height) / 2 + root.pan-y;
+                        image-fit: contain;
+                    }
+                    viewer-pointer := TouchArea {
+                        property <length> drag-x;
+                        property <length> drag-y;
+                        property <length> start-x;
+                        property <length> start-y;
+                        mouse-cursor: self.pressed ? grabbing : grab;
+                        scroll-event(event) => { root.zoom(event.delta-y > 0px ? 1.2 : 1 / 1.2, self.mouse-x, self.mouse-y); accept }
+                        pointer-event(event) => {
+                            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                                self.drag-x = self.mouse-x; self.drag-y = self.mouse-y;
+                                self.start-x = root.pan-x; self.start-y = root.pan-y;
+                            }
+                        }
+                        moved => { if self.pressed { root.pan-x = self.start-x + self.mouse-x - self.drag-x; root.pan-y = self.start-y + self.mouse-y - self.drag-y; root.bound-pan(); } }
+                    }
+                }
+                if State.viewer-error != "": Text { text: State.viewer-error; wrap: word-wrap; color: Tokens.danger; }
+                if State.viewer-error != "": Button { text: "Retry original"; enabled: !State.viewer-loading; clicked => { State.open-photo(State.viewer-key); } }
+                if State.viewer-save-status != "": Text { text: State.viewer-save-status; wrap: word-wrap; color: Tokens.secondary; }
+                HorizontalLayout {
+                    Button { text: "−"; accessible-label: "Zoom out"; enabled: State.viewer-zoom > 0.1; clicked => { root.zoom(0.8, viewport.width / 2, viewport.height / 2); } }
+                    Button { text: "+"; accessible-label: "Zoom in"; enabled: State.viewer-zoom < 24; clicked => { root.zoom(1.25, viewport.width / 2, viewport.height / 2); } }
+                    Button { text: "Fit"; clicked => { root.fit-photo(); } }
+                    original-size := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "1:1"; accessible-label: "Original size"; clicked => { root.original-photo(); } }
+                }
+            }
+        }
+    }
+    Rectangle {
+        visible: root.cancel-confirm && State.auth-open;
+        background: Tokens.foreground.with-alpha(0.32);
+        TouchArea {}
+        Rectangle {
+            width: min(440px, parent.width - 32px); height: min(320px, parent.height - 32px);
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Tokens.background; border-width: 1px; border-color: Tokens.border;
+            FocusScope {
+                key-pressed(event) => {
+                    if event.text == Key.Escape { root.cancel-confirm = false; auth-back.focus(); return accept; }
+                    if event.text == Key.Tab { if keep-waiting.has-focus { confirm-cancel.focus(); } else { keep-waiting.focus(); } return accept; }
+                    reject
+                }
+                VerticalLayout {
+                    padding: 20px; spacing: 12px;
+                    Text { text: "Cancel sign-in?"; font-size: Tokens.heading; }
+                    Text { text: "The current approval attempt will stop. Your existing session and drafts stay on this device."; wrap: word-wrap; }
+                    VerticalLayout {
+                        keep-waiting := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Keep waiting"; clicked => { root.cancel-confirm = false; auth-back.focus(); } }
+                        confirm-cancel := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Cancel sign-in"; clicked => { root.cancel-confirm = false; State.cancel-sign-in(); } }
+                    }
+                }
+            }
+        }
+    }
+    property <length> pan-x;
+    property <length> pan-y;
+    public function bound-pan() {
+        root.pan-x = max(-max(0px, (State.viewer-image.width * 1px * viewport.fit * State.viewer-zoom - viewport.width) / 2), min(max(0px, (State.viewer-image.width * 1px * viewport.fit * State.viewer-zoom - viewport.width) / 2), root.pan-x));
+        root.pan-y = max(-max(0px, (State.viewer-image.height * 1px * viewport.fit * State.viewer-zoom - viewport.height) / 2), min(max(0px, (State.viewer-image.height * 1px * viewport.fit * State.viewer-zoom - viewport.height) / 2), root.pan-y));
+    }
+    public function zoom(factor: float, px: length, py: length) {
+        let previous = State.viewer-zoom;
+        State.viewer-zoom = max(0.1, min(24, previous * factor));
+        let ratio = State.viewer-zoom / previous;
+        root.pan-x = px - viewport.width / 2 - (px - viewport.width / 2 - root.pan-x) * ratio;
+        root.pan-y = py - viewport.height / 2 - (py - viewport.height / 2 - root.pan-y) * ratio;
+        root.bound-pan();
+    }
+    public function fit-photo() { State.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
+    public function original-photo() { State.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
+    public function focus-profile() { profile-close.focus(); }
+    public function focus-settings() { root.settings-section = 0; settings-close.focus(); }
+    public function focus-auth() { if State.auth-busy { auth-back.focus(); } else { auth-start.focus(); } }
+    public function focus-viewer() { viewer-close.focus(); }
+    public function reset-viewer() { root.fit-photo(); State.viewer-save-status = ""; }
+
+}

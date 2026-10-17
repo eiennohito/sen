@@ -48,12 +48,12 @@ def quoted(value):
         raise ValueError("desktop paths must not contain newlines")
     for char in ("\\", '"', "`", "$"):
         value = value.replace(char, "\\" + char)
-    return '"' + value.replace("%", "%%") + '"'
+    return '"' + value.replace("\\", "\\\\").replace("%", "%%") + '"'
 
 arguments = [destination]
 if args.dev_paths:
     arguments.extend(["--state", ROOT / "artifacts/auth/session.json", "--wasm", ROOT / "artifacts/line-3.7.2/ltsm.wasm"])
-command = " ".join(quoted(v) for v in arguments)
+command = "/usr/bin/env -- " + " ".join(quoted(v) for v in arguments)
 # D-Bus service Exec uses shell-like quoting without desktop field-code expansion.
 service_command = " ".join(shlex.quote(str(v)) for v in arguments)
 service.write_text(f"[D-BUS Service]\nName={APP_ID}\nExec={service_command}\n")

@@ -19,10 +19,18 @@ pub struct Saved {
     pub drafts: HashMap<String, String>,
     pub outbox: Vec<Outgoing>,
     pub font_size: i32,
+    pub enter_sends: bool,
+    pub background_mode: bool,
+    pub autostart: bool,
+    pub(crate) notifications: super::attention_policy::Preferences,
+    pub next_request_seq: u32,
+    pub(crate) unread: HashMap<String, super::unread::SavedUnread>,
 }
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Outgoing {
     pub local_id: String,
+    #[serde(default)]
+    pub request_seq: Option<u32>,
     #[serde(default)]
     pub timestamp_ms: i64,
     pub chat: String,
@@ -147,11 +155,14 @@ mod tests {
         let (storage, mut saved) = Storage::open(&paths, || {}).unwrap();
         saved.selected = "chat-a".into();
         saved.font_size = 24;
+        saved.enter_sends = true;
+        saved.next_request_seq = 18;
         saved
             .drafts
             .insert("chat-a".into(), "秘密の下書き 🐈\nline two".into());
         saved.outbox.push(Outgoing {
             local_id: "local-1".into(),
+            request_seq: Some(17),
             timestamp_ms: 1,
             chat: "chat-b".into(),
             text: "possibly delivered".into(),
@@ -163,6 +174,9 @@ mod tests {
         let (storage, reopened) = Storage::open(&paths, || {}).unwrap();
         assert_eq!(reopened.selected, "chat-a");
         assert_eq!(reopened.font_size, 24);
+        assert!(reopened.enter_sends);
+        assert_eq!(reopened.next_request_seq, 18);
+        assert_eq!(reopened.outbox[0].request_seq, Some(17));
         assert_eq!(reopened.drafts["chat-a"], "秘密の下書き 🐈\nline two");
         assert_eq!(reopened.outbox[0].chat, "chat-b");
         assert_eq!(reopened.outbox[0].status, "Pending…");

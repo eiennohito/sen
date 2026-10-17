@@ -1,0 +1,64 @@
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { Pane } from "scrollpane.slint";
+
+// Thin native TextInput wrapper: keep native IME, selection and clipboard
+// behavior while exposing the pinned Slint byte-offset selection API.
+export component DraftEditor inherits Rectangle {
+    forward-focus: input;
+    out property <int> caret: input.cursor-position-byte-offset;
+    out property <int> anchor: input.anchor-position-byte-offset;
+    public function restore(anchor: int, caret: int) {
+        input.set-selection-offsets(anchor, caret);
+        State.editor-anchor = input.anchor-position-byte-offset;
+        State.editor-caret = input.cursor-position-byte-offset;
+    }
+    public function focus-editor() { input.focus(); input.set-selection-offsets(State.editor-anchor, State.editor-caret); }
+    // Native TextInput collapses selection on FocusOut. Preserve the user's
+    // selection while a layer owns focus and restore on programmatic return.
+    changed caret => { if input.has-focus { State.editor-caret = root.caret; } }
+    changed anchor => { if input.has-focus { State.editor-anchor = root.anchor; } }
+    property <bool> focused: input.has-focus;
+    changed focused => { State.composer-focused = root.focused; }
+    background: Tokens.background;
+    border-width: input.has-focus ? 2px : 1px;
+    border-color: input.has-focus ? Tokens.accent : Tokens.border;
+    editor-pane := Pane {
+        x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
+        offset <=> State.editor-y;
+        changed extent => { self.jump(State.editor-y); }
+        input := TextInput {
+            x: 0px; y: 0px; width: editor-pane.visible-width;
+            height: max(self.preferred-height, root.height - 8px);
+            text <=> State.draft;
+            enabled: State.has-chat;
+            accessible-label: "Message draft";
+            accessible-description: self.has-focus ? "Focused message draft" : "Message draft";
+            single-line: false; wrap: word-wrap;
+            font-size: Tokens.base; color: Tokens.foreground;
+            selection-background-color: Tokens.selection;
+            selection-foreground-color: Tokens.selection-foreground;
+            page-height: root.height - 8px;
+            edited => { State.draft-edited(); }
+            cursor-position-changed(pos) => {
+                if root.height > Tokens.base + 8px {
+                    if pos.y + State.editor-y < 0px { editor-pane.jump(-pos.y); }
+                    else if pos.y + State.editor-y > root.height - Tokens.base - 8px {
+                        editor-pane.jump(root.height - Tokens.base - 8px - pos.y);
+                    }
+                }
+            }
+            key-pressed(event) => {
+                if State.browser-key(event) == accept { return accept; }
+                if State.ime-active { return reject; }
+                if event.text == Key.Escape { return accept; }
+                if event.text == Key.Tab && event.modifiers.shift { State.focus-reading-before-editor(); return accept; }
+                if event.text == Key.Return && !event.modifiers.alt && !event.modifiers.meta && !event.modifiers.shift && (event.modifiers.control || State.enter-sends) && !State.auth-open && !State.settings-open && !State.viewer-open && !State.profile-open && State.recovery-kind == "" {
+                    if State.can-send && !event.repeat { State.send(); }
+                    return accept;
+                }
+                reject
+            }
+        }
+    }
+}

@@ -1,0 +1,28 @@
+import { RichRun } from "types.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+
+// Each run is measured by the same native text shaper that paints it.
+export component RichFlow inherits Rectangle {
+    in property <[RichRun]> runs;
+    in property <string> message-id;
+    in property <brush> text-color: Tokens.foreground;
+    background: transparent;
+    height: root.runs.length > 0 ? root.runs[root.runs.length - 1].y * 1px + max(Tokens.base * 1.5, root.runs[root.runs.length - 1].measured-height * 1px) : 0px;
+    for run[index] in root.runs: Rectangle {
+        x: run.x * 1px; y: run.y * 1px;
+        width: run.emoji ? Tokens.base * 1.4 : measure.preferred-width;
+        height: Tokens.base * 1.5;
+        property <float> measured-width: self.width / 1px;
+        property <float> measured-height: self.height / 1px;
+        property <float> available: root.width / 1px;
+        changed measured-width => { State.rich-measure(root.runs, index, self.measured-width, self.measured-height, self.available); }
+        changed measured-height => { State.rich-measure(root.runs, index, self.measured-width, self.measured-height, self.available); }
+        changed available => { State.rich-measure(root.runs, index, self.measured-width, self.measured-height, self.available); }
+        init => { State.rich-measure(root.runs, index, self.measured-width, self.measured-height, self.available); }
+        background: transparent;
+        measure := Text { visible: false; text: run.newline ? "" : run.text; font-size: Tokens.base; }
+        Text { accessible-role: none; visible: !run.newline && (!run.emoji || !run.has-picture); text: run.text; font-size: run.emoji ? Tokens.small : Tokens.base; color: root.text-color; vertical-alignment: center; overflow: elide; }
+        Image { visible: run.emoji && run.has-picture; source: run.picture; width: 100%; height: 100%; image-fit: contain; accessible-role: image; accessible-label: run.text; }
+    }
+}

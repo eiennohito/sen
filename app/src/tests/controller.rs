@@ -83,6 +83,7 @@ fn controller_scenario(stop: usize) {
     assert_eq!(ui.get_messages(), model);
     view.saved.outbox.push(storage::Outgoing {
         local_id: "pending".into(),
+        request_seq: None,
         timestamp_ms: 1,
         chat: "1".into(),
         text: "submitted text".into(),
@@ -219,7 +220,8 @@ fn controller_scenario(stop: usize) {
     view.update(&ui, account::Update::SendFailed { id, local_id });
     assert_eq!(ui.get_draft(), "a newer committed draft");
     assert!(
-        rx.try_recv().is_err(),
+        rx.try_iter()
+            .all(|command| matches!(command, account::Command::RetainSendRequests { .. })),
         "ambiguous send was automatically retried"
     );
     view.storage.take();
@@ -309,6 +311,7 @@ fn controller_scenario(stop: usize) {
         unread: None,
         muted: None,
         last_read_message: None,
+        last_message_id: None,
         outgoing_preview: false,
         group: false,
         member_count: None,
@@ -339,7 +342,7 @@ fn controller_scenario(stop: usize) {
     assert_eq!(ui.get_chats().row_data(0).unwrap().title, "newest");
     ui.set_list_pressed(false);
     for event in std::mem::take(&mut view.deferred) {
-        view.update(&ui, event);
+        view.update_render(&ui, event);
     }
     assert_eq!(ui.get_chats().row_data(0).unwrap().title, "older");
     assert_eq!(view.current, "newest");
@@ -368,6 +371,7 @@ fn controller_scenario(stop: usize) {
     );
     view.saved.outbox.push(storage::Outgoing {
         local_id: "outbox-between".into(),
+        request_seq: None,
         timestamp_ms: 200,
         chat: view.current.clone(),
         text: "pending between messages".into(),
@@ -470,6 +474,44 @@ fn controller_scenario(stop: usize) {
     key("\n", false);
     assert_eq!(submissions.get(), 1);
     assert_eq!(ui.get_draft().len(), before_enter.len() + 1);
+    // Opt-in Enter send, Shift+Enter newline, and composition precedence.
+    ui.set_enter_sends(true);
+    let count_before = submissions.get();
+    key("\n", true);
+    key("\n", false);
+    assert_eq!(submissions.get(), count_before + 1);
+    let length = ui.get_draft().len();
+    key("\u{10}", true);
+    key("\n", true);
+    key("\n", false);
+    key("\u{10}", false);
+    assert_eq!(submissions.get(), count_before + 1);
+    assert_eq!(ui.get_draft().len(), length + 1);
+    ui.set_ime_active(true);
+    key("\n", true);
+    key("\n", false);
+    assert_eq!(submissions.get(), count_before + 1);
+    ui.set_ime_active(false);
+    let draft_before_escape = ui.get_draft();
+    key("\u{1b}", true);
+    key("\u{1b}", false);
+    assert_eq!(ui.get_draft(), draft_before_escape);
+    ui.set_enter_sends(false);
+    let quits = Rc::new(std::cell::Cell::new(0));
+    let quit_count = quits.clone();
+    ui.on_quit(move || quit_count.set(quit_count.get() + 1));
+    ui.set_ime_active(true);
+    key("\u{11}", true);
+    key("q", true);
+    key("q", false);
+    key("\u{11}", false);
+    assert_eq!(quits.get(), 0, "Ctrl+Q fired during composition");
+    ui.set_ime_active(false);
+    key("\u{11}", true);
+    key("q", true);
+    key("q", false);
+    key("\u{11}", false);
+    assert_eq!(quits.get(), 1);
     if stop == 6 {
         ui.hide().unwrap();
         return;
@@ -510,10 +552,10 @@ fn controller_scenario(stop: usize) {
     view.browse(&ui, 1);
     assert_eq!(view.current, current);
     assert_eq!(ui.get_draft(), draft);
-    assert_eq!(ui.get_friends().row_count(), 3);
+    assert_eq!(ui.get_friends().row_count(), 5);
     ui.set_friend_query("葵".into());
     view.filter_friends(&ui);
-    assert_eq!(ui.get_friends().row_count(), 1);
+    assert_eq!(ui.get_friends().row_count(), 3);
     view.open_profile(&ui, &current);
     assert!(ui.get_profile_open());
     assert_eq!(ui.get_profile_status(), "こんにちは\n日本語");
@@ -523,9 +565,9 @@ fn controller_scenario(stop: usize) {
     ui.set_friend_query("".into());
     ui.set_groups_expanded(false);
     view.filter_friends(&ui);
-    assert_eq!(ui.get_friends().row_count(), 2);
+    assert_eq!(ui.get_friends().row_count(), 4);
     view.update(&ui, account::Update::FriendsFailed);
-    assert_eq!(ui.get_friends().row_count(), 2);
+    assert_eq!(ui.get_friends().row_count(), 4);
     assert!(!ui.get_friends_error().is_empty());
     view.open_profile(&ui, &current);
     view.start_friend_chat(&ui);
@@ -601,4 +643,33 @@ fn friend_profile_navigation() {
     std::thread::spawn(|| controller_scenario(7))
         .join()
         .unwrap();
+}
+
+#[test]
+fn deferred_incoming_counts_unread_immediately_and_only_once() {
+    let _window = snapshot::install().unwrap();
+    let ui = create_app_window().unwrap();
+    let mut view = View {
+        current: "chat".into(),
+        ..Default::default()
+    };
+    view.unread.server("chat", Some(0), None);
+    ui.global::<State>().set_history_interacting(true);
+    view.update(
+        &ui,
+        account::Update::Incoming {
+            chat: "chat".into(),
+            messages: vec![message("101", "synthetic")],
+            replay: false,
+        },
+    );
+    assert_eq!(view.unread.chats["chat"].count, Some(1));
+    assert!(view.messages.is_empty());
+    assert_eq!(view.deferred.len(), 1);
+    ui.global::<State>().set_history_interacting(false);
+    for event in std::mem::take(&mut view.deferred) {
+        view.update_render(&ui, event);
+    }
+    assert_eq!(view.unread.chats["chat"].count, Some(1));
+    assert_eq!(view.messages.len(), 1);
 }

@@ -84,6 +84,10 @@ impl Asset {
         })
     }
 
+    pub fn inline_emoji(span: &rich::InlineEmoji) -> Option<Self> {
+        Self::paid_reaction(&json!({"productId":span.product_id,"emojiId":span.sticon_id}))
+    }
+
     pub(super) fn paid_reaction(value: &Value) -> Option<Self> {
         let product = segment(value["productId"].as_str()?)?;
         let emoji = segment(value["emojiId"].as_str()?)?;
@@ -128,6 +132,32 @@ impl Asset {
                 }
                 .into(),
             ),
+        })
+    }
+
+    /// Source QO/zD: files use the bare OBS object, never a preview URL.
+    pub fn attachment(raw: &Value) -> Option<Self> {
+        if raw["contentType"].as_u64() != Some(14) {
+            return None;
+        }
+        let meta = &raw["contentMetadata"];
+        let id = segment(raw["id"].as_str()?)?;
+        let key = meta["ENC_KM"].as_str().map(str::to_owned);
+        let (sid, oid) = if key.is_some() {
+            (
+                segment(meta["SID"].as_str().unwrap_or("m"))?,
+                segment(meta["OID"].as_str().unwrap_or(id))?,
+            )
+        } else {
+            ("m", id)
+        };
+        Some(Self {
+            url: format!("https://obs.line-apps.com/r/talk/{sid}/{oid}"),
+            private: true,
+            key_material: key,
+            talk_meta: Some(talk_meta(id)),
+            dimension: 0,
+            original_suffix: None,
         })
     }
 
@@ -182,29 +212,29 @@ impl Asset {
             .args(["--config", "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+            .stderr(Stdio::null())
             .spawn()?;
         child
             .stdin
             .take()
             .context("asset transport stdin")?
             .write_all(config.as_bytes())?;
-        let output = child.wait_with_output()?;
+        let cancel = REQUEST_CANCEL.with(|slot| slot.borrow().clone());
+        let (status, stdout) = wait_transport(child, cancel.as_deref(), MAX_DOWNLOAD as u64 + 100)?;
         ensure!(
-            output.status.success(),
+            status.success(),
             "image transport failed; URL and body not logged"
         );
-        let split = output
-            .stdout
+        let split = stdout
             .iter()
             .rposition(|b| *b == b'\n')
             .context("missing asset HTTP status")?;
         ensure!(
-            &output.stdout[split + 1..] == b"200",
+            &stdout[split + 1..] == b"200",
             "image unavailable; HTTP response not logged"
         );
         ensure!(split <= MAX_DOWNLOAD, "image download too large");
-        let bytes = &output.stdout[..split];
+        let bytes = &stdout[..split];
         if let Some(key) = &self.key_material {
             decrypt_media(bytes, &decode(key)?)
         } else {

@@ -96,7 +96,97 @@ pub(super) fn examples() -> Vec<Conversation> {
 
 /// All scenario events are local fixtures, even when completions are delayed.
 pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
+    // Switching synthetic fixtures must not inherit the paging fixture's range.
+    if !matches!(kind, 1 | 2 | 3 | 4 | 9 | 10) {
+        let mut view = state.borrow_mut();
+        if view.demo_paging {
+            view.demo_paging = false;
+            let current = view.current.clone();
+            view.paging.borrow_mut().remove(&current);
+            view.recent.remove(&current);
+            ui.global::<State>().set_paging_demo(false);
+            ui.global::<State>().set_history_needs_refresh(false);
+        }
+    }
+
     if !state.borrow().demo {
+        return;
+    }
+    if kind == 14 {
+        let mut view = state.borrow_mut();
+        let chat = view.current.clone();
+        view.unread.chats.remove(&chat);
+        view.unread.server(&chat, Some(0), None);
+        let ids = ["90001", "90002", "90003"];
+        view.unread
+            .incoming(&chat, ids.into_iter().map(str::to_owned));
+        for id in ids {
+            if !view.messages.iter().any(|m| m.id == id) {
+                view.messages.push(MessageRow {
+                    id: id.into(),
+                    body: "新しいメッセージ 🐈".into(),
+                    sort_key: order_key(1800000000000 + id.parse::<i64>().unwrap()).into(),
+                    ..Default::default()
+                });
+            }
+        }
+        if let Some(other) = view.ids.iter().find(|id| **id != chat).cloned() {
+            view.unread.server(&other, Some(0), None);
+            view.unread
+                .incoming(&other, ["80001", "80002"].into_iter().map(str::to_owned));
+        }
+        ui.set_following(false);
+        ui.set_new_count(3);
+        view.unread_page(ui);
+        view.render(ui);
+        return;
+    }
+    if kind == 12 {
+        let mut view = state.borrow_mut();
+        view.messages = rich_fixture();
+        view.render(ui);
+        ui.invoke_show_history(0., false);
+        return;
+    }
+    if kind == 9 {
+        ui.set_loading_history(!ui.get_loading_history());
+        ui.set_history_error("".into());
+        return;
+    }
+    if kind == 8 {
+        let mut view = state.borrow_mut();
+        let current = view.current.clone();
+        view.saved.outbox.retain(|item| item.chat != current);
+        view.messages = [
+            MessageKind::Text,
+            MessageKind::Photo,
+            MessageKind::Sticker,
+            MessageKind::Video,
+            MessageKind::Voice,
+            MessageKind::File,
+            MessageKind::Location,
+            MessageKind::Contact,
+            MessageKind::System,
+            MessageKind::Withdrawn,
+            MessageKind::Undecryptable,
+            MessageKind::Unknown,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, kind)| MessageRow {
+            id: format!("reading-{i}").into(),
+            kind,
+            body: crate::links::placeholder(kind)
+                .unwrap_or("参照「https://example.org/reading」。またはwww.example.jp、どう？")
+                .into(),
+            sender_name: "葵".into(),
+            time: "2026/10/17 12:00".into(),
+            sort_key: order_key(i as i64).into(),
+            ..Default::default()
+        })
+        .collect();
+        view.render(ui);
+        ui.invoke_show_history(0., false);
         return;
     }
     if kind == 7 {
@@ -269,12 +359,13 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
                 );
             }
         });
-    } else if kind == 3 {
+    } else if kind == 3 || kind == 10 {
         let mut view = state.borrow_mut();
         view.serial += 1;
         let local_id = format!("synthetic-outgoing-{}", view.serial);
         view.saved.outbox.push(storage::Outgoing {
             local_id: local_id.clone(),
+            request_seq: None,
             timestamp_ms: i64::MAX,
             chat: chat.clone(),
             text: "Synthetic submission · no network request".into(),
@@ -288,9 +379,16 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
         let state = state.clone();
         slint::Timer::single_shot(std::time::Duration::from_secs(1), move || {
             if let Some(ui) = weak.upgrade() {
-                state
-                    .borrow_mut()
-                    .update(&ui, account::Update::SendFailed { id: chat, local_id });
+                let outcome = if kind == 10 {
+                    account::Update::SendRejected {
+                        id: chat,
+                        local_id,
+                        reason: "Submission rejected".into(),
+                    }
+                } else {
+                    account::Update::SendUncertain { id: chat, local_id }
+                };
+                state.borrow_mut().update(&ui, outcome);
             }
         });
     }
@@ -361,4 +459,79 @@ pub(super) fn avatar(index: usize) -> slint::Image {
         pixels.width,
         pixels.height,
     ))
+}
+
+pub(crate) fn rich_fixture() -> Vec<MessageRow> {
+    let mut target = message(
+        "前のメッセージ — 日本語と emoji 🌸",
+        "2026/10/17 12:00",
+        false,
+    );
+    target.id = "rich-target".into();
+    let body = "日😀[笑]本🌸 longunbrokenabcdefghijklmnopqrstuvwxyz0123456789\n二行目のテキスト";
+    let span = line_wasm_poc::client::desktop::rich::InlineEmoji {
+        start_utf16: 3,
+        end_utf16: 6,
+        start_byte: 7,
+        end_byte: 12,
+        fallback: "[笑]".into(),
+        product_id: "synthetic".into(),
+        sticon_id: "synthetic".into(),
+        version: None,
+        animated: false,
+    };
+    let mut row = message(body, "2026/10/17 12:01", false);
+    row.id = "rich-emoji".into();
+    row.rich_runs = crate::rich_content::runs(
+        body,
+        &[account::EmojiView {
+            span,
+            image_key: "demo-inline".into(),
+        }],
+    );
+    if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
+        for i in 0..runs.row_count() {
+            let mut run = runs.row_data(i).unwrap();
+            if run.emoji {
+                run.picture = avatar(0);
+                run.has_picture = true;
+                runs.set_row_data(i, run);
+            }
+        }
+    }
+    row.reply_id = target.id.clone();
+    row.reply_preview = "葵: 前のメッセージ".into();
+    let mut rows = vec![target, row];
+    for (kind, body, detail) in [
+        (MessageKind::File, "資料.txt", "2.0 KB"),
+        (MessageKind::Video, "Video", "2:05"),
+        (MessageKind::Voice, "Voice message", "0:12"),
+        (MessageKind::Contact, "Contact · 葵", ""),
+        (MessageKind::System, "葵 joined the group", ""),
+        (MessageKind::Withdrawn, "Message withdrawn", ""),
+    ] {
+        let mut row = message(body, "2026/10/17 12:02", false);
+        row.id = format!("rich-{kind:?}").into();
+        row.kind = kind;
+        row.detail = detail.into();
+        rows.push(row);
+    }
+    rows
+}
+
+/// Generate only the requested synthetic page, never a retained thousand-row model.
+pub(super) fn paged_rows(range: std::ops::Range<usize>) -> Vec<MessageRow> {
+    range
+        .map(|n| {
+            let timestamp = 1_760_000_000_000i64 + n as i64 * 60_000;
+            MessageRow {
+                id: format!("paged-{n:04}").into(),
+                body: format!("History item {n:04} · bounded page\n日本語 🐈").into(),
+                sort_key: order_key(timestamp).into(),
+                delivered_time: timestamp.to_string().into(),
+                time: display_time(timestamp).into(),
+                ..Default::default()
+            }
+        })
+        .collect()
 }

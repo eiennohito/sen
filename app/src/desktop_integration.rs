@@ -65,7 +65,9 @@ impl Instance {
         self.events.replace(empty)
     }
     /// Must precede window, storage and worker creation. The bus executor runs off the UI thread.
-    pub fn acquire() -> Result<Launch, Box<dyn std::error::Error>> {
+    pub fn acquire_with_activation(
+        activate_existing: bool,
+    ) -> Result<Launch, Box<dyn std::error::Error>> {
         let (ready_tx, ready_rx) = mpsc::sync_channel(1);
         thread::Builder::new()
             .name("desktop-bus".into())
@@ -84,13 +86,15 @@ impl Instance {
                             | zbus::fdo::RequestNameReply::AlreadyOwner,
                         ) => Ok(Some((connection, rx))),
                         Err(zbus::Error::NameTaken) | Ok(_) => {
-                            let _ = connection.call_method(
-                                Some(APP_ID),
-                                OBJECT,
-                                Some("org.freedesktop.Application"),
-                                "Activate",
-                                &(HashMap::<String, OwnedValue>::new(),),
-                            );
+                            if activate_existing {
+                                let _ = connection.call_method(
+                                    Some(APP_ID),
+                                    OBJECT,
+                                    Some("org.freedesktop.Application"),
+                                    "Activate",
+                                    &(HashMap::<String, OwnedValue>::new(),),
+                                );
+                            }
                             Ok(None)
                         }
                         Err(error) => Err(error),

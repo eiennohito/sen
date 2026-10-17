@@ -1,7 +1,43 @@
-import { ChatRow, FriendRow, MessageRow } from "types.slint";
+import { ChatRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
+    in-out property <bool> window-active: false;
+    in-out property <int> unread-conversations;
+    in-out property <bool> unread-stale;
+    in-out property <string> unread-divider;
+    in-out property <bool> unread-locating;
+    in-out property <bool> unread-boundary-unknown;
+    callback read-state-changed();
+    changed window-active => { self.read-state-changed(); }
+    changed modal-open => { self.read-state-changed(); }
+    changed loading-history => { self.read-state-changed(); }
+    changed unread-locating => { self.read-state-changed(); }
+    changed show-conversation => { self.read-state-changed(); }
+
     in-out property <int> section: 0;
+    in-out property <int> category: 0;
+    callback filter-category();
+    callback switch-chat(int);
+    callback focus-chat-list();
+    callback focus-friend-list();
+    public function browser-key(event: KeyEvent) -> EventResult {
+        if self.modal-open || self.ime-active { return reject; }
+        if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+            if event.text == "f" || event.text == "F" { self.show-conversation = false; if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
+            if event.text == "1" || event.text == "2" { self.browse(event.text == "1" ? 1 : 0); if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
+            if event.text == "q" || event.text == "Q" { if !event.repeat { self.quit(); } return accept; }
+        }
+        if event.modifiers.alt && event.text == Key.LeftArrow && self.narrow && self.show-conversation {
+            self.show-conversation = false;
+            if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); }
+            return accept;
+        }
+        if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+            self.switch-chat(event.text == Key.DownArrow ? 1 : -1);
+            return accept;
+        }
+        return reject;
+    }
     in-out property <[FriendRow]> friends;
     in-out property <int> friend-result: -1;
     in-out property <length> friend-row-height: max(70px, self.text-size * 3px + 16px);
@@ -26,11 +62,40 @@ export global State {
     in-out property <string> chat-title;
     in-out property <string> chat-subtitle;
     in-out property <string> draft;
+    in-out property <bool> enter-sends: false;
+    in-out property <int> editor-caret;
+    in-out property <int> editor-anchor;
+    in-out property <bool> composer-focused;
+    in-out property <string> recovery-kind;
+    in-out property <string> recovery-id;
+    in-out property <string> recovery-focus-id;
+    in-out property <string> recovery-focus-action;
+    callback restore-editor(int, int);
+    callback retry-message(string);
+    callback resolve-recovery(string);
+    callback quit();
     in-out property <bool> can-send;
     in-out property <string> send-reason;
     in-out property <bool> list-pressed;
     in-out property <bool> list-release-pending;
     in-out property <length> chat-row-height: max(82px, self.text-size * 3.2px + 20px);
+    in-out property <bool> background-mode;
+    in-out property <bool> tray-available;
+    in-out property <bool> autostart;
+    in-out property <string> background-status;
+    in-out property <string> autostart-status;
+    in-out property <bool> notifications-paused;
+    in-out property <bool> notifications-enabled;
+    in-out property <int> notification-preview: 1;
+    in-out property <bool> notification-sound;
+    in-out property <bool> notification-mention-exception;
+    in-out property <bool> notification-group-events;
+    in-out property <bool> notification-available;
+    in-out property <string> notification-status;
+    in-out property <bool> demo-notifications;
+    in-out property <string> transient-notice;
+    callback test-notification();
+    callback demo-notification(int);
     in-out property <bool> settings-open;
     in-out property <bool> viewer-open;
     in-out property <image> viewer-image;
@@ -39,18 +104,29 @@ export global State {
     in-out property <bool> viewer-loading;
     in-out property <string> viewer-key;
     in-out property <float> viewer-zoom: 1;
+    in-out property <bool> viewer-has-previous;
+    in-out property <bool> viewer-has-next;
+    in-out property <string> viewer-save-status;
+    in-out property <bool> viewer-saving;
+    in-out property <string> viewer-return-key;
+    in-out property <int> viewer-return-serial;
+    in-out property <bool> modal-open: self.auth-open || self.viewer-open || self.settings-open || (self.narrow && self.profile-open) || self.recovery-kind != "";
+    callback viewer-step(int);
+    callback save-photo();
+    callback close-settings();
     in-out property <bool> connected;
     in-out property <bool> connection-failed;
     in-out property <bool> retrying-connection;
     in-out property <bool> auth-open;
     in-out property <bool> auth-busy;
+    in-out property <bool> auth-cancel-confirm;
     in-out property <bool> auth-cancelling;
     in-out property <image> auth-qr;
     in-out property <string> auth-pin;
     in-out property <string> auth-stage;
     in-out property <string> auth-error;
-    in-out property <bool> sending;
     in-out property <bool> demo;
+    in-out property <bool> automation-background;
     in-out property <bool> more-chats;
     in-out property <bool> has-chat;
     in-out property <bool> loading-chats;
@@ -74,11 +150,6 @@ export global State {
     in-out property <bool> searching;
     in-out property <int> result-focus: -1;
     in-out property <bool> narrow: self.window-width < 740px;
-    in-out property <string> anchor-id;
-    in-out property <length> anchor-screen-y;
-    in-out property <bool> capture-anchor;
-    in-out property <length> restore-y;
-    in-out property <bool> restore-pending;
     in-out property <length> window-width;
     in-out property <length> conversation-height;
     in-out property <length> history-width;
@@ -89,6 +160,13 @@ export global State {
     callback open-profile(string);
     callback start-friend-chat();
     callback open-photo(string);
+    callback open-link(string);
+    callback rich-measure([RichRun], int, float, float, float);
+    callback save-file(string);
+    in-out property <string> file-save-id;
+    in-out property <string> file-save-status;
+    in-out property <bool> file-saving;
+    in-out property <string> last-opened-link;
     callback photo-closed();
     callback reconnect();
     callback start-sign-in();
@@ -108,6 +186,7 @@ export global State {
     callback show-profile();
     callback close-profile();
     callback focus-composer();
+    callback focus-reading-before-editor();
     callback show-viewer(string);
     callback close-viewer();
     callback account-ready();
@@ -123,7 +202,43 @@ export global State {
     callback focus-auth-start();
     callback focus-sign-in-opener();
     callback focus-viewer-close();
+    public function reading-key(event: KeyEvent) -> EventResult {
+        if self.ime-active { return reject; }
+        if self.browser-key(event) == accept { return accept; }
+        if self.recovery-kind != "" { return reject; }
+        if event.text == Key.End { self.latest(); self.focus-history(); return accept; }
+        if event.text == Key.UpArrow { self.history-jump(self.history-y + self.text-size * 1.4px); }
+        else if event.text == Key.DownArrow { self.history-jump(self.history-y - self.text-size * 1.4px); }
+        else if event.text == Key.PageUp { self.history-jump(self.history-y + self.history-viewport-height * 0.9); }
+        else if event.text == Key.PageDown { self.history-jump(self.history-y - self.history-viewport-height * 0.9); }
+        else if event.text == Key.Home { self.history-jump(0px); }
+        else { return reject; }
+        self.following = self.history-can-follow && !self.history-dragging && self.history-extent + self.history-y <= self.text-size * 1px;
+        if self.following { self.new-count = 0; }
+        self.history-scrolled();
+        self.focus-history();
+        return accept;
+    }
     callback focus-history();
     callback reset-viewer();
+    in-out property <length> history-viewport-height;
+    in-out property <string> older-status;
+    in-out property <bool> older-failed;
+    in-out property <bool> paging-demo;
+    in-out property <int> history-retained;
+    in-out property <int> history-pages;
+    in-out property <string> highlight-message;
+    in-out property <bool> return-visible;
+    in-out property <string> jump-error;
+    in-out property <bool> history-needs-refresh;
+    in-out property <bool> history-budget-warning;
+    in-out property <bool> history-can-follow: true;
+    in-out property <bool> history-interacting;
+    callback row-geometry(string, length, length);
+    callback history-scrolled();
+    callback latest-request();
+    callback older-retry();
+    callback jump-message(string);
+    callback return-to-message();
     callback history-jump(length);
 }

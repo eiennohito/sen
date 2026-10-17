@@ -21,12 +21,10 @@ fn grouping_respects_identity_five_minutes_and_calendar_days() {
         rows.iter().map(|m| m.group_start).collect::<Vec<_>>(),
         [true, false, true, true, true]
     );
-    assert_eq!(
-        rows.iter()
-            .map(|m| m.day_label.as_str())
-            .collect::<Vec<_>>(),
-        ["2026/10/15", "", "", "", "2026/10/16"]
-    );
+    let now = chrono::Local::now().timestamp_millis();
+    assert_eq!(rows[0].day_label, day_label(1, now));
+    assert_eq!(rows[4].day_label, day_label(600_002, now));
+    assert!(rows[1..4].iter().all(|row| row.day_label.is_empty()));
     assert!(rows.iter().all(|m| m.clock == "12:00"));
     rows[3].outgoing = true;
     rows[4].outgoing = true;

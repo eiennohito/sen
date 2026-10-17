@@ -20,6 +20,7 @@ pub struct Chat {
     pub unread: Option<u64>,
     pub muted: Option<bool>,
     pub last_read_message: Option<String>,
+    pub last_message_id: Option<String>,
     pub member_count: Option<usize>,
     pub outgoing_preview: bool,
     pub group: bool,
@@ -63,6 +64,16 @@ pub struct Message {
     pub decryption_failed: bool,
     #[serde(default)]
     pub rich: rich::RichContent,
+    #[serde(default)]
+    pub request_seq: Option<u32>,
+    #[serde(default)]
+    pub attachment: Option<Asset>,
+    #[serde(default)]
+    pub mentioned: bool,
+    #[serde(default)]
+    pub skip_badge: bool,
+    #[serde(default)]
+    pub metadata_version: u8,
 }
 
 #[derive(Debug)]
@@ -91,6 +102,11 @@ pub fn send_failure(error: &anyhow::Error) -> SendFailure {
     } else {
         SendFailure::Uncertain
     }
+}
+
+/// Install the owning worker's cancellation token for all synchronous requests.
+pub fn set_cancellation_token(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    set_request_cancel(cancel);
 }
 
 type ResyncPages = (Vec<Chat>, Vec<(String, Vec<Message>)>);
@@ -164,6 +180,12 @@ impl Client {
         chat::talk(&mut self.api, access(&self.state)?, method, args)
     }
 
+    pub fn retain_send_requests(&mut self, sequences: &[u32]) -> Result<()> {
+        self.messages.retain_requests(sequences)
+    }
+    pub fn withdraw(&mut self, message: &str) -> Result<()> {
+        self.messages.withdraw(message)
+    }
     pub fn mark_read(&mut self, chat: &str, message: &str) -> Result<()> {
         self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
         self.talk(
@@ -174,7 +196,32 @@ impl Client {
     }
     pub fn read_ranges(&mut self, chat: &str) -> Result<Vec<ReadRange>> {
         let data = self.talk("getMessageReadRange", json!([[chat], 0]))?;
-        Ok(parse_read_ranges(&data))
+        Ok(parse_read_ranges(&data)
+            .into_iter()
+            .filter(|range| range.reader != self.my_mid)
+            .collect())
+    }
+    pub fn own_echo(&self, operation: &Value) -> Option<(String, u32, String)> {
+        if operation["type"].as_u64() != Some(25)
+            || operation["message"]["from"].as_str() != Some(self.my_mid.as_str())
+        {
+            return None;
+        }
+        let request = operation["reqSeq"]
+            .as_u64()
+            .or_else(|| operation["reqSeq"].as_str()?.parse().ok())?;
+        let request = u32::try_from(request).ok()?;
+        if !self
+            .messages
+            .request_matches(request, &operation["message"])
+        {
+            return None;
+        }
+        Some((
+            operation["message"]["to"].as_str()?.into(),
+            request,
+            operation["message"]["id"].as_str()?.into(),
+        ))
     }
     pub fn operation(&mut self, operation: &Value) -> Option<(String, Message)> {
         if !matches!(operation["type"].as_u64(), Some(25 | 26 | 43)) {
@@ -265,7 +312,7 @@ impl Client {
         if !groups.is_empty() {
             let response = self.talk(
                 "getChats",
-                json!([{"chatMids":groups,"withMembers":false,"withInvitees":false},0]),
+                json!([{"chatMids":groups,"withMembers":true,"withInvitees":false},0]),
             )?;
             if let Some(chats) = response["chats"].as_array() {
                 for chat in chats {
@@ -322,6 +369,7 @@ impl Client {
                     .or_else(|| entry["unreadCount"].as_str()?.parse().ok()),
                 muted: None,
                 last_read_message: entry["lastSeenMessageId"].as_str().map(str::to_owned),
+                last_message_id: last.and_then(|m| m["id"].as_str().map(str::to_owned)),
                 id,
                 title,
                 preview,
@@ -377,7 +425,7 @@ impl Client {
             let response = self.talk(
                 "getChats",
                 json!([{
-                "chatMids": chunk, "withMembers": false, "withInvitees": false
+                "chatMids": chunk, "withMembers": true, "withInvitees": false
             }, 0]),
             )?;
             let chats = response["chats"].as_array().context("missing groups")?;
@@ -417,11 +465,10 @@ impl Client {
         if let Ok(Some(mut messages)) = self.messages.page(chat_mid) {
             // Old cache pages predate sender identity. Refresh these rather
             // than silently showing anonymous group messages indefinitely.
-            if !is_user(chat_mid)
-                && messages.iter().any(|m| m.sender_id.is_empty())
-                && let Ok(refreshed) = self.refresh_messages(chat_mid)
-            {
-                return Ok(refreshed);
+            let needs_refresh = messages.iter().any(|m| m.metadata_version < 2)
+                || (!is_user(chat_mid) && messages.iter().any(|m| m.sender_id.is_empty()));
+            if needs_refresh {
+                messages = cached_or_refreshed(messages, || self.refresh_messages(chat_mid));
             }
             self.resolve_senders(chat_mid, &mut messages);
             sort_messages(&mut messages);
@@ -448,11 +495,8 @@ impl Client {
         },0]))?;
         let raw = data.as_array().context("missing older messages")?;
         let reached_beginning = raw.len() < 50;
-        let mut messages: Vec<_> = raw.iter().take(50).map(|m| self.message(m)).collect();
-        messages.retain(|m| m.id != before);
-        let mut ids = std::collections::HashSet::new();
-        messages.retain(|m| ids.insert(m.id.clone()));
-        sort_messages(&mut messages);
+        let messages: Vec<_> = raw.iter().take(50).map(|m| self.message(m)).collect();
+        let mut messages = normalize_older(before, messages);
         self.resolve_senders(chat, &mut messages);
         let _ =
             self.messages
@@ -542,22 +586,7 @@ impl Client {
                 Ok(body)
             })();
             match result {
-                Ok(body) => {
-                    for field in ["text", "location"] {
-                        if !body[field].is_null() {
-                            data[field] = body[field].clone();
-                        }
-                    }
-                    if !body["REPLACE"].is_null() {
-                        data["contentMetadata"]["REPLACE"] = body["REPLACE"].clone();
-                    }
-                    if let Some(key) = body["keyMaterial"].as_str() {
-                        data["contentMetadata"]["ENC_KM"] = json!(key);
-                    }
-                    if let Some(name) = body["fileName"].as_str() {
-                        data["contentMetadata"]["FILE_NAME"] = json!(name);
-                    }
-                }
+                Ok(body) => merge_decrypted(&mut data, &body),
                 Err(_) => {
                     failed = true;
                     let _ = self.reset_runtime();
@@ -590,7 +619,7 @@ impl Client {
                 _ => None,
             }
         };
-        let message = Message {
+        let mut message = Message {
             sender_id: data["from"].as_str().unwrap_or_default().to_owned(),
             sender_name: String::new(),
             sender_avatar: None,
@@ -610,8 +639,29 @@ impl Client {
             reactions: reactions(&data["reactions"]),
             encrypted,
             decryption_failed: failed,
-            rich: rich::parse(&data),
+            request_seq: self.messages.matching_request(raw),
+            mentioned: mentioned(&data["contentMetadata"], &self.my_mid),
+            skip_badge: data["contentMetadata"]["SKIP_BADGE_COUNT"].as_str() == Some("true"),
+            metadata_version: 2,
+            attachment: if failed {
+                None
+            } else {
+                Asset::attachment(&data)
+            },
+            rich: {
+                let mut rich = rich::parse(&data);
+                rich.withdrawn |= self
+                    .messages
+                    .is_withdrawn(data["id"].as_str().unwrap_or_default());
+                rich
+            },
         };
+        if message.rich.withdrawn {
+            message.body.clear();
+            message.image = None;
+            message.reactions.clear();
+            message.rich.content_type = 18;
+        }
         if !message.decryption_failed {
             self.messages.remember(fingerprint, message.clone());
         }
@@ -649,12 +699,52 @@ impl Client {
         Ok(Arc::new(assets::original_pixels(&data)?))
     }
 
+    pub fn file_bytes(&mut self, chat: &str, message: &str) -> Result<(String, Vec<u8>)> {
+        let item = match self.messages.cached_message(message)? {
+            Some(message) => message,
+            None => self
+                .messages(chat)?
+                .into_iter()
+                .find(|m| m.id == message)
+                .context("file is outside loaded history")?,
+        };
+        ensure!(
+            !item.rich.withdrawn
+                && item
+                    .rich
+                    .file_size
+                    .is_none_or(|size| size <= 16 * 1024 * 1024),
+            "file unavailable or exceeds 16 MiB download limit"
+        );
+        let asset = item.attachment.context("file download unavailable")?;
+        self.authorize_media(&asset)?;
+        let bytes = asset.fetch(self.obs_access.as_deref())?;
+        Ok((
+            item.rich.file_name.unwrap_or_else(|| "attachment".into()),
+            bytes,
+        ))
+    }
+
     pub fn cache_stats(&self) -> assets::CacheStats {
         self.cache.stats()
     }
 
     /// Called only after the user presses Send; diagnostics never call this.
     pub fn send_text(&mut self, to: &str, text: &str) -> Result<Message> {
+        self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
+        self.send_text_with_request(to, text, self.request_seq)
+    }
+    /// The desktop persists this request identity before calling the network.
+    pub fn send_text_with_request(
+        &mut self,
+        to: &str,
+        text: &str,
+        request_seq: u32,
+    ) -> Result<Message> {
+        ensure!(
+            request_seq > 0 && request_seq <= 0x7fff_ffff,
+            "invalid persisted send sequence"
+        );
         if text.trim().is_empty() || text.len() > 10_000 {
             return Err(SendFailure::Rejected.into());
         }
@@ -666,9 +756,11 @@ impl Client {
                 return Err(error.context(SendFailure::Rejected));
             }
         };
-        self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
+        self.messages
+            .record_request(request_seq, &message)
+            .map_err(|error| error.context(SendFailure::Rejected))?;
         // Never automatically retry this RPC: a timeout can mean it was sent.
-        let result = self.talk("sendMessage", json!([self.request_seq, message]))?;
+        let result = self.talk("sendMessage", json!([request_seq, message]))?;
         Ok(self.message(&result))
     }
 
@@ -767,6 +859,50 @@ impl Client {
             "contentMetadata":{"e2eeVersion":version.to_string()},"chunks":chunks}),
         )
     }
+}
+
+fn mentioned(metadata: &Value, my_mid: &str) -> bool {
+    let value = if metadata["MENTION"].is_object() {
+        Some(metadata["MENTION"].clone())
+    } else {
+        metadata["MENTION"]
+            .as_str()
+            .and_then(|v| serde_json::from_str::<Value>(v).ok())
+    };
+    value
+        .as_ref()
+        .and_then(|v| v["MENTIONEES"].as_array())
+        .is_some_and(|mentions| {
+            mentions.iter().any(|mention| {
+                mention["M"].as_str() == Some(my_mid) || mention["A"].as_str() == Some("1")
+            })
+        })
+}
+
+fn merge_decrypted(data: &mut Value, body: &Value) {
+    if !data["contentMetadata"].is_object() {
+        data["contentMetadata"] = json!({});
+    }
+    for field in ["text", "location"] {
+        if !body[field].is_null() {
+            data[field] = body[field].clone();
+        }
+    }
+    if !body["REPLACE"].is_null() {
+        data["contentMetadata"]["REPLACE"] = body["REPLACE"].clone();
+    }
+    for (source, target) in [("keyMaterial", "ENC_KM"), ("fileName", "FILE_NAME")] {
+        if let Some(value) = body[source].as_str() {
+            data["contentMetadata"][target] = json!(value);
+        }
+    }
+}
+
+fn normalize_older(before: &str, mut messages: Vec<Message>) -> Vec<Message> {
+    let mut ids = std::collections::HashSet::new();
+    messages.retain(|m| m.id != before && ids.insert(m.id.clone()));
+    sort_messages(&mut messages);
+    messages
 }
 
 fn contact_name(contact: &Value) -> Option<&str> {
@@ -895,6 +1031,7 @@ pub struct ReadRange {
     pub reader: String,
     pub start: String,
     pub end: String,
+    pub open_end: bool,
 }
 fn parse_read_ranges(data: &Value) -> Vec<ReadRange> {
     let mut ranges = Vec::new();
@@ -907,14 +1044,14 @@ fn parse_read_ranges(data: &Value) -> Vec<ReadRange> {
                 if let (Some(start), Some(end)) = (
                     range["startMessageId"].as_str(),
                     range["endMessageId"].as_str(),
-                ) && end != "1"
-                    && message_id_cmp(start, end).is_le()
+                ) && (end == "1" || message_id_cmp(start, end).is_le())
                 {
                     ranges.push(ReadRange {
                         chat: id.into(),
                         reader: reader.clone(),
                         start: start.into(),
                         end: end.into(),
+                        open_end: end == "1",
                     });
                 }
             }
@@ -931,9 +1068,54 @@ mod read_tests {
         let ranges = parse_read_ranges(
             &json!([{"chatId":"group","ranges":{"member":[{"startMessageId":"4","endMessageId":"9"},{"startMessageId":"10","endMessageId":"1"}]}}]),
         );
-        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges.len(), 2);
+        assert!(ranges[1].open_end);
+        assert!(!ranges[0].open_end);
         assert_eq!(ranges[0].reader, "member");
         assert_eq!(ranges[0].start, "4");
         assert_eq!(ranges[0].end, "9");
+    }
+}
+
+#[cfg(test)]
+mod decrypted_metadata_tests {
+    use super::*;
+    #[test]
+    fn decrypted_replace_and_attachment_details_reach_rich_parser() {
+        let mut raw = json!({"contentType":0,"contentMetadata":null});
+        let body = json!({"text":"日😀[笑]","REPLACE":{"sticon":{"resources":[{"S":3,"E":6,"productId":"synthetic","sticonId":"1"}]}},"keyMaterial":"synthetic-key","fileName":"example.txt"});
+        merge_decrypted(&mut raw, &body);
+        let rich = rich::parse(&raw);
+        assert_eq!(rich.emoji.len(), 1);
+        assert_eq!(rich.emoji[0].fallback, "[笑]");
+        assert_eq!(raw["contentMetadata"]["ENC_KM"], "synthetic-key");
+        assert_eq!(raw["contentMetadata"]["FILE_NAME"], "example.txt");
+    }
+}
+
+// A metadata upgrade must not turn a transient outage into lost offline history.
+fn cached_or_refreshed(
+    cached: Vec<Message>,
+    refresh: impl FnOnce() -> Result<Vec<Message>>,
+) -> Vec<Message> {
+    refresh().unwrap_or(cached)
+}
+#[cfg(test)]
+mod offline_metadata_tests {
+    use super::*;
+    #[test]
+    fn failed_metadata_refresh_preserves_cached_history() {
+        let old: Message = serde_json::from_value(serde_json::json!({
+            "id":"123","body":"offline cached history","timestamp_ms":1,
+            "outgoing":false,"image":null,"reactions":[],"encrypted":false,
+            "decryption_failed":false
+        }))
+        .unwrap();
+        let rows = cached_or_refreshed(vec![old], || {
+            Err(anyhow::anyhow!("synthetic transport outage"))
+        });
+        assert_eq!(rows[0].body, "offline cached history");
+        assert_eq!(rows[0].metadata_version, 0);
+        assert!(!rows[0].skip_badge);
     }
 }

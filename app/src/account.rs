@@ -10,7 +10,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender},
     },
     time::{Duration, Instant},
@@ -26,6 +26,17 @@ pub struct Paths {
 #[allow(dead_code)]
 pub enum Command {
     Stop,
+    ReadActivity {
+        allowed: bool,
+    },
+    SaveFile {
+        chat: String,
+        message_id: String,
+        request: u64,
+    },
+    RetainSendRequests {
+        request_seqs: Vec<u32>,
+    },
     Older {
         chat: String,
         before_message: String,
@@ -39,6 +50,11 @@ pub enum Command {
     Friends,
     ChatDetails,
     MarkRead {
+        chat: String,
+        up_to_message: String,
+        eligibility_epoch: u64,
+    },
+    MarkReadExplicit {
         chat: String,
         up_to_message: String,
     },
@@ -60,6 +76,7 @@ pub enum Command {
         refresh: bool,
     },
     Send {
+        request_seq: u32,
         id: String,
         generation: u64,
         text: String,
@@ -77,6 +94,7 @@ pub struct ChatView {
     pub unread: Option<u64>,
     pub muted: Option<bool>,
     pub last_read_message: Option<String>,
+    pub last_message_id: Option<String>,
     pub member_count: Option<usize>,
     pub outgoing_preview: bool,
     pub group: bool,
@@ -95,6 +113,11 @@ pub struct ReactionView {
     pub image_key: String,
 }
 #[allow(dead_code)]
+pub struct EmojiView {
+    pub span: line_wasm_poc::client::desktop::rich::InlineEmoji,
+    pub image_key: String,
+}
+#[allow(dead_code)]
 pub struct MessageView {
     pub id: String,
     pub sender_id: String,
@@ -109,11 +132,24 @@ pub struct MessageView {
     pub image_key: String,
     pub reactions: Vec<ReactionView>,
     pub rich: line_wasm_poc::client::desktop::rich::RichContent,
+    pub decryption_failed: bool,
+    pub emoji: Vec<EmojiView>,
+    pub mentioned: bool,
+    pub skip_badge: bool,
 }
 #[allow(dead_code)]
 pub enum Update {
+    FileBytes {
+        request: u64,
+        name: String,
+        bytes: Arc<Vec<u8>>,
+    },
+    FileFailed {
+        request: u64,
+    },
     Older {
         chat: String,
+        before_message: String,
         messages: Vec<MessageView>,
         reached_beginning: bool,
     },
@@ -151,6 +187,15 @@ pub enum Update {
         chat: String,
         up_to_message: String,
         reader_count: Option<usize>,
+    },
+    OwnEcho {
+        chat: String,
+        request_seq: u32,
+        server_id: String,
+    },
+    Withdrawn {
+        chat: String,
+        message_id: String,
     },
     SendRejected {
         id: String,
@@ -209,16 +254,42 @@ pub enum Update {
     },
 }
 
+#[derive(Default)]
+pub struct ReadGate {
+    allowed: AtomicBool,
+    epoch: AtomicU64,
+}
+impl ReadGate {
+    pub fn revoke(&self) {
+        self.allowed.store(false, Ordering::SeqCst);
+        self.epoch.fetch_add(1, Ordering::SeqCst);
+    }
+    pub fn allow(&self) {
+        self.allowed.store(true, Ordering::SeqCst);
+    }
+    pub fn epoch(&self) -> u64 {
+        self.epoch.load(Ordering::SeqCst)
+    }
+    pub fn accepts(&self, epoch: u64) -> bool {
+        self.allowed.load(Ordering::SeqCst) && self.epoch() == epoch
+    }
+}
+
 pub struct Worker {
     pub commands: SyncSender<Command>,
     stop: Arc<AtomicBool>,
     pub pairing_cancel: Arc<AtomicBool>,
+    pub read_gate: Arc<ReadGate>,
+    thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         let _ = self.commands.try_send(Command::Stop);
         self.pairing_cancel.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -228,23 +299,43 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
     let cancel = stop.clone();
     let pairing_cancel = Arc::new(AtomicBool::new(false));
     let pairing_stop = pairing_cancel.clone();
+    let read_gate = Arc::new(ReadGate::default());
+    let exposure_gate = read_gate.clone();
     let push_tx = tx.clone();
-    std::thread::spawn(move || {
+    let thread = std::thread::spawn(move || {
+        line_wasm_poc::client::desktop::set_cancellation_token(cancel.clone());
         let Some(mut client) = connect(&paths, &rx, &cancel, &pairing_stop, &publish) else {
             return;
         };
         publish(Update::Connected(client.account_name.clone()));
         let mut sync_epoch = 0;
         let mut sync_guard = Some(start_sync(&paths, &push_tx, &cancel, sync_epoch));
+        let mut sync_connected = false;
+        let mut marker_epochs = std::collections::HashMap::<String, u64>::new();
         let mut markers = line_wasm_poc::client::desktop::read::Markers::default();
         let mut pending = Some(Command::Chats { next: false });
         let mut jobs: Vec<(String, Asset)> = Vec::new();
         let mut failed_images = std::collections::HashMap::<String, Instant>::new();
         while !cancel.load(Ordering::Relaxed) {
-            if let Some((chat, up_to_message)) = markers.due(Instant::now()) {
+            let command = rx.try_recv().ok().or_else(|| pending.take());
+
+            if command.is_none()
+                && sync_connected
+                && exposure_gate.accepts(exposure_gate.epoch())
+                && let Some((chat, up_to_message)) = markers.due(Instant::now())
+            {
+                if marker_epochs
+                    .get(&chat)
+                    .is_none_or(|epoch| !exposure_gate.accepts(*epoch))
+                {
+                    markers.cancel(&chat);
+                    marker_epochs.remove(&chat);
+                    continue;
+                }
                 match client.mark_read(&chat, &up_to_message) {
                     Ok(()) => {
                         markers.confirmed(&chat, &up_to_message);
+                        marker_epochs.remove(&chat);
                         publish(Update::ReadMarked {
                             chat,
                             up_to_message,
@@ -253,31 +344,45 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     Err(_) => publish(Update::ReadFailed { chat }),
                 }
             }
-            let command = rx.try_recv().ok().or_else(|| pending.take());
             if let Some(command) = command {
                 // Prefer user commands over outstanding images from an old view.
                 match command {
                     Command::Stop => break,
+                    Command::ReadActivity { .. } => {},
+                    Command::MarkReadExplicit { chat,up_to_message } => match client.mark_read(&chat,&up_to_message) {Ok(())=>{markers.confirmed(&chat,&up_to_message);publish(Update::ReadMarked{chat,up_to_message});},Err(_)=>publish(Update::ReadFailed{chat})},
+                    Command::SaveFile { chat,message_id,request } => match client.file_bytes(&chat,&message_id) {
+                        Ok((name,bytes)) => publish(Update::FileBytes { request,name,bytes:Arc::new(bytes) }),
+                        Err(_) => publish(Update::FileFailed { request }),
+                    },
+                    Command::RetainSendRequests { request_seqs } => { let _ = client.retain_send_requests(&request_seqs); },
                     Command::Older { chat, before_message, delivered_time } => match client.older(&chat, &before_message, delivered_time) {
-                        Ok((messages,reached_beginning)) => publish(Update::Older { chat, messages: messages.into_iter().map(|m| message_view(m,&mut jobs)).collect(), reached_beginning }),
+                        Ok((messages,reached_beginning)) => { publish_echoes(&chat,&messages,&publish); publish(Update::Older { chat, before_message, messages: messages.into_iter().map(|m| message_view(m,&mut jobs)).collect(), reached_beginning }); },
                         Err(_) => publish(Update::OlderFailed { chat, before_message }),
                     },
-                    Command::MarkRead { chat, up_to_message } => markers.expose(chat, up_to_message, Instant::now()),
+                    Command::MarkRead { chat, up_to_message, eligibility_epoch } => { if exposure_gate.accepts(eligibility_epoch) {marker_epochs.insert(chat.clone(),eligibility_epoch);markers.expose(chat,up_to_message,Instant::now());} },
                     Command::Receipts { chat } => { if let Ok(ranges) = client.read_ranges(&chat) { publish(Update::ReadRanges(ranges)); } },
                     Command::Push { epoch, event } => { if epoch != sync_epoch { continue; } match event {
-                        sync::Event::State(state) => publish(Update::Sync(state)),
+                        sync::Event::State(state) => { sync_connected = matches!(state, SyncState::Connected); publish(Update::Sync(state)); },
                         sync::Event::Token(token) => client.replace_token(token),
                         sync::Event::Resync { complete, .. } => {
                             match client.resync() {
                                 Ok((chats, pages)) => {
                                     publish(Update::Chats { chats: chats.into_iter().map(|c| chat_view(c, &mut jobs)).collect(), more: client.more_chats });
-                                    for (chat, messages) in pages { publish(Update::Incoming { chat, messages: messages.into_iter().map(|m| message_view(m, &mut jobs)).collect(), replay: true }); }
+                                    for (chat, messages) in pages { publish_echoes(&chat, &messages, &publish); publish(Update::Incoming { chat, messages: messages.into_iter().map(|m| message_view(m, &mut jobs)).collect(), replay: true }); }
                                     let _ = complete.send(true);
                                 },
                                 Err(_) => { let _ = complete.send(false); }
                             }
                         },
                         sync::Event::Operation(operation) => {
+                            if matches!(operation["type"].as_u64(),Some(64|65)) {
+                                if let (Some(chat),Some(message))=(operation["param1"].as_str(),operation["param2"].as_str()) { let _ = client.withdraw(message); publish(Update::Withdrawn { chat:chat.into(),message_id:message.into() }); }
+                                pending=Some(Command::Chats{next:false});
+                                continue;
+                            }
+
+                            if let Some((chat, request_seq, server_id)) = client.own_echo(&operation) { publish(Update::OwnEcho { chat, request_seq, server_id }); }
+
                             if operation["type"].as_u64() == Some(40) {
                                 if let (Some(chat), Some(message)) = (operation["param1"].as_str(),operation["param2"].as_str()) { publish(Update::ReadElsewhere { chat: chat.into(), up_to_message: message.into() }); }
                                 continue;
@@ -350,6 +455,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         client.messages(&id)
                     } {
                         Ok(messages) => {
+                            publish_echoes(&id, &messages, &publish);
                             pending = Some(Command::Receipts { chat: id.clone() });
                             publish(Update::Messages {
                                 id, generation, messages: messages.into_iter().map(|m| message_view(m, &mut jobs)).collect(),
@@ -361,11 +467,12 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         }),
                     },
                     Command::Send {
+                        request_seq,
                         id,
                         generation,
                         text,
                         local_id,
-                    } => match client.send_text(&id, &text) {
+                    } => match client.send_text_with_request(&id, &text, request_seq) {
                         Ok(message) => {
                             publish(Update::Sent {
                                 id: id.clone(),
@@ -416,7 +523,10 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     }
                 }
             } else {
-                if let Some(wait) = markers.wait(Instant::now()) {
+                if let Some(wait) = (sync_connected && exposure_gate.accepts(exposure_gate.epoch()))
+                    .then(|| markers.wait(Instant::now()))
+                    .flatten()
+                {
                     match rx.recv_timeout(wait) {
                         Ok(command) => pending = Some(command),
                         Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -435,6 +545,8 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
         commands: tx,
         stop,
         pairing_cancel,
+        read_gate,
+        thread: Some(thread),
     }
 }
 
@@ -462,6 +574,7 @@ fn start_sync(
     let paths = paths.clone();
     let tx = tx.clone();
     let thread = std::thread::spawn(move || {
+        line_wasm_poc::client::desktop::set_cancellation_token(thread_stop.clone());
         let publish = |event| {
             let mut command = Command::Push { epoch, event };
             loop {
@@ -518,7 +631,11 @@ fn connect(
                 }
             }
             Ok(Command::Original { request, .. }) => publish(Update::OriginalFailed { request }),
-            Ok(Command::Send { id, local_id, .. }) => publish(Update::SendFailed { id, local_id }),
+            Ok(Command::Send { id, local_id, .. }) => publish(Update::SendRejected {
+                id,
+                local_id,
+                reason: "Connection is unavailable. Try again after reconnecting.".into(),
+            }),
             Ok(Command::Stop) | Err(_) => return None,
             Ok(_) => {}
         }
@@ -550,6 +667,18 @@ fn reauthenticate(
     }
 }
 
+fn publish_echoes(chat: &str, messages: &[Message], publish: &impl Fn(Update)) {
+    for message in messages.iter().filter(|m| m.outgoing) {
+        if let Some(request_seq) = message.request_seq {
+            publish(Update::OwnEcho {
+                chat: chat.into(),
+                request_seq,
+                server_id: message.id.clone(),
+            });
+        }
+    }
+}
+
 fn asset_key(asset: Option<Asset>, jobs: &mut Vec<(String, Asset)>) -> String {
     if let Some(asset) = asset {
         let key = asset.key();
@@ -569,6 +698,7 @@ fn chat_view(chat: Chat, jobs: &mut Vec<(String, Asset)>) -> ChatView {
         unread: chat.unread,
         muted: chat.muted,
         last_read_message: chat.last_read_message,
+        last_message_id: chat.last_message_id,
         member_count: chat.member_count,
         outgoing_preview: chat.outgoing_preview,
         group: chat.group,
@@ -593,7 +723,21 @@ fn message_view(message: Message, jobs: &mut Vec<(String, Asset)>) -> MessageVie
         delivered_time: message.delivered_time,
         outgoing: message.outgoing,
         image_key: asset_key(message.image, jobs),
+        emoji: message
+            .rich
+            .emoji
+            .iter()
+            .map(|span| EmojiView {
+                span: span.clone(),
+                image_key: asset_key(Asset::inline_emoji(span), jobs),
+            })
+            .collect(),
         rich: message.rich,
+        decryption_failed: message.decryption_failed,
+        mentioned: message.mentioned,
+        // Legacy cached text stays visible offline, but unknown unread metadata
+        // must not participate in exposure/counting. Never persist this UI flag.
+        skip_badge: message.skip_badge || message.metadata_version < 2,
         reactions: message
             .reactions
             .into_iter()
@@ -671,6 +815,22 @@ pub fn check(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
 mod tests {
     use super::*;
     #[test]
+    fn legacy_cached_text_remains_visible_without_assuming_unread_metadata() {
+        let mut message: Message = serde_json::from_value(serde_json::json!({
+            "id":"123", "body":"cached text", "timestamp_ms":1,
+            "outgoing":false, "image":null,"reactions":[],"encrypted":false,
+            "decryption_failed":false
+        }))
+        .unwrap();
+        let legacy = message_view(message.clone(), &mut Vec::new());
+        assert_eq!(legacy.body, "cached text");
+        assert!(legacy.skip_badge);
+        assert!(!message.skip_badge);
+        message.metadata_version = 2;
+        assert!(!message_view(message, &mut Vec::new()).skip_badge);
+    }
+
+    #[test]
     fn failed_startup_keeps_retry_and_explicit_sign_in_receiver_alive() {
         let root = std::env::temp_dir().join(format!("line-missing-auth-{}", std::process::id()));
         let (tx, rx) = mpsc::channel();
@@ -702,5 +862,22 @@ mod tests {
             Update::SignInFailed { cancelled: true }
         ));
         assert!(!root.exists());
+    }
+    #[test]
+    fn read_revocation_is_immediate_even_when_command_queue_is_full() {
+        let gate = ReadGate::default();
+        gate.allow();
+        let old = gate.epoch();
+        let (tx, _rx) = mpsc::sync_channel(1);
+        assert!(tx.try_send(Command::Stop).is_ok());
+        gate.revoke();
+        assert!(
+            tx.try_send(Command::ReadActivity { allowed: false })
+                .is_err()
+        );
+        assert!(!gate.accepts(old));
+        gate.allow();
+        assert!(!gate.accepts(old));
+        assert!(gate.accepts(gate.epoch()));
     }
 }

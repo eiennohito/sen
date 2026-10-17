@@ -1,0 +1,40 @@
+import { Button } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+
+export component RecoveryDialog inherits Rectangle {
+    visible: State.recovery-kind != "";
+    width: 100%; height: 100%;
+    background: Tokens.foreground.with-alpha(0.32);
+    TouchArea { }
+    property <bool> opened: State.recovery-kind != "";
+    changed opened => { if self.opened { cancel.focus(); } }
+    FocusScope {
+        key-pressed(event) => {
+            if !State.ime-active && event.text == Key.Tab {
+                if event.modifiers.shift && cancel.has-focus { if State.recovery-kind == "edit" { append.focus(); } else { resend.focus(); } return accept; }
+                if !event.modifiers.shift && (append.has-focus || resend.has-focus) { cancel.focus(); return accept; }
+            }
+            if !State.ime-active && event.text == Key.Escape { State.resolve-recovery("cancel"); return accept; }
+            reject
+        }
+        Rectangle {
+            width: min(440px, parent.width - 32px);
+            height: content.preferred-height + 32px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Tokens.surface; border-width: 1px; border-color: Tokens.border;
+            content := VerticalLayout {
+                padding: 16px; spacing: 12px;
+                Text { text: State.recovery-kind == "resend" ? "Send again?" : "Use message text?"; font-size: Tokens.heading; wrap: word-wrap; }
+                Text { text: State.recovery-kind == "resend" ? "The message may already have arrived. Sending again could create a duplicate." : "There is already a draft in this conversation. Replace it or append this message?"; color: Tokens.foreground; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    cancel := Button { text: "Cancel"; clicked => { State.resolve-recovery("cancel"); } }
+                    replace := Button { visible: State.recovery-kind == "edit"; enabled: self.visible; text: "Replace"; clicked => { State.resolve-recovery("replace"); } }
+                    append := Button { visible: State.recovery-kind == "edit"; enabled: self.visible; text: "Append"; clicked => { State.resolve-recovery("append"); } }
+                    resend := Button { visible: State.recovery-kind == "resend"; enabled: self.visible; text: "Resend"; clicked => { State.resolve-recovery("resend"); } }
+                }
+            }
+        }
+    }
+}

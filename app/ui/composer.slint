@@ -3,6 +3,7 @@ import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { Pane } from "scrollpane.slint";
+import { DraftEditor } from "draft-editor.slint";
 
 export component Composer inherits Rectangle {
     height: min(State.conversation-height / 3, max(132px, draft-measure.preferred-height + 78px));
@@ -17,20 +18,7 @@ draft-measure := Text {
                 background: Tokens.surface;
                 VerticalLayout {
                     padding: 12px; spacing: 8px;
-                    composer := TextEdit {
-                        content-y <=> State.editor-y;
-                        text <=> State.draft; enabled: State.has-chat;
-                        accessible-label: "Message draft"; wrap: word-wrap;
-                        font-size: Tokens.base;
-                        edited => { State.draft-edited(); }
-                        key-pressed(event) => {
-                            if event.text == Key.Return && event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta && !State.ime-active && !State.auth-open && !State.settings-open && !State.viewer-open && !State.profile-open {
-                                if State.can-send && !event.repeat { State.send(); }
-                                return accept;
-                            }
-                            reject
-                        }
-                    }
+                    composer := DraftEditor { }
                     HorizontalLayout {
                         height: max(36px, max(send-caption.preferred-height, send-button.preferred-height)); spacing: 8px;
                         send-caption := Text { text: State.send-reason; color: Tokens.secondary; font-size: Tokens.time; wrap: word-wrap; vertical-alignment: center; }
@@ -38,5 +26,6 @@ draft-measure := Text {
                     }
                 }
             }
-    public function focus-editor() { composer.focus(); }
+    public function focus-editor() { composer.focus-editor(); }
+    public function restore-editor(anchor: int, caret: int) { composer.restore(anchor, caret); }
 }

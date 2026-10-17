@@ -5,10 +5,16 @@ pub(crate) struct Reading {
     pub(crate) y: f32,
     pub(crate) latest: bool,
     pub(crate) editor_y: f32,
+    pub(crate) editor_caret: i32,
+    pub(crate) editor_anchor: i32,
     pub(crate) messages: Vec<MessageRow>,
 }
 #[derive(Default)]
 pub(crate) struct View {
+    pub(crate) unread: unread::Unread,
+    pub(crate) read_activity: Option<bool>,
+    pub(crate) read_gate: Option<std::sync::Arc<account::ReadGate>>,
+    pub(crate) attention: Option<attention::Attention>,
     pub(crate) friends: Vec<FriendRow>,
     pub(crate) friends_loaded: bool,
     pub(crate) profile_id: String,
@@ -17,6 +23,10 @@ pub(crate) struct View {
     pub(crate) ids: Vec<String>,
     pub(crate) current: String,
     pub(crate) messages: Vec<MessageRow>,
+    pub(crate) paging: RefCell<HashMap<String, history_window::HistoryWindow>>,
+    pub(crate) recent: HashMap<String, Vec<MessageRow>>,
+    pub(crate) demo_paging: bool,
+    pub(crate) demo_page_failure: bool,
     pub(crate) history: HashMap<String, Reading>,
     pub(crate) generation: u64,
     pub(crate) query: String,
@@ -25,9 +35,16 @@ pub(crate) struct View {
     pub(crate) saved: storage::Saved,
     pub(crate) storage: Option<storage::Storage>,
     pub(crate) deferred: Vec<account::Update>,
+    pub(crate) deferred_counted: std::collections::HashSet<String>,
     pub(crate) serial: u64,
+    pub(crate) retained_request_seqs: Option<Vec<u32>>,
     pub(crate) aliases: HashMap<(String, String), (String, i64)>,
     pub(crate) viewer_request: u64,
+    pub(crate) notification_connection: u8,
+    pub(crate) notification_through: HashMap<String, String>,
+    pub(crate) background: background::Controller,
+    pub(crate) notification_reads: HashMap<String, String>,
+    pub(crate) file_request: u64,
     pub(crate) paths: Option<account::Paths>,
     pub(crate) pairing_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
@@ -44,6 +61,7 @@ impl View {
             return;
         }
         self.rows[index].preview = single_line(&last.body).into();
+        self.rows[index].outgoing_preview = last.outgoing;
         self.rows[index].activity = last.sort_key.clone();
         self.rows[index].time = list_time(last.sort_key.parse().unwrap_or(0)).into();
         self.filter(ui);
@@ -85,9 +103,14 @@ impl View {
             self.saved.selected_title = ui.get_chat_title().to_string();
         }
         self.saved.font_size = ui.get_text_size();
+        self.saved.enter_sends = ui.get_enter_sends();
+        self.capture_notification_settings(ui);
+        self.background.capture(ui, &mut self.saved);
     }
     pub(crate) fn persist(&mut self, ui: &AppWindow) {
         self.capture(ui);
+        self.retain_send_requests();
+        self.filter(ui);
         if let Some(storage) = &self.storage {
             storage.save(self.saved.clone());
         }
@@ -103,6 +126,8 @@ impl View {
                 y: ui.get_history_y(),
                 latest: ui.get_following(),
                 editor_y: ui.get_editor_y(),
+                editor_caret: ui.get_editor_caret(),
+                editor_anchor: ui.get_editor_anchor(),
                 messages: self.messages.clone(),
             },
         );
@@ -128,6 +153,18 @@ impl View {
         self.capture(ui);
         self.remember(ui);
         self.current = id;
+        if let Some(gate) = &self.read_gate {
+            gate.revoke();
+        }
+        for entry in self.unread.chats.values_mut() {
+            entry.queued = false;
+        }
+        self.read_activity = None;
+        self.unread.enter(&self.current);
+        if self.history.contains_key(&self.current) {
+            self.unread.chats.get_mut(&self.current).unwrap().jump = false;
+        }
+        ui.global::<State>().set_unread_divider("".into());
         self.generation += 1;
         ui.set_has_chat(true);
         ui.set_selected_chat(index as i32);
@@ -153,10 +190,17 @@ impl View {
                 .map(|chat| chat.messages.clone())
                 .unwrap_or_default();
         }
+        let (anchor, caret) = reading
+            .map(|r| (r.editor_anchor, r.editor_caret))
+            .unwrap_or((0, 0));
+        self.bound_history(ui, &self.current.clone());
+        self.paging_status(ui);
+        self.unread_page(ui);
         self.render(ui);
         ui.invoke_show_history(y, latest);
+        ui.invoke_restore_editor(anchor, caret);
         ui.set_editor_y(editor_y);
-        ui.set_chat_subtitle("".into());
+        ui.set_chat_subtitle(chat_subtitle(&self.rows[index]).into());
         if !self.demo {
             self.load(ui, false);
         }
@@ -177,6 +221,12 @@ impl View {
         ));
     }
     pub(crate) fn request(&self, ui: &AppWindow, command: account::Command) -> bool {
+        let feedback = match &command {
+            account::Command::Chats { .. } => 1,
+            account::Command::Messages { .. } => 2,
+            account::Command::Friends => 3,
+            _ => 0,
+        };
         if self
             .commands
             .as_ref()
@@ -184,7 +234,13 @@ impl View {
         {
             true
         } else {
-            ui.set_list_error("Account is busy. Try again shortly.".into());
+            let message = "Account is busy. Try again shortly.".into();
+            match feedback {
+                1 => ui.set_list_error(message),
+                2 => ui.set_history_error(message),
+                3 => ui.set_friends_error(message),
+                _ => {} // Send and media callers place their own item-local failure.
+            }
             false
         }
     }
@@ -221,20 +277,123 @@ impl View {
                 row.id = local.clone().into();
                 row.sort_key = order_key(*timestamp).into();
                 row.time = display_time(*timestamp).into();
-                row.delivery = "Sent".into();
+                if row.delivery != "Read" {
+                    row.delivery = "Sent".into();
+                }
             }
         }
         messages.sort_by(|a, b| a.sort_key.cmp(&b.sort_key));
         group_messages(&mut messages);
+        let sender = self
+            .ids
+            .iter()
+            .position(|id| id == chat)
+            .and_then(|i| self.rows.get(i))
+            .map(|row| row.title.as_str())
+            .unwrap_or("contact");
+        for row in &mut messages {
+            crate::links::decorate_message(row, sender);
+        }
         messages
     }
     pub(crate) fn render(&self, ui: &AppWindow) {
-        let desired = self.with_outbox(&self.current, self.messages.clone());
+        let mut all = self.with_outbox(&self.current, self.messages.clone());
+        let mut replies: HashMap<String, String> = all
+            .iter()
+            .map(|row| {
+                (
+                    row.id.to_string(),
+                    format!(
+                        "{}{}{}",
+                        row.sender_name,
+                        if row.sender_name.is_empty() { "" } else { ": " },
+                        single_line(&row.body)
+                    )
+                    .chars()
+                    .take(80)
+                    .collect(),
+                )
+            })
+            .collect();
+        for ((chat, server), (local, _)) in &self.aliases {
+            if chat == &self.current
+                && let Some(preview) = replies.get(local).cloned()
+            {
+                replies.insert(server.clone(), preview);
+            }
+        }
+        for row in &mut all {
+            if !row.reply_id.is_empty() {
+                row.reply_preview = replies
+                    .get(row.reply_id.as_str())
+                    .cloned()
+                    .unwrap_or_else(|| "Message unavailable".into())
+                    .into();
+            }
+        }
+        let ids: Vec<String> = all.iter().map(|row| row.id.to_string()).collect();
+        let range = self
+            .paging
+            .borrow_mut()
+            .entry(self.current.clone())
+            .or_default()
+            .range(&ids, ui.get_following());
+        let evicted = self
+            .paging
+            .borrow()
+            .get(&self.current)
+            .is_some_and(|window| window.newer_evicted);
+        ui.global::<State>()
+            .set_history_can_follow(range.end == all.len() && !evicted);
+        let mut desired = all[range].to_vec();
+        ui.global::<State>()
+            .set_history_retained(self.messages.len() as i32);
+        ui.global::<State>().set_history_pages(
+            self.paging
+                .borrow()
+                .get(&self.current)
+                .map(|window| window.page_count())
+                .unwrap_or(0) as i32,
+        );
         let model = ui.get_messages();
         // Stable row identity retains text selection and active context menus
         // across confirmations, receipts, and refreshes of unchanged messages.
         if let Some(model) = model.as_any().downcast_ref::<VecModel<MessageRow>>() {
-            for (i, row) in desired.iter().enumerate() {
+            for (i, row) in desired.iter_mut().enumerate() {
+                // Link models are derived presentation data. Reuse the old model
+                // for unchanged text so metadata updates preserve row identity.
+                if let Some(old) = model
+                    .row_data(i)
+                    .filter(|old| old.id == row.id && old.body == row.body)
+                {
+                    row.links = old.links;
+                    if row.rich_runs.row_count() == old.rich_runs.row_count()
+                        && (0..row.rich_runs.row_count()).all(|i| {
+                            let a = row.rich_runs.row_data(i).unwrap_or_default();
+                            let b = old.rich_runs.row_data(i).unwrap_or_default();
+                            a.text == b.text
+                                && a.image_key == b.image_key
+                                && a.emoji == b.emoji
+                                && a.newline == b.newline
+                        })
+                    {
+                        if let Some(existing) =
+                            old.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>()
+                        {
+                            for i in 0..row.rich_runs.row_count() {
+                                if let Some(incoming) = row.rich_runs.row_data(i)
+                                    && incoming.has_picture
+                                    && let Some(mut previous) = existing.row_data(i)
+                                {
+                                    previous.picture = incoming.picture;
+                                    previous.has_picture = true;
+                                    existing.set_row_data(i, previous);
+                                }
+                            }
+                        }
+                        row.rich_runs = old.rich_runs;
+                    }
+                }
                 if model.row_data(i).is_some_and(|old| old.id == row.id) {
                     if model.row_data(i).as_ref() != Some(row) {
                         model.set_row_data(i, row.clone());
@@ -262,34 +421,118 @@ impl View {
         ui.set_messages(ModelRc::new(VecModel::from(desired)));
     }
     pub(crate) fn update(&mut self, ui: &AppWindow, event: account::Update) {
+        // Attention and unread accounting follow receipt, independently of
+        // deferred visual mutations during a selection or scrollbar drag.
+        self.notification_update(ui, &event);
+        if let account::Update::Incoming {
+            chat,
+            messages,
+            replay: false,
+        } = &event
+        {
+            self.unread.incoming(
+                chat,
+                messages
+                    .iter()
+                    .filter(|m| !m.outgoing && !m.skip_badge)
+                    .map(|m| m.id.clone()),
+            );
+            self.unread_ui(ui);
+        }
+        self.update_render(ui, event);
+    }
+    pub(crate) fn update_render(&mut self, ui: &AppWindow, event: account::Update) {
         if (ui.get_list_pressed()
             && matches!(
                 event,
                 account::Update::Chats { .. }
+                    | account::Update::Withdrawn { .. }
                     | account::Update::Incoming { .. }
                     | account::Update::ChatMeta { .. }
                     | account::Update::Messages { .. }
+                    | account::Update::Older { .. }
+                    | account::Update::OlderFailed { .. }
                     | account::Update::Sent { .. }
                     | account::Update::SendFailed { .. }
+                    | account::Update::SendRejected { .. }
+                    | account::Update::SendUncertain { .. }
+                    | account::Update::OwnEcho { .. }
             ))
-            || (ui.get_history_dragging()
+            || ((ui.get_history_dragging() || ui.global::<State>().get_history_interacting())
                 && matches!(
                     event,
-                    account::Update::Messages { .. }
+                    account::Update::Older { .. }
+                        | account::Update::OlderFailed { .. }
+                        | account::Update::Messages { .. }
+                        | account::Update::Withdrawn { .. }
                         | account::Update::Incoming { .. }
                         | account::Update::Receipt { .. }
                         | account::Update::Image { .. }
                         | account::Update::ImageFailed { .. }
                         | account::Update::Sent { .. }
                         | account::Update::SendFailed { .. }
+                        | account::Update::SendRejected { .. }
+                        | account::Update::SendUncertain { .. }
+                        | account::Update::OwnEcho { .. }
                 ))
         {
-            self.deferred.push(event);
+            self.defer_update(ui, event);
             return;
         }
         match event {
-            // Older requests are not issued by the UI until S10 supplies paging.
-            account::Update::Older { .. } | account::Update::OlderFailed { .. } => {}
+            account::Update::Older {
+                chat,
+                before_message,
+                messages,
+                reached_beginning,
+            } => {
+                if self
+                    .paging
+                    .borrow()
+                    .get(&chat)
+                    .and_then(|window| window.request.as_ref())
+                    .is_none_or(|request| request.cursor.message != before_message)
+                {
+                    return;
+                }
+                self.older_arrived(
+                    ui,
+                    &chat,
+                    messages.into_iter().map(message_row).collect(),
+                    reached_beginning,
+                );
+            }
+            account::Update::OlderFailed {
+                chat,
+                before_message,
+            } => {
+                if let Some(window) = self.paging.borrow_mut().get_mut(&chat) {
+                    window.failed(&before_message);
+                }
+                if chat == self.current {
+                    self.paging_status(ui);
+                }
+            }
+            account::Update::Withdrawn { chat, message_id } => {
+                let withdraw = |rows: &mut Vec<MessageRow>| {
+                    if let Some(row) = rows.iter_mut().find(|row| row.id == message_id) {
+                        row.kind = MessageKind::Withdrawn;
+                        row.body = "Message withdrawn".into();
+                        row.image_key = "".into();
+                        row.has_picture = false;
+                        row.rich_runs = ModelRc::default();
+                        row.reply_id = "".into();
+                        row.detail = "".into();
+                    }
+                };
+                if chat == self.current {
+                    withdraw(&mut self.messages);
+                    self.render(ui);
+                }
+                if let Some(history) = self.history.get_mut(&chat) {
+                    withdraw(&mut history.messages);
+                }
+            }
             account::Update::Sync(state) => {
                 use line_wasm_poc::client::desktop::sync::SyncState;
                 let (connected, retrying, message) = match state {
@@ -341,7 +584,7 @@ impl View {
                         }
                         *existing = row;
                     } else {
-                        if !row.outgoing {
+                        if !row.outgoing && !self.deferred_counted.remove(row.id.as_str()) {
                             arrivals += 1;
                         }
                         rows.push(row);
@@ -366,22 +609,28 @@ impl View {
                         || o.server_id.is_empty()
                         || !rows.iter().any(|m| m.id == o.server_id)
                 });
+                self.unread.page(&chat, &rows);
+                self.unread_ui(ui);
                 self.refresh_preview(ui, &chat, &rows);
                 if chat == self.current {
                     if !replay && !ui.get_following() {
                         ui.set_new_count(ui.get_new_count() + arrivals);
                     }
                     self.messages = rows;
+                    self.keep_recent(&chat, true);
+                    self.bound_history(ui, &chat);
                     self.render(ui);
                     self.persist(ui);
                 } else {
                     self.history
-                        .entry(chat)
+                        .entry(chat.clone())
                         .or_insert_with(|| Reading {
                             latest: true,
                             ..Default::default()
                         })
                         .messages = rows;
+                    self.keep_recent(&chat, false);
+                    self.bound_history(ui, &chat);
                 }
             }
             account::Update::ChatMeta {
@@ -389,12 +638,17 @@ impl View {
                 title,
                 preview,
                 timestamp,
-                unread: _,
-                muted: _,
+                unread,
+                muted,
             } => {
+                self.unread.server(&chat, unread, None);
                 if let Some(index) = self.ids.iter().position(|id| id == &chat) {
+                    self.rows[index].muted = muted.unwrap_or(self.rows[index].muted);
                     if !title.is_empty() {
                         self.rows[index].title = single_line(&title).into();
+                    }
+                    if let Some(muted) = muted {
+                        self.rows[index].muted = muted;
                     }
                     self.rows[index].preview = single_line(&preview).into();
                     self.rows[index].activity = order_key(timestamp).into();
@@ -405,10 +659,49 @@ impl View {
             // A bare endpoint cannot establish the reader's exact range. S8
             // consumes ReadRanges before exposing Read or a group reader count.
             account::Update::Receipt { .. } => {}
-            account::Update::ReadElsewhere { .. }
-            | account::Update::ReadMarked { .. }
-            | account::Update::ReadFailed { .. }
-            | account::Update::ReadRanges(_) => {}
+            account::Update::ReadElsewhere {
+                chat,
+                up_to_message,
+            } => {
+                self.unread.elsewhere(&chat, &up_to_message);
+                if let Some(attention) = &self.attention {
+                    attention.withdraw(&chat);
+                }
+                self.unread_ui(ui);
+                self.persist(ui);
+            }
+            account::Update::ReadMarked {
+                chat,
+                up_to_message,
+            } => {
+                if let Some(e) = self.unread.chats.get_mut(&chat)
+                    && (up_to_message.len(), up_to_message.as_str())
+                        >= (e.last_read.len(), e.last_read.as_str())
+                {
+                    e.pending = false;
+                }
+            }
+            account::Update::ReadFailed { .. } => {}
+            account::Update::ReadRanges(ranges) => {
+                self.apply_read_ranges(ui, &ranges);
+            }
+            account::Update::OwnEcho {
+                chat,
+                request_seq,
+                server_id,
+            } => {
+                if let Some(item) = self
+                    .saved
+                    .outbox
+                    .iter_mut()
+                    .find(|item| item.chat == chat && item.request_seq == Some(request_seq))
+                {
+                    item.server_id = server_id;
+                    item.status = "Server confirmed".into();
+                    self.render(ui);
+                    self.persist(ui);
+                }
+            }
             account::Update::SendRejected {
                 id,
                 local_id,
@@ -418,11 +711,10 @@ impl View {
                     .saved
                     .outbox
                     .iter_mut()
-                    .find(|o| o.chat == id && o.local_id == local_id)
+                    .find(|o| o.chat == id && o.local_id == local_id && o.server_id.is_empty())
                 {
                     item.status = format!("Not submitted · {reason}");
                 }
-                ui.set_sending(false);
                 self.render(ui);
                 self.persist(ui);
             }
@@ -440,6 +732,7 @@ impl View {
                             .map(|row| row.avatar.clone())
                             .unwrap_or_default();
                         FriendRow {
+                            header: false,
                             id: friend.id.into(),
                             name: friend.name.into(),
                             status: friend.status.into(),
@@ -472,6 +765,23 @@ impl View {
             account::Update::FriendsFailed => {
                 ui.set_loading_friends(false);
                 ui.set_friends_error("Could not refresh friends and groups. Loaded entries are kept. Use Refresh to retry.".into());
+            }
+            account::Update::FileBytes {
+                request,
+                name,
+                bytes,
+            } => {
+                if request == self.file_request {
+                    crate::rich_content::save_download(ui, name, bytes, self.demo);
+                }
+            }
+            account::Update::FileFailed { request } => {
+                if request == self.file_request {
+                    ui.global::<State>().set_file_saving(false);
+                    ui.global::<State>().set_file_save_status(
+                        "File unavailable or exceeds the 16 MB download limit.".into(),
+                    );
+                }
             }
             account::Update::Original { request, pixels } => {
                 if request != self.viewer_request || !ui.get_viewer_open() {
@@ -569,6 +879,17 @@ impl View {
                 ui.set_connected(false);
                 self.storage.take();
                 self.saved = Default::default();
+                self.retained_request_seqs = None;
+                ui.set_recovery_kind("".into());
+                ui.set_recovery_id("".into());
+                ui.set_recovery_focus_id("".into());
+                ui.set_enter_sends(false);
+                self.unread = Default::default();
+                self.read_activity = None;
+                if let Some(attention) = &self.attention {
+                    attention.withdraw_all();
+                }
+                self.unread_ui(ui);
                 self.current.clear();
                 self.rows.clear();
                 self.ids.clear();
@@ -576,11 +897,17 @@ impl View {
                 self.history.clear();
                 self.aliases.clear();
                 self.deferred.clear();
+                self.deferred_counted.clear();
+                self.paging.borrow_mut().clear();
+                self.recent.clear();
+                self.demo_paging = false;
                 self.query.clear();
                 self.generation += 1;
                 ui.set_chats(ModelRc::default());
                 ui.set_messages(ModelRc::default());
                 ui.set_draft("".into());
+                ui.invoke_restore_editor(0, 0);
+                ui.set_editor_y(0.);
                 ui.set_has_chat(false);
                 ui.set_query("".into());
                 ui.set_selected_chat(-1);
@@ -617,7 +944,20 @@ impl View {
                 // Canonical indices retain identity while the visible list is
                 // sorted newest-first. Updates wait for an active click to finish.
                 for chat in chats {
+                    self.unread.server_through(
+                        &chat.id,
+                        chat.unread,
+                        chat.last_read_message.as_deref(),
+                        chat.last_message_id.as_deref(),
+                    );
                     if let Some(index) = self.ids.iter().position(|id| id == &chat.id) {
+                        self.rows[index].member_count = chat
+                            .member_count
+                            .and_then(|n| i32::try_from(n).ok())
+                            .unwrap_or(0);
+                        self.rows[index].group = chat.group;
+                        self.rows[index].outgoing_preview = chat.outgoing_preview;
+                        self.rows[index].muted = chat.muted.unwrap_or(false);
                         self.rows[index].title = single_line(&chat.title).into();
                         self.rows[index].preview = single_line(&chat.preview).into();
                         self.rows[index].activity = order_key(chat.timestamp).into();
@@ -631,6 +971,13 @@ impl View {
                     } else {
                         self.rows.push(ChatRow {
                             index: self.rows.len() as i32,
+                            group: chat.group,
+                            member_count: chat
+                                .member_count
+                                .and_then(|n| i32::try_from(n).ok())
+                                .unwrap_or(0),
+                            outgoing_preview: chat.outgoing_preview,
+                            muted: chat.muted.unwrap_or(false),
                             title: single_line(&chat.title).into(),
                             initial: chat.title.chars().next().unwrap_or('·').to_string().into(),
                             preview: single_line(&chat.preview).into(),
@@ -643,6 +990,7 @@ impl View {
                     }
                 }
                 self.filter(ui);
+                self.unread_ui(ui);
                 ui.set_more_chats(more);
                 ui.set_loading_chats(false);
                 ui.set_list_error("".into());
@@ -695,6 +1043,22 @@ impl View {
                 messages,
             } => {
                 if id == self.current && generation != self.generation {
+                    return;
+                }
+                if self
+                    .paging
+                    .borrow()
+                    .get(&id)
+                    .and_then(|w| w.request.as_ref())
+                    .is_some_and(|request| request.cursor.message == "recent-range")
+                {
+                    self.older_arrived(
+                        ui,
+                        &id,
+                        messages.into_iter().map(message_row).collect(),
+                        false,
+                    );
+                    ui.set_loading_history(false);
                     return;
                 }
                 let mut messages = messages;
@@ -763,8 +1127,12 @@ impl View {
                     ui.set_new_count(ui.get_new_count() + new as i32);
                 }
                 self.messages = rows;
+                self.keep_recent(&id, true);
+                self.bound_history(ui, &id);
+                self.record_recent_page(&id);
                 ui.set_loading_history(false);
                 ui.set_history_error("".into());
+                self.unread_page(ui);
                 self.render(ui);
                 self.persist(ui);
             }
@@ -815,6 +1183,18 @@ impl View {
                             row.sender_avatar = image.clone();
                             row.has_sender_avatar = true;
                         }
+                        if let Some(runs) =
+                            row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>()
+                        {
+                            for index in 0..runs.row_count() {
+                                let mut run = runs.row_data(index).unwrap();
+                                if run.image_key == key {
+                                    run.picture = image.clone();
+                                    run.has_picture = true;
+                                    runs.set_row_data(index, run);
+                                }
+                            }
+                        }
                         if row.image_key == key {
                             row.picture = image.clone();
                             row.has_picture = true;
@@ -841,6 +1221,7 @@ impl View {
                 for history in self.history.values_mut() {
                     apply(&mut history.messages, &key, &image);
                 }
+                self.bound_all_histories(ui);
                 self.render(ui);
             }
             account::Update::ImageFailed { key } => {
@@ -869,7 +1250,6 @@ impl View {
                     item.status = "Server confirmed · read status unavailable".into();
                     item.server_id = server_id;
                 }
-                ui.set_sending(false);
                 self.render(ui);
                 self.persist(ui);
             }
@@ -878,13 +1258,12 @@ impl View {
                     .saved
                     .outbox
                     .iter_mut()
-                    .find(|o| o.chat == id && o.local_id == local_id)
+                    .find(|o| o.chat == id && o.local_id == local_id && o.server_id.is_empty())
                 {
                     item.status =
                         "Confirmation unavailable · may have arrived. Check before sending again."
                             .into();
                 }
-                ui.set_sending(false);
                 self.render(ui);
                 self.persist(ui);
             }
@@ -895,15 +1274,11 @@ impl View {
                 if generation.is_some_and(|g| g != self.generation) {
                     return;
                 }
-                ui.set_connection_failed(true);
-                ui.set_connected(false);
-                ui.set_retrying_connection(false);
                 if generation.is_some() {
                     ui.set_loading_history(false);
                     ui.set_history_error(message.into());
                 } else {
                     ui.set_list_error(message.into());
-                    ui.set_connected(false);
                     ui.set_loading_chats(false);
                 }
                 self.send_availability(ui);
@@ -968,8 +1343,13 @@ impl View {
                 } else {
                     15
                 });
+                ui.set_enter_sends(saved.enter_sends);
+                self.unread.restore(&saved.unread);
                 self.saved = saved;
+                self.apply_notification_settings(ui);
+                self.background.apply(ui, &self.saved);
                 self.storage = Some(storage);
+                self.unread_ui(ui);
                 ui.set_storage_retryable(true);
                 ui.set_storage_error("".into());
             }
@@ -1001,6 +1381,7 @@ impl View {
             return;
         }
         self.capture(ui);
+        self.retain_send_requests();
         if let Some(storage) = &self.storage
             && !storage.flush(self.saved.clone())
         {
@@ -1044,6 +1425,13 @@ impl View {
         if !ui.get_can_send() {
             return;
         }
+        let Some(request_seq) = self.allocate_request_seq() else {
+            ui.set_storage_error(
+                "Could not allocate a message request number. Sending is unavailable.".into(),
+            );
+            self.send_availability(ui);
+            return;
+        };
         self.serial += 1;
         let local_id = format!(
             "local-{}-{}",
@@ -1053,6 +1441,7 @@ impl View {
         let text = ui.get_draft().to_string();
         self.saved.outbox.push(storage::Outgoing {
             local_id: local_id.clone(),
+            request_seq: Some(request_seq),
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
             chat: self.current.clone(),
             text: text.clone(),
@@ -1074,20 +1463,21 @@ impl View {
             self.send_availability(ui);
             return;
         }
-        if !self.request(
-            ui,
-            account::Command::Send {
-                id: self.current.clone(),
-                generation: self.generation,
-                text: text.clone(),
-                local_id,
-            },
-        ) && let Some(item) = self.saved.outbox.last_mut()
+        let command = account::Command::Send {
+            id: self.current.clone(),
+            generation: self.generation,
+            text: text.clone(),
+            local_id,
+            request_seq,
+        };
+        if self
+            .commands
+            .as_ref()
+            .is_none_or(|tx| tx.try_send(command).is_err())
+            && let Some(item) = self.saved.outbox.last_mut()
         {
-            item.status =
-                "Not submitted · connection unavailable. Append text to draft to retry.".into();
+            item.status = "Not submitted · Try again when connected.".into();
         }
-        ui.set_sending(true);
         self.refresh_preview(ui, &self.current.clone(), &self.messages.clone());
         self.render(ui);
         ui.invoke_latest();

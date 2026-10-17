@@ -4,12 +4,13 @@ import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { Pane } from "scrollpane.slint";
-export { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow } from "types.slint";
+export { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow, RichRun } from "types.slint";
 import { Rail } from "rail.slint";
 import { Friends } from "friends.slint";
 import { Chats } from "chats.slint";
 import { Conversation } from "conversation.slint";
-import { Sheets } from "sheets.slint";
+import { Layers } from "layers.slint";
+import { RecoveryDialog } from "recovery-dialog.slint";
 
 export component AppWindow inherits Window {
     in property <bool> migration-needed;
@@ -17,7 +18,8 @@ export component AppWindow inherits Window {
     in-out property <string> desktop-warning <=> State.desktop-warning;
     in-out property <string> connection-status <=> State.connection-status;
     callback migration-choice(bool);
-    public function go-back() { if root.narrow && root.show-conversation && !root.auth-open && !root.settings-open && !root.viewer-open && !root.profile-open && !root.migration-needed { root.show-conversation = false; if root.section == 1 { root.focus-friend-search(); } else { root.focus-search(); } } }
+    public function go-back() { if root.narrow && root.show-conversation && !State.modal-open && !root.migration-needed { root.show-conversation = false; if root.section == 1 { root.focus-friend-search(); } else { root.focus-search(); } } }
+    property <bool> compact-detail: !root.narrow && root.profile-open && root.width < 1024px;
     in-out property <int> section <=> State.section;
     in-out property <[FriendRow]> friends <=> State.friends;
     in-out property <int> friend-result <=> State.friend-result;
@@ -35,13 +37,16 @@ export component AppWindow inherits Window {
     in-out property <bool> profile-group <=> State.profile-group;
     in-out property <image> profile-avatar <=> State.profile-avatar;
     in-out property <bool> profile-available <=> State.profile-available;
+    in-out property <int> category <=> State.category;
+    callback filter-category(); callback switch-chat(int);
     callback browse(int); callback refresh-friends(); callback filter-friends();
     callback open-profile(string); callback start-friend-chat();
     public function show-profile() { root.profile-open = true; State.focus-profile-close(); }
-    public function close-profile() { root.profile-open = false; State.focus-friend-search(); }
+    public function close-profile() { root.profile-open = false; State.focus-friend-list(); }
     in-out property <bool> ime-active <=> State.ime-active;
     public function focus-composer() { conversation.focus-editor(); }
-    title: root.demo ? "LINE (preview)" : "LINE";
+    public function focus-reading-before-editor() { conversation.focus-reading-before-editor(); }
+    title: root.demo ? "LINE (preview)" : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
     icon: @image-url("../assets/icon.svg");
     preferred-width: 980px; preferred-height: 720px;
     min-width: 360px; min-height: 520px;
@@ -54,6 +59,18 @@ export component AppWindow inherits Window {
     in-out property <string> chat-title <=> State.chat-title;
     in-out property <string> chat-subtitle <=> State.chat-subtitle;
     in-out property <string> draft <=> State.draft;
+    in-out property <bool> enter-sends <=> State.enter-sends;
+    in-out property <int> editor-caret <=> State.editor-caret;
+    in-out property <int> editor-anchor <=> State.editor-anchor;
+    in-out property <bool> composer-focused <=> State.composer-focused;
+    in-out property <string> recovery-kind <=> State.recovery-kind;
+    in-out property <string> recovery-id <=> State.recovery-id;
+    in-out property <string> recovery-focus-id <=> State.recovery-focus-id;
+    in-out property <string> recovery-focus-action <=> State.recovery-focus-action;
+    callback retry-message(string);
+    callback resolve-recovery(string);
+    callback quit();
+    public function restore-editor(anchor: int, caret: int) { conversation.restore-editor(anchor, caret); }
     in-out property <bool> can-send <=> State.can-send;
     in-out property <string> send-reason <=> State.send-reason;
     in-out property <bool> list-pressed <=> State.list-pressed;
@@ -70,7 +87,7 @@ export component AppWindow inherits Window {
     property <float> viewer-zoom <=> State.viewer-zoom;
     callback open-photo(string); callback photo-closed();
     public function show-viewer(key: string) { root.viewer-open = true; root.viewer-key = key; root.viewer-zoom = 1; State.reset-viewer(); State.focus-viewer-close(); }
-    public function close-viewer() { root.viewer-open = false; State.focus-history(); root.photo-closed(); }
+    public function close-viewer() { root.viewer-open = false; State.focus-history(); State.viewer-return-key = root.viewer-key; State.viewer-return-serial += 1; root.viewer-key = ""; root.photo-closed(); }
     in-out property <bool> connected <=> State.connected;
     in-out property <bool> connection-failed <=> State.connection-failed;
     in-out property <bool> retrying-connection <=> State.retrying-connection;
@@ -83,10 +100,10 @@ export component AppWindow inherits Window {
     in-out property <string> auth-error <=> State.auth-error;
     callback reconnect(); callback start-sign-in(); callback cancel-sign-in();
     public function account-ready() { root.auth-open = false; root.show-conversation = false; State.focus-search(); }
+    public function close-settings() { root.settings-open = false; State.focus-settings-opener(); }
     public function close-sign-in() { root.auth-open = false; State.focus-sign-in-opener(); }
     public function open-sign-in() { root.auth-open = true; State.focus-auth-start(); }
 
-    in-out property <bool> sending <=> State.sending;
     in-out property <bool> demo <=> State.demo;
     in-out property <bool> more-chats <=> State.more-chats;
     in-out property <bool> has-chat <=> State.has-chat;
@@ -102,39 +119,29 @@ export component AppWindow inherits Window {
     in-out property <int> new-count <=> State.new-count;
     in-out property <length> history-y <=> State.history-y;
     out property <bool> history-dragging <=> State.history-dragging;
-    changed history-dragging => { if !root.history-dragging { root.release-deferred(); } }
+    changed history-dragging => { if !root.history-dragging { State.release-deferred(); } }
     in-out property <string> query <=> State.query;
     in-out property <length> list-y <=> State.list-y;
     in-out property <length> editor-y <=> State.editor-y;
     property <length> search-list-y <=> State.search-list-y;
     property <bool> searching <=> State.searching;
-    property <int> result-focus <=> State.result-focus;
+    in-out property <int> result-focus <=> State.result-focus;
     property <bool> narrow <=> State.narrow;
-    property <string> anchor-id <=> State.anchor-id;
-    property <length> anchor-screen-y <=> State.anchor-screen-y;
-    property <bool> capture-anchor <=> State.capture-anchor;
-    property <length> restore-y <=> State.restore-y;
-    property <bool> restore-pending <=> State.restore-pending;
     callback select-chat(int);
     callback search-changed(string);
     callback draft-edited();
     callback refresh(); callback retry-history(); callback more(); callback send();
     callback settings-changed(); callback retry-storage(); callback recover-message(string); callback demo-event(int); callback release-deferred();
     public function show-history(y: length, latest: bool) {
-        root.anchor-id = "";
         root.following = latest;
-        root.restore-y = y;
-        root.restore-pending = true;
+        root.history-y = y;
+        if latest { conversation.jump(-State.history-extent); }
     }
-    public function latest() { root.following = true; root.new-count = 0; conversation.jump(-State.history-extent); root.capture-anchor = true; }
-    Timer { interval: 16ms; running: root.capture-anchor; triggered => { root.capture-anchor = false; } }
-    Timer {
-        interval: 1ms; running: root.restore-pending;
-        triggered => {
-            root.capture-anchor = true;
-            conversation.jump(root.following ? -State.history-extent : root.restore-y);
-            root.restore-pending = false;
-        }
+    public function latest() {
+        State.latest-request();
+        root.following = true;
+        root.new-count = 0;
+        conversation.jump(-State.history-extent);
     }
     auth-notice := Rectangle {
         x: 0px; y: 0px; width: root.width;
@@ -151,15 +158,15 @@ export component AppWindow inherits Window {
         }
     }
     FocusScope {
-        key-pressed(event) => { if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
+        key-pressed(event) => { if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: auth-notice.height;
         width: 100%; height: root.height - auth-notice.height;
-        visible: !root.auth-open && !root.settings-open && !root.viewer-open && !root.profile-open && !root.migration-needed;
+        visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.profile-open) && !root.migration-needed;
         rail := Rail { x: 0px; y: root.narrow ? parent.height - 48px : 0px; width: root.narrow ? parent.width : 56px; height: root.narrow ? 48px : parent.height; visible: !root.narrow || !root.show-conversation; }
         browser := Rectangle {
             x: root.narrow ? 0px : 56px; y: 0px;
             height: parent.height - (root.narrow ? 48px : 0px);
-            visible: !State.narrow || !State.show-conversation;
+            visible: (!State.narrow || !State.show-conversation) && !root.compact-detail;
             width: !self.visible ? 0px : State.narrow ? State.window-width : 286px;
             horizontal-stretch: 0;
             background: Tokens.alternate-background; clip: true;
@@ -167,7 +174,7 @@ export component AppWindow inherits Window {
  chats-surface := Chats {}
 }
 
-        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: parent.width - self.x; height: parent.height; visible: !root.narrow || root.show-conversation; }
+        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!root.narrow && root.profile-open ? 320px : 0px)); height: parent.height; visible: !root.narrow || root.show-conversation; }
     }
     property <length> token-base: root.text-size * 1px;
     changed token-base => { Tokens.base = root.token-base; }
@@ -175,17 +182,19 @@ export component AppWindow inherits Window {
     changed state-window-width => { State.window-width = root.width; }
     init => { State.window-width = root.width; Tokens.base = root.text-size * 1px; }
     public function focus-search() { chats-surface.focus-search(); }
+    public function focus-chat-list() { chats-surface.focus-list(); }
+    public function focus-friend-list() { friends-surface.focus-list(); }
     public function focus-friend-search() { friends-surface.focus-search(); }
     public function focus-settings-opener() { rail.focus-navigation(); }
-    public function focus-settings-close() { sheets.focus-settings(); }
-    public function focus-profile-close() { sheets.focus-profile(); }
-    public function focus-auth-start() { sheets.focus-auth(); }
-    public function focus-viewer-close() { sheets.focus-viewer(); }
+    public function focus-settings-close() { layers.focus-settings(); }
+    public function focus-profile-close() { layers.focus-profile(); }
+    public function focus-auth-start() { layers.focus-auth(); }
+    public function focus-viewer-close() { layers.focus-viewer(); }
     public function focus-history() { conversation.focus-history(); }
     public function focus-sign-in-opener() { sign-in-opener.focus(); }
-    public function reset-viewer() { sheets.reset-viewer(); }
+    public function reset-viewer() { layers.reset-viewer(); }
     public function history-jump(y: length) { conversation.jump(y); }
-    sheets := Sheets {}
+    layers := Layers {}
     Rectangle {
         width: 100%; height: 100%; visible: root.migration-needed; background: Tokens.background;
         VerticalLayout {
@@ -197,4 +206,5 @@ export component AppWindow inherits Window {
             if root.migration-error != "": Text { text: root.migration-error; color: Tokens.danger; wrap: word-wrap; }
         }
     }
+    RecoveryDialog { }
 }

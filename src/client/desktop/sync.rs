@@ -122,14 +122,24 @@ pub fn receive(
                         .downcast_ref::<RpcError>()
                         .is_some_and(|e| matches!(e.http, 401 | 403))
                     {
-                        if refreshed_once
-                            || refresh(&mut api, &mut state, state_path, stop, &mut deliver)
-                                .is_err()
-                        {
+                        if refreshed_once {
                             deliver(Event::State(SyncState::AuthExpired));
                             return Ok(());
                         }
-                        refreshed_once = true;
+                        match refresh(&mut api, &mut state, state_path, stop, &mut deliver) {
+                            Ok(()) => refreshed_once = true,
+                            Err(error) if expired_refresh(&error) => {
+                                deliver(Event::State(SyncState::AuthExpired));
+                                return Ok(());
+                            }
+                            Err(_) => {
+                                attempt += 1;
+                                if !deliver(Event::State(retry_state(attempt))) {
+                                    break;
+                                }
+                                pause(stop, backoff(attempt));
+                            }
+                        }
                     } else {
                         attempt += 1;
                         if !deliver(Event::State(retry_state(attempt))) {
@@ -150,15 +160,36 @@ pub fn receive(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        if matches!(result, Ok(401 | 403)) {
-            if refreshed_once
-                || refresh(&mut api, &mut state, state_path, stop, &mut deliver).is_err()
-            {
+        if result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.downcast_ref::<ExpiredSession>().is_some())
+        {
+            deliver(Event::State(SyncState::AuthExpired));
+            return Ok(());
+        }
+        if matches!(result, Ok(401 | 403))
+            || result.as_ref().err().is_some_and(|error| {
+                error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|e| e.code == 119)
+            })
+        {
+            if refreshed_once {
                 deliver(Event::State(SyncState::AuthExpired));
                 return Ok(());
             }
-            refreshed_once = true;
-            continue;
+            match refresh(&mut api, &mut state, state_path, stop, &mut deliver) {
+                Ok(()) => {
+                    refreshed_once = true;
+                    continue;
+                }
+                Err(error) if expired_refresh(&error) => {
+                    deliver(Event::State(SyncState::AuthExpired));
+                    return Ok(());
+                }
+                Err(_) => {}
+            }
         }
         attempt += 1;
         if !deliver(Event::State(retry_state(attempt))) {
@@ -168,6 +199,21 @@ pub fn receive(
     }
     Ok(())
 }
+#[derive(Debug)]
+struct ExpiredSession;
+impl std::fmt::Display for ExpiredSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Session authorization expired")
+    }
+}
+impl std::error::Error for ExpiredSession {}
+fn expired_refresh(error: &anyhow::Error) -> bool {
+    error.downcast_ref::<ExpiredSession>().is_some()
+        || error.downcast_ref::<RpcError>().is_some_and(|e| {
+            ((400..500).contains(&e.http) && !matches!(e.http, 408 | 429)) || e.code == 10201
+        })
+}
+
 fn retry_state(attempt: u32) -> SyncState {
     if attempt >= 5 {
         SyncState::Offline
@@ -182,7 +228,10 @@ fn refresh(
     stop: &AtomicBool,
     deliver: &mut impl FnMut(Event) -> bool,
 ) -> Result<()> {
-    let token = required(&state["token_v3_issue_result"], "refreshToken")?;
+    let token = state["token_v3_issue_result"]["refreshToken"]
+        .as_str()
+        .filter(|token| !token.is_empty())
+        .ok_or(ExpiredSession)?;
     let value = api.call(
         "/api/auth/tokenRefresh",
         &json!({"refreshToken":token}),
@@ -220,6 +269,7 @@ fn dispatch(
                 return Ok(false);
             }
             revisions.commit(&data);
+            *attempt = 0;
         }
         "fullSync" | "partialFullSync" => {
             let next = data["nextRevision"]
@@ -259,8 +309,21 @@ fn dispatch(
                 return Ok(false);
             }
         }
+        "ping" => *attempt = 0,
         "reconnect" => return Ok(false),
-        "talkException" => return Err(anyhow::anyhow!("sync talk exception")),
+        "talkException" => match data["code"].as_u64() {
+            Some(1 | 7 | 8) => return Err(ExpiredSession.into()),
+            Some(119) => {
+                return Err(RpcError {
+                    method: "SSE".into(),
+                    http: 401,
+                    code: 119,
+                    status: 0,
+                }
+                .into());
+            }
+            _ => return Err(anyhow::anyhow!("sync talk exception")),
+        },
         "open" => {
             let (tx, rx) = mpsc::sync_channel(1);
             if !deliver(Event::Resync {
@@ -281,7 +344,6 @@ fn dispatch(
                     Err(_) => {}
                 }
             }
-            *attempt = 0;
             if !deliver(Event::State(SyncState::Connected)) {
                 return Ok(false);
             }
@@ -496,5 +558,47 @@ mod transport_tests {
             .unwrap()
         );
         assert!(started.elapsed() < Duration::from_millis(100));
+    }
+}
+
+#[cfg(test)]
+mod auth_tests {
+    use super::*;
+    #[test]
+    fn refresh_transport_outage_is_not_expired_authorization() {
+        for http in [408, 429, 500, 503] {
+            assert!(!expired_refresh(
+                &RpcError {
+                    method: "refresh".into(),
+                    http,
+                    code: 0,
+                    status: 0
+                }
+                .into()
+            ));
+        }
+        for http in [400, 401, 403] {
+            assert!(expired_refresh(
+                &RpcError {
+                    method: "refresh".into(),
+                    http,
+                    code: 0,
+                    status: 0
+                }
+                .into()
+            ));
+        }
+        assert!(!expired_refresh(&anyhow::anyhow!("timeout")));
+        assert!(expired_refresh(&ExpiredSession.into()));
+        let error = dispatch(
+            "talkException",
+            json!({"code":8}),
+            &mut Revisions::default(),
+            &mut 0,
+            &AtomicBool::new(false),
+            &mut |_| true,
+        )
+        .unwrap_err();
+        assert!(error.downcast_ref::<ExpiredSession>().is_some());
     }
 }

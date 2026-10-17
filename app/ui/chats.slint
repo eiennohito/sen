@@ -6,6 +6,14 @@ import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 
 export component Chats inherits Rectangle {
+    public function focus-list() { list-focus.focus(); }
+    public function move-cursor(delta: int) {
+        State.result-focus = max(0, min(State.chats.length - 1, State.result-focus + delta));
+        chat-list.jump(-max(0px, State.result-focus * State.chat-row-height - chat-list.height / 2));
+    }
+    public function open-result() {
+        if State.result-focus >= 0 && State.result-focus < State.chats.length { State.select-chat(State.chats[State.result-focus].index); State.show-conversation = true; State.focus-composer(); }
+    }
             VerticalLayout {
                 y: 0px; height: parent.height; visible: State.section == 0;
                 padding: 14px; spacing: 10px;
@@ -26,23 +34,44 @@ export component Chats inherits Rectangle {
                             if query == "" { State.list-y = State.search-list-y; State.searching = false; }
                         }
                         key-pressed(event) => {
+                            if State.browser-key(event) == accept { return accept; }
+                            if State.ime-active { return reject; }
+                            if event.text == Key.Tab { if event.modifiers.shift { State.focus-settings-opener(); } else { list-focus.focus(); } return accept; }
                             if event.text == Key.Escape && State.query != "" {
                                 State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; return accept;
                             }
-                            if event.text == Key.DownArrow || event.text == Key.UpArrow {
-                                State.result-focus = max(0, min(State.chats.length - 1, State.result-focus + (event.text == Key.DownArrow ? 1 : -1)));
-                                chat-list.content-y = -max(0px, State.result-focus * State.chat-row-height - chat-list.height / 2);
-                                return accept;
-                            }
-                            if event.text == Key.Return && State.result-focus >= 0 && State.result-focus < State.chats.length {
-                                State.select-chat(State.chats[State.result-focus].index); State.show-conversation = true; if State.narrow { State.focus-composer(); } return accept;
-                            }
+                            if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
+                            if event.text == Key.Return { root.open-result(); return accept; }
                             reject
                         }
                     }
                     Button { text: "Clear"; enabled: State.query != ""; clicked => { State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; State.focus-search(); } }
                 }
+                HorizontalLayout {
+                    spacing: 4px;
+                    for category[i] in ["All", "Friends", "Groups"]: Rectangle {
+                        height: max(32px, Tokens.base * 2); border-radius: 16px;
+                        background: State.category == i ? Tokens.selection : Tokens.surface;
+                        border-width: State.category == i ? 2px : 1px; border-color: State.category == i ? Tokens.accent : Tokens.border;
+                        accessible-role: button; accessible-label: category; accessible-action-default => { State.category = i; State.filter-category(); }
+                        Text { text: category; color: State.category == i ? Tokens.selection-foreground : Tokens.foreground; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { mouse-cursor: pointer; clicked => { State.category = i; State.filter-category(); } }
+                    }
+                }
                 if State.chats.length == 0: Text { text: State.query == "" ? "No conversations loaded" : "No match among loaded conversations"; wrap: word-wrap; }
+                list-focus := FocusScope {
+                    accessible-role: list; accessible-label: "Conversations";
+                    key-pressed(event) => {
+                        if State.browser-key(event) == accept { return accept; }
+                        if State.ime-active { return reject; }
+                        if event.text == Key.Tab { if event.modifiers.shift { search.focus(); } else if State.narrow && !State.show-conversation { State.focus-settings-opener(); } else { State.focus-history(); } return accept; }
+                        if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
+                        if event.text == Key.Home { State.result-focus = 0; chat-list.jump(0px); return accept; }
+                        if event.text == Key.End { State.result-focus = State.chats.length - 1; chat-list.jump(-chat-list.extent); return accept; }
+                        if event.text == Key.LeftArrow || event.text == Key.RightArrow { State.category = max(0,min(2, State.category + (event.text == Key.RightArrow ? 1 : -1))); State.filter-category(); return accept; }
+                        if event.text == Key.Return || event.text == " " { root.open-result(); return accept; }
+                        reject
+                    }
                 chat-list := Pane {
                     offset <=> State.list-y;
                     content-width: self.visible-width;
@@ -51,7 +80,7 @@ for chat[i] in State.chats: Rectangle {
                         width: chat-list.visible-width; height: State.chat-row-height;
                         border-radius: 6px; clip: true;
                         background: chat.index == State.selected-chat ? Tokens.selection : row-touch.has-hover ? Tokens.alternate-background : transparent;
-                        border-width: row-focus.has-focus || (search.has-focus && i == State.result-focus) ? 2px : 0px;
+                        border-width: (list-focus.has-focus || search.has-focus) && i == State.result-focus ? 2px : 0px;
                         border-color: Tokens.accent;
                         Rectangle {
                             x: 10px; y: (parent.height - 40px) / 2; width: 40px; height: 40px;
@@ -61,18 +90,20 @@ for chat[i] in State.chats: Rectangle {
                         }
                         Rectangle {
                             x: 60px; y: 10px; width: max(0px, parent.width - 72px); height: parent.height - 20px; clip: true;
-                            name := Text { x: 0px; y: 0px; width: max(0px, parent.width - (chat.time != "" ? 42px : 0px)); height: State.text-size * 1.5px; text: chat.title; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.foreground; font-weight: 600; overflow: elide; wrap: no-wrap; }
-                            Text { x: parent.width - 38px; y: 3px; width: 38px; text: chat.time; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.time; horizontal-alignment: right; overflow: elide; }
-                            Text { x: 0px; y: name.height + 4px; width: parent.width; height: max(0px, parent.height - self.y); text: chat.preview; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.preview; wrap: no-wrap; overflow: elide; }
-                        }
-                        row-focus := FocusScope {
-                            accessible-role: button; accessible-label: chat.title;
-                            accessible-action-default => { State.select-chat(chat.index); State.show-conversation = true; if State.narrow { State.focus-composer(); } }
-                            key-pressed(event) => {
-                                if event.text == Key.Return || event.text == " " { State.select-chat(chat.index); State.show-conversation = true; if State.narrow { State.focus-composer(); } return accept; }
-                                reject
+                            time := Text { y: 3px; x: parent.width - self.width; max-width: parent.width * 0.55; text: chat.time; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.time; horizontal-alignment: right; overflow: elide; }
+                            name := Text { x: 0px; y: 0px; width: max(0px, parent.width - time.width - 8px); height: State.text-size * 1.5px; text: chat.title; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.foreground; font-weight: 600; overflow: elide; wrap: no-wrap; }
+                            Text { x: 0px; y: name.height + 4px; width: max(0px,parent.width - markers.width - 4px); height: max(0px, parent.height - self.y); text: chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.preview; wrap: no-wrap; overflow: elide; }
+                            markers := HorizontalLayout {
+                                x: parent.width - self.width; y: name.height + 4px; spacing: 4px; width: (chat.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
+                                if chat.unread > 0 || chat.unread-unknown: Rectangle { width: 32px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: chat.unread-unknown ? "•" : chat.unread > 99 ? "99+" : "" + chat.unread; color: Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
+                                if chat.draft: Image { source: @image-url("../assets/icons/draft.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.accent; width: 16px; height: 16px; accessible-role: image; accessible-label: "Draft"; }
+                                if chat.failed: Image { source: @image-url("../assets/icons/failed.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.danger; width: 16px; height: 16px; accessible-role: image; accessible-label: "Send failed"; }
+                                if chat.muted: Image { source: @image-url("../assets/icons/muted.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; width: 16px; height: 16px; accessible-role: image; accessible-label: "Muted"; }
                             }
                         }
+                        accessible-role: button;
+                        accessible-label: chat.title + (chat.time != "" ? ", " + chat.time : "") + ", " + (chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview) + (chat.unread-unknown ? ", Unread count unavailable" : chat.unread > 0 ? ", " + chat.unread + " unread" : "") + (chat.failed ? ", Send failed" : "") + (chat.muted ? ", Muted" : "");
+                        accessible-action-default => { State.result-focus = i; root.open-result(); }
                         row-touch := TouchArea {
                             pointer-event(event) => {
                                 if event.kind == PointerEventKind.cancel { State.list-pressed = false; State.list-release-pending = true; }
@@ -81,28 +112,35 @@ for chat[i] in State.chats: Rectangle {
                                     else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel { State.list-pressed = false; State.list-release-pending = true; }
                                 }
                             }
-                            clicked => { row-focus.focus(); State.select-chat(chat.index); State.show-conversation = true; if State.narrow { State.focus-composer(); } } }
+                            clicked => { State.result-focus = i; root.open-result(); } }
                     }
 }
 
+                }
                 }
                 if State.more-chats: Button { text: State.loading-chats ? "Loading…" : "Load more"; enabled: !State.loading-chats; clicked => { State.more(); } }
                 if State.loading-chats: Text { text: "Loading conversations…"; color: Tokens.secondary; }
                 if State.list-error != "": HorizontalLayout { Text { text: State.list-error; color: Tokens.danger; wrap: word-wrap; } Button { text: "Retry"; clicked => { State.refresh(); } } }
                 if State.demo: VerticalLayout {
-                    Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.time; }
+                    demo-marker := Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.time; }
                     HorizontalLayout {
                         Button { text: "History"; accessible-label: "Long history"; clicked => { State.demo-event(0); } }
                         Button { text: "Arrivals"; accessible-label: "Receive 3"; clicked => { State.demo-event(1); } }
                     }
                     HorizontalLayout {
                         Button { text: "Media"; accessible-label: "Load media"; clicked => { State.demo-event(2); } }
+                        Button { text: "Rejected"; accessible-label: "Rejected send"; clicked => { State.demo-event(10); } }
                         Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { State.demo-event(3); } }
                     }
                 }
+                if State.paging-demo: Text { text: "History window " + State.messages.length + " · retained " + State.history-retained + " · pages " + State.history-pages; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
+                if State.demo: Button { text: "Paged history"; clicked => { State.demo-event(11); } }
                 if State.demo: Button { text: "Photo preview"; clicked => { State.demo-event(5); } }
                 if State.demo: Button { text: "Sticker preview"; clicked => { State.demo-event(6); } }
                 if State.demo: Button { text: "Group preview"; clicked => { State.demo-event(7); } }
+                if State.demo: HorizontalLayout { Button { text: "Reading fixtures"; clicked => { State.demo-event(8); } } Button { text: "History load"; clicked => { State.demo-event(9); } } }
+                if State.demo: Button { text: "Unread scenario"; clicked => { State.demo-event(14); } }
+                if State.demo: Button { text: "Rich content"; clicked => { State.demo-event(12); } }
                 if State.demo: Button { text: "Login recovery"; clicked => { State.demo-event(4); } }
 
             }

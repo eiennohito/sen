@@ -69,6 +69,8 @@ pub(super) struct MessageCache {
     keys: [u8; 64],
     memo: HashMap<String, (Message, u64, usize)>,
     tick: u64,
+    requests: HashMap<u32, String>,
+    withdrawals: std::collections::VecDeque<String>,
 }
 
 pub(super) fn fingerprint(raw: &Value) -> String {
@@ -87,14 +89,135 @@ impl MessageCache {
         hkdf::Hkdf::<Sha256>::new(None, secret)
             .expand(b"line-native/local-message-cache/v1", &mut keys)
             .map_err(|_| anyhow::anyhow!("cache key derivation failed"))?;
-        let cache = Self {
+        let mut cache = Self {
             directory,
             keys,
             memo: HashMap::new(),
             tick: 0,
+            requests: HashMap::new(),
+            withdrawals: Default::default(),
         };
+        cache.load_metadata()?;
         cache.prune(0)?;
         Ok(cache)
+    }
+    fn load_metadata(&mut self) -> Result<()> {
+        let path = self.directory.join("protocol.state");
+        if !path.exists() {
+            return Ok(());
+        }
+        ensure!(
+            path.metadata()?.len() <= 2 * 1024 * 1024,
+            "protocol metadata too large"
+        );
+        let bytes = self.open(&fs::read(path)?)?;
+        let data: ProtocolMetadata = serde_json::from_slice(&bytes)?;
+        ensure!(
+            data.requests.len() <= 256 && data.withdrawals.len() <= 16384,
+            "protocol metadata exceeds budget"
+        );
+        self.requests = data.requests;
+        self.withdrawals = data.withdrawals;
+        Ok(())
+    }
+    fn save_metadata(&self) -> Result<()> {
+        let data = ProtocolMetadata {
+            requests: self.requests.clone(),
+            withdrawals: self.withdrawals.clone(),
+        };
+        private_write(
+            &self.directory.join("protocol.state"),
+            &self.seal(&serde_json::to_vec(&data)?)?,
+        )
+    }
+    pub fn record_request(&mut self, sequence: u32, raw: &Value) -> Result<()> {
+        ensure!(
+            self.requests.len() < 256 || self.requests.contains_key(&sequence),
+            "too many unresolved send bindings"
+        );
+        let fingerprint = request_fingerprint(raw);
+        if let Some(previous) = self.requests.get(&sequence) {
+            ensure!(previous == &fingerprint, "send sequence already bound");
+        }
+        self.requests.insert(sequence, fingerprint);
+        self.save_metadata()
+    }
+    pub fn retain_requests(&mut self, sequences: &[u32]) -> Result<()> {
+        self.requests.retain(|seq, _| sequences.contains(seq));
+        self.save_metadata()
+    }
+    pub fn matching_request(&self, raw: &Value) -> Option<u32> {
+        let fingerprint = request_fingerprint(raw);
+        let mut matches = self
+            .requests
+            .iter()
+            .filter(|(_, value)| **value == fingerprint)
+            .map(|(sequence, _)| *sequence);
+        let first = matches.next()?;
+        matches.next().is_none().then_some(first)
+    }
+    pub fn request_matches(&self, sequence: u32, raw: &Value) -> bool {
+        self.requests
+            .get(&sequence)
+            .is_some_and(|fingerprint| *fingerprint == request_fingerprint(raw))
+    }
+    pub fn is_withdrawn(&self, message: &str) -> bool {
+        self.withdrawals.iter().any(|id| id == message)
+    }
+    pub fn withdraw(&mut self, message: &str) -> Result<()> {
+        if !self.is_withdrawn(message) {
+            self.withdrawals.push_back(message.into());
+        }
+        if self.withdrawals.len() > 16384 {
+            // Eviction cannot resurrect a withdrawn item from an old disk page.
+            for entry in fs::read_dir(&self.directory)? {
+                let entry = entry?;
+                if entry.path().extension().is_some_and(|e| e == "page") {
+                    fs::remove_file(entry.path())?;
+                }
+            }
+            self.withdrawals.pop_front();
+        }
+        for entry in self.memo.values_mut().filter(|entry| entry.0.id == message) {
+            withdrawn(&mut entry.0);
+        }
+        self.save_metadata()
+    }
+    pub fn cached_message(&self, id: &str) -> Result<Option<Message>> {
+        if let Some(entry) = self.memo.values().find(|entry| entry.0.id == id) {
+            return Ok(Some(entry.0.clone()));
+        }
+        for entry in fs::read_dir(&self.directory)? {
+            let entry = entry?;
+            if entry
+                .path()
+                .extension()
+                .is_none_or(|extension| extension != "page")
+                || entry.metadata()?.len() > MAX_PAGE as u64
+            {
+                continue;
+            }
+            let page = (|| -> Result<Page> {
+                Ok(serde_json::from_slice(
+                    &self.open(&fs::read(entry.path())?)?,
+                )?)
+            })();
+            if let Ok(page) = page
+                && page.version == 1
+                && page.records.len() <= 50
+                && let Some(mut message) = page
+                    .records
+                    .into_iter()
+                    .map(|record| record.message)
+                    .find(|message| message.id == id)
+            {
+                if self.is_withdrawn(id) {
+                    withdrawn(&mut message);
+                }
+                return Ok(Some(message));
+            }
+        }
+        Ok(None)
     }
     pub fn lookup(&mut self, fingerprint: &str) -> Option<Message> {
         self.tick += 1;
@@ -102,7 +225,10 @@ impl MessageCache {
         entry.1 = self.tick;
         Some(entry.0.clone())
     }
-    pub fn remember(&mut self, fingerprint: String, message: Message) {
+    pub fn remember(&mut self, fingerprint: String, mut message: Message) {
+        if self.is_withdrawn(&message.id) {
+            withdrawn(&mut message);
+        }
         self.tick += 1;
         let size = serde_json::to_vec(&message)
             .map(|v| v.len())
@@ -180,13 +306,18 @@ impl MessageCache {
             );
             Ok(page)
         })();
-        let page = match result {
+        let mut page = match result {
             Ok(page) => page,
             Err(_) => {
                 let _ = fs::remove_file(path);
                 return Ok(None);
             }
         };
+        for record in &mut page.records {
+            if self.is_withdrawn(&record.message.id) {
+                withdrawn(&mut record.message);
+            }
+        }
         let failed = page
             .records
             .iter()
@@ -199,6 +330,7 @@ impl MessageCache {
             if !record.fingerprint.is_empty()
                 && !record.message.decryption_failed
                 && !record.message.sender_id.is_empty()
+                && record.message.metadata_version >= 2
             {
                 self.remember(record.fingerprint.clone(), record.message.clone());
             }
@@ -284,7 +416,12 @@ impl MessageCache {
         let mut pages = Vec::new();
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
-            if !entry.file_type()?.is_file() {
+            if !entry.file_type()?.is_file()
+                || entry
+                    .path()
+                    .extension()
+                    .is_none_or(|extension| extension != "page")
+            {
                 continue;
             }
             let metadata = entry.metadata()?;
@@ -311,6 +448,28 @@ impl MessageCache {
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ProtocolMetadata {
+    requests: HashMap<u32, String>,
+    withdrawals: std::collections::VecDeque<String>,
+}
+fn request_fingerprint(raw: &Value) -> String {
+    fingerprint(&json!([
+        raw["to"],
+        raw["from"],
+        raw["contentType"],
+        raw["chunks"]
+    ]))
+}
+fn withdrawn(message: &mut Message) {
+    message.body.clear();
+    message.image = None;
+    message.attachment = None;
+    message.reactions.clear();
+    message.rich.withdrawn = true;
+    message.rich.content_type = 18;
+}
+
 fn range_key(chat: &str, before: &str, delivered: i64) -> String {
     json!(["older-v1", chat, before, delivered]).to_string()
 }
@@ -333,6 +492,11 @@ mod tests {
             encrypted: true,
             decryption_failed: false,
             rich: Default::default(),
+            request_seq: None,
+            attachment: None,
+            mentioned: false,
+            skip_badge: false,
+            metadata_version: 2,
         }
     }
     #[test]
@@ -438,5 +602,120 @@ mod tests {
         assert_ne!(fingerprint(&a), fingerprint(&b));
         let c = json!({"id":"1","chunks":["changed"],"reactions":[]});
         assert_ne!(fingerprint(&a), fingerprint(&c));
+    }
+    #[test]
+    fn send_bindings_survive_restart_and_reject_same_sequence_other_ciphertext() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("line-send-bindings-{}", std::process::id()));
+        let raw =
+            json!({"from":"self","to":"chat","contentType":0,"chunks":["synthetic ciphertext"]});
+        let mut cache = MessageCache::new(&root, b"synthetic")?;
+        cache.record_request(12, &raw)?;
+        drop(cache);
+        let mut cache = MessageCache::new(&root, b"synthetic")?;
+        assert!(cache.request_matches(12, &raw));
+        // Recent-page catch-up has no operation reqSeq; the exact encrypted
+        // envelope still recovers the persisted local submission identity.
+        assert_eq!(cache.matching_request(&raw), Some(12));
+        let mut unrelated = raw.clone();
+        unrelated["chunks"] = json!(["different ciphertext"]);
+        assert!(!cache.request_matches(12, &unrelated));
+        assert!(cache.record_request(12, &unrelated).is_err());
+        cache.retain_requests(&[])?;
+        drop(cache);
+        assert!(!MessageCache::new(&root, b"synthetic")?.request_matches(12, &raw));
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    #[test]
+    fn range_pages_retry_end_and_withdrawal_overlay_survive_restart() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("line-range-pages-{}", std::process::id()));
+        let mut cache = MessageCache::new(&root, b"synthetic")?;
+        // A failed fetch stores nothing: retry sees precisely the same miss.
+        assert!(cache.range("chat", "150", 150)?.is_none());
+        assert!(cache.range("chat", "150", 150)?.is_none());
+        for (before, start, end) in [("150", 100, false), ("100", 50, false), ("50", 1, true)] {
+            let page: Vec<_> = (start..start + 49)
+                .map(|id| {
+                    let mut m = message();
+                    m.id = id.to_string();
+                    m.timestamp_ms = id;
+                    m.delivered_time = id;
+                    m
+                })
+                .collect();
+            cache.store_range("chat", before, before.parse().unwrap(), &page, end)?;
+        }
+        cache.withdraw("7")?;
+        drop(cache);
+        let mut cache = MessageCache::new(&root, b"synthetic")?;
+        assert!(cache.cached_message("7")?.unwrap().rich.withdrawn);
+        let mut ids = std::collections::HashSet::new();
+        for before in ["150", "100", "50"] {
+            let (page, end) = cache
+                .range("chat", before, before.parse().unwrap())?
+                .unwrap();
+            assert_eq!(end, before == "50");
+            for m in page {
+                assert!(ids.insert(m.id.clone()));
+                if m.id == "7" {
+                    assert!(m.rich.withdrawn);
+                    assert!(m.body.is_empty());
+                }
+            }
+        }
+        assert_eq!(ids.len(), 147);
+        assert!(cache.memo.len() <= MAX_MESSAGES);
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    #[test]
+    fn synthetic_transport_three_inclusive_pages_failure_retry_and_beginning() -> Result<()> {
+        let root =
+            std::env::temp_dir().join(format!("line-older-transport-{}", std::process::id()));
+        let mut cache = MessageCache::new(&root, b"synthetic")?;
+        let mut transport: std::collections::VecDeque<Result<Vec<Message>>> = Default::default();
+        let page = |start: i64, end: i64| {
+            (start..=end)
+                .map(|n| {
+                    let mut m = message();
+                    m.id = n.to_string();
+                    m.timestamp_ms = n;
+                    m
+                })
+                .collect()
+        };
+        transport.push_back(Ok(page(71, 120)));
+        transport.push_back(Err(anyhow::anyhow!("synthetic failure")));
+        transport.push_back(Ok(page(22, 71)));
+        transport.push_back(Ok(page(1, 22)));
+        let mut before = "120".to_owned();
+        let mut all = std::collections::HashSet::new();
+        let mut failed = false;
+        for index in 0..4 {
+            assert!(cache.range("chat", &before, before.parse()?)?.is_none());
+            let raw = match transport.pop_front().unwrap() {
+                Ok(page) => page,
+                Err(_) => {
+                    failed = true;
+                    continue;
+                }
+            };
+            let reached = index == 3;
+            let normalized = normalize_older(&before, raw);
+            assert!(normalized.iter().all(|m| m.id != before));
+            for m in &normalized {
+                assert!(all.insert(m.id.clone()));
+            }
+            cache.store_range("chat", &before, before.parse()?, &normalized, reached)?;
+            let (restored, end) = cache.range("chat", &before, before.parse()?)?.unwrap();
+            assert_eq!(end, reached);
+            assert_eq!(restored.len(), normalized.len());
+            before = normalized[0].id.clone();
+        }
+        assert!(failed);
+        assert!(transport.is_empty());
+        assert_eq!(before, "1");
+        fs::remove_dir_all(root)?;
+        Ok(())
     }
 }

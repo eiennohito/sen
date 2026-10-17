@@ -4,6 +4,7 @@ export component Pane inherits Rectangle {
     out property <length> extent: max(0px, content.height - root.height);
     out property <bool> dragging: thumb-touch.pressed;
     callback scrolled();
+    callback focus-requested();
     in-out property <length> content-y <=> root.offset;
     out property <length> visible-width: max(0px, root.width - 16px);
     in property <length> content-width;
@@ -11,6 +12,7 @@ export component Pane inherits Rectangle {
     clip: true;
     public function jump(y: length) { root.offset = max(-root.extent, min(0px, y)); }
     TouchArea {
+        clicked => { root.focus-requested(); }
         scroll-event(event) => {
             root.jump(root.offset + event.delta-y);
             root.scrolled();

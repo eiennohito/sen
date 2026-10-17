@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{
     env, fmt,
     fs::{self, OpenOptions},
-    io::{self, IsTerminal, Write},
+    io::{self, IsTerminal, Read, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -147,6 +147,40 @@ fn quoted(value: &str) -> String {
             .replace('\r', "\\r")
     )
 }
+thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) }; }
+fn set_request_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+    REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
+}
+fn wait_transport(
+    mut child: std::process::Child,
+    cancel: Option<&std::sync::atomic::AtomicBool>,
+    limit: u64,
+) -> Result<(std::process::ExitStatus, Vec<u8>)> {
+    let stdout = child.stdout.take().context("transport stdout")?;
+    let reader = std::thread::spawn(move || {
+        let mut bytes = Vec::new();
+        stdout.take(limit).read_to_end(&mut bytes).map(|_| bytes)
+    });
+    let result = loop {
+        if cancel.is_some_and(|token| token.load(std::sync::atomic::Ordering::Relaxed)) {
+            let _ = child.kill();
+            break child.wait();
+        }
+        match child.try_wait() {
+            Ok(Some(status)) => break Ok(status),
+            Ok(None) => std::thread::park_timeout(Duration::from_millis(20)),
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                break Err(error);
+            }
+        }
+    };
+    let bytes = reader
+        .join()
+        .map_err(|_| anyhow::anyhow!("transport reader stopped"))??;
+    Ok((result?, bytes))
+}
 fn curl_request(
     path: &str,
     body: &str,
@@ -178,7 +212,7 @@ fn curl_request(
         .args(["--config", "-"])
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()
         .context("start curl")?;
     child
@@ -186,13 +220,13 @@ fn curl_request(
         .take()
         .context("curl stdin")?
         .write_all(config.as_bytes())?;
-    let out = child.wait_with_output()?;
+    let cancel = REQUEST_CANCEL.with(|slot| slot.borrow().clone());
+    let (status, stdout) = wait_transport(child, cancel.as_deref(), 1048600)?;
     ensure!(
-        out.status.success(),
+        status.success(),
         "HTTPS transport failed (curl exit {}); response not logged",
-        out.status.code().unwrap_or(-1)
+        status.code().unwrap_or(-1)
     );
-    let stdout = out.stdout;
     let split = stdout
         .iter()
         .rposition(|b| *b == b'\n')
@@ -820,5 +854,26 @@ mod tests {
         assert!(url.contains("%2B"));
         assert!(url.ends_with("&e2eeVersion=1"));
         assert!(callback("file:///tmp/test", &[0; 32]).is_err());
+    }
+    #[test]
+    fn cancellation_kills_and_reaps_owned_transport_child() -> Result<()> {
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let child = Command::new("sleep")
+            .arg("60")
+            .stdout(Stdio::piped())
+            .spawn()?;
+        let id = child.id();
+        let signal = cancel.clone();
+        let thread = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            signal.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let started = Instant::now();
+        let (status, _) = wait_transport(child, Some(&cancel), 1024)?;
+        thread.join().unwrap();
+        assert!(!status.success());
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(!Path::new(&format!("/proc/{id}")).exists());
+        Ok(())
     }
 }

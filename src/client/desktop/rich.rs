@@ -92,9 +92,13 @@ pub fn parse(raw: &Value) -> RichContent {
         _ => {}
     }
     // REPLACE is a JSON string in both plain and E2EE-decoded messages.
-    let replace = metadata["REPLACE"]
-        .as_str()
-        .and_then(|s| serde_json::from_str::<Value>(s).ok());
+    let replace = if metadata["REPLACE"].is_object() {
+        Some(metadata["REPLACE"].clone())
+    } else {
+        metadata["REPLACE"]
+            .as_str()
+            .and_then(|s| serde_json::from_str::<Value>(s).ok())
+    };
     if let Some(resources) = replace
         .as_ref()
         .and_then(|v| v["sticon"]["resources"].as_array())
