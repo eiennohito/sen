@@ -1,0 +1,110 @@
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
+import { IconButton } from "icon-button.slint";
+import { Pane } from "scrollpane.slint";
+
+export component Chats inherits Rectangle {
+            VerticalLayout {
+                y: 0px; height: parent.height; visible: State.section == 0;
+                padding: 14px; spacing: 10px;
+                HorizontalLayout {
+                    height: 42px;
+                    Text { text: "Chats"; color: Tokens.accent; font-size: Tokens.heading; font-weight: 800; vertical-alignment: center; }
+                    if !State.demo: IconButton { label: "Refresh conversations"; icon: @image-url("../assets/icons/refresh.svg"); enabled: State.connected && !State.loading-chats; activated => { State.refresh(); } }
+                }
+                HorizontalLayout {
+                    search := LineEdit {
+                        text <=> State.query;
+                        placeholder-text: "Find a conversation";
+                        accessible-label: "Find a conversation";
+                        edited(query) => {
+                            if query != "" && !State.searching { State.search-list-y = State.list-y; State.searching = true; }
+                            State.search-changed(query);
+                            State.result-focus = -1;
+                            if query == "" { State.list-y = State.search-list-y; State.searching = false; }
+                        }
+                        key-pressed(event) => {
+                            if event.text == Key.Escape && State.query != "" {
+                                State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; return accept;
+                            }
+                            if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                                State.result-focus = max(0, min(State.chats.length - 1, State.result-focus + (event.text == Key.DownArrow ? 1 : -1)));
+                                chat-list.content-y = -max(0px, State.result-focus * State.chat-row-height - chat-list.height / 2);
+                                return accept;
+                            }
+                            if event.text == Key.Return && State.result-focus >= 0 && State.result-focus < State.chats.length {
+                                State.select-chat(State.chats[State.result-focus].index); State.show-conversation = true; if State.narrow { State.focus-composer(); } return accept;
+                            }
+                            reject
+                        }
+                    }
+                    Button { text: "Clear"; enabled: State.query != ""; clicked => { State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; State.focus-search(); } }
+                }
+                if State.chats.length == 0: Text { text: State.query == "" ? "No conversations loaded" : "No match among loaded conversations"; wrap: word-wrap; }
+                chat-list := Pane {
+                    offset <=> State.list-y;
+                    content-width: self.visible-width;
+                    VerticalLayout { spacing: 0px;
+for chat[i] in State.chats: Rectangle {
+                        width: chat-list.visible-width; height: State.chat-row-height;
+                        border-radius: 6px; clip: true;
+                        background: chat.index == State.selected-chat ? Tokens.selection : row-touch.has-hover ? Tokens.alternate-background : transparent;
+                        border-width: row-focus.has-focus || (search.has-focus && i == State.result-focus) ? 2px : 0px;
+                        border-color: Tokens.accent;
+                        Rectangle {
+                            x: 10px; y: (parent.height - 40px) / 2; width: 40px; height: 40px;
+                            border-radius: 20px; background: Tokens.selection;
+                            Text { width: 100%; height: 100%; visible: chat.avatar.width == 0; text: chat.initial; horizontal-alignment: center; vertical-alignment: center; }
+                            Image { source: chat.avatar; width: 100%; height: 100%; image-fit: contain; accessible-role: image; accessible-label: "Contact photo"; }
+                        }
+                        Rectangle {
+                            x: 60px; y: 10px; width: max(0px, parent.width - 72px); height: parent.height - 20px; clip: true;
+                            name := Text { x: 0px; y: 0px; width: max(0px, parent.width - (chat.time != "" ? 42px : 0px)); height: State.text-size * 1.5px; text: chat.title; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.foreground; font-weight: 600; overflow: elide; wrap: no-wrap; }
+                            Text { x: parent.width - 38px; y: 3px; width: 38px; text: chat.time; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.time; horizontal-alignment: right; overflow: elide; }
+                            Text { x: 0px; y: name.height + 4px; width: parent.width; height: max(0px, parent.height - self.y); text: chat.preview; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.preview; wrap: no-wrap; overflow: elide; }
+                        }
+                        row-focus := FocusScope {
+                            accessible-role: button; accessible-label: chat.title;
+                            accessible-action-default => { State.select-chat(chat.index); State.show-conversation = true; if State.narrow { State.focus-composer(); } }
+                            key-pressed(event) => {
+                                if event.text == Key.Return || event.text == " " { State.select-chat(chat.index); State.show-conversation = true; if State.narrow { State.focus-composer(); } return accept; }
+                                reject
+                            }
+                        }
+                        row-touch := TouchArea {
+                            pointer-event(event) => {
+                                if event.kind == PointerEventKind.cancel { State.list-pressed = false; State.list-release-pending = true; }
+                                else if event.button == PointerEventButton.left {
+                                    if event.kind == PointerEventKind.down { State.list-pressed = true; }
+                                    else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel { State.list-pressed = false; State.list-release-pending = true; }
+                                }
+                            }
+                            clicked => { row-focus.focus(); State.select-chat(chat.index); State.show-conversation = true; if State.narrow { State.focus-composer(); } } }
+                    }
+}
+
+                }
+                if State.more-chats: Button { text: State.loading-chats ? "Loading…" : "Load more"; enabled: !State.loading-chats; clicked => { State.more(); } }
+                if State.loading-chats: Text { text: "Loading conversations…"; color: Tokens.secondary; }
+                if State.list-error != "": HorizontalLayout { Text { text: State.list-error; color: Tokens.danger; wrap: word-wrap; } Button { text: "Retry"; clicked => { State.refresh(); } } }
+                if State.demo: VerticalLayout {
+                    Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.time; }
+                    HorizontalLayout {
+                        Button { text: "History"; accessible-label: "Long history"; clicked => { State.demo-event(0); } }
+                        Button { text: "Arrivals"; accessible-label: "Receive 3"; clicked => { State.demo-event(1); } }
+                    }
+                    HorizontalLayout {
+                        Button { text: "Media"; accessible-label: "Load media"; clicked => { State.demo-event(2); } }
+                        Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { State.demo-event(3); } }
+                    }
+                }
+                if State.demo: Button { text: "Photo preview"; clicked => { State.demo-event(5); } }
+                if State.demo: Button { text: "Sticker preview"; clicked => { State.demo-event(6); } }
+                if State.demo: Button { text: "Group preview"; clicked => { State.demo-event(7); } }
+                if State.demo: Button { text: "Login recovery"; clicked => { State.demo-event(4); } }
+
+            }
+    public function focus-search() { search.focus(); }
+}

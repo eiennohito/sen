@@ -1,0 +1,69 @@
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
+import { Pane } from "scrollpane.slint";
+
+export component Friends inherits Rectangle {
+            Rectangle {
+                y: 0px; width: parent.width; height: parent.height; visible: State.section == 1;
+                VerticalLayout {
+                    padding: 14px; spacing: 8px;
+                    HorizontalLayout {
+                        Text { text: "Friends"; font-size: Tokens.heading; color: Tokens.accent; font-weight: 800; }
+                        Button { text: State.loading-friends ? "Loading…" : "Refresh"; enabled: !State.loading-friends && State.connected; clicked => { State.refresh-friends(); } }
+                    }
+                    HorizontalLayout {
+                        friend-search := LineEdit {
+                            text <=> State.friend-query; placeholder-text: "Search friends and groups";
+                            accessible-label: "Search loaded friends and groups";
+                            edited => { State.filter-friends(); }
+                            key-pressed(event) => {
+                                if State.ime-active { return reject; }
+                                if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                                    State.friend-result = max(0, min(State.friends.length - 1, State.friend-result + (event.text == Key.DownArrow ? 1 : -1)));
+                                    friend-list.content-y = -max(0px, State.friend-result * State.friend-row-height - friend-list.height / 2);
+                                    return accept;
+                                }
+                                if event.text == Key.Return && State.friend-result >= 0 && State.friend-result < State.friends.length { State.open-profile(State.friends[State.friend-result].id); return accept; }
+                                if event.text == Key.Escape && State.friend-query != "" { State.friend-query = ""; State.filter-friends(); return accept; }
+                                reject
+                            }
+                        }
+                        Button { text: "Clear"; enabled: State.friend-query != ""; clicked => { State.friend-query = ""; State.filter-friends(); friend-search.focus(); } }
+                    }
+                    HorizontalLayout {
+                        Button { text: State.friends-expanded ? "Friends ▾" : "Friends ▸"; clicked => { State.friends-expanded = !State.friends-expanded; State.filter-friends(); } }
+                        Button { text: State.groups-expanded ? "Groups ▾" : "Groups ▸"; clicked => { State.groups-expanded = !State.groups-expanded; State.filter-friends(); } }
+                    }
+                    if State.friends-error != "": Text { text: State.friends-error; wrap: word-wrap; color: Tokens.danger; }
+                    if State.friends.length == 0: Text { text: State.loading-friends ? "Loading friends and groups…" : State.friend-query != "" ? "No match among loaded friends and groups" : "No entries in expanded categories"; wrap: word-wrap; }
+                    friend-list := Pane {
+                        offset <=> State.friends-y;
+                        content-width: self.visible-width;
+                        VerticalLayout { spacing: 0px;
+for friend[i] in State.friends: Rectangle {
+                            height: State.friend-row-height; width: friend-list.visible-width;
+                            background: friend-search.has-focus && State.friend-result == i ? Tokens.selection : Tokens.alternate-background;
+                            border-width: friend-search.has-focus && State.friend-result == i ? 2px : 0px;
+                            border-color: Tokens.accent;
+                            Rectangle { x: 4px; y: 12px; width: 36px; height: 36px; border-radius: 18px; background: Tokens.selection;
+                                Text { width: 100%; height: 100%; text: friend.group ? "G" : "●"; horizontal-alignment: center; vertical-alignment: center; visible: friend.avatar.width == 0; }
+                                Image { width: 100%; height: 100%; source: friend.avatar; image-fit: contain; }
+                            }
+                            Button {
+                                x: 46px; y: 4px; width: max(0px, parent.width - 50px); height: parent.height - 8px;
+                                property <bool> restore-profile-focus: !State.profile-open && State.profile-id == friend.id;
+                                changed restore-profile-focus => { if self.restore-profile-focus { self.focus(); } }
+                                text: (friend.group ? "Group · " : "") + friend.name;
+                                accessible-label: "Open profile: " + friend.name;
+                                clicked => { State.friend-result = i; State.open-profile(friend.id); }
+                            }
+                        }
+}
+
+                    }
+                }
+            }
+    public function focus-search() { friend-search.focus(); }
+}

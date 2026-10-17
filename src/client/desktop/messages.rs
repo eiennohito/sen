@@ -59,6 +59,8 @@ struct Record {
 #[derive(serde::Serialize, serde::Deserialize)]
 struct Page {
     version: u32,
+    #[serde(default)]
+    reached_beginning: Option<bool>,
     records: Vec<Record>,
 }
 
@@ -70,7 +72,10 @@ pub(super) struct MessageCache {
 }
 
 pub(super) fn fingerprint(raw: &Value) -> String {
-    format!("{:x}", Sha256::digest(raw.to_string().as_bytes()))
+    format!(
+        "{:x}",
+        Sha256::digest(format!("rich-v1:{}", raw).as_bytes())
+    )
 }
 
 impl MessageCache {
@@ -129,6 +134,29 @@ impl MessageCache {
             .join(format!("{:x}.page", Sha256::digest(chat.as_bytes())))
     }
     pub fn page(&mut self, chat: &str) -> Result<Option<Vec<Message>>> {
+        Ok(self.page_with_end(chat)?.map(|(messages, _)| messages))
+    }
+    pub fn range(
+        &mut self,
+        chat: &str,
+        before: &str,
+        delivered: i64,
+    ) -> Result<Option<(Vec<Message>, bool)>> {
+        Ok(self
+            .page_with_end(&range_key(chat, before, delivered))?
+            .and_then(|(messages, end)| end.map(|end| (messages, end))))
+    }
+    pub fn store_range(
+        &mut self,
+        chat: &str,
+        before: &str,
+        delivered: i64,
+        messages: &[Message],
+        end: bool,
+    ) -> Result<()> {
+        self.store_page_with_end(&range_key(chat, before, delivered), messages, Some(end))
+    }
+    fn page_with_end(&mut self, chat: &str) -> Result<Option<(Vec<Message>, Option<bool>)>> {
         let path = self.path(chat);
         let metadata = match path.metadata() {
             Ok(metadata) => metadata,
@@ -178,14 +206,23 @@ impl MessageCache {
         if failed {
             return Ok(None);
         }
-        Ok(Some(
+        Ok(Some((
             page.records
                 .into_iter()
                 .map(|record| record.message)
                 .collect(),
-        ))
+            page.reached_beginning,
+        )))
     }
     pub fn store_page(&mut self, chat: &str, messages: &[Message]) -> Result<()> {
+        self.store_page_with_end(chat, messages, None)
+    }
+    fn store_page_with_end(
+        &mut self,
+        chat: &str,
+        messages: &[Message],
+        reached_beginning: Option<bool>,
+    ) -> Result<()> {
         let records = messages
             .iter()
             .take(50)
@@ -204,6 +241,7 @@ impl MessageCache {
             .collect();
         let bytes = serde_json::to_vec(&Page {
             version: 1,
+            reached_beginning,
             records,
         })?;
         ensure!(
@@ -273,6 +311,10 @@ impl MessageCache {
     }
 }
 
+fn range_key(chat: &str, before: &str, delivered: i64) -> String {
+    json!(["older-v1", chat, before, delivered]).to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,11 +326,13 @@ mod tests {
             sender_avatar: None,
             body: "Private synthetic 日本語".into(),
             timestamp_ms: 1,
+            delivered_time: 1,
             outgoing: false,
             image: None,
             reactions: Vec::new(),
             encrypted: true,
             decryption_failed: false,
+            rich: Default::default(),
         }
     }
     #[test]

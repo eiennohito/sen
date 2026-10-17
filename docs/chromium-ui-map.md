@@ -300,3 +300,36 @@ switches windows, `.exit` detaches. Default mode prints component/navigation
 structure. Arbitrary evaluation is powerful: the tool does not enforce read-only
 behavior or redact arbitrary expressions. Never query account storage or dump
 whole DOM/text; filter private descendants before inspecting controls.
+
+## Protocol source trace — 2026-10-17 (not live validation)
+
+The installed 3.7.2 bundle's operation enum maps SEND_MESSAGE=25,
+RECEIVE_MESSAGE=26, SEND_CHAT_CHECKED=40, SEND_CONTENT=43,
+NOTIFIED_READ_MESSAGE=55, NOTIFIED_JOIN_CHAT=60, NOTIFIED_LEAVE_CHAT=61,
+DESTROY_MESSAGE=64, NOTIFIED_DESTROY_MESSAGE=65. `RS` interprets checked
+`param1` as chat and `param2` as lastSeenMessageId, clearing unreadCount;
+`yS` interprets receipt `param1/2/3` as chat/member/endMessageId, with
+createdTime as endTime. These are per-member range endpoints, not a message's
+reader count. Source `getMessageReadRange` arguments are `[chatIds,syncReason]`;
+`sendChatChecked` arguments are `[reqSeq,chatId,messageId,0]`.
+
+The SSE constructor uses native EventSource `withCredentials:true`, no
+custom signed-POST header mapper. Native SSE therefore sends the lct cookie,
+Accept event-stream and version/language query; signed headers remain on thrift
+and refresh POSTs. This requirement is source evidence, not a confirmed gateway
+header requirement. Ping has 20 s interval plus 10 s spare. Stream data remains
+private and never enters diagnostics. Full/partial sync falls back to refreshing
+the loaded native chat/message scope before advancing a supplied nextRevision;
+profile/configuration categories outside the native model remain unimplemented.
+
+`renewToken` calls POST `/api/auth/tokenRefresh` with `{refreshToken}` and
+merges the returned token fields into tokenV3IssueResult before persisting.
+The native path performs one refresh on SSE HTTP 401/403; missing/rejected
+refresh becomes AuthExpired without pairing or resending. Scheduled proactive
+refresh and the extension's AUTH_RETRY_REQUIRED jitter policy are not yet
+implemented. No native request was made for this trace.
+
+Mute is **not a server chat flag in the inspected code**: `VT` reads
+`isMute` from user storage `messageBox[id]`, and the menu writes it through
+`Fz(np.USER,"messageBox",id)`. This cannot establish a native server mute value;
+unknown remains unknown, with native private local overrides supplied separately.

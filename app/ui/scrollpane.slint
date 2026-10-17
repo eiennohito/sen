@@ -1,0 +1,59 @@
+import { Tokens } from "tokens.slint";
+export component Pane inherits Rectangle {
+    in-out property <length> offset: 0px;
+    out property <length> extent: max(0px, content.height - root.height);
+    out property <bool> dragging: thumb-touch.pressed;
+    callback scrolled();
+    in-out property <length> content-y <=> root.offset;
+    out property <length> visible-width: max(0px, root.width - 16px);
+    in property <length> content-width;
+    in property <bool> horizontal-scrollbar-policy;
+    clip: true;
+    public function jump(y: length) { root.offset = max(-root.extent, min(0px, y)); }
+    TouchArea {
+        scroll-event(event) => {
+            root.jump(root.offset + event.delta-y);
+            root.scrolled();
+            return accept;
+        }
+    }
+    content := Rectangle {
+        x: 0px; y: root.offset;
+        width: max(0px, root.width - 16px);
+        height: self.preferred-height;
+        @children
+    }
+    track := Rectangle {
+        x: parent.width - 16px; width: 16px; height: parent.height;
+        background: Tokens.alternate-background;
+        visible: root.extent > 0px;
+        thumb := Rectangle {
+            x: 3px; width: 10px;
+            height: max(32px, track.height * track.height / max(1px, content.height));
+            y: (track.height - self.height) * (-root.offset / max(1px, root.extent));
+            border-radius: 5px;
+            background: thumb-touch.pressed ? Tokens.accent : Tokens.secondary;
+        }
+        thumb-touch := TouchArea {
+            property <length> start-offset;
+            property <length> start-y;
+            pointer-event(event) => {
+                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                    if self.mouse-y < thumb.y || self.mouse-y > thumb.y + thumb.height {
+                        root.jump(-root.extent * (self.mouse-y / track.height));
+                        root.scrolled();
+                    }
+                    self.start-offset = root.offset;
+                    self.start-y = self.mouse-y;
+                }
+            }
+            moved => {
+                if self.pressed {
+                    root.jump(self.start-offset - (self.mouse-y - self.start-y) * root.extent / max(1px, track.height - thumb.height));
+                    root.scrolled();
+                }
+            }
+            scroll-event(event) => { root.jump(root.offset + event.delta-y); root.scrolled(); accept }
+        }
+    }
+}

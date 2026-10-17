@@ -1,0 +1,135 @@
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind } from "types.slint";
+import { Pane } from "scrollpane.slint";
+
+export component Message inherits VerticalLayout {
+    in property <MessageRow> message;
+
+                        property <length> screen-y: self.y + State.history-y;
+                        changed screen-y => {
+                            if State.capture-anchor && self.screen-y <= 16px && self.screen-y + self.height > 16px {
+                                State.anchor-id = root.message.id;
+                                State.anchor-screen-y = self.screen-y;
+                            }
+                        }
+                        changed y => {
+                            if root.message.id == State.anchor-id && !State.capture-anchor && !State.restore-pending && !State.history-dragging && !State.following {
+                                State.history-jump(State.anchor-screen-y - self.y);
+                            }
+                        }
+                        vertical-stretch: 0; spacing: 3px;
+                        if root.message.day-label != "": Text {
+                            text: root.message.day-label; color: Tokens.secondary; font-size: Tokens.time;
+                            height: 24px; horizontal-alignment: center; vertical-alignment: center;
+                        }
+                        if root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn: Text {
+                            text: root.message.body; accessible-label: root.message.accessible-label; horizontal-alignment: center; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap;
+                        }
+                        if root.message.kind != MessageKind.system && root.message.kind != MessageKind.withdrawn: HorizontalLayout {
+                        spacing: 5px;
+                        if root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
+                        if !root.message.outgoing && root.message.sender-name != "": VerticalLayout {
+                            width: 32px; spacing: 0px;
+                            Rectangle {
+                                height: 32px; visible: root.message.group-start;
+                                background: root.message.has-sender-avatar ? transparent : Tokens.selection; border-radius: 16px;
+                                Text { visible: !root.message.has-sender-avatar; text: root.message.sender-initial; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+                                Image { width: 32px; height: 32px; source: root.message.sender-avatar; visible: root.message.has-sender-avatar; image-fit: contain; accessible-role: image; accessible-label: root.message.sender-name + " avatar"; }
+                            }
+                            Rectangle { vertical-stretch: 1; }
+                        }
+                        VerticalLayout {
+                            horizontal-stretch: 0;
+                            min-width: min(State.history-width - 140px, root.message.image-key != "" ? 200px : 72px);
+                            preferred-width: root.message.image-key != "" ? min(340px, State.history-width - 140px) : min(max(72px, min(480px, State.history-width - 140px)), body-measure.preferred-width + 24px);
+                            max-width: max(72px, min(480px, State.history-width - 140px));
+                            spacing: 3px;
+                            if root.message.group-start && !root.message.outgoing && root.message.sender-name != "": Text {
+                                text: root.message.sender-name; accessible-label: "Sender: " + root.message.sender-name;
+                                color: Tokens.secondary; font-size: Tokens.small; overflow: elide;
+                            }
+                            Rectangle {
+                                background: root.message.sticker ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface;
+                                border-width: body.has-focus ? 2px : root.message.sticker ? 0px : 1px;
+                                border-color: body.has-focus ? Tokens.accent : Tokens.border;
+                                border-radius: 9px;
+                                height: bubble-content.preferred-height;
+                                body-measure := Text { visible: false; text: root.message.body; font-size: Tokens.base; }
+                                bubble-content := VerticalLayout {
+                                    padding: 10px; spacing: 6px; alignment: start;
+                                    ContextMenuArea {
+                                        visible: !root.message.sticker || root.message.image-key == "";
+                                        height: self.visible ? body.preferred-height : 0px;
+                                        Menu {
+                                            MenuItem { title: "Copy selection"; activated => { body.copy(); } }
+                                            MenuItem { title: "Copy message"; activated => { body.select-all(); body.copy(); } }
+                                        }
+                                        body := TextInput {
+                                            text: root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
+                                            wrap: word-wrap; color: root.message.outgoing ? Tokens.selection-foreground : Tokens.foreground;
+                                            font-size: Tokens.base;
+                                            height: self.preferred-height;
+                                            accessible-label: root.message.accessible-label;
+                                            selection-background-color: Tokens.selection;
+                                            // Explicit surface traversal is the click-only equivalent on Slint 1.18.
+                                            key-pressed(event) => {
+                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else { State.focus-composer(); } return accept; }
+                                                if event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.PageUp || event.text == Key.PageDown || event.text == Key.Home || event.text == Key.End { State.focus-history(); return accept; }
+                                                reject
+                                            }
+                                            changed anchor-position-byte-offset => { if self.anchor-position-byte-offset != self.cursor-position-byte-offset { State.following = false; State.capture-anchor = true; } }
+                                            changed cursor-position-byte-offset => { if self.anchor-position-byte-offset != self.cursor-position-byte-offset { State.following = false; State.capture-anchor = true; } }
+                                        }
+                                    }
+                                    if root.message.image-key != "": Rectangle {
+                                        // Geometry does not change when a thumbnail arrives or fails.
+                                        height: 180px;
+                                        clip: true;
+                                        Image { source: root.message.picture; width: 100%; height: 100%; image-fit: contain; visible: root.message.has-picture; accessible-role: image; accessible-label: root.message.photo ? "Photo preview" : "Message image"; }
+                                        if root.message.photo: FocusScope {
+                                            accessible-role: button; accessible-label: "Open photo";
+                                            accessible-action-default => { State.open-photo(root.message.image-key); }
+                                            TouchArea { mouse-cursor: pointer; clicked => { parent.focus(); State.open-photo(root.message.image-key); } }
+                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-photo(root.message.image-key); return accept; } reject }
+                                            Rectangle { visible: parent.has-focus; border-width: 2px; border-color: Tokens.accent; background: transparent; }
+                                            
+                                            property <bool> restore-photo: !State.viewer-open && State.viewer-key == root.message.image-key;
+                                            changed restore-photo => { if self.restore-photo { self.focus(); State.viewer-key = ""; } }
+                                        }
+                                        Text { visible: !root.message.has-picture; text: root.message.image-failed ? "Preview unavailable · Refresh to retry" : root.message.sticker ? root.message.body : "Loading preview…"; color: Tokens.secondary; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
+                                    }
+                                }
+                            }
+                            if root.message.recoverable: Text { text: root.message.delivery-detail; color: Tokens.danger; font-size: Tokens.time; wrap: word-wrap; }
+                            if root.message.recoverable: Button { text: "Append text to draft"; clicked => { State.recover-message(root.message.id); State.focus-composer(); } }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                for reaction in root.message.reactions: HorizontalLayout {
+                                    if reaction.has-picture: Image { source: reaction.picture; width: 24px; height: 24px; image-fit: contain; }
+                                    Text { text: reaction.label; font-size: Tokens.small; color: Tokens.secondary; }
+                                }
+                            }
+                        }
+                        // Time appears once per sender/time group, beside the
+                        // bubble. Status has a fixed slot and never adds a row.
+                        VerticalLayout {
+                            width: root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8;
+                            spacing: 0px;
+                            Rectangle { vertical-stretch: 1; }
+                            HorizontalLayout {
+                                height: max(16px, Tokens.time * 1.4); spacing: 2px;
+                                Text { text: root.message.group-start ? root.message.clock : ""; accessible-label: root.message.group-start ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
+                                if root.message.outgoing: Text {
+                                    width: Tokens.time;
+                                    text: root.message.delivery == "Sending…" ? "…" : root.message.recoverable ? "!" : "✓";
+                                    accessible-label: root.message.delivery == "" || root.message.delivery == "Sent" ? "Sent · server confirmed; read status unavailable" : root.message.delivery;
+                                    color: root.message.recoverable ? Tokens.danger : Tokens.secondary; font-size: Tokens.time;
+                                }
+                            }
+                        }
+                        if !root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
+                        }
+                    
+}

@@ -4,6 +4,7 @@ import argparse
 import os
 from pathlib import Path
 import shutil
+import shlex
 import subprocess
 import json
 import sys
@@ -12,6 +13,7 @@ APP_ID = "org.lineclient.Desktop"
 ROOT = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--destdir", type=Path, help="stage bin/ and share/ under this directory instead of installing")
+parser.add_argument("--dev-paths", action="store_true", help="use repository session and WASM paths explicitly")
 args = parser.parse_args()
 binary = ROOT / "target/release/line-desktop"
 if not binary.is_file():
@@ -26,7 +28,8 @@ else:
     data_dir = Path(os.environ.get("XDG_DATA_HOME", str(Path.home() / ".local/share")))
 launcher = data_dir / "applications" / f"{APP_ID}.desktop"
 icon = data_dir / "icons/hicolor/scalable/apps" / f"{APP_ID}.svg"
-for directory in (bin_dir, launcher.parent, icon.parent):
+service = data_dir / "dbus-1/services" / f"{APP_ID}.service"
+for directory in (bin_dir, launcher.parent, icon.parent, service.parent):
     directory.mkdir(parents=True, exist_ok=True)
 destination = bin_dir / "line-desktop"
 # Atomic replacement also permits updating an executable that is running.
@@ -47,10 +50,14 @@ def quoted(value):
         value = value.replace(char, "\\" + char)
     return '"' + value.replace("%", "%%") + '"'
 
-command = " ".join(quoted(v) for v in (
-    destination, "--state", ROOT / "artifacts/auth/session.json",
-    "--wasm", ROOT / "artifacts/line-3.7.2/ltsm.wasm",
-))
+arguments = [destination]
+if args.dev_paths:
+    arguments.extend(["--state", ROOT / "artifacts/auth/session.json", "--wasm", ROOT / "artifacts/line-3.7.2/ltsm.wasm"])
+command = " ".join(quoted(v) for v in arguments)
+# D-Bus service Exec uses shell-like quoting without desktop field-code expansion.
+service_command = " ".join(shlex.quote(str(v)) for v in arguments)
+service.write_text(f"[D-BUS Service]\nName={APP_ID}\nExec={service_command}\n")
+service.chmod(0o644)
 icon_value = str(icon.resolve()).replace("\\", "\\\\")
 launcher.write_text(f"""[Desktop Entry]
 Type=Application
@@ -61,11 +68,16 @@ Icon={icon_value}
 Terminal=false
 Categories=Network;InstantMessaging;
 StartupWMClass={APP_ID}
+SingleMainWindow=true
+StartupNotify=true
+DBusActivatable=true
+Keywords=chat;messaging;
 """)
 launcher.chmod(0o644)
 print(f"Installed app: {destination}")
 print(f"Installed launcher: {launcher}")
 print(f"Installed icon: {icon}")
+print(f"Installed D-Bus service: {service}")
 
 # Staging must not change the current desktop session's caches.
 if not args.destdir:

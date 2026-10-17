@@ -51,8 +51,7 @@ def element(label, role):
     return next(item for item in tree() if item.get("accessibleLabel") == label and item.get("accessibleRole") == role)
 
 # Refuse to operate on a real account. This script never clicks Send.
-element("Offline preview", "Text")
-element("Messages are examples", "Text")
+element("Synthetic interaction scenarios", "Text")
 composer = element("Message draft", "TextInput")["handle"]
 search = element("Find a conversation", "TextInput")["handle"]
 draft = "日本語の下書き\nDraft with emoji 🐈"
@@ -63,7 +62,7 @@ call("click_element", elementHandle=element("葵", "Button")["handle"])
 value = call("get_element_properties", elementHandle=composer)
 assert value.get("accessibleValue") == draft, "draft did not survive chat switching"
 call("set_element_value", elementHandle=search, value="Weekend")
-chat_rows = [item for item in tree() if any(base.get("id") == "AppWindow::row-focus" for base in item.get("typeNamesAndIds", []))]
+chat_rows = [item for item in tree() if any(base.get("id", "").endswith("::row-focus") for base in item.get("typeNamesAndIds", []))]
 assert len(chat_rows) == 1 and chat_rows[0]["accessibleLabel"] == "Weekend plans", "search did not filter chats"
 call("set_element_value", elementHandle=search, value="")
 assert not element("Send", "Button").get("accessibleEnabled", False), "offline Send became enabled"
@@ -86,7 +85,7 @@ if args.scenarios:
         key("\x11", "Release")
 
     def bodies():
-        return [item for item in tree() if item.get("accessibleLabel") in ("Incoming message", "Outgoing message")]
+        return [item for item in tree() if item.get("accessibleRole") == "TextInput" and any(base.get("id", "").endswith("::body") for base in item.get("typeNamesAndIds", []))]
 
     call("click_element", elementHandle=element("Long history", "Button")["handle"])
     time.sleep(0.05)
@@ -178,7 +177,7 @@ if args.layout_photos:
     scrolled_group = tree()
     times = set()
     for visible_group in (grouped, scrolled_group):
-        message_bodies = [item for item in visible_group if item.get("accessibleLabel") in ("Incoming message", "Outgoing message")]
+        message_bodies = [item for item in visible_group if item.get("accessibleRole") == "TextInput" and any(base.get("id", "").endswith("::body") for base in item.get("typeNamesAndIds", []))]
         for meta in visible_group:
             label = meta.get("accessibleLabel", "")
             if not (label.startswith("2026/") and " " in label):

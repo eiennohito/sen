@@ -4,6 +4,9 @@ use std::{collections::HashMap, sync::Arc};
 
 pub mod assets;
 mod messages;
+pub mod read;
+pub mod rich;
+pub mod sync;
 use assets::{Asset, ImageCache};
 pub use messages::LocalStateStore;
 
@@ -14,6 +17,12 @@ pub struct Chat {
     pub preview: String,
     pub timestamp_ms: i64,
     pub avatar: Option<Asset>,
+    pub unread: Option<u64>,
+    pub muted: Option<bool>,
+    pub last_read_message: Option<String>,
+    pub member_count: Option<usize>,
+    pub outgoing_preview: bool,
+    pub group: bool,
 }
 
 /// Read-only friend/group identity, independent of the loaded conversation list.
@@ -24,6 +33,7 @@ pub struct Friend {
     pub status: String,
     pub group: bool,
     pub avatar: Option<Asset>,
+    pub member_count: Option<usize>,
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -44,12 +54,46 @@ pub struct Message {
     pub sender_avatar: Option<Asset>,
     pub body: String,
     pub timestamp_ms: i64,
+    #[serde(default)]
+    pub delivered_time: i64,
     pub outgoing: bool,
     pub image: Option<Asset>,
     pub reactions: Vec<Reaction>,
     pub encrypted: bool,
     pub decryption_failed: bool,
+    #[serde(default)]
+    pub rich: rich::RichContent,
 }
+
+#[derive(Debug)]
+pub enum SendFailure {
+    Rejected,
+    Uncertain,
+}
+impl std::fmt::Display for SendFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Rejected => "Message was not accepted",
+            Self::Uncertain => "Acceptance could not be confirmed",
+        })
+    }
+}
+impl std::error::Error for SendFailure {}
+pub fn send_failure(error: &anyhow::Error) -> SendFailure {
+    if error
+        .downcast_ref::<SendFailure>()
+        .is_some_and(|v| matches!(v, SendFailure::Rejected))
+        || error
+            .downcast_ref::<RpcError>()
+            .is_some_and(|e| (400..500).contains(&e.http) || e.code != 0)
+    {
+        SendFailure::Rejected
+    } else {
+        SendFailure::Uncertain
+    }
+}
+
+type ResyncPages = (Vec<Chat>, Vec<(String, Vec<Message>)>);
 
 pub struct Client {
     api: Api,
@@ -65,6 +109,9 @@ pub struct Client {
     request_seq: u32,
     cache: ImageCache,
     messages: messages::MessageCache,
+    detail_boxes: Vec<Value>,
+    loaded_chats: Vec<String>,
+    live_ids: std::collections::VecDeque<String>,
 }
 
 impl Client {
@@ -107,11 +154,54 @@ impl Client {
             request_seq: (sequence % 1_000_000_000) as u32,
             cache,
             messages,
+            detail_boxes: Vec::new(),
+            loaded_chats: Vec::new(),
+            live_ids: std::collections::VecDeque::new(),
         })
     }
 
     fn talk(&mut self, method: &str, args: Value) -> Result<Value> {
         chat::talk(&mut self.api, access(&self.state)?, method, args)
+    }
+
+    pub fn mark_read(&mut self, chat: &str, message: &str) -> Result<()> {
+        self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
+        self.talk(
+            "sendChatChecked",
+            json!([self.request_seq, chat, message, 0]),
+        )?;
+        Ok(())
+    }
+    pub fn read_ranges(&mut self, chat: &str) -> Result<Vec<ReadRange>> {
+        let data = self.talk("getMessageReadRange", json!([[chat], 0]))?;
+        Ok(parse_read_ranges(&data))
+    }
+    pub fn operation(&mut self, operation: &Value) -> Option<(String, Message)> {
+        if !matches!(operation["type"].as_u64(), Some(25 | 26 | 43)) {
+            return None;
+        }
+        let raw = &operation["message"];
+        let message_id = raw["id"].as_str()?;
+        if self.live_ids.iter().any(|id| id == message_id) {
+            return None;
+        }
+        self.live_ids.push_back(message_id.into());
+        if self.live_ids.len() > 2048 {
+            self.live_ids.pop_front();
+        }
+        let from = raw["from"].as_str()?;
+        let to = raw["to"].as_str()?;
+        let chat = if is_user(to) && from != self.my_mid {
+            from
+        } else {
+            to
+        }
+        .to_owned();
+        Some((chat, self.message(raw)))
+    }
+    pub fn replace_token(&mut self, token: Value) {
+        self.state["token_v3_issue_result"] = token;
+        self.obs_access = None;
     }
 
     /// Reset only the poisoned WASM store, preserving validated public-key data.
@@ -140,6 +230,15 @@ impl Client {
             .last()
             .and_then(|c| c["id"].as_str())
             .map(str::to_owned);
+        self.detail_boxes = boxes.clone();
+        let chats = self.build_chats(boxes, &HashMap::new())?;
+        self.more_chats = more_chats;
+        self.chat_cursor = chat_cursor;
+        Ok(chats)
+    }
+    /// Follow-up metadata work yields to queued Send/Messages commands first.
+    pub fn chat_details(&mut self) -> Result<Vec<Chat>> {
+        let boxes = self.detail_boxes.clone();
         let users: Vec<_> = boxes
             .iter()
             .filter_map(|c| c["id"].as_str())
@@ -176,6 +275,13 @@ impl Client {
                 }
             }
         }
+        self.build_chats(&boxes, &group_info)
+    }
+    fn build_chats(
+        &mut self,
+        boxes: &[Value],
+        group_info: &HashMap<String, Value>,
+    ) -> Result<Vec<Chat>> {
         let mut chats = Vec::new();
         for entry in boxes.iter().take(50) {
             let id = required(entry, "id")?.to_owned();
@@ -206,19 +312,25 @@ impl Client {
                 })
             });
             let timestamp_ms = last.map(message_timestamp).unwrap_or(0);
+            let member_count = info.and_then(|chat| rich::group_member_count(chat, &self.my_mid));
             let preview = last.map(|m| self.message(m).body).unwrap_or_default();
             chats.push(Chat {
+                group: !is_user(&id),
+                member_count,
+                unread: entry["unreadCount"]
+                    .as_u64()
+                    .or_else(|| entry["unreadCount"].as_str()?.parse().ok()),
+                muted: None,
+                last_read_message: entry["lastSeenMessageId"].as_str().map(str::to_owned),
                 id,
                 title,
                 preview,
                 timestamp_ms,
                 avatar,
+                outgoing_preview: last
+                    .is_some_and(|m| m["from"].as_str() == Some(self.my_mid.as_str())),
             });
         }
-        // Commit pagination only after all dependent metadata requests succeed.
-        // A retry must request the same boundary instead of silently skipping it.
-        self.more_chats = more_chats;
-        self.chat_cursor = chat_cursor;
         Ok(chats)
     }
 
@@ -246,6 +358,7 @@ impl Client {
                     name: contact_name(contact).unwrap_or("Unnamed friend").into(),
                     status: contact["statusMessage"].as_str().unwrap_or_default().into(),
                     group: false,
+                    member_count: None,
                     avatar: contact["picturePath"].as_str().and_then(Asset::avatar),
                 });
                 self.contacts.insert(id.into(), contact.clone());
@@ -278,6 +391,7 @@ impl Client {
                         .into(),
                     status: String::new(),
                     group: true,
+                    member_count: rich::group_member_count(chat, &self.my_mid),
                     avatar: chat["picturePath"].as_str().and_then(Asset::avatar),
                 });
             }
@@ -285,7 +399,21 @@ impl Client {
         Ok(friends)
     }
 
+    pub fn resync(&mut self) -> Result<ResyncPages> {
+        self.chats(false)?;
+        let chats = self.chat_details()?;
+        let mut pages = Vec::new();
+        for chat in self.loaded_chats.clone() {
+            pages.push((chat.clone(), self.refresh_messages(&chat)?));
+        }
+        Ok((chats, pages))
+    }
     pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
+        self.loaded_chats.retain(|id| id != chat_mid);
+        self.loaded_chats.push(chat_mid.into());
+        if self.loaded_chats.len() > 8 {
+            self.loaded_chats.remove(0);
+        }
         if let Ok(Some(mut messages)) = self.messages.page(chat_mid) {
             // Old cache pages predate sender identity. Refresh these rather
             // than silently showing anonymous group messages indefinitely.
@@ -302,6 +430,35 @@ impl Client {
         self.refresh_messages(chat_mid)
     }
 
+    pub fn older(
+        &mut self,
+        chat: &str,
+        before: &str,
+        delivered_time: i64,
+    ) -> Result<(Vec<Message>, bool)> {
+        ensure!(
+            !before.is_empty() && delivered_time > 0,
+            "invalid history cursor"
+        );
+        if let Ok(Some(page)) = self.messages.range(chat, before, delivered_time) {
+            return Ok(page);
+        }
+        let data = self.talk("getPreviousMessagesV2WithRequest", json!([{
+            "messageBoxId":chat,"endMessageId":{"deliveredTime":delivered_time.to_string(),"messageId":before},"messagesCount":50
+        },0]))?;
+        let raw = data.as_array().context("missing older messages")?;
+        let reached_beginning = raw.len() < 50;
+        let mut messages: Vec<_> = raw.iter().take(50).map(|m| self.message(m)).collect();
+        messages.retain(|m| m.id != before);
+        let mut ids = std::collections::HashSet::new();
+        messages.retain(|m| ids.insert(m.id.clone()));
+        sort_messages(&mut messages);
+        self.resolve_senders(chat, &mut messages);
+        let _ =
+            self.messages
+                .store_range(chat, before, delivered_time, &messages, reached_beginning);
+        Ok((messages, reached_beginning))
+    }
     pub fn refresh_messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
         // Prime fingerprints from valid persisted history before fetching updates.
         let _ = self.messages.page(chat_mid);
@@ -391,6 +548,9 @@ impl Client {
                             data[field] = body[field].clone();
                         }
                     }
+                    if !body["REPLACE"].is_null() {
+                        data["contentMetadata"]["REPLACE"] = body["REPLACE"].clone();
+                    }
                     if let Some(key) = body["keyMaterial"].as_str() {
                         data["contentMetadata"]["ENC_KM"] = json!(key);
                     }
@@ -441,11 +601,16 @@ impl Client {
                 .unwrap_or_else(|| format!("unavailable-{fingerprint}")),
             body,
             timestamp_ms: message_timestamp(&data),
+            delivered_time: data["deliveredTime"]
+                .as_i64()
+                .or_else(|| data["deliveredTime"].as_str()?.parse().ok())
+                .unwrap_or_else(|| message_timestamp(&data)),
             outgoing: data["from"].as_str() == Some(&self.my_mid),
             image,
             reactions: reactions(&data["reactions"]),
             encrypted,
             decryption_failed: failed,
+            rich: rich::parse(&data),
         };
         if !message.decryption_failed {
             self.messages.remember(fingerprint, message.clone());
@@ -490,16 +655,15 @@ impl Client {
 
     /// Called only after the user presses Send; diagnostics never call this.
     pub fn send_text(&mut self, to: &str, text: &str) -> Result<Message> {
-        ensure!(
-            !text.trim().is_empty() && text.len() <= 10_000,
-            "message must contain 1–10000 UTF-8 bytes"
-        );
+        if text.trim().is_empty() || text.len() > 10_000 {
+            return Err(SendFailure::Rejected.into());
+        }
         let result = self.encrypted_text(to, text);
         let message = match result {
             Ok(message) => message,
             Err(error) => {
-                self.reset_runtime()?;
-                return Err(error);
+                let _ = self.reset_runtime();
+                return Err(error.context(SendFailure::Rejected));
             }
         };
         self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
@@ -698,4 +862,78 @@ fn reactions(value: &Value) -> Vec<Reaction> {
     }
     groups.truncate(6);
     groups
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+    #[test]
+    fn send_rejected_response_shapes_and_unanswered_transport() {
+        for (http, code) in [(400, 0), (403, 10052), (200, 10102)] {
+            let error = anyhow::Error::new(RpcError {
+                method: "sendMessage".into(),
+                http,
+                code,
+                status: 0,
+            });
+            assert!(matches!(send_failure(&error), SendFailure::Rejected));
+        }
+        assert!(matches!(
+            send_failure(&anyhow::anyhow!("transport timeout")),
+            SendFailure::Uncertain
+        ));
+        assert!(matches!(
+            send_failure(&anyhow::Error::new(SendFailure::Rejected)),
+            SendFailure::Rejected
+        ));
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct ReadRange {
+    pub chat: String,
+    pub reader: String,
+    pub start: String,
+    pub end: String,
+}
+fn parse_read_ranges(data: &Value) -> Vec<ReadRange> {
+    let mut ranges = Vec::new();
+    for chat in data.as_array().into_iter().flatten() {
+        let Some(id) = chat["chatId"].as_str() else {
+            continue;
+        };
+        for (reader, values) in chat["ranges"].as_object().into_iter().flatten() {
+            for range in values.as_array().into_iter().flatten() {
+                if let (Some(start), Some(end)) = (
+                    range["startMessageId"].as_str(),
+                    range["endMessageId"].as_str(),
+                ) && end != "1"
+                    && message_id_cmp(start, end).is_le()
+                {
+                    ranges.push(ReadRange {
+                        chat: id.into(),
+                        reader: reader.clone(),
+                        start: start.into(),
+                        end: end.into(),
+                    });
+                }
+            }
+        }
+    }
+    ranges
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    #[test]
+    fn preserves_member_ranges_and_open_sentinel() {
+        let ranges = parse_read_ranges(
+            &json!([{"chatId":"group","ranges":{"member":[{"startMessageId":"4","endMessageId":"9"},{"startMessageId":"10","endMessageId":"1"}]}}]),
+        );
+        assert_eq!(ranges.len(), 1);
+        assert_eq!(ranges[0].reader, "member");
+        assert_eq!(ranges[0].start, "4");
+        assert_eq!(ranges[0].end, "9");
+    }
 }

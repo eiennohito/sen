@@ -41,7 +41,7 @@ not applicable, one unknown. Nothing has physical or account verification.
 | SH1 | Rail with icon destinations; current destination shown as selected, not disabled; Settings and account at the rail bottom | no | — |
 | SH2 | Browser pane, conversation pane, and detail panel scroll independently; wheel input never spills across panes | part (two panes; no panel) | M |
 | SH3 | Header and composer stay visible while history scrolls | yes | M |
-| SH4 | One scrollbar style across panes; thumb ≥ 10 px; appears when content overflows; no text rewrap when it appears | part (three styles) | M |
+| SH4 | One scrollbar style across panes; thumb ≥ 10 px; appears when content overflows; no text rewrap when it appears | part (S1: shared Pane for chats, friends, history; standard editor/viewer/sheet scrollbars remain) | S M |
 | SH5 | Window and pane resizing keep selected chat, draft, focus, and reading anchor | part | S |
 | SH6 | Narrow layout below 740 px: Back in header returns to the browser at its previous offset; unread reachable from the conversation pane | part (Back exists; no unread) | M |
 | SH7 | Minimum 360×520 at the largest text size has no overlapping controls | part (verified at 24 px only by snapshot) | M |
@@ -182,8 +182,8 @@ not applicable, one unknown. Nothing has physical or account verification.
 
 | ID | Requirement | Impl | Verified |
 | --- | --- | --- | --- |
-| VIS1 | Type scale derives from the text-size setting; no hard-coded text sizes except the two minimums | no | — |
-| VIS2 | Colours come from the system palette and follow light/dark | no (fixed light palette; widgets follow system) | — |
+| VIS1 | Type scale derives from the text-size setting; no hard-coded text sizes except the two minimums | yes (S1) | S M |
+| VIS2 | Colours come from the system palette and follow light/dark | yes (S1, Palette roles) | S M; dark desktop screenshot, physical scale/theme V pending |
 | VIS3 | Hover, selected, focused, pressed, disabled are distinct and not colour-only | part | M |
 | VIS4 | One icon family; rail and markers use icons, not text glyphs | no | — |
 | VIS5 | 100 %, 150 %, 200 % scale with long names, unbroken links, Japanese and emoji text remain usable | part | M (1.5 only) P— |
@@ -194,12 +194,12 @@ not applicable, one unknown. Nothing has physical or account verification.
 
 | ID | Requirement | Impl | Verified |
 | --- | --- | --- | --- |
-| OS1 | App id, class, desktop entry, icon consistent; entry has SingleMainWindow, StartupNotify, Keywords | part (id and icon; entry fields missing) | P— |
-| OS2 | Single instance: second launch activates the first; D-Bus `org.freedesktop.Application` implemented | no | — |
+| OS1 | App id, class, desktop entry, icon consistent; entry has SingleMainWindow, StartupNotify, Keywords | yes | S; P— |
+| OS2 | Single instance: second launch activates the first; D-Bus `org.freedesktop.Application` implemented | yes (activation request and attention fallback) | S; P— |
 | OS3 | Notifications via `org.freedesktop.Notifications` with desktop-entry hint and actions | no | — |
 | OS4 | Badge via LauncherEntry | no | — |
 | OS5 | Window activation from a notification works on Wayland, or falls back to the attention hint | no | — |
-| OS6 | State, data, and cache in XDG directories; nothing under the repository by default | part (cache only) | — |
+| OS6 | State, data, and cache in XDG directories; nothing under the repository by default | yes (explicit legacy-file choice retained) | S |
 | OS7 | Background mode and autostart are off by default and explicit preferences | n/a (close quits) | S |
 | OS8 | System theme, accent, font, and per-monitor scale are followed | part (scale only) | P— |
 | OS9 | Links open through the default handler after activation | no | — |
@@ -240,7 +240,7 @@ is required where marked P.
 | SC12 | Resize at 200 % with a long draft and media | Independent scrolling; caret, Send, metadata usable | P | — |
 | SC13 | Compose Japanese; switch focus; cancel candidates; click the open chat | No accidental send, duplicate commit, stuck preedit, lost draft | P | — |
 | SC14 | Open menu, viewer, panel, settings; dismiss in turn | Only intended layers close; focus returns; shortcuts beneath do not fire | M | partial (menu Escape, viewer Escape, settings Escape) |
-| SC15 | Launch the app twice; click a notification; log out | One window; it is raised; notifications and badge cleared | P | blocked (OS2–OS4) |
+| SC15 | Launch the app twice; click a notification; log out | One window; it is raised; notifications and badge cleared | P | blocked (physical raise; OS3–OS4) |
 | SC16 | Switch the desktop to dark theme while running | Every surface follows; text stays legible | P | — |
 
 ## Verification log
@@ -249,6 +249,9 @@ Keep account contents and private screenshots out of Git. Newest first.
 
 | Date | Build | Covered | Environment | Result |
 | --- | --- | --- | --- | --- |
+| 2026-10-17 | S1–S3/P1–P4 working tree | VIS1, VIS2, SH4 partial; modular UI/controller regression | Slint 1.18.1 software renderer; offline snapshots 980×720/15 and 360×520/24; Plasma Wayland BreezeDark at 1.5 scale; MCP | Required workspace tests and Clippy with warnings denied pass; formatting passes. Required MCP batch (`--scenarios --layout-photos --friends --auth-recovery`) passes. Snapshots and actual dark desktop screenshot inspected; caption/time geometry scales at 24 px. Shared Pane covers chats/friends/history; standard editor and viewer/profile/auth sheet scrollbars remain. Physical IME/pointer/scale V and account checks remain unverified. |
+| 2026-10-17 | S2 working tree | OS1, OS2, OS6 | Offline synthetic Rust harness, private `dbus-run-session`, isolated installer staging | 5 activation/path/migration/lock tests and isolated Clippy pass. Private bus verifies primary ownership, second-launch Activate/exit, introspection, Open, and open-chat dispatch. A copied release binary passes two offline demo launches: owner PID retained, second exits 0; compositor focus is not asserted. Normal and dev-paths staged entries/service pass field checks. Physical compositor raising and notification activation remain unverified; no account access. |
+| 2026-10-17 | P4 working tree | Rich-content protocol parser (enables MSG6–MSG8) | Offline synthetic Rust harness importing `desktop/rich.rs` | 4 tests and Clippy with warnings denied pass: UTF-16/UTF-8 boundaries, malformed and overlapping spans, metadata numbers, reply relation filtering, membership. No account access or rich UI verification. |
 | 2026-10-17 | `fc4c112` | Workspace tests; headless snapshots 980×720/15 px, 360×520/24 px for demo, groups, friends, photos | Linux, Slint 1.18.1 software renderer, offline | 18 tests pass, 1 WASM test ignored. Snapshots show the defects listed in ux-sessions.md (full-window sheets, button-like friend rows, fixed caption sizes at 24 px, Latest control visible at first open in headless mode). No desktop run. |
 | 2026-10-16 | `fc4c112` | NAV1, NAV2, NAV11–NAV14 partial; friends MCP run | Wayland, scale 1.5, `check-ui-mcp.py --friends --scenarios --layout-photos --auth-recovery` | Passed. Friend and group retrieval against the account not exercised. |
 | 2026-10-15 | `f7ab75a` and follow-ups | RD2–RD5, RD8 partial, MSG1–MSG3, OUT1, OUT3, OUT4, OUT8, CMP3–CMP7, FB2, SC1, SC2, SC5–SC8 | Wayland, scale 1.5, MCP simulated pointer and keyboard; `cargo test` | Passed as simulated input. Physical pointer, Fcitx, and 100/200 % scale never run. Sticker fallback, group identity, photo viewer, and authentication recovery sheets checked by MCP. |

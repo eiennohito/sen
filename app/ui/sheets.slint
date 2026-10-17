@@ -1,0 +1,119 @@
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
+import { Pane } from "scrollpane.slint";
+
+export component Sheets inherits Rectangle {
+    Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%;
+        visible: State.auth-open; background: Tokens.background;
+        FocusScope {
+            key-pressed(event) => {
+                if event.text == Key.Escape { State.cancel-sign-in(); return accept; }
+                reject
+            }
+            VerticalLayout {
+                padding: 16px; spacing: 12px;
+                Text { text: "Sign in to LINE"; font-size: Tokens.heading; font-weight: 700; color: Tokens.accent; }
+                ScrollView {
+                    horizontal-scrollbar-policy: always-off;
+                    VerticalLayout {
+                        padding-right: 16px; spacing: 12px; alignment: start;
+                        Text { text: "Use LINE on your phone to scan the QR code and approve this device. This uses the Chrome device slot and may sign Chrome out."; wrap: word-wrap; font-size: Tokens.base; }
+                        Text { text: "Your existing session and encrypted drafts will be kept separately. They will not be moved into the new login."; wrap: word-wrap; font-size: Tokens.base; color: Tokens.secondary; }
+                        if State.auth-busy: Text { text: State.auth-stage; wrap: word-wrap; font-size: Tokens.base; }
+                        if State.auth-qr.width > 0: Image { source: State.auth-qr; height: min(280px, State.window-width - 64px); image-fit: contain; accessible-label: "Scan this QR code with LINE on your phone"; }
+                        if State.auth-pin != "": Text { text: "Enter this code on your phone: " + State.auth-pin; wrap: word-wrap; font-size: Tokens.heading; font-weight: 700; }
+                        if State.auth-error != "": Text { text: State.auth-error; wrap: word-wrap; font-size: Tokens.base; color: Tokens.danger; }
+                    }
+                }
+                VerticalLayout {
+                    spacing: 8px;
+                    auth-start := Button { text: "Start sign-in"; enabled: !State.auth-busy; clicked => { State.start-sign-in(); } }
+                    Button { text: State.auth-cancelling ? "Cancelling…" : State.auth-busy ? "Cancel sign-in" : "Back"; enabled: !State.auth-cancelling; clicked => { State.cancel-sign-in(); } }
+                }
+            }
+        }
+    }
+
+    Rectangle {
+        width: 100%; height: 100%; visible: State.profile-open; background: Tokens.background;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { State.close-profile(); return accept; } reject }
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                profile-close := Button { text: "Back to friends"; clicked => { State.close-profile(); } }
+                Image { source: State.profile-avatar; height: 80px; image-fit: contain; }
+                Text { text: State.profile-group ? "Group profile" : "Friend profile"; color: Tokens.secondary; }
+                Text { text: State.profile-name; font-size: Tokens.heading; wrap: word-wrap; }
+                ScrollView { Text { text: State.profile-status; wrap: word-wrap; } }
+                if !State.profile-available: Text { text: "This entry is no longer in your friend/group list. Refresh Friends to update it."; wrap: word-wrap; color: Tokens.danger; }
+                Button { text: "Open chat"; enabled: State.profile-available; clicked => { State.start-friend-chat(); } }
+            }
+        }
+    }
+    Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%; visible: State.settings-open; background: Tokens.background;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { State.settings-open = false; State.focus-settings-opener(); return accept; } reject }
+            VerticalLayout {
+                padding: 20px; spacing: 16px; alignment: start;
+                settings-close := Button { text: "Back to chats"; clicked => { State.settings-open = false; State.focus-settings-opener(); } }
+                Text { text: State.account-name; color: Tokens.secondary; overflow: elide; }
+                if State.desktop-warning != "": Text { text: State.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
+                Text { text: "Settings"; font-size: Tokens.heading; font-weight: 700; }
+                Text { text: "Message text size"; }
+                ComboBox {
+                    accessible-label: "Message text size";
+                    model: ["Small", "Default", "Large", "Extra large"];
+                    current-index: State.text-size <= 13 ? 0 : State.text-size <= 15 ? 1 : State.text-size <= 18 ? 2 : 3;
+                    selected(value) => { State.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; State.settings-changed(); }
+                }
+                Text { text: "Shortcuts"; font-weight: 600; }
+                Text { text: "Ctrl+Enter  Send\nEnter  New line\nEscape  Close layer or clear search\nCtrl+F  Search\nCtrl+1  Friends\nCtrl+2  Chats\nAlt+↑ / Alt+↓  Previous / next chat\nAlt+←  Back\nCtrl+Q  Quit"; font-size: Tokens.small; wrap: word-wrap; }
+            }
+        }
+    }
+    Rectangle {
+        x: 0px; y: 0px; width: 100%; height: 100%; visible: State.viewer-open; background: Tokens.background;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { State.close-viewer(); return accept; } reject }
+            VerticalLayout {
+                padding: 12px; spacing: 10px;
+                HorizontalLayout {
+                    viewer-close := Button { text: "Close photo"; clicked => { State.close-viewer(); } }
+                    Text { text: State.viewer-status; color: Tokens.foreground; wrap: word-wrap; vertical-alignment: center; }
+                }
+                viewer-scroll := ScrollView {
+                    property <float> fit: min(self.visible-width / max(1px, State.viewer-image.width * 1px), self.visible-height / max(1px, State.viewer-image.height * 1px));
+                    content-width: max(self.visible-width, State.viewer-image.width * 1px * self.fit * State.viewer-zoom);
+                    content-height: max(self.visible-height, State.viewer-image.height * 1px * self.fit * State.viewer-zoom);
+                    Image {
+                        source: State.viewer-image;
+                        accessible-role: image; accessible-label: "Photo in viewer";
+                        width: State.viewer-image.width * 1px * viewer-scroll.fit * State.viewer-zoom;
+                        height: State.viewer-image.height * 1px * viewer-scroll.fit * State.viewer-zoom;
+                        x: (viewer-scroll.content-width - self.width) / 2; y: (viewer-scroll.content-height - self.height) / 2;
+                        image-fit: contain;
+                    }
+                }
+                if State.viewer-error != "": Text { text: State.viewer-error; wrap: word-wrap; color: Tokens.danger; }
+                if State.viewer-error != "": Button { text: "Retry original"; enabled: !State.viewer-loading; clicked => { State.open-photo(State.viewer-key); } }
+                HorizontalLayout {
+                    Button { text: "−"; accessible-label: "Zoom out"; enabled: State.viewer-zoom > 1; clicked => { State.viewer-zoom = max(1, State.viewer-zoom / 1.5); } }
+                    Button { text: "+"; accessible-label: "Zoom in"; enabled: State.viewer-zoom < 12; clicked => { State.viewer-zoom = min(12, State.viewer-zoom * 1.5); } }
+                    Button { text: "Fit"; clicked => { State.viewer-zoom = 1; viewer-scroll.content-x = 0px; viewer-scroll.content-y = 0px; } }
+                    Button { text: "1:1"; accessible-label: "Original size"; clicked => { State.viewer-zoom = max(1, 1 / max(0.001, viewer-scroll.fit)); } }
+                }
+            }
+        }
+    }
+
+    public function focus-profile() { profile-close.focus(); }
+    public function focus-settings() { settings-close.focus(); }
+    public function focus-auth() { auth-start.focus(); }
+    public function focus-viewer() { viewer-close.focus(); }
+    public function reset-viewer() { viewer-scroll.content-x = 0px; viewer-scroll.content-y = 0px; }
+
+}

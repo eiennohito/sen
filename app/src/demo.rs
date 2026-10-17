@@ -1,7 +1,6 @@
 use super::*;
 pub(super) struct Conversation {
     pub title: &'static str,
-    pub subtitle: &'static str,
     pub preview: &'static str,
     pub initial: &'static str,
     pub messages: Vec<MessageRow>,
@@ -68,7 +67,6 @@ pub(super) fn examples() -> Vec<Conversation> {
     vec![
         Conversation {
             title: "葵",
-            subtitle: "Example conversation",
             preview: "また明日、駅の前で。",
             initial: "葵",
             messages: vec![
@@ -79,14 +77,12 @@ pub(super) fn examples() -> Vec<Conversation> {
         },
         Conversation {
             title: "Weekend plans",
-            subtitle: "Example group · 3 members",
             preview: "The riverside route looks good.",
             initial: "W",
             messages: group_fixture(),
         },
         Conversation {
             title: "Notes to self",
-            subtitle: "Example conversation",
             preview: "A quiet place for a thought.",
             initial: "N",
             messages: vec![message(

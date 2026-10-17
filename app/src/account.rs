@@ -1,7 +1,9 @@
 //! A single account worker owns all tokens, WASM objects, requests and decoding.
 use line_wasm_poc::client::desktop::{
-    Chat, Client, Message,
+    Chat, Client, Message, SendFailure,
     assets::{Asset, Pixels},
+    send_failure,
+    sync::{self, SyncState},
 };
 use std::{
     collections::HashSet,
@@ -20,9 +22,29 @@ pub struct Paths {
     pub wasm: PathBuf,
     pub cache: PathBuf,
 }
+// Extended contracts are consumed by S8/S10/S11 in subsequent sessions.
+#[allow(dead_code)]
 pub enum Command {
+    Stop,
+    Older {
+        chat: String,
+        before_message: String,
+        delivered_time: i64,
+    },
+    Push {
+        epoch: u64,
+        event: sync::Event,
+    },
     Reconnect,
     Friends,
+    ChatDetails,
+    MarkRead {
+        chat: String,
+        up_to_message: String,
+    },
+    Receipts {
+        chat: String,
+    },
     Reauthenticate,
     Original {
         chat: String,
@@ -45,24 +67,34 @@ pub enum Command {
     },
 }
 
+#[allow(dead_code)]
 pub struct ChatView {
     pub id: String,
     pub title: String,
     pub preview: String,
     pub timestamp: i64,
     pub avatar_key: String,
+    pub unread: Option<u64>,
+    pub muted: Option<bool>,
+    pub last_read_message: Option<String>,
+    pub member_count: Option<usize>,
+    pub outgoing_preview: bool,
+    pub group: bool,
 }
+#[allow(dead_code)]
 pub struct FriendView {
     pub id: String,
     pub name: String,
     pub status: String,
     pub group: bool,
     pub avatar_key: String,
+    pub member_count: Option<usize>,
 }
 pub struct ReactionView {
     pub label: String,
     pub image_key: String,
 }
+#[allow(dead_code)]
 pub struct MessageView {
     pub id: String,
     pub sender_id: String,
@@ -72,11 +104,63 @@ pub struct MessageView {
     pub photo: bool,
     pub body: String,
     pub timestamp: i64,
+    pub delivered_time: i64,
     pub outgoing: bool,
     pub image_key: String,
     pub reactions: Vec<ReactionView>,
+    pub rich: line_wasm_poc::client::desktop::rich::RichContent,
 }
+#[allow(dead_code)]
 pub enum Update {
+    Older {
+        chat: String,
+        messages: Vec<MessageView>,
+        reached_beginning: bool,
+    },
+    OlderFailed {
+        chat: String,
+        before_message: String,
+    },
+    Sync(SyncState),
+    Incoming {
+        chat: String,
+        messages: Vec<MessageView>,
+        replay: bool,
+    },
+    ReadElsewhere {
+        chat: String,
+        up_to_message: String,
+    },
+    ReadMarked {
+        chat: String,
+        up_to_message: String,
+    },
+    ReadFailed {
+        chat: String,
+    },
+    ReadRanges(Vec<line_wasm_poc::client::desktop::ReadRange>),
+    ChatMeta {
+        chat: String,
+        title: String,
+        preview: String,
+        timestamp: i64,
+        unread: Option<u64>,
+        muted: Option<bool>,
+    },
+    Receipt {
+        chat: String,
+        up_to_message: String,
+        reader_count: Option<usize>,
+    },
+    SendRejected {
+        id: String,
+        local_id: String,
+        reason: String,
+    },
+    SendUncertain {
+        id: String,
+        local_id: String,
+    },
     Friends(Vec<FriendView>),
     FriendsFailed,
     Original {
@@ -133,6 +217,7 @@ pub struct Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        let _ = self.commands.try_send(Command::Stop);
         self.pairing_cancel.store(true, Ordering::Relaxed);
     }
 }
@@ -143,19 +228,73 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
     let cancel = stop.clone();
     let pairing_cancel = Arc::new(AtomicBool::new(false));
     let pairing_stop = pairing_cancel.clone();
+    let push_tx = tx.clone();
     std::thread::spawn(move || {
         let Some(mut client) = connect(&paths, &rx, &cancel, &pairing_stop, &publish) else {
             return;
         };
         publish(Update::Connected(client.account_name.clone()));
+        let mut sync_epoch = 0;
+        let mut sync_guard = Some(start_sync(&paths, &push_tx, &cancel, sync_epoch));
+        let mut markers = line_wasm_poc::client::desktop::read::Markers::default();
         let mut pending = Some(Command::Chats { next: false });
         let mut jobs: Vec<(String, Asset)> = Vec::new();
         let mut failed_images = std::collections::HashMap::<String, Instant>::new();
         while !cancel.load(Ordering::Relaxed) {
-            let command = pending.take().or_else(|| rx.try_recv().ok());
+            if let Some((chat, up_to_message)) = markers.due(Instant::now()) {
+                match client.mark_read(&chat, &up_to_message) {
+                    Ok(()) => {
+                        markers.confirmed(&chat, &up_to_message);
+                        publish(Update::ReadMarked {
+                            chat,
+                            up_to_message,
+                        });
+                    }
+                    Err(_) => publish(Update::ReadFailed { chat }),
+                }
+            }
+            let command = rx.try_recv().ok().or_else(|| pending.take());
             if let Some(command) = command {
                 // Prefer user commands over outstanding images from an old view.
                 match command {
+                    Command::Stop => break,
+                    Command::Older { chat, before_message, delivered_time } => match client.older(&chat, &before_message, delivered_time) {
+                        Ok((messages,reached_beginning)) => publish(Update::Older { chat, messages: messages.into_iter().map(|m| message_view(m,&mut jobs)).collect(), reached_beginning }),
+                        Err(_) => publish(Update::OlderFailed { chat, before_message }),
+                    },
+                    Command::MarkRead { chat, up_to_message } => markers.expose(chat, up_to_message, Instant::now()),
+                    Command::Receipts { chat } => { if let Ok(ranges) = client.read_ranges(&chat) { publish(Update::ReadRanges(ranges)); } },
+                    Command::Push { epoch, event } => { if epoch != sync_epoch { continue; } match event {
+                        sync::Event::State(state) => publish(Update::Sync(state)),
+                        sync::Event::Token(token) => client.replace_token(token),
+                        sync::Event::Resync { complete, .. } => {
+                            match client.resync() {
+                                Ok((chats, pages)) => {
+                                    publish(Update::Chats { chats: chats.into_iter().map(|c| chat_view(c, &mut jobs)).collect(), more: client.more_chats });
+                                    for (chat, messages) in pages { publish(Update::Incoming { chat, messages: messages.into_iter().map(|m| message_view(m, &mut jobs)).collect(), replay: true }); }
+                                    let _ = complete.send(true);
+                                },
+                                Err(_) => { let _ = complete.send(false); }
+                            }
+                        },
+                        sync::Event::Operation(operation) => {
+                            if operation["type"].as_u64() == Some(40) {
+                                if let (Some(chat), Some(message)) = (operation["param1"].as_str(),operation["param2"].as_str()) { publish(Update::ReadElsewhere { chat: chat.into(), up_to_message: message.into() }); }
+                                continue;
+                            }
+                            if operation["type"].as_u64() == Some(55) {
+                                if let (Some(chat), Some(message)) = (operation["param1"].as_str(),operation["param3"].as_str()) { publish(Update::Receipt { chat: chat.into(), up_to_message: message.into(), reader_count: None }); pending=Some(Command::Receipts { chat: chat.into() }); }
+                                continue;
+                            }
+                            match client.operation(&operation) {
+                                Some((chat, message)) => {
+                                    publish(Update::Incoming { chat, messages: vec![message_view(message, &mut jobs)], replay: false });
+                                    pending = Some(Command::Chats { next: false });
+                                },
+                                None => { pending = Some(Command::Chats { next: false }); }
+                            }
+                        }
+                    } },
                     Command::Original { chat, key, request } => {
                         let result = client.messages(&chat).and_then(|messages| {
                             let asset = messages.into_iter().filter_map(|m| m.image).find(|asset| asset.key() == key).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "photo is no longer loaded"))?;
@@ -164,17 +303,24 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         match result { Ok(pixels) => publish(Update::Original { request, pixels }), Err(_) => publish(Update::OriginalFailed { request }) }
                     }
                     command @ (Command::Reconnect | Command::Reauthenticate) => {
-                        if matches!(command, Command::Reauthenticate) && !reauthenticate(&paths, &cancel, &pairing_stop, &publish) { continue; }
+                        sync_epoch = sync_epoch.wrapping_add(1);
+                        drop(sync_guard.take());
+                        if matches!(command, Command::Reauthenticate) && !reauthenticate(&paths, &cancel, &pairing_stop, &publish) { sync_guard = Some(start_sync(&paths, &push_tx, &cancel, sync_epoch)); continue; }
                         let Some(reconnected) = connect(&paths, &rx, &cancel, &pairing_stop, &publish) else { break; };
                         client = reconnected;
+                        sync_guard = Some(start_sync(&paths, &push_tx, &cancel, sync_epoch));
                         jobs.clear(); failed_images.clear();
                         publish(Update::Connected(client.account_name.clone()));
                         pending = Some(Command::Chats { next: false });
                     }
 
+                    Command::ChatDetails => match client.chat_details() {
+                        Ok(chats) => publish(Update::Chats { chats: chats.into_iter().map(|c| chat_view(c, &mut jobs)).collect(), more: client.more_chats }),
+                        Err(_) => publish(Update::ChatsFailed),
+                    },
                     Command::Friends => match client.friends() {
                         Ok(friends) => publish(Update::Friends(friends.into_iter().map(|friend| FriendView {
-                            id: friend.id, name: friend.name, status: friend.status, group: friend.group,
+                            id: friend.id, name: friend.name, status: friend.status, group: friend.group, member_count: friend.member_count,
                             avatar_key: asset_key(friend.avatar, &mut jobs),
                         }).collect())),
                         Err(_) => publish(Update::FriendsFailed),
@@ -189,6 +335,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                                 chats: views,
                                 more: client.more_chats,
                             });
+                            pending = Some(Command::ChatDetails);
                         }
                         Err(_) => publish(Update::ChatsFailed),
                     },
@@ -202,14 +349,12 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     } else {
                         client.messages(&id)
                     } {
-                        Ok(messages) => publish(Update::Messages {
-                            id,
-                            generation,
-                            messages: messages
-                                .into_iter()
-                                .map(|m| message_view(m, &mut jobs))
-                                .collect(),
-                        }),
+                        Ok(messages) => {
+                            pending = Some(Command::Receipts { chat: id.clone() });
+                            publish(Update::Messages {
+                                id, generation, messages: messages.into_iter().map(|m| message_view(m, &mut jobs)).collect(),
+                            });
+                        },
                         Err(_) => publish(Update::Error {
                             message: "Could not load recent messages. Already loaded messages are kept. Use Retry messages.".into(),
                             generation: Some(generation),
@@ -233,7 +378,10 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                                 refresh: true,
                             });
                         }
-                        Err(_) => publish(Update::SendFailed { id, local_id }),
+                        Err(error) => match send_failure(&error) {
+                            SendFailure::Rejected => publish(Update::SendRejected { id, local_id, reason: "Message was not accepted. You can retry.".into() }),
+                            SendFailure::Uncertain => publish(Update::SendUncertain { id, local_id }),
+                        },
                     },
                 }
                 let mut seen = HashSet::new();
@@ -268,10 +416,17 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     }
                 }
             } else {
-                match rx.recv_timeout(Duration::from_millis(200)) {
-                    Ok(command) => pending = Some(command),
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                if let Some(wait) = markers.wait(Instant::now()) {
+                    match rx.recv_timeout(wait) {
+                        Ok(command) => pending = Some(command),
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(_) => break,
+                    }
+                } else {
+                    match rx.recv() {
+                        Ok(command) => pending = Some(command),
+                        Err(_) => break,
+                    }
                 }
             }
         }
@@ -280,6 +435,61 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
         commands: tx,
         stop,
         pairing_cancel,
+    }
+}
+
+struct SyncGuard {
+    stop: Arc<AtomicBool>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+impl Drop for SyncGuard {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+fn start_sync(
+    paths: &Paths,
+    tx: &SyncSender<Command>,
+    global_stop: &Arc<AtomicBool>,
+    epoch: u64,
+) -> SyncGuard {
+    let stop = Arc::new(AtomicBool::new(false));
+    let thread_stop = stop.clone();
+    let global_stop = global_stop.clone();
+    let paths = paths.clone();
+    let tx = tx.clone();
+    let thread = std::thread::spawn(move || {
+        let publish = |event| {
+            let mut command = Command::Push { epoch, event };
+            loop {
+                if thread_stop.load(Ordering::Relaxed) || global_stop.load(Ordering::Relaxed) {
+                    return false;
+                }
+                match tx.try_send(command) {
+                    Ok(()) => return true,
+                    Err(mpsc::TrySendError::Full(value)) => {
+                        command = value;
+                        std::thread::park_timeout(Duration::from_millis(20));
+                    }
+                    Err(_) => return false,
+                }
+            }
+        };
+        if sync::receive(&paths.state, &paths.wasm, &thread_stop, publish).is_err()
+            && !thread_stop.load(Ordering::Relaxed)
+        {
+            let _ = tx.try_send(Command::Push {
+                epoch,
+                event: sync::Event::State(SyncState::Offline),
+            });
+        }
+    });
+    SyncGuard {
+        stop,
+        thread: Some(thread),
     }
 }
 
@@ -300,7 +510,7 @@ fn connect(
             publish(Update::ConnectionFailed);
             attempt = false;
         }
-        match rx.recv_timeout(Duration::from_millis(200)) {
+        match rx.recv() {
             Ok(Command::Reconnect) => attempt = true,
             Ok(Command::Reauthenticate) => {
                 if reauthenticate(paths, stop, pairing_cancel, publish) {
@@ -309,8 +519,8 @@ fn connect(
             }
             Ok(Command::Original { request, .. }) => publish(Update::OriginalFailed { request }),
             Ok(Command::Send { id, local_id, .. }) => publish(Update::SendFailed { id, local_id }),
-            Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return None,
+            Ok(Command::Stop) | Err(_) => return None,
+            Ok(_) => {}
         }
     }
     None
@@ -356,6 +566,12 @@ fn chat_view(chat: Chat, jobs: &mut Vec<(String, Asset)>) -> ChatView {
         preview: chat.preview,
         timestamp: chat.timestamp_ms,
         avatar_key: asset_key(chat.avatar, jobs),
+        unread: chat.unread,
+        muted: chat.muted,
+        last_read_message: chat.last_read_message,
+        member_count: chat.member_count,
+        outgoing_preview: chat.outgoing_preview,
+        group: chat.group,
     }
 }
 fn message_view(message: Message, jobs: &mut Vec<(String, Asset)>) -> MessageView {
@@ -374,8 +590,10 @@ fn message_view(message: Message, jobs: &mut Vec<(String, Asset)>) -> MessageVie
             .is_some_and(|asset| asset.kind() == "sticker"),
         body: message.body,
         timestamp: message.timestamp_ms,
+        delivered_time: message.delivered_time,
         outgoing: message.outgoing,
         image_key: asset_key(message.image, jobs),
+        rich: message.rich,
         reactions: message
             .reactions
             .into_iter()

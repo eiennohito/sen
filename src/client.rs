@@ -275,6 +275,15 @@ impl Api {
                 30
             },
         )?;
+        if (400..500).contains(&http) {
+            return Err(RpcError {
+                method: path.rsplit('/').next().unwrap_or("RPC").into(),
+                http,
+                code: 0,
+                status: 0,
+            }
+            .into());
+        }
         let response: Value = serde_json::from_slice(&bytes)
             .context("server returned invalid JSON; body not logged")?;
         let code = response["code"]

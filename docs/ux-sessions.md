@@ -184,7 +184,15 @@ surfaces must follow.
 `tokens.slint`; `rg "#[0-9a-f]{6}" app/ui` finds none outside
 `tokens.slint`; tests and MCP pass; dark screenshot is consistent.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S1 implemented: Slint surfaces are separate components with shared
+presentation State and Palette-based Tokens; AppWindow keeps its Rust API through
+weak callback forwarding. View/browser/present and named controller scenarios are
+separate modules; cumulative scenario setup remains a maintainability limitation.
+Chats/friends/history use Pane. Standard TextEdit and viewer/profile/auth ScrollView
+scrollbars remain exceptions for later layer work. Required offline tests, format,
+Clippy, MCP batch, both snapshots, and actual BreezeDark desktop screenshot pass.
+Snapshots include concurrent S3 shell changes and prepared S5 accessibility fields;
+physical input/theme/scale V and all account verification remain pending.
 
 ---
 
@@ -225,7 +233,15 @@ resolution and the lock fallback.
 
 **Done when.** SC15's first step passes on the desktop.
 
-**Hand-off.** _(empty)_
+**Hand-off.** S2 implements pre-worker single-instance ownership, the standard
+Application D-Bus methods, and an XDG runtime lock fallback with Settings warning.
+Default session/WASM, drafts/outbox, and cache use XDG data/state/cache; choosing
+legacy files explicitly records paths without copying credentials. The installer
+stages a D-Bus service and supports repository paths only with `--dev-paths`.
+Five synthetic activation/path/migration/lock tests, private-bus dispatch, isolated
+Clippy, normal/dev installer staging, and two offline demo launches pass. Physical Wayland raising and activation
+tokens remain unverified; notification use belongs to S9. No account was opened.
+
 
 ---
 
@@ -481,7 +497,16 @@ delivery, duplicate suppression after reconnect, auth-expired mapping,
 rejected versus uncertain. No account use unless authorized; if the slot
 is assigned, one read-only live-poll run for five minutes with counts only.
 
-**Hand-off.** _(empty)_
+**Hand-off.** SSE transport and bounded private worker delivery implemented with
+revision replay filtering, message-ID suppression, 30 s ping watchdog,
+cancellable subprocess cleanup, capped reconnect backoff and unauthorized-token
+refresh. Full/partial sync acknowledges loaded-scope resync before cursor advance.
+Send errors now distinguish rejected and uncertain without changing sync state;
+chat metadata runs as a follow-up after queued user work. Synthetic library tests
+cover frame/revision replay and send response classification; physical/live checks
+remain unrun. Proactive refresh and non-native full-sync categories remain scoped
+limitations documented in chromium-ui-map.md.
+
 
 ---
 
@@ -505,7 +530,15 @@ is assigned, one read-only live-poll run for five minutes with counts only.
 
 **Verification.** Synthetic tests; no live marking without authorization.
 
-**Hand-off.** _(empty)_
+**Hand-off.** Chat and worker views preserve optional unread counts, mute and
+last-seen metadata. MarkRead advances a monotonic per-chat watermark with a
+bounded coalescer (at most one request/second/chat); read-elsewhere and exact
+per-member read-range updates have separate events. Source mute is Chrome user
+storage rather than a server flag, so unknown remains unknown; no server
+preference is fabricated or changed. Synthetic tests cover coalescing, stale
+boundary suppression and range/sentinel parsing. UI eligibility remains S8;
+no live read marker was sent.
+
 
 ---
 
@@ -531,7 +564,14 @@ spans (`REPLACE.sticon` with UTF-16 offset validation per the map), reply
 references, file name and size, video and voice duration, contact name,
 system message text, withdrawn flag, group member counts. No UI.
 
-**Hand-off.** _(empty)_
+**Hand-off.** P4 typed parser and membership helper implemented in
+`src/client/desktop/rich.rs`; protocol integration adds the details to decoded
+messages and chat metadata. Four synthetic parser tests cover mixed Japanese/astral
+UTF-16 offsets, surrogate boundaries, overlapping/malformed spans, attachment
+metadata, reply relation filtering, and membership counts. System localization
+keys/arguments are retained when literal text is absent; withdrawal state comes
+from destroy operations. S11 still owns rendering, emoji assets, and reply jumps.
+No account requests were made; live protocol compatibility remains unverified.
 
 ---
 

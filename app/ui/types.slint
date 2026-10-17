@@ -1,0 +1,15 @@
+export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
+export struct LinkRow { label: string, url: string }
+export struct ChatRow { index: int, title: string, preview: string, initial: string, activity: string, time: string, avatar: image, avatar-key: string }
+export struct FriendRow { id: string, name: string, status: string, group: bool, avatar: image, avatar-key: string }
+export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
+export struct MessageRow {
+    kind: MessageKind, links: [LinkRow], accessible-label: string,
+    id: string, delivered-time: string, sticker: bool, photo: bool, sort-key: string, body: string, time: string, outgoing: bool,
+    sender-id: string, sender-name: string, sender-initial: string, sender-key: string, sender-avatar: image, has-sender-avatar: bool,
+    group-start: bool, day-label: string, clock: string,
+    image-key: string, picture: image, has-picture: bool, image-failed: bool,
+    delivery: string, delivery-detail: string, recoverable: bool, reactions: [ReactionRow],
+}
+
+// Fixed gutter and a wide pointer target. Content changes during a thumb drag

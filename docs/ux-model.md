@@ -210,7 +210,19 @@ Composing ──submit──▶ Pending ──confirmed──▶ Confirmed ─�
 
 ### 7.1 Sources
 
-Unread counts and mute state come from the server chat list and live events.
+Unread counts come from the server chat list and live events. The inspected
+Chrome mute flag is private user storage (`messageBox[id].isMute`), not a
+server chat field; native mute remains unknown until a native private local
+override is available, and must not be presented as a known server preference.
+The protocol's `sendChatChecked(reqSeq, chat, messageId, 0)` advances a
+per-chat last-seen message-ID watermark; operation 40 carries chat in param1
+and that watermark in param2. It clears that chat's unread count. Receipt
+operation 55 instead advances one member's read-range endpoint (chat/member/end
+in param1/2/3); fetched ranges preserve start/end IDs and the open-end sentinel
+`1`, so group counts must be calculated for each message from distinct member
+ranges, never from a single receipt endpoint. Message IDs compare as positive
+decimal integers without converting them to floating point.
+
 Local exposure updates the local boundary immediately and sends the read
 marker when eligible. Reads on other devices arrive as events and clear
 local state. Counts that are unknown show as a dot, not as a number.

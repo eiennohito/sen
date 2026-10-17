@@ -1,0 +1,26 @@
+import { Palette } from "std-widgets.slint";
+export global Tokens {
+    in-out property <length> base: 15px;
+    out property <length> small: max(11px, base - 2px);
+    out property <length> caption: small;
+    out property <length> heading: base + 6px;
+    out property <length> title: base;
+    out property <length> preview: base - 1px;
+    out property <length> time: max(10px, base - 3px);
+    out property <length> space-1: 4px;
+    out property <length> space-2: 8px;
+    out property <length> space-3: 12px;
+    out property <length> space-4: 16px;
+    out property <length> space-6: 24px;
+    out property <brush> background: Palette.background;
+    out property <brush> surface: Palette.control-background;
+    out property <brush> alternate-background: Palette.alternate-background;
+    out property <brush> foreground: Palette.foreground;
+    out property <brush> secondary: Palette.alternate-foreground;
+    out property <brush> accent: Palette.accent-background;
+    out property <brush> selection-foreground: Palette.selection-foreground;
+    out property <brush> selection: Palette.selection-background;
+    out property <brush> border: Palette.border;
+    out property <brush> danger: Palette.color-scheme == ColorScheme.dark ? #ffbdab : #943824;
+    out property <brush> outgoing-bubble: Palette.selection-background;
+}

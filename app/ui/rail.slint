@@ -1,0 +1,42 @@
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+
+component RailButton inherits Rectangle {
+    in property <image> icon;
+    in property <string> label;
+    in property <bool> selected;
+    callback activated();
+    width: 48px; height: 44px;
+    border-radius: 8px;
+    background: touch.pressed ? Tokens.selection : touch.has-hover ? Tokens.alternate-background : transparent;
+    Rectangle { x: 0px; y: 8px; width: 3px; height: parent.height - 16px; background: Tokens.accent; visible: root.selected; }
+    Image { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; width: 24px; height: 24px; source: root.icon; colorize: root.selected ? Tokens.accent : Tokens.foreground; }
+    touch := TouchArea { accessible-role: button; accessible-label: root.label; clicked => { root.activated(); } }
+}
+
+export component Rail inherits Rectangle {
+    background: Tokens.background;
+    public function focus-navigation() { rail-focus.focus(); }
+    property <int> cursor: State.section;
+    public function activate(index: int) {
+        if index < 2 { State.browse(index); }
+        else if index == 2 { State.settings-open = true; State.focus-settings-close(); }
+        else { State.settings-open = true; State.focus-settings-close(); }
+    }
+    rail-focus := FocusScope {
+        accessible-role: button; accessible-label: "Navigation";
+        key-pressed(event) => {
+            if State.ime-active { return reject; }
+            if event.text == Key.Tab && !event.modifiers.shift { if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } return accept; }
+            if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.cursor = max(0, root.cursor - 1); return accept; }
+            if event.text == Key.DownArrow || event.text == Key.RightArrow { root.cursor = min(3, root.cursor + 1); return accept; }
+            if event.text == Key.Return || event.text == " " { root.activate(root.cursor); return accept; }
+            reject
+        }
+        Rectangle { x: State.narrow ? parent.width * root.cursor / 4 + (parent.width / 4 - 48px) / 2 : 4px; y: State.narrow ? 2px : root.cursor < 2 ? 4px + root.cursor * 48px : parent.height - (root.cursor == 2 ? 100px : 52px); width: 48px; height: 44px; background: transparent; border-color: Tokens.accent; border-width: rail-focus.has-focus ? 1px : 0px; border-radius: 8px; }
+        RailButton { x: State.narrow ? (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : 4px; label: "Chats"; icon: @image-url("../assets/icons/chats.svg"); selected: State.section == 0; activated => { rail-focus.focus(); root.cursor = 0; root.activate(0); } }
+        RailButton { x: State.narrow ? parent.width / 4 + (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : 52px; label: "Friends"; icon: @image-url("../assets/icons/friends.svg"); selected: State.section == 1; activated => { rail-focus.focus(); root.cursor = 1; root.activate(1); } }
+        RailButton { x: State.narrow ? parent.width / 2 + (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : parent.height - 100px; label: "Settings"; icon: @image-url("../assets/icons/settings.svg"); activated => { root.cursor = 2; root.activate(2); } }
+        RailButton { x: State.narrow ? parent.width * 3 / 4 + (parent.width / 4 - self.width) / 2 : 4px; y: State.narrow ? 2px : parent.height - 52px; label: "Account"; icon: @image-url("../assets/icons/account.svg"); activated => { root.cursor = 3; root.activate(3); } }
+    }
+}

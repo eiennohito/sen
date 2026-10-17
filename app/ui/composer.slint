@@ -1,0 +1,42 @@
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
+import { Pane } from "scrollpane.slint";
+
+export component Composer inherits Rectangle {
+    height: min(State.conversation-height / 3, max(132px, draft-measure.preferred-height + 78px));
+    vertical-stretch: 0;
+draft-measure := Text {
+        visible: false; text: State.draft + "\n";
+        width: max(100px, root.width - 56px);
+        wrap: word-wrap; font-size: Tokens.base;
+    }
+            Rectangle {
+                height: root.height;
+                background: Tokens.surface;
+                VerticalLayout {
+                    padding: 12px; spacing: 8px;
+                    composer := TextEdit {
+                        content-y <=> State.editor-y;
+                        text <=> State.draft; enabled: State.has-chat;
+                        accessible-label: "Message draft"; wrap: word-wrap;
+                        font-size: Tokens.base;
+                        edited => { State.draft-edited(); }
+                        key-pressed(event) => {
+                            if event.text == Key.Return && event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta && !State.ime-active && !State.auth-open && !State.settings-open && !State.viewer-open && !State.profile-open {
+                                if State.can-send && !event.repeat { State.send(); }
+                                return accept;
+                            }
+                            reject
+                        }
+                    }
+                    HorizontalLayout {
+                        height: max(36px, max(send-caption.preferred-height, send-button.preferred-height)); spacing: 8px;
+                        send-caption := Text { text: State.send-reason; color: Tokens.secondary; font-size: Tokens.time; wrap: word-wrap; vertical-alignment: center; }
+                        send-button := Button { text: "Send"; enabled: State.can-send; width: 80px; horizontal-stretch: 0; clicked => { State.send(); State.focus-composer(); } }
+                    }
+                }
+            }
+    public function focus-editor() { composer.focus(); }
+}

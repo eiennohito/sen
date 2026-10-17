@@ -43,11 +43,7 @@ impl Storage {
     ) -> Result<(Self, Saved), String> {
         let (tx, rx) = mpsc::channel::<Write>();
         let (ready_tx, ready_rx) = mpsc::sync_channel::<Result<Saved, String>>(1);
-        let cache = paths
-            .state
-            .parent()
-            .unwrap_or(std::path::Path::new("."))
-            .join("desktop-state");
+        let cache = super::desktop_integration::storage_directory(&paths.state);
         let session = paths.state.clone();
         let healthy = Arc::new(AtomicBool::new(true));
         let status = healthy.clone();

@@ -1,0 +1,83 @@
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
+import { IconButton } from "icon-button.slint";
+import { Pane } from "scrollpane.slint";
+import { Message } from "message.slint";
+import { Composer } from "composer.slint";
+
+export component Conversation inherits Rectangle {
+
+          visible: !State.narrow || State.show-conversation;
+          VerticalLayout {
+            spacing: 0px;
+            Rectangle {
+                height: State.chat-subtitle == "" ? 64px : 84px; background: Tokens.surface;
+                VerticalLayout {
+                    padding: 14px; spacing: 5px;
+                    HorizontalLayout {
+                        if State.narrow: IconButton { label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } } }
+                        Text { text: State.chat-title; color: Tokens.foreground; font-size: Tokens.heading; font-weight: 700; overflow: elide; vertical-alignment: center; }
+                    }
+                    if State.chat-subtitle != "": Text { text: State.chat-subtitle; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; }
+                }
+            }
+            history-surface := Rectangle {
+              vertical-stretch: 1;
+              history-focus := FocusScope {
+                accessible-role: list; accessible-label: "Message history";
+                key-pressed(event) => {
+                    if event.text == Key.Tab { if event.modifiers.shift { State.focus-search(); } else { State.focus-composer(); } return accept; }
+                    if event.text == Key.UpArrow { history.jump(State.history-y + Tokens.base * 1.4); history.scrolled(); return accept; }
+                    if event.text == Key.DownArrow { history.jump(State.history-y - Tokens.base * 1.4); history.scrolled(); return accept; }
+                    if event.text == Key.PageUp { history.jump(State.history-y + history.height * 0.9); history.scrolled(); return accept; }
+                    if event.text == Key.PageDown { history.jump(State.history-y - history.height * 0.9); history.scrolled(); return accept; }
+                    if event.text == Key.Home { history.jump(-history.extent); history.scrolled(); return accept; }
+                    if event.text == Key.End { State.latest(); return accept; }
+                    reject
+                }
+              }
+              history := Pane {
+                changed extent => { State.history-extent = self.extent; if State.following && !self.dragging { State.restore-pending = true; } }
+                changed dragging => { State.history-dragging = self.dragging; }
+                offset <=> State.history-y;
+
+                vertical-stretch: 1;
+                scrolled => { State.capture-anchor = true; State.following = !State.history-dragging && State.history-extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } }
+                VerticalLayout {
+                    padding: 16px; spacing: 5px;
+                    if !State.has-chat: Text { text: "Choose a conversation"; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
+                    if State.messages.length == 50: Text { text: "Older messages are not loaded yet"; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
+                    for message in State.messages: Message { message: message; }
+                }
+            }
+              Rectangle { visible: history-focus.has-focus; border-width: 2px; border-color: Tokens.accent; background: transparent; }
+              // Overlay: async loading/error never contributes to history geometry.
+              Rectangle {
+                visible: State.history-error != "" || State.loading-history;
+                height: 24px; background: Tokens.surface;
+                HorizontalLayout {
+                    padding-left: 8px; spacing: 4px;
+                    Text { text: State.loading-history ? "Loading recent messages…" : State.history-error; accessible-label: self.text; color: State.loading-history ? Tokens.secondary : Tokens.danger; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
+                    if !State.loading-history: Button { text: "Retry"; clicked => { State.retry-history(); } }
+                }
+              }
+            }
+            if !State.following && State.has-chat: Button { text: State.new-count > 0 ? "Latest · " + State.new-count + " new" : "Latest"; clicked => { State.latest(); } }
+composer-surface := Composer { }
+            if State.storage-error != "": HorizontalLayout {
+                padding: 8px;
+                Text { text: State.storage-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
+                Button { text: "Retry saving"; enabled: State.storage-retryable; clicked => { State.retry-storage(); } }
+            }
+        }
+    
+    public function focus-editor() { composer-surface.focus-editor(); }
+    public function focus-history() { history-focus.focus(); }
+    public function jump(y: length) { history.jump(y); }
+    changed width => { State.history-width = history.width; }
+    init => { State.history-width = history.width; State.conversation-height = root.height; State.history-extent = history.extent; }
+    changed height => { State.conversation-height = root.height; }
+
+}

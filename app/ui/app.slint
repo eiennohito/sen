@@ -1,172 +1,120 @@
-import { Button, LineEdit, TextEdit, ScrollView, ListView, ComboBox } from "std-widgets.slint";
-
-export struct ChatRow { index: int, title: string, preview: string, initial: string, activity: string, time: string, avatar: image, avatar-key: string }
-export struct FriendRow { id: string, name: string, status: string, group: bool, avatar: image, avatar-key: string }
-export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
-export struct MessageRow {
-    id: string, sticker: bool, photo: bool, sort-key: string, body: string, time: string, outgoing: bool,
-    sender-id: string, sender-name: string, sender-initial: string, sender-key: string, sender-avatar: image, has-sender-avatar: bool,
-    group-start: bool, day-label: string, clock: string,
-    image-key: string, picture: image, has-picture: bool, image-failed: bool,
-    delivery: string, delivery-detail: string, recoverable: bool, reactions: [ReactionRow],
-}
-
-// Fixed gutter and a wide pointer target. Content changes during a thumb drag
-// are deferred by the controller; wheel input is consumed even at the boundary.
-component Pane inherits Rectangle {
-    in-out property <length> offset: 0px;
-    out property <length> extent: max(0px, content.height - root.height);
-    out property <bool> dragging: thumb-touch.pressed;
-    callback scrolled();
-    clip: true;
-    public function jump(y: length) { root.offset = max(-root.extent, min(0px, y)); }
-    TouchArea {
-        scroll-event(event) => {
-            root.jump(root.offset + event.delta-y);
-            root.scrolled();
-            return accept;
-        }
-    }
-    content := Rectangle {
-        x: 0px; y: root.offset;
-        width: max(0px, root.width - 16px);
-        height: self.preferred-height;
-        @children
-    }
-    track := Rectangle {
-        x: parent.width - 16px; width: 16px; height: parent.height;
-        background: #e5ebe3;
-        visible: root.extent > 0px;
-        thumb := Rectangle {
-            x: 3px; width: 10px;
-            height: max(32px, track.height * track.height / max(1px, content.height));
-            y: (track.height - self.height) * (-root.offset / max(1px, root.extent));
-            border-radius: 5px;
-            background: thumb-touch.pressed ? #167446 : #8a9e8d;
-        }
-        thumb-touch := TouchArea {
-            property <length> start-offset;
-            property <length> start-y;
-            pointer-event(event) => {
-                if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
-                    if self.mouse-y < thumb.y || self.mouse-y > thumb.y + thumb.height {
-                        root.jump(-root.extent * (self.mouse-y / track.height));
-                        root.scrolled();
-                    }
-                    self.start-offset = root.offset;
-                    self.start-y = self.mouse-y;
-                }
-            }
-            moved => {
-                if self.pressed {
-                    root.jump(self.start-offset - (self.mouse-y - self.start-y) * root.extent / max(1px, track.height - thumb.height));
-                    root.scrolled();
-                }
-            }
-            scroll-event(event) => { root.jump(root.offset + event.delta-y); root.scrolled(); accept }
-        }
-    }
-}
+export { State } from "state.slint";
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
+import { Pane } from "scrollpane.slint";
+export { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow } from "types.slint";
+import { Rail } from "rail.slint";
+import { Friends } from "friends.slint";
+import { Chats } from "chats.slint";
+import { Conversation } from "conversation.slint";
+import { Sheets } from "sheets.slint";
 
 export component AppWindow inherits Window {
-    in-out property <int> section: 0;
-    in property <[FriendRow]> friends;
-    in-out property <int> friend-result: -1;
-    out property <length> friend-row-height: max(70px, root.text-size * 3px + 16px);
-    in-out property <string> friend-query;
-    in-out property <bool> groups-expanded: true;
-    in-out property <bool> friends-expanded: true;
-    in-out property <length> friends-y <=> friend-list.content-y;
-    in property <bool> loading-friends;
-    in property <string> friends-error;
-    in-out property <bool> profile-open;
-    in property <string> profile-name;
-    in property <string> profile-id;
-    in property <string> profile-status;
-    in property <bool> profile-group;
-    in property <image> profile-avatar;
-    in property <bool> profile-available;
+    in property <bool> migration-needed;
+    in property <string> migration-error;
+    in-out property <string> desktop-warning <=> State.desktop-warning;
+    in-out property <string> connection-status <=> State.connection-status;
+    callback migration-choice(bool);
+    public function go-back() { if root.narrow && root.show-conversation && !root.auth-open && !root.settings-open && !root.viewer-open && !root.profile-open && !root.migration-needed { root.show-conversation = false; if root.section == 1 { root.focus-friend-search(); } else { root.focus-search(); } } }
+    in-out property <int> section <=> State.section;
+    in-out property <[FriendRow]> friends <=> State.friends;
+    in-out property <int> friend-result <=> State.friend-result;
+    out property <length> friend-row-height <=> State.friend-row-height;
+    in-out property <string> friend-query <=> State.friend-query;
+    in-out property <bool> groups-expanded <=> State.groups-expanded;
+    in-out property <bool> friends-expanded <=> State.friends-expanded;
+    in-out property <length> friends-y <=> State.friends-y;
+    in-out property <bool> loading-friends <=> State.loading-friends;
+    in-out property <string> friends-error <=> State.friends-error;
+    in-out property <bool> profile-open <=> State.profile-open;
+    in-out property <string> profile-name <=> State.profile-name;
+    in-out property <string> profile-id <=> State.profile-id;
+    in-out property <string> profile-status <=> State.profile-status;
+    in-out property <bool> profile-group <=> State.profile-group;
+    in-out property <image> profile-avatar <=> State.profile-avatar;
+    in-out property <bool> profile-available <=> State.profile-available;
     callback browse(int); callback refresh-friends(); callback filter-friends();
     callback open-profile(string); callback start-friend-chat();
-    public function show-profile() { root.profile-open = true; profile-close.focus(); }
-    public function close-profile() { root.profile-open = false; friend-search.focus(); }
-    in-out property <bool> ime-active: false;
-    public function focus-composer() { composer.focus(); }
-    title: root.demo ? "LINE · Preview" : "LINE · " + root.account-name;
+    public function show-profile() { root.profile-open = true; State.focus-profile-close(); }
+    public function close-profile() { root.profile-open = false; State.focus-friend-search(); }
+    in-out property <bool> ime-active <=> State.ime-active;
+    public function focus-composer() { conversation.focus-editor(); }
+    title: root.demo ? "LINE (preview)" : "LINE";
     icon: @image-url("../assets/icon.svg");
     preferred-width: 980px; preferred-height: 720px;
     min-width: 360px; min-height: 520px;
-    background: #fafbf9;
-    default-font-size: root.text-size * 1px;
-    in-out property <int> text-size: 15;
-    in property <[ChatRow]> chats;
-    in property <[MessageRow]> messages;
-    in-out property <int> selected-chat: -1;
-    in property <string> chat-title;
-    in property <string> chat-subtitle;
-    in-out property <string> draft;
-    in property <bool> can-send;
-    in property <string> send-reason;
-    in-out property <bool> list-pressed;
-    property <bool> list-release-pending;
-    out property <length> chat-row-height: max(82px, root.text-size * 3.2px + 20px);
+    background: Tokens.background;
+    default-font-size: Tokens.base;
+    in-out property <int> text-size <=> State.text-size;
+    in-out property <[ChatRow]> chats <=> State.chats;
+    in-out property <[MessageRow]> messages <=> State.messages;
+    in-out property <int> selected-chat <=> State.selected-chat;
+    in-out property <string> chat-title <=> State.chat-title;
+    in-out property <string> chat-subtitle <=> State.chat-subtitle;
+    in-out property <string> draft <=> State.draft;
+    in-out property <bool> can-send <=> State.can-send;
+    in-out property <string> send-reason <=> State.send-reason;
+    in-out property <bool> list-pressed <=> State.list-pressed;
+    property <bool> list-release-pending <=> State.list-release-pending;
+    out property <length> chat-row-height <=> State.chat-row-height;
     Timer { interval: 1ms; running: root.list-release-pending; triggered => { root.list-release-pending = false; root.release-deferred(); } }
-    in-out property <bool> settings-open;
-    in-out property <bool> viewer-open;
-    in property <image> viewer-image;
-    in property <string> viewer-status;
-    in property <string> viewer-error;
-    in property <bool> viewer-loading;
-    in-out property <string> viewer-key;
-    property <float> viewer-zoom: 1;
+    in-out property <bool> settings-open <=> State.settings-open;
+    in-out property <bool> viewer-open <=> State.viewer-open;
+    in-out property <image> viewer-image <=> State.viewer-image;
+    in-out property <string> viewer-status <=> State.viewer-status;
+    in-out property <string> viewer-error <=> State.viewer-error;
+    in-out property <bool> viewer-loading <=> State.viewer-loading;
+    in-out property <string> viewer-key <=> State.viewer-key;
+    property <float> viewer-zoom <=> State.viewer-zoom;
     callback open-photo(string); callback photo-closed();
-    public function show-viewer(key: string) { root.viewer-open = true; root.viewer-key = key; root.viewer-zoom = 1; viewer-scroll.content-x = 0px; viewer-scroll.content-y = 0px; viewer-close.focus(); }
-    public function close-viewer() { root.viewer-open = false; history-focus.focus(); root.photo-closed(); }
-    in property <bool> connected;
-    in-out property <bool> connection-failed;
-    in-out property <bool> retrying-connection;
-    in-out property <bool> auth-open;
-    in-out property <bool> auth-busy;
-    in-out property <bool> auth-cancelling;
-    in property <image> auth-qr;
-    in property <string> auth-pin;
-    in property <string> auth-stage;
-    in property <string> auth-error;
+    public function show-viewer(key: string) { root.viewer-open = true; root.viewer-key = key; root.viewer-zoom = 1; State.reset-viewer(); State.focus-viewer-close(); }
+    public function close-viewer() { root.viewer-open = false; State.focus-history(); root.photo-closed(); }
+    in-out property <bool> connected <=> State.connected;
+    in-out property <bool> connection-failed <=> State.connection-failed;
+    in-out property <bool> retrying-connection <=> State.retrying-connection;
+    in-out property <bool> auth-open <=> State.auth-open;
+    in-out property <bool> auth-busy <=> State.auth-busy;
+    in-out property <bool> auth-cancelling <=> State.auth-cancelling;
+    in-out property <image> auth-qr <=> State.auth-qr;
+    in-out property <string> auth-pin <=> State.auth-pin;
+    in-out property <string> auth-stage <=> State.auth-stage;
+    in-out property <string> auth-error <=> State.auth-error;
     callback reconnect(); callback start-sign-in(); callback cancel-sign-in();
-    public function account-ready() { root.auth-open = false; root.show-conversation = false; search.focus(); }
-    public function close-sign-in() { root.auth-open = false; sign-in-opener.focus(); }
-    public function open-sign-in() { root.auth-open = true; auth-start.focus(); }
+    public function account-ready() { root.auth-open = false; root.show-conversation = false; State.focus-search(); }
+    public function close-sign-in() { root.auth-open = false; State.focus-sign-in-opener(); }
+    public function open-sign-in() { root.auth-open = true; State.focus-auth-start(); }
 
-    in property <bool> sending;
-    in property <bool> demo;
-    in property <bool> more-chats;
-    in property <bool> has-chat;
-    in property <bool> loading-chats;
-    in property <bool> loading-history;
-    in property <string> history-error;
-    in property <string> list-error;
-    in property <string> storage-error;
-    in property <bool> storage-retryable;
-    in property <string> status;
-    in property <string> account-name;
-    in-out property <bool> show-conversation: false;
-    in-out property <bool> following: true;
-    in-out property <int> new-count;
-    in-out property <length> history-y <=> history.offset;
-    out property <bool> history-dragging: history.dragging;
+    in-out property <bool> sending <=> State.sending;
+    in-out property <bool> demo <=> State.demo;
+    in-out property <bool> more-chats <=> State.more-chats;
+    in-out property <bool> has-chat <=> State.has-chat;
+    in-out property <bool> loading-chats <=> State.loading-chats;
+    in-out property <bool> loading-history <=> State.loading-history;
+    in-out property <string> history-error <=> State.history-error;
+    in-out property <string> list-error <=> State.list-error;
+    in-out property <string> storage-error <=> State.storage-error;
+    in-out property <bool> storage-retryable <=> State.storage-retryable;
+    in-out property <string> account-name <=> State.account-name;
+    in-out property <bool> show-conversation <=> State.show-conversation;
+    in-out property <bool> following <=> State.following;
+    in-out property <int> new-count <=> State.new-count;
+    in-out property <length> history-y <=> State.history-y;
+    out property <bool> history-dragging <=> State.history-dragging;
     changed history-dragging => { if !root.history-dragging { root.release-deferred(); } }
-    in-out property <string> query;
-    in-out property <length> list-y <=> chat-list.content-y;
-    in-out property <length> editor-y <=> composer.content-y;
-    property <length> search-list-y;
-    property <bool> searching;
-    property <int> result-focus: -1;
-    property <bool> narrow: root.width < 740px;
-    property <string> anchor-id;
-    property <length> anchor-screen-y;
-    property <bool> capture-anchor;
-    property <length> restore-y;
-    property <bool> restore-pending;
+    in-out property <string> query <=> State.query;
+    in-out property <length> list-y <=> State.list-y;
+    in-out property <length> editor-y <=> State.editor-y;
+    property <length> search-list-y <=> State.search-list-y;
+    property <bool> searching <=> State.searching;
+    property <int> result-focus <=> State.result-focus;
+    property <bool> narrow <=> State.narrow;
+    property <string> anchor-id <=> State.anchor-id;
+    property <length> anchor-screen-y <=> State.anchor-screen-y;
+    property <bool> capture-anchor <=> State.capture-anchor;
+    property <length> restore-y <=> State.restore-y;
+    property <bool> restore-pending <=> State.restore-pending;
     callback select-chat(int);
     callback search-changed(string);
     callback draft-edited();
@@ -178,503 +126,75 @@ export component AppWindow inherits Window {
         root.restore-y = y;
         root.restore-pending = true;
     }
-    public function latest() { root.following = true; root.new-count = 0; history.jump(-history.extent); root.capture-anchor = true; }
+    public function latest() { root.following = true; root.new-count = 0; conversation.jump(-State.history-extent); root.capture-anchor = true; }
     Timer { interval: 16ms; running: root.capture-anchor; triggered => { root.capture-anchor = false; } }
     Timer {
         interval: 1ms; running: root.restore-pending;
         triggered => {
             root.capture-anchor = true;
-            history.jump(root.following ? -history.extent : root.restore-y);
+            conversation.jump(root.following ? -State.history-extent : root.restore-y);
             root.restore-pending = false;
         }
-    }
-    draft-measure := Text {
-        visible: false; text: root.draft + "\n";
-        width: max(100px, conversation.width - 56px);
-        wrap: word-wrap; font-size: root.text-size * 1px;
     }
     auth-notice := Rectangle {
         x: 0px; y: 0px; width: root.width;
         height: root.connection-failed && !root.auth-open ? 116px : 0px;
         visible: root.connection-failed && !root.auth-open;
-        background: #fff2dd;
+        background: Tokens.alternate-background;
         VerticalLayout {
             padding: 12px; spacing: 8px;
-            Text { text: root.retrying-connection ? "Reconnecting to your saved account…" : "Connection needs attention. Retry, or sign in again if your login has expired."; font-size: 14px; color: #613d1b; wrap: word-wrap; }
+            Text { text: root.connection-status != "" ? root.connection-status : root.retrying-connection ? "Reconnecting to your saved account…" : "Connection needs attention. Retry, or sign in again if your login has expired."; font-size: Tokens.small; color: Tokens.foreground; wrap: word-wrap; }
             HorizontalLayout {
                 Button { text: "Retry"; accessible-label: "Retry connection"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.reconnect(); } }
                 sign-in-opener := Button { text: "Sign in again"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.open-sign-in(); } }
             }
         }
     }
-    Rectangle {
+    FocusScope {
+        key-pressed(event) => { if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: auth-notice.height;
         width: 100%; height: root.height - auth-notice.height;
-        visible: !root.auth-open && !root.settings-open && !root.viewer-open && !root.profile-open;
+        visible: !root.auth-open && !root.settings-open && !root.viewer-open && !root.profile-open && !root.migration-needed;
+        rail := Rail { x: 0px; y: root.narrow ? parent.height - 48px : 0px; width: root.narrow ? parent.width : 56px; height: root.narrow ? 48px : parent.height; visible: !root.narrow || !root.show-conversation; }
         browser := Rectangle {
-            x: 0px; y: 0px;
-            height: parent.height;
-            visible: !root.narrow || !root.show-conversation;
-            width: !self.visible ? 0px : root.narrow ? root.width : 286px;
+            x: root.narrow ? 0px : 56px; y: 0px;
+            height: parent.height - (root.narrow ? 48px : 0px);
+            visible: !State.narrow || !State.show-conversation;
+            width: !self.visible ? 0px : State.narrow ? State.window-width : 286px;
             horizontal-stretch: 0;
-            background: #f0f3ee; clip: true;
-            HorizontalLayout {
-                x: 8px; y: 8px; width: parent.width - 16px; height: 38px; spacing: 4px;
-                Button { text: "Chats"; enabled: root.section != 0; clicked => { root.browse(0); } }
-                Button { text: "Friends"; enabled: root.section != 1; clicked => { root.browse(1); } }
-                Button { text: "Add friend"; enabled: root.section != 2; clicked => { root.browse(2); } }
-            }
-            Rectangle {
-                y: 52px; width: parent.width; height: parent.height - self.y; visible: root.section == 1;
-                VerticalLayout {
-                    padding: 14px; spacing: 8px;
-                    HorizontalLayout {
-                        Text { text: "Friends"; font-size: 23px; color: #167446; font-weight: 800; }
-                        Button { text: root.loading-friends ? "Loading…" : "Refresh"; enabled: !root.loading-friends && root.connected; clicked => { root.refresh-friends(); } }
-                    }
-                    HorizontalLayout {
-                        friend-search := LineEdit {
-                            text <=> root.friend-query; placeholder-text: "Search friends and groups";
-                            accessible-label: "Search loaded friends and groups";
-                            edited => { root.filter-friends(); }
-                            key-pressed(event) => {
-                                if root.ime-active { return reject; }
-                                if event.text == Key.DownArrow || event.text == Key.UpArrow {
-                                    root.friend-result = max(0, min(root.friends.length - 1, root.friend-result + (event.text == Key.DownArrow ? 1 : -1)));
-                                    friend-list.content-y = -max(0px, root.friend-result * root.friend-row-height - friend-list.height / 2);
-                                    return accept;
-                                }
-                                if event.text == Key.Return && root.friend-result >= 0 && root.friend-result < root.friends.length { root.open-profile(root.friends[root.friend-result].id); return accept; }
-                                if event.text == Key.Escape && root.friend-query != "" { root.friend-query = ""; root.filter-friends(); return accept; }
-                                reject
-                            }
-                        }
-                        Button { text: "Clear"; enabled: root.friend-query != ""; clicked => { root.friend-query = ""; root.filter-friends(); friend-search.focus(); } }
-                    }
-                    Text { text: "Searches loaded friend and group names. Select a profile, then Open chat."; font-size: 11px; wrap: word-wrap; color: #647367; }
-                    HorizontalLayout {
-                        Button { text: root.friends-expanded ? "Friends ▾" : "Friends ▸"; clicked => { root.friends-expanded = !root.friends-expanded; root.filter-friends(); } }
-                        Button { text: root.groups-expanded ? "Groups ▾" : "Groups ▸"; clicked => { root.groups-expanded = !root.groups-expanded; root.filter-friends(); } }
-                    }
-                    if root.friends-error != "": Text { text: root.friends-error; wrap: word-wrap; color: #943824; }
-                    if root.friends.length == 0: Text { text: root.loading-friends ? "Loading friends and groups…" : root.friend-query != "" ? "No loaded friends or groups match" : "No entries in expanded categories"; wrap: word-wrap; }
-                    friend-list := ListView {
-                        horizontal-scrollbar-policy: always-off;
-                        content-width: self.visible-width;
-                        for friend[i] in root.friends: Rectangle {
-                            height: root.friend-row-height; width: friend-list.visible-width;
-                            background: friend-search.has-focus && root.friend-result == i ? #dce9dc : #f0f3ee;
-                            border-width: friend-search.has-focus && root.friend-result == i ? 2px : 0px;
-                            border-color: #167446;
-                            Rectangle { x: 4px; y: 12px; width: 36px; height: 36px; border-radius: 18px; background: #d0dfcf;
-                                Text { width: 100%; height: 100%; text: friend.group ? "G" : "●"; horizontal-alignment: center; vertical-alignment: center; visible: friend.avatar.width == 0; }
-                                Image { width: 100%; height: 100%; source: friend.avatar; image-fit: contain; }
-                            }
-                            Button {
-                                x: 46px; y: 4px; width: max(0px, parent.width - 50px); height: parent.height - 8px;
-                                property <bool> restore-profile-focus: !root.profile-open && root.profile-id == friend.id;
-                                changed restore-profile-focus => { if self.restore-profile-focus { self.focus(); } }
-                                text: (friend.group ? "Group · " : "") + friend.name;
-                                accessible-label: "Open profile: " + friend.name;
-                                clicked => { root.friend-result = i; root.open-profile(friend.id); }
-                            }
-                        }
-                    }
-                }
-            }
-            Rectangle {
-                y: 52px; width: parent.width; height: parent.height - self.y; visible: root.section == 2;
-                VerticalLayout { padding: 14px;
-                    Text { text: "Add friend"; font-size: 23px; color: #167446; font-weight: 800; }
-                    Text { text: "Adding friends and recommendations are unavailable in this version. Use LINE on your phone, then refresh Friends here."; wrap: word-wrap; }
-                    Rectangle { vertical-stretch: 1; }
-                }
-            }
-            VerticalLayout {
-                y: 52px; height: parent.height - self.y; visible: root.section == 0;
-                padding: 14px; spacing: 10px;
-                HorizontalLayout {
-                    height: 42px;
-                    Image { source: @image-url("../assets/icon.svg"); width: 30px; image-fit: contain; }
-                    Text { text: "Chats"; color: #167446; font-size: 23px; font-weight: 800; vertical-alignment: center; }
-                    if !root.demo: Button { text: root.loading-chats ? "Refreshing…" : "Refresh"; enabled: root.connected && !root.loading-chats; clicked => { root.refresh(); } }
-                }
-                HorizontalLayout {
-                    search := LineEdit {
-                        text <=> root.query;
-                        placeholder-text: "Find a conversation";
-                        accessible-label: "Find a conversation";
-                        edited(query) => {
-                            if query != "" && !root.searching { root.search-list-y = root.list-y; root.searching = true; }
-                            root.search-changed(query);
-                            root.result-focus = -1;
-                            if query == "" { root.list-y = root.search-list-y; root.searching = false; }
-                        }
-                        key-pressed(event) => {
-                            if event.text == Key.Escape && root.query != "" {
-                                root.query = ""; root.search-changed(""); root.list-y = root.search-list-y; root.result-focus = -1; root.searching = false; return accept;
-                            }
-                            if event.text == Key.DownArrow || event.text == Key.UpArrow {
-                                root.result-focus = max(0, min(root.chats.length - 1, root.result-focus + (event.text == Key.DownArrow ? 1 : -1)));
-                                chat-list.content-y = -max(0px, root.result-focus * root.chat-row-height - chat-list.height / 2);
-                                return accept;
-                            }
-                            if event.text == Key.Return && root.result-focus >= 0 && root.result-focus < root.chats.length {
-                                root.select-chat(root.chats[root.result-focus].index); root.show-conversation = true; if root.narrow { composer.focus(); } return accept;
-                            }
-                            reject
-                        }
-                    }
-                    Button { text: "Clear"; enabled: root.query != ""; clicked => { root.query = ""; root.search-changed(""); root.list-y = root.search-list-y; root.result-focus = -1; root.searching = false; search.focus(); } }
-                }
-                Text { text: "Searches loaded conversation names only"; color: #647367; font-size: 11px; wrap: word-wrap; }
-                if root.chats.length == 0: Text { text: root.query == "" ? "No conversations loaded" : "No loaded conversations match"; wrap: word-wrap; }
-                chat-list := ListView {
-                    horizontal-scrollbar-policy: always-off;
-                    content-width: self.visible-width;
-                    for chat[i] in root.chats: Rectangle {
-                        width: chat-list.visible-width; height: root.chat-row-height;
-                        border-radius: 6px; clip: true;
-                        background: chat.index == root.selected-chat ? #dce9dc : row-touch.has-hover ? #e7ede4 : transparent;
-                        border-width: row-focus.has-focus || (search.has-focus && i == root.result-focus) ? 2px : 0px;
-                        border-color: #167446;
-                        Rectangle {
-                            x: 10px; y: (parent.height - 40px) / 2; width: 40px; height: 40px;
-                            border-radius: 20px; background: #d0dfcf;
-                            Text { width: 100%; height: 100%; visible: chat.avatar.width == 0; text: chat.initial; horizontal-alignment: center; vertical-alignment: center; }
-                            Image { source: chat.avatar; width: 100%; height: 100%; image-fit: contain; accessible-role: image; accessible-label: "Contact photo"; }
-                        }
-                        Rectangle {
-                            x: 60px; y: 10px; width: max(0px, parent.width - 72px); height: parent.height - 20px; clip: true;
-                            name := Text { x: 0px; y: 0px; width: max(0px, parent.width - (chat.time != "" ? 42px : 0px)); height: root.text-size * 1.5px; text: chat.title; color: #253a2b; font-weight: 600; overflow: elide; wrap: no-wrap; }
-                            Text { x: parent.width - 38px; y: 3px; width: 38px; text: chat.time; color: #647367; font-size: 11px; horizontal-alignment: right; overflow: elide; }
-                            Text { x: 0px; y: name.height + 4px; width: parent.width; height: max(0px, parent.height - self.y); text: chat.preview; color: #647367; font-size: max(12, root.text-size - 2) * 1px; wrap: no-wrap; overflow: elide; }
-                        }
-                        row-focus := FocusScope {
-                            accessible-role: button; accessible-label: chat.title;
-                            accessible-action-default => { root.select-chat(chat.index); root.show-conversation = true; if root.narrow { composer.focus(); } }
-                            key-pressed(event) => {
-                                if event.text == Key.Return || event.text == " " { root.select-chat(chat.index); root.show-conversation = true; if root.narrow { composer.focus(); } return accept; }
-                                reject
-                            }
-                        }
-                        row-touch := TouchArea {
-                            pointer-event(event) => {
-                                if event.kind == PointerEventKind.cancel { root.list-pressed = false; root.list-release-pending = true; }
-                                else if event.button == PointerEventButton.left {
-                                    if event.kind == PointerEventKind.down { root.list-pressed = true; }
-                                    else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel { root.list-pressed = false; root.list-release-pending = true; }
-                                }
-                            }
-                            clicked => { row-focus.focus(); root.select-chat(chat.index); root.show-conversation = true; if root.narrow { composer.focus(); } } }
-                    }
-                }
-                if root.more-chats: Button { text: root.loading-chats ? "Loading…" : "More conversations"; enabled: !root.loading-chats; clicked => { root.more(); } }
-                if root.list-error != "": Text { text: root.list-error; color: #943824; wrap: word-wrap; }
-                if root.demo: VerticalLayout {
-                    Text { text: "Synthetic interaction scenarios"; color: #647367; font-size: 11px; }
-                    HorizontalLayout {
-                        Button { text: "History"; accessible-label: "Long history"; clicked => { root.demo-event(0); } }
-                        Button { text: "Arrivals"; accessible-label: "Receive 3"; clicked => { root.demo-event(1); } }
-                    }
-                    HorizontalLayout {
-                        Button { text: "Media"; accessible-label: "Load media"; clicked => { root.demo-event(2); } }
-                        Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { root.demo-event(3); } }
-                    }
-                }
-                if root.demo: Button { text: "Photo preview"; clicked => { root.demo-event(5); } }
-                if root.demo: Button { text: "Sticker preview"; clicked => { root.demo-event(6); } }
-                if root.demo: Button { text: "Group preview"; clicked => { root.demo-event(7); } }
-                if root.demo: Button { text: "Login recovery"; clicked => { root.demo-event(4); } }
-                Text { text: root.account-name; color: #69766b; font-size: 12px; overflow: elide; }
-                Text { text: root.status; color: #69766b; font-size: 12px; wrap: word-wrap; }
-                settings-opener := Button { text: "Settings"; clicked => { root.settings-open = true; settings-close.focus(); } }
+            background: Tokens.alternate-background; clip: true;
+ friends-surface := Friends {}
+ chats-surface := Chats {}
+}
 
-            }
-        }
-        conversation := Rectangle {
-          x: browser.width;
-          width: parent.width - self.x; height: parent.height;
-          visible: !root.narrow || root.show-conversation;
-          VerticalLayout {
-            spacing: 0px;
-            Rectangle {
-                height: root.narrow ? 100px : 84px; background: #ffffff;
-                VerticalLayout {
-                    padding: 14px; spacing: 5px;
-                    HorizontalLayout {
-                        if root.narrow: Button { text: "Back"; width: 84px; horizontal-stretch: 0; clicked => { root.show-conversation = false; search.focus(); } }
-                        Text { text: root.chat-title; color: #23362a; font-size: (root.text-size + 4) * 1px; font-weight: 700; overflow: elide; vertical-alignment: center; }
-                    }
-                    Text { text: root.chat-subtitle; color: #6c786f; font-size: 12px; overflow: elide; }
-                }
-            }
-            if root.history-error != "" || root.loading-history: HorizontalLayout {
-                padding: 8px;
-                Text { text: root.loading-history ? "Loading recent messages…" : root.history-error; color: #943824; wrap: word-wrap; }
-                if !root.loading-history: Button { text: "Retry messages"; clicked => { root.retry-history(); } }
-            }
-            history := Pane {
-                history-focus := FocusScope { width: 0px; height: 0px; key-pressed(event) => { if event.text == Key.PageUp { history.jump(history.offset + history.height * 0.9); history.scrolled(); return accept; } if event.text == Key.PageDown { history.jump(history.offset - history.height * 0.9); history.scrolled(); return accept; } reject } }
-                vertical-stretch: 1;
-                scrolled => { root.capture-anchor = true; root.following = !history.dragging && history.extent + history.offset <= root.text-size * 1px; if root.following { root.new-count = 0; } }
-                changed extent => { if root.following && !history.dragging { root.restore-pending = true; } }
-                VerticalLayout {
-                    padding: 16px; spacing: 5px;
-                    Text { text: root.has-chat ? "Recent history · older messages are unavailable" : "Choose a conversation"; color: #69766b; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
-                    for message in root.messages: message-row := VerticalLayout {
-                        property <length> screen-y: self.y + history.offset;
-                        changed screen-y => {
-                            if root.capture-anchor && self.screen-y <= 16px && self.screen-y + self.height > 16px {
-                                root.anchor-id = message.id;
-                                root.anchor-screen-y = self.screen-y;
-                            }
-                        }
-                        changed y => {
-                            if message.id == root.anchor-id && !root.capture-anchor && !root.restore-pending && !history.dragging && !root.following {
-                                history.jump(root.anchor-screen-y - self.y);
-                            }
-                        }
-                        vertical-stretch: 0; spacing: 3px;
-                        if message.day-label != "": Text {
-                            text: message.day-label; color: #617064; font-size: 11px;
-                            height: 24px; horizontal-alignment: center; vertical-alignment: center;
-                        }
-                        HorizontalLayout {
-                        spacing: 5px;
-                        if message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
-                        if !message.outgoing && message.sender-name != "": VerticalLayout {
-                            width: 32px; spacing: 0px;
-                            Rectangle {
-                                height: 32px; visible: message.group-start;
-                                background: message.has-sender-avatar ? transparent : #dce8da; border-radius: 16px;
-                                Text { visible: !message.has-sender-avatar; text: message.sender-initial; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
-                                Image { width: 32px; height: 32px; source: message.sender-avatar; visible: message.has-sender-avatar; image-fit: contain; accessible-role: image; accessible-label: message.sender-name + " avatar"; }
-                            }
-                            Rectangle { vertical-stretch: 1; }
-                        }
-                        VerticalLayout {
-                            horizontal-stretch: 0;
-                            min-width: min(history.width - 140px, message.image-key != "" ? 200px : 72px);
-                            preferred-width: message.image-key != "" ? min(340px, history.width - 140px) : min(max(72px, min(480px, history.width - 140px)), body-measure.preferred-width + 24px);
-                            max-width: max(72px, min(480px, history.width - 140px));
-                            spacing: 3px;
-                            if message.group-start && !message.outgoing && message.sender-name != "": Text {
-                                text: message.sender-name; accessible-label: "Sender: " + message.sender-name;
-                                color: #49654e; font-size: 12px; overflow: elide;
-                            }
-                            Rectangle {
-                                background: message.sticker ? transparent : message.outgoing ? #dcefd5 : #ffffff;
-                                border-width: body.has-focus ? 2px : message.sticker ? 0px : 1px;
-                                border-color: body.has-focus ? #167446 : #d2dfcf;
-                                border-radius: 9px;
-                                height: bubble-content.preferred-height;
-                                body-measure := Text { visible: false; text: message.body; font-size: root.text-size * 1px; }
-                                bubble-content := VerticalLayout {
-                                    padding: 10px; spacing: 6px; alignment: start;
-                                    ContextMenuArea {
-                                        visible: !message.sticker || message.image-key == "";
-                                        height: self.visible ? body.preferred-height : 0px;
-                                        Menu {
-                                            MenuItem { title: "Copy selection"; activated => { body.copy(); } }
-                                            MenuItem { title: "Copy message"; activated => { body.select-all(); body.copy(); } }
-                                        }
-                                        body := TextInput {
-                                            text: message.body; read-only: true; single-line: false; text-cursor-width: 0px;
-                                            wrap: word-wrap; color: #24382a;
-                                            font-size: root.text-size * 1px;
-                                            height: self.preferred-height;
-                                            accessible-label: message.outgoing ? "Outgoing message" : "Incoming message";
-                                            selection-background-color: #9bc9a3;
-                                            changed has-focus => { if self.has-focus { root.following = false; root.capture-anchor = true; } }
-                                        }
-                                    }
-                                    if message.image-key != "": Rectangle {
-                                        // Geometry does not change when a thumbnail arrives or fails.
-                                        height: 180px;
-                                        clip: true;
-                                        Image { source: message.picture; width: 100%; height: 100%; image-fit: contain; visible: message.has-picture; accessible-role: image; accessible-label: message.photo ? "Photo preview" : "Message image"; }
-                                        if message.photo: FocusScope {
-                                            accessible-role: button; accessible-label: "Open photo";
-                                            accessible-action-default => { root.open-photo(message.image-key); }
-                                            TouchArea { mouse-cursor: pointer; clicked => { parent.focus(); root.open-photo(message.image-key); } }
-                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.open-photo(message.image-key); return accept; } reject }
-                                            Rectangle { visible: parent.has-focus; border-width: 2px; border-color: #167446; background: transparent; }
-                                            changed has-focus => { if self.has-focus && !root.viewer-open && !root.profile-open { root.following = false; } }
-                                            property <bool> restore-photo: !root.viewer-open && root.viewer-key == message.image-key;
-                                            changed restore-photo => { if self.restore-photo { self.focus(); root.viewer-key = ""; } }
-                                        }
-                                        Text { visible: !message.has-picture; text: message.image-failed ? "Preview unavailable · Refresh to retry" : message.sticker ? message.body : "Loading preview…"; color: #647367; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; }
-                                    }
-                                }
-                            }
-                            if message.recoverable: Text { text: message.delivery-detail; color: #943824; font-size: 11px; wrap: word-wrap; }
-                            if message.recoverable: Button { text: "Append text to draft"; clicked => { root.recover-message(message.id); composer.focus(); } }
-                            HorizontalLayout {
-                                spacing: 4px;
-                                for reaction in message.reactions: HorizontalLayout {
-                                    if reaction.has-picture: Image { source: reaction.picture; width: 24px; height: 24px; image-fit: contain; }
-                                    Text { text: reaction.label; font-size: 12px; color: #526957; }
-                                }
-                            }
-                        }
-                        // Time appears once per sender/time group, beside the
-                        // bubble. Status has a fixed slot and never adds a row.
-                        VerticalLayout {
-                            width: message.outgoing ? 58px : 38px;
-                            spacing: 0px;
-                            Rectangle { vertical-stretch: 1; }
-                            HorizontalLayout {
-                                height: 16px; spacing: 2px;
-                                Text { text: message.group-start ? message.clock : ""; accessible-label: message.group-start ? message.time : ""; color: #617064; font-size: 10px; }
-                                if message.outgoing: Text {
-                                    width: 14px;
-                                    text: message.delivery == "Sending…" ? "…" : message.recoverable ? "!" : "✓";
-                                    accessible-label: message.delivery == "" || message.delivery == "Sent" ? "Sent · server confirmed; read status unavailable" : message.delivery;
-                                    color: message.recoverable ? #943824 : #617064; font-size: 11px;
-                                }
-                            }
-                        }
-                        if !message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
-                        }
-                    }
-                }
-            }
-            if !root.following && root.has-chat: Button { text: root.new-count > 0 ? "Latest · " + root.new-count + " new" : "Latest"; clicked => { root.latest(); } }
-            Rectangle {
-                height: min(conversation.height / 3, max(132px, draft-measure.preferred-height + 78px));
-                background: #ffffff;
-                VerticalLayout {
-                    padding: 12px; spacing: 8px;
-                    composer := TextEdit {
-                        text <=> root.draft; enabled: root.has-chat;
-                        accessible-label: "Message draft"; wrap: word-wrap;
-                        font-size: root.text-size * 1px;
-                        edited => { root.draft-edited(); }
-                        key-pressed(event) => {
-                            if event.text == Key.Return && event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta && !root.ime-active && !root.auth-open && !root.settings-open && !root.viewer-open && !root.profile-open {
-                                if root.can-send && !event.repeat { root.send(); }
-                                return accept;
-                            }
-                            reject
-                        }
-                    }
-                    HorizontalLayout {
-                        height: 36px; spacing: 8px;
-                        Text { text: root.send-reason != "" ? root.send-reason : "Enter inserts a line. Ctrl+Enter sends."; color: #6c786f; font-size: 11px; wrap: word-wrap; vertical-alignment: center; }
-                        Button { text: "Send"; enabled: root.can-send; width: 80px; horizontal-stretch: 0; clicked => { root.send(); composer.focus(); } }
-                    }
-                }
-            }
-            if root.storage-error != "": HorizontalLayout {
-                padding: 8px;
-                Text { text: root.storage-error; color: #943824; font-size: 12px; wrap: word-wrap; }
-                Button { text: "Retry saving"; enabled: root.storage-retryable; clicked => { root.retry-storage(); } }
-            }
-        }
+        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: parent.width - self.x; height: parent.height; visible: !root.narrow || root.show-conversation; }
     }
-    }
+    property <length> token-base: root.text-size * 1px;
+    changed token-base => { Tokens.base = root.token-base; }
+    property <length> state-window-width: root.width;
+    changed state-window-width => { State.window-width = root.width; }
+    init => { State.window-width = root.width; Tokens.base = root.text-size * 1px; }
+    public function focus-search() { chats-surface.focus-search(); }
+    public function focus-friend-search() { friends-surface.focus-search(); }
+    public function focus-settings-opener() { rail.focus-navigation(); }
+    public function focus-settings-close() { sheets.focus-settings(); }
+    public function focus-profile-close() { sheets.focus-profile(); }
+    public function focus-auth-start() { sheets.focus-auth(); }
+    public function focus-viewer-close() { sheets.focus-viewer(); }
+    public function focus-history() { conversation.focus-history(); }
+    public function focus-sign-in-opener() { sign-in-opener.focus(); }
+    public function reset-viewer() { sheets.reset-viewer(); }
+    public function history-jump(y: length) { conversation.jump(y); }
+    sheets := Sheets {}
     Rectangle {
-        x: 0px; y: 0px; width: 100%; height: 100%;
-        visible: root.auth-open; background: #fafbf9;
-        FocusScope {
-            key-pressed(event) => {
-                if event.text == Key.Escape { root.cancel-sign-in(); return accept; }
-                reject
-            }
-            VerticalLayout {
-                padding: 16px; spacing: 12px;
-                Text { text: "Sign in to LINE"; font-size: 22px; font-weight: 700; color: #167446; }
-                ScrollView {
-                    horizontal-scrollbar-policy: always-off;
-                    VerticalLayout {
-                        padding-right: 16px; spacing: 12px; alignment: start;
-                        Text { text: "Use LINE on your phone to scan the QR code and approve this device. This uses the Chrome device slot and may sign Chrome out."; wrap: word-wrap; font-size: 15px; }
-                        Text { text: "Your existing session and encrypted drafts will be kept separately. They will not be moved into the new login."; wrap: word-wrap; font-size: 15px; color: #647367; }
-                        if root.auth-busy: Text { text: root.auth-stage; wrap: word-wrap; font-size: 15px; }
-                        if root.auth-qr.width > 0: Image { source: root.auth-qr; height: min(280px, root.width - 64px); image-fit: contain; accessible-label: "Scan this QR code with LINE on your phone"; }
-                        if root.auth-pin != "": Text { text: "Enter this code on your phone: " + root.auth-pin; wrap: word-wrap; font-size: 24px; font-weight: 700; }
-                        if root.auth-error != "": Text { text: root.auth-error; wrap: word-wrap; font-size: 15px; color: #943824; }
-                    }
-                }
-                VerticalLayout {
-                    spacing: 8px;
-                    auth-start := Button { text: "Start sign-in"; enabled: !root.auth-busy; clicked => { root.start-sign-in(); } }
-                    Button { text: root.auth-cancelling ? "Cancelling…" : root.auth-busy ? "Cancel sign-in" : "Back"; enabled: !root.auth-cancelling; clicked => { root.cancel-sign-in(); } }
-                }
-            }
+        width: 100%; height: 100%; visible: root.migration-needed; background: Tokens.background;
+        VerticalLayout {
+            padding: 24px; spacing: 16px; alignment: center;
+            Text { text: "Existing local files"; font-size: Tokens.heading; wrap: word-wrap; }
+            Text { text: "Use the session and local drafts already on this device, or start with new app folders. Existing files stay in place."; wrap: word-wrap; }
+            Button { text: "Use existing files"; clicked => { root.migration-choice(true); } }
+            Button { text: "Start fresh"; clicked => { root.migration-choice(false); } }
+            if root.migration-error != "": Text { text: root.migration-error; color: Tokens.danger; wrap: word-wrap; }
         }
     }
-
-    Rectangle {
-        width: 100%; height: 100%; visible: root.profile-open; background: #fafbf9;
-        FocusScope {
-            key-pressed(event) => { if event.text == Key.Escape { root.close-profile(); return accept; } reject }
-            VerticalLayout {
-                padding: 20px; spacing: 12px;
-                profile-close := Button { text: "Back to friends"; clicked => { root.close-profile(); } }
-                Image { source: root.profile-avatar; height: 80px; image-fit: contain; }
-                Text { text: root.profile-group ? "Group profile" : "Friend profile"; color: #647367; }
-                Text { text: root.profile-name; font-size: (root.text-size + 5) * 1px; wrap: word-wrap; }
-                ScrollView { Text { text: root.profile-status; wrap: word-wrap; } }
-                if !root.profile-available: Text { text: "This entry is no longer in your friend/group list. Refresh Friends to update it."; wrap: word-wrap; color: #943824; }
-                Button { text: "Open chat"; enabled: root.profile-available; clicked => { root.start-friend-chat(); } }
-                Text { text: "Opens recent history or an empty conversation. No message is sent."; wrap: word-wrap; color: #647367; }
-            }
-        }
-    }
-    Rectangle {
-        x: 0px; y: 0px; width: 100%; height: 100%; visible: root.settings-open; background: #fafbf9;
-        FocusScope {
-            key-pressed(event) => { if event.text == Key.Escape { root.settings-open = false; settings-opener.focus(); return accept; } reject }
-            VerticalLayout {
-                padding: 20px; spacing: 16px; alignment: start;
-                settings-close := Button { text: "Back to chats"; clicked => { root.settings-open = false; settings-opener.focus(); } }
-                Text { text: "Settings"; font-size: 24px; font-weight: 700; }
-                Text { text: "Message text size"; }
-                ComboBox {
-                    accessible-label: "Message text size";
-                    model: ["Small", "Default", "Large", "Extra large"];
-                    current-index: root.text-size <= 13 ? 0 : root.text-size <= 15 ? 1 : root.text-size <= 18 ? 2 : 3;
-                    selected(value) => { root.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; root.settings-changed(); }
-                }
-                Text { text: "Changes apply immediately and are saved on this device."; wrap: word-wrap; color: #647367; }
-            }
-        }
-    }
-    Rectangle {
-        x: 0px; y: 0px; width: 100%; height: 100%; visible: root.viewer-open; background: #18211c;
-        FocusScope {
-            key-pressed(event) => { if event.text == Key.Escape { root.close-viewer(); return accept; } reject }
-            VerticalLayout {
-                padding: 12px; spacing: 10px;
-                HorizontalLayout {
-                    viewer-close := Button { text: "Close photo"; clicked => { root.close-viewer(); } }
-                    Text { text: root.viewer-status; color: #f1f5f0; wrap: word-wrap; vertical-alignment: center; }
-                }
-                viewer-scroll := ScrollView {
-                    property <float> fit: min(self.visible-width / max(1px, root.viewer-image.width * 1px), self.visible-height / max(1px, root.viewer-image.height * 1px));
-                    content-width: max(self.visible-width, root.viewer-image.width * 1px * self.fit * root.viewer-zoom);
-                    content-height: max(self.visible-height, root.viewer-image.height * 1px * self.fit * root.viewer-zoom);
-                    Image {
-                        source: root.viewer-image;
-                        accessible-role: image; accessible-label: "Photo in viewer";
-                        width: root.viewer-image.width * 1px * viewer-scroll.fit * root.viewer-zoom;
-                        height: root.viewer-image.height * 1px * viewer-scroll.fit * root.viewer-zoom;
-                        x: (viewer-scroll.content-width - self.width) / 2; y: (viewer-scroll.content-height - self.height) / 2;
-                        image-fit: contain;
-                    }
-                }
-                if root.viewer-error != "": Text { text: root.viewer-error; wrap: word-wrap; color: #ffbdab; }
-                if root.viewer-error != "": Button { text: "Retry original"; enabled: !root.viewer-loading; clicked => { root.open-photo(root.viewer-key); } }
-                HorizontalLayout {
-                    Button { text: "−"; accessible-label: "Zoom out"; enabled: root.viewer-zoom > 1; clicked => { root.viewer-zoom = max(1, root.viewer-zoom / 1.5); } }
-                    Button { text: "+"; accessible-label: "Zoom in"; enabled: root.viewer-zoom < 12; clicked => { root.viewer-zoom = min(12, root.viewer-zoom * 1.5); } }
-                    Button { text: "Fit"; clicked => { root.viewer-zoom = 1; viewer-scroll.content-x = 0px; viewer-scroll.content-y = 0px; } }
-                    Button { text: "1:1"; accessible-label: "Original size"; clicked => { root.viewer-zoom = max(1, 1 / max(0.001, viewer-scroll.fit)); } }
-                }
-            }
-        }
-    }
-
 }
