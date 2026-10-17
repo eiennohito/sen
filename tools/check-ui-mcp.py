@@ -61,9 +61,15 @@ def tree():
 def element(label, role):
     return next(item for item in tree() if (item.get("accessibleLabel") == label or item.get("accessibleLabel", "").startswith(label + ", ")) and item.get("accessibleRole") == role)
 
+def demo_scenario(label):
+    call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
+    call("click_element", elementHandle=element(label, "Button")["handle"])
+
 # Refuse to operate on a real account. This script never clicks Send.
+call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
 demo_marker = element("Synthetic interaction scenarios", "Text")
 assert any(part.get("id", "").endswith("::demo-marker") for part in demo_marker.get("typeNamesAndIds", [])), "refusing a window without the compiled demo-only marker"
+call("click_element", elementHandle=element("Close demo scenarios", "Button")["handle"])
 composer = element("Message draft", "TextInput")["handle"]
 search = element("Find a conversation", "TextInput")["handle"]
 draft = "日本語の下書き\nDraft with emoji 🐈"
@@ -100,7 +106,7 @@ if args.scenarios:
     def bodies():
         return [item for item in tree() if item.get("accessibleRole") == "TextInput" and any(base.get("id", "").endswith("::body") for base in item.get("typeNamesAndIds", []))]
 
-    call("click_element", elementHandle=element("Long history", "Button")["handle"])
+    demo_scenario("Long history")
     time.sleep(0.05)
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=800, deltaX=0)
     time.sleep(0.05)
@@ -108,8 +114,8 @@ if args.scenarios:
     body = next(item for item in bodies() if "\n" in item.get("accessibleValue", "") and item["absolutePosition"]["y"] > 110)
     expected_text = body["accessibleValue"]
     expected_y = body["absolutePosition"]["y"]
-    call("click_element", elementHandle=element("Load media", "Button")["handle"])
-    call("click_element", elementHandle=element("Receive 3", "Button")["handle"])
+    demo_scenario("Load media")
+    demo_scenario("Receive 3")
     call("click_element", elementHandle=body["handle"])
     ctrl("a")
     time.sleep(2.3)
@@ -125,12 +131,12 @@ if args.scenarios:
     call("click_element", elementHandle=element("Latest · 3 new", "Button")["handle"])
     time.sleep(0.05)
     assert not any("Latest" in item.get("accessibleLabel", "") for item in tree() if item.get("accessibleRole") == "Button"), "Latest did not resume following"
-    call("click_element", elementHandle=element("Receive 3", "Button")["handle"])
+    demo_scenario("Receive 3")
     time.sleep(0.5)
     assert any("到着 3" in item.get("accessibleValue", "") for item in bodies()), "at-latest burst did not remain visible"
     assert not any("Latest" in item.get("accessibleLabel", "") for item in tree() if item.get("accessibleRole") == "Button"), "at-latest burst disabled following"
     call("set_element_value", elementHandle=composer, value="Keep this newer draft")
-    call("click_element", elementHandle=element("Uncertain send", "Button")["handle"])
+    demo_scenario("Uncertain send")
     time.sleep(1.2)
     assert any("Confirmation unavailable" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == "Keep this newer draft", "late result replaced newer text"
@@ -148,7 +154,7 @@ if args.layout_photos:
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     element("Settings", "Button")
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
-    call("click_element", elementHandle=element("Photo preview", "Button")["handle"])
+    demo_scenario("Photo preview")
     time.sleep(0.05)
     preview = next(item for item in tree() if item.get("accessibleLabel") == "Photo preview" and item.get("accessibleRole") == "Image")
     timestamp = next(item for item in tree() if item.get("accessibleRole") == "Text" and item.get("accessibleLabel", "").startswith("2026/10/15 12:05"))
@@ -167,7 +173,7 @@ if args.layout_photos:
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "viewer changed the draft"
     element("Open photo", "Button")
     print("PASS: bounded round-avatar frames, settings placement, media/timestamp separation, original viewer, zoom/fit, Escape, and draft retention")
-    call("click_element", elementHandle=element("Sticker preview", "Button")["handle"])
+    demo_scenario("Sticker preview")
     time.sleep(0.05)
     element("[sticker]", "Text")
     before_sticker_time = element("2026/10/15 12:09", "Text")["absolutePosition"]
@@ -176,7 +182,7 @@ if args.layout_photos:
     assert not any(item.get("accessibleLabel") == "[sticker]" or item.get("accessibleValue") == "[sticker]" for item in tree()), "loaded sticker retained its fallback label"
     assert element("2026/10/15 12:09", "Text")["absolutePosition"] == before_sticker_time, "sticker completion moved its timestamp"
     print("PASS: sticker fallback disappears after loading without moving the timestamp")
-    call("click_element", elementHandle=element("Group preview", "Button")["handle"])
+    demo_scenario("Group preview")
     time.sleep(0.05)
     # Inspect both ends because the final timestamp can be clipped. Scope to
     # history: a browser relative time may also legitimately say "Yesterday".
@@ -253,7 +259,7 @@ if args.friends:
 
 if args.auth_recovery:
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
-    call("click_element", elementHandle=element("Login recovery", "Button")["handle"])
+    demo_scenario("Login recovery")
     element("Retry connection", "Button")
     call("click_element", elementHandle=element("Sign in again", "Button")["handle"])
     assert any("Chrome device slot" in item.get("accessibleLabel", "") for item in tree()), "sign-in did not explain its scope"
@@ -267,6 +273,15 @@ if args.auth_recovery:
     print("PASS: failed-login recovery controls, explicit sign-in explanation, offline pairing guard, Escape, and draft preservation")
 
 if args.layers:
+    call("click_element", elementHandle=composer)
+    for dismiss in ("escape", "close"):
+        call("dispatch_key_event", windowHandle=window, text="\uf70f")
+        assert element("Close demo scenarios", "Button").get("accessibleDescription") == "Focused"
+        if dismiss == "escape":
+            call("dispatch_key_event", windowHandle=window, text="\x1b")
+        else:
+            call("click_element", elementHandle=element("Close demo scenarios", "Button")["handle"])
+        assert call("get_element_properties", elementHandle=composer).get("accessibleDescription") == "Focused message draft", "scenarios did not restore the composer focus"
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
     call("click_element", elementHandle=element("Settings", "Button")["handle"])
     close_settings = element("Close settings", "Button")
@@ -288,7 +303,7 @@ if args.layers:
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert element("Friends and groups", "List").get("accessibleDescription") == "Focused friends and groups", "profile did not restore its list opener"
     call("click_element", elementHandle=element("Chats", "Button")["handle"])
-    call("click_element", elementHandle=element("Photo preview", "Button")["handle"])
+    demo_scenario("Photo preview")
     call("click_element", elementHandle=element("Open photo", "Button")["handle"])
     call("click_element", elementHandle=element("Next", "Button")["handle"])
     assert any("800 × 1200" in item.get("accessibleLabel", "") for item in tree()), "Next left the loaded photo scope"
@@ -329,7 +344,7 @@ if args.reading:
     def reading_bodies():
         return [item for item in tree() if item.get("accessibleRole") == "TextInput" and item.get("accessibleLabel", "").startswith(("Incoming from ", "Outgoing, "))]
 
-    call("click_element", elementHandle=element("Reading fixtures", "Button")["handle"])
+    demo_scenario("Reading fixtures")
     time.sleep(0.05)
     labels = [item.get("accessibleLabel", "") for item in tree()]
     # MCP exposes clipped rows only while visible; inspect both fixture halves.
@@ -342,11 +357,11 @@ if args.reading:
         assert any(expected in label for label in labels), f"missing placeholder: {expected}"
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     first_y = first["absolutePosition"]["y"]
-    call("click_element", elementHandle=element("History load", "Button")["handle"])
+    demo_scenario("History load")
     time.sleep(0.05)
     element("Loading recent messages…", "Text")
     assert call("get_element_properties", elementHandle=first["handle"])["absolutePosition"]["y"] == first_y, "loading strip shifted history"
-    call("click_element", elementHandle=element("History load", "Button")["handle"])
+    demo_scenario("History load")
     assert call("get_element_properties", elementHandle=first["handle"])["absolutePosition"]["y"] == first_y, "loading completion shifted history"
     url = "https://example.org/reading"
     link = element("Open link " + url, "Button")
@@ -427,11 +442,11 @@ if args.reading:
     call("click_element", elementHandle=element("Weekend plans", "Button")["handle"])
     call("click_element", elementHandle=element("葵", "Button")["handle"])
     assert element("Message draft", "TextInput").get("accessibleValue") == before_copy, "selected-body chat switch lost draft or failed"
-    call("click_element", elementHandle=element("Reading fixtures", "Button")["handle"])
+    demo_scenario("Reading fixtures")
     print(f"PASS: reading search→composer in {tabs} Tabs, single history focus/scroll, stable loading, demo link activation and 12 content kinds")
 
 if args.rich:
-    call("click_element", elementHandle=element("Rich content", "Button")["handle"])
+    demo_scenario("Rich content")
     time.sleep(0.3)
     def rich_tree():
         result = call("get_element_tree", elementHandle=root, maxElements=2500)
@@ -496,11 +511,13 @@ if args.paging:
     def paging_bodies():
         return [item for item in tree() if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue", "").startswith("History item ")]
     def state_counts():
+        call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
         text = next(item["accessibleLabel"] for item in tree() if item.get("accessibleLabel", "").startswith("History window "))
+        call("click_element", elementHandle=element("Close demo scenarios", "Button")["handle"])
         window_count, retained_count, page_count = map(int, re.findall(r"\d+", text))
         assert window_count <= 200 and retained_count <= 600, "history exceeded the UI or retained-row budget"
         return page_count
-    call("click_element", elementHandle=element("Paged history", "Button")["handle"])
+    demo_scenario("Paged history")
     time.sleep(.15)
     rss_before = rss_kib()
     failure_seen = False
@@ -542,13 +559,13 @@ if args.paging:
     print(f"PASS: SC4 thousand-message paging, failure/retry/end, {anchor_checks} stable prepend anchors, UI<=200/retained<=600; RSS KiB before={rss_before} after={rss_after}")
 
 if args.unread:
-    call("click_element", elementHandle=element("Long history", "Button")["handle"])
+    demo_scenario("Long history")
     time.sleep(.1)
     call("dispatch_pointer_scroll",windowHandle=window,position={"x":600,"y":280},deltaY=700,deltaX=0)
     time.sleep(.1)
     candidates=[item for item in tree() if item.get("accessibleRole")=="TextInput" and any(base.get("id","").endswith("::body") for base in item.get("typeNamesAndIds",[])) and 120<item["absolutePosition"]["y"]<380]
     anchor=candidates[0] if candidates else None
-    call("click_element",elementHandle=element("Unread scenario","Button")["handle"])
+    demo_scenario("Unread scenario")
     time.sleep(.25)
     current=element("葵","Button")
     other=element("Weekend plans","Button")

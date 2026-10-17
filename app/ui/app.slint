@@ -11,6 +11,7 @@ import { Chats } from "chats.slint";
 import { Conversation } from "conversation.slint";
 import { Layers } from "layers.slint";
 import { RecoveryDialog } from "recovery-dialog.slint";
+import { DemoScenarios } from "demo-scenarios.slint";
 
 export component AppWindow inherits Window {
     in property <bool> migration-needed;
@@ -46,8 +47,9 @@ export component AppWindow inherits Window {
     in-out property <bool> ime-active <=> State.ime-active;
     public function focus-composer() { conversation.focus-editor(); }
     public function focus-reading-before-editor() { conversation.focus-reading-before-editor(); }
-    title: root.demo ? "LINE (preview)" : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
+    title: root.demo ? "LINE (preview · F12: scenarios)" : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
     icon: @image-url("../assets/icon.svg");
+    forward-focus: shell;
     preferred-width: 980px; preferred-height: 720px;
     min-width: 360px; min-height: 520px;
     background: Tokens.background;
@@ -157,8 +159,8 @@ export component AppWindow inherits Window {
             }
         }
     }
-    FocusScope {
-        key-pressed(event) => { if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
+    shell := FocusScope {
+        key-pressed(event) => { if root.demo && !State.modal-open && event.text == Key.F12 { scenarios.open(); return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: auth-notice.height;
         width: 100%; height: root.height - auth-notice.height;
         visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.profile-open) && !root.migration-needed;
@@ -207,4 +209,5 @@ export component AppWindow inherits Window {
         }
     }
     RecoveryDialog { }
+    scenarios := DemoScenarios { scenario-selected => { shell.focus(); } }
 }

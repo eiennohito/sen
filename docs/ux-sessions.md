@@ -84,7 +84,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Fix |
 | --- | --- | --- |
-| V1 | Every inspected snapshot and every MCP run is demo mode, where fifteen scenario buttons crush the chat list to one and a half rows at 980×720 and a 6 px sliver at 760×600. The production list has never been rendered by a reviewer. | Move demo controls into a separate debug sheet or an env-gated panel; snapshot the shell without them. |
 | V2 | Demo mode never enables Send; CMP7 is marked verified by MCP, which is impossible. | A demo transport that accepts sends locally, so the real composer path is exercised. |
 | V3 | Demo scenarios open scrolled to the top (`show_history(0, false)`); first-open-at-bottom has only synthetic coverage. | Fixture that opens like a real chat. |
 | V4 | Demo fixtures: 1970/1/1 date divider, three-line "Synthetic profile" rows, "Synthetic submission" bubbles. The time formatter and the two-line row are not exercised. | Realistic fixtures with current timestamps. |
@@ -98,3 +97,4 @@ P, then the UI groups in any order. V closes the loop.
 | T7 | QR encoded in-process with `qrcodegen` (PNG for the app and `--qr-file`, black-on-white ANSI or plain text in the CLI); kitty output removed. Verified by independent zxing decode. |
 | T8 | Already correct at `05cd26d`: `app/src/links.rs` spawns `xdg-open` on a helper thread and waits on it. The audit row was stale. |
 | T10 | `line-auth` resolves defaults through the app's XDG `Locations` (moved to `src/locations.rs`), lazily, honouring the saved paths choice. |
+| V1 | Demo scenarios moved into an F12 dialog (`app/ui/demo-scenarios.slint`); the demo shell renders as production, apart from the title hint. MCP checks pass, each flag on a fresh instance. |

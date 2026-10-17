@@ -87,9 +87,13 @@ Use existing files or Start fresh choice; credentials are never copied silently.
 `--state` or `--wasm` uses explicit paths with XDG defaults for omitted paths.
 Private desktop state uses `$XDG_STATE_HOME/line-desktop` (normally under
 `~/.local/state`). Empty or relative XDG directories fall back to `$HOME`.
-Use `--demo` for an offline synthetic preview. Its controls exercise arrivals,
-paging, media, rich content, delivery failures and recovery without account use.
-The ordinary Send button remains disabled in this mode.
+Use `--demo` for an offline synthetic preview. Press **F12** in the shell to open
+**Demo scenarios**, as indicated in the preview window title. The dialog keeps
+scenario controls out of the conversation list and reading surface. Escape or
+Close restores the previous focus; selecting a scenario closes the dialog before
+running it. Normal account windows have no scenario shortcut. Paging diagnostics
+remain in the dialog while the paged-history fixture is active. The ordinary
+Send button remains disabled in demo mode.
 
 Install the built executable, original app icon, and desktop launcher for the
 current user (the launcher uses XDG defaults; `--dev-paths` explicitly selects
@@ -121,6 +125,8 @@ target/release/line-desktop --snapshot /tmp/line-small.ppm --snapshot-size 360x5
 This renders through Slint's software renderer without creating a desktop window.
 It checks layout and text rendering, not desktop input methods or window behavior.
 Snapshots always use synthetic conversations, even without `--demo`.
+`--demo --snapshot FILE` starts with the demo dialog closed; scenario selectors
+such as `--demo-photos`, `--demo-groups` and `--demo-rich` still apply.
 
 If opening the saved account fails, use **Retry** to reconnect with the saved
 session or **Sign in again** to open phone-based QR/PIN sign-in inside the app.

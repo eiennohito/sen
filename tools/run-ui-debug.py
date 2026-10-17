@@ -29,6 +29,8 @@ if not 1024 <= args.port <= 65535:
     parser.error('use an unprivileged unique MCP port')
 try:
     probe = sockets.socket()
+    # Match the server: a stopped fresh instance may leave TCP TIME_WAIT sockets.
+    probe.setsockopt(sockets.SOL_SOCKET, sockets.SO_REUSEADDR, 1)
     probe.bind(('127.0.0.1', args.port))
     probe.close()
 except OSError:

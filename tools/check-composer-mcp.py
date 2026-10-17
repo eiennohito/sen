@@ -63,8 +63,15 @@ def set_draft(text):
     call('set_element_value', elementHandle=element('Message draft', 'TextInput')['handle'], value=text)
 
 
+def demo_scenario(label):
+    key('\uf70f')  # F12
+    click(label)
+
+
 # This marker refuses to operate on an authenticated window. No test clicks Send.
+key('\uf70f')  # F12
 element('Synthetic interaction scenarios', 'Text')
+click('Close demo scenarios')
 click('葵')
 set_draft('日本語 🐈\nsecond line\n')
 click('Message draft', 'TextInput')
@@ -111,7 +118,7 @@ assert element('Enter sends').get('accessibleChecked') is True
 call('click_element', elementHandle=element('Enter sends')['handle'])
 key('\x1b')
 set_draft('Keep this newer draft')
-click('Rejected send')
+demo_scenario('Rejected send')
 element('Sending', 'Image')
 time.sleep(1.2)
 element('Not sent', 'Image')
@@ -129,7 +136,7 @@ assert value() == 'Synthetic submission · no network request'
 click('Retry')
 element('Sent', 'Image')
 set_draft('Preserve while uncertain')
-click('Uncertain send')
+demo_scenario('Uncertain send')
 element('Sending', 'Image')
 time.sleep(1.2)
 element('Unconfirmed', 'Image')

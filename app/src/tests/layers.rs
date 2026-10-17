@@ -1,5 +1,90 @@
 use super::*;
 #[test]
+fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
+    std::thread::spawn(|| {
+        use slint::platform::WindowEvent;
+        let _platform = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let events = Rc::new(RefCell::new(Vec::new()));
+        let captured = events.clone();
+        let weak = ui.as_weak();
+        ui.on_demo_event(move |kind| {
+            assert!(
+                !weak
+                    .upgrade()
+                    .unwrap()
+                    .global::<State>()
+                    .get_demo_scenarios_open()
+            );
+            captured.borrow_mut().push(kind);
+        });
+        let notifications = Rc::new(RefCell::new(Vec::new()));
+        let captured = notifications.clone();
+        ui.global::<State>()
+            .on_demo_notification(move |kind| captured.borrow_mut().push(kind));
+        let key = |text: &str| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text: text.into() });
+            slint::platform::update_timers_and_animations();
+        };
+        ui.show().unwrap();
+        for (width, height) in [(980., 720.), (760., 600.), (360., 520.)] {
+            ui.window().set_size(slint::LogicalSize::new(width, height));
+            ui.invoke_focus_search();
+            ui.set_demo(false);
+            key("\u{f70f}"); // F12 is unavailable in account windows.
+            assert!(!ui.global::<State>().get_demo_scenarios_open());
+            ui.set_demo(true);
+            ui.global::<State>().set_demo_notifications(true);
+            key("\u{f70f}");
+            assert!(ui.global::<State>().get_demo_scenarios_open());
+            assert!(ui.global::<State>().get_modal_open());
+            // Reverse Tab wraps to the final action; forward Tab returns to Close.
+            ui.window().dispatch_event(WindowEvent::KeyPressed {
+                text: "\u{10}".into(),
+            });
+            key("\t");
+            ui.window().dispatch_event(WindowEvent::KeyReleased {
+                text: "\u{10}".into(),
+            });
+            key("\t");
+            key("\n");
+            assert!(!ui.global::<State>().get_modal_open());
+            events.borrow_mut().clear();
+            notifications.borrow_mut().clear();
+            for index in 0..19 {
+                key("\u{f70f}");
+                for _ in 0..=index {
+                    key("\t");
+                }
+                key("\n");
+                assert!(!ui.global::<State>().get_demo_scenarios_open());
+                assert!(!ui.global::<State>().get_modal_open());
+            }
+            assert_eq!(
+                *events.borrow(),
+                [0, 1, 2, 10, 3, 11, 5, 6, 7, 8, 9, 14, 12, 4]
+            );
+            assert_eq!(*notifications.borrow(), [0, 1, 2, 3, 4]);
+            ui.invoke_focus_search();
+            key("\u{f70f}");
+            assert!(ui.global::<State>().get_demo_scenarios_open());
+            key("\u{1b}");
+            assert!(!ui.global::<State>().get_modal_open());
+            // Escape restores the actual search target, with no intervening click.
+            key("x");
+            assert_eq!(ui.get_query(), "x");
+            ui.set_query("".into());
+        }
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn escape_busy_sign_in_requires_a_decision() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
@@ -37,7 +122,7 @@ fn escape_busy_sign_in_requires_a_decision() {
 #[test]
 fn profile_panel_preserves_reading_at_wide_boundaries() {
     std::thread::spawn(|| {
-        let platform = snapshot::install().unwrap();
+        let _platform = snapshot::install().unwrap();
         let ui = create_app_window().unwrap();
         ui.set_demo(true);
         ui.set_has_chat(true);
@@ -55,12 +140,9 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
         ui.show().unwrap();
         ui.set_profile_open(true);
         for width in [740, 800] {
-            snapshot::save(
-                &platform,
-                &format!("/tmp/line-profile-{width}.ppm"),
-                (width, 720),
-            )
-            .unwrap();
+            ui.window()
+                .set_size(slint::LogicalSize::new(width as f32, 720.));
+            slint::platform::update_timers_and_animations();
             assert!(
                 ui.global::<State>().get_history_width() >= 300.,
                 "profile left an unusable reading width at {width}"

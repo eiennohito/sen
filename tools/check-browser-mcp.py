@@ -57,8 +57,10 @@ def chats():
     return [row for row in tree() if row.get("accessibleRole") == "Button" and row.get("accessibleLabel", "").startswith(("葵, ", "Weekend plans, ", "Notes to self, "))]
 
 # This marker exists exclusively in --demo; never touch an account window.
+key("\uf70f")  # F12
 demo_marker = element("Synthetic interaction scenarios", "Text")
 assert any(part.get("id", "").endswith("::demo-marker") for part in demo_marker.get("typeNamesAndIds", [])), "refusing a window without the compiled demo-only marker"
+click("Close demo scenarios")
 click("Chats")
 click("All")
 value("Find a conversation", "")
@@ -75,6 +77,9 @@ assert len(chats()) == 2 and not any(row["accessibleLabel"].startswith("Weekend 
 # Select All explicitly and exercise the global shortcuts from the composer.
 click("All")
 click("Message draft", "TextInput")
+key("\uf70f")
+key("\x1b")
+assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft"
 modified("\x11", "1")
 element("Search loaded friends and groups", "TextInput")
 modified("\x11", "2")

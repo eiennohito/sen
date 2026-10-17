@@ -110,7 +110,7 @@ export global State {
     in-out property <bool> viewer-saving;
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
-    in-out property <bool> modal-open: self.auth-open || self.viewer-open || self.settings-open || (self.narrow && self.profile-open) || self.recovery-kind != "";
+    in-out property <bool> modal-open: self.auth-open || self.viewer-open || self.settings-open || (self.demo && self.demo-scenarios-open) || (self.narrow && self.profile-open) || self.recovery-kind != "";
     callback viewer-step(int);
     callback save-photo();
     callback close-settings();
@@ -126,6 +126,7 @@ export global State {
     in-out property <string> auth-stage;
     in-out property <string> auth-error;
     in-out property <bool> demo;
+    in-out property <bool> demo-scenarios-open: false;
     in-out property <bool> automation-background;
     in-out property <bool> more-chats;
     in-out property <bool> has-chat;

@@ -121,27 +121,6 @@ for chat[i] in State.chats: Rectangle {
                 if State.more-chats: Button { text: State.loading-chats ? "Loading…" : "Load more"; enabled: !State.loading-chats; clicked => { State.more(); } }
                 if State.loading-chats: Text { text: "Loading conversations…"; color: Tokens.secondary; }
                 if State.list-error != "": HorizontalLayout { Text { text: State.list-error; color: Tokens.danger; wrap: word-wrap; } Button { text: "Retry"; clicked => { State.refresh(); } } }
-                if State.demo: VerticalLayout {
-                    demo-marker := Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.time; }
-                    HorizontalLayout {
-                        Button { text: "History"; accessible-label: "Long history"; clicked => { State.demo-event(0); } }
-                        Button { text: "Arrivals"; accessible-label: "Receive 3"; clicked => { State.demo-event(1); } }
-                    }
-                    HorizontalLayout {
-                        Button { text: "Media"; accessible-label: "Load media"; clicked => { State.demo-event(2); } }
-                        Button { text: "Rejected"; accessible-label: "Rejected send"; clicked => { State.demo-event(10); } }
-                        Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { State.demo-event(3); } }
-                    }
-                }
-                if State.paging-demo: Text { text: "History window " + State.messages.length + " · retained " + State.history-retained + " · pages " + State.history-pages; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
-                if State.demo: Button { text: "Paged history"; clicked => { State.demo-event(11); } }
-                if State.demo: Button { text: "Photo preview"; clicked => { State.demo-event(5); } }
-                if State.demo: Button { text: "Sticker preview"; clicked => { State.demo-event(6); } }
-                if State.demo: Button { text: "Group preview"; clicked => { State.demo-event(7); } }
-                if State.demo: HorizontalLayout { Button { text: "Reading fixtures"; clicked => { State.demo-event(8); } } Button { text: "History load"; clicked => { State.demo-event(9); } } }
-                if State.demo: Button { text: "Unread scenario"; clicked => { State.demo-event(14); } }
-                if State.demo: Button { text: "Rich content"; clicked => { State.demo-event(12); } }
-                if State.demo: Button { text: "Login recovery"; clicked => { State.demo-event(4); } }
 
             }
     public function focus-search() { search.focus(); }

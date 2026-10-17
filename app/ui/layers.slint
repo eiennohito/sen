@@ -151,15 +151,6 @@ export component Layers inherits Rectangle {
                             notification-test := Button { text: "Send test notification"; clicked => { State.test-notification(); } }
                             if !State.notification-available: Text { text: "Notification service not available"; color: Tokens.secondary; wrap: word-wrap; }
                             if State.notification-status != "": Text { text: State.notification-status; wrap: word-wrap; }
-                            if State.demo-notifications: VerticalLayout {
-                                spacing: 8px;
-                                Text { text: "Notification preview scenarios"; wrap: word-wrap; }
-                                Button { text: "Demo inactive"; clicked => { State.demo-notification(0); } }
-                                Button { text: "Demo muted"; clicked => { State.demo-notification(1); } }
-                                Button { text: "Demo replay"; clicked => { State.demo-notification(2); } }
-                                Button { text: "Demo mention"; clicked => { State.demo-notification(3); } }
-                                Button { text: "Demo exposed"; clicked => { State.demo-notification(4); } }
-                            }
                         }
                         VerticalLayout {
                             visible: root.settings-section == 2; height: self.visible ? self.preferred-height : 0px;
