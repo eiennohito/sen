@@ -251,7 +251,7 @@ impl<In: UreqTransport> Connector<In> for PollTcpConnector {
             if remaining.is_zero() {
                 return Err(ureq::Error::Timeout(ureq::Timeout::Connect));
             }
-            match TcpStream::connect_timeout(addr, remaining) {
+            match connect_polled(*addr, remaining) {
                 Ok(stream) => {
                     stream.set_nodelay(true)?;
                     stream.set_read_timeout(Some(POLL))?;
@@ -280,6 +280,53 @@ impl<In: UreqTransport> Connector<In> for PollTcpConnector {
             .map(ureq::Error::Io)
             .unwrap_or(ureq::Error::ConnectionFailed))
     }
+}
+
+fn connect_polled(addr: std::net::SocketAddr, remaining: Duration) -> Result<TcpStream, io::Error> {
+    use std::os::fd::AsRawFd;
+    let socket = socket2::Socket::new(
+        socket2::Domain::for_address(addr),
+        socket2::Type::STREAM,
+        Some(socket2::Protocol::TCP),
+    )?;
+    socket.set_nonblocking(true)?;
+    match socket.connect(&addr.into()) {
+        Ok(()) => {}
+        Err(error)
+            if error.kind() == io::ErrorKind::WouldBlock
+                || error.raw_os_error() == Some(libc::EINPROGRESS) =>
+        {
+            let deadline = Instant::now() + remaining;
+            loop {
+                check_request().map_err(io::Error::other)?;
+                if let Some(error) = socket.take_error()? {
+                    return Err(error);
+                }
+                if socket.peer_addr().is_ok() {
+                    break;
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                if remaining.is_zero() {
+                    return Err(io::ErrorKind::TimedOut.into());
+                }
+                let mut poll = libc::pollfd {
+                    fd: socket.as_raw_fd(),
+                    events: libc::POLLOUT,
+                    revents: 0,
+                };
+                let timeout = POLL.min(remaining).as_millis().max(1) as i32;
+                if unsafe { libc::poll(&mut poll, 1, timeout) } < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() != io::ErrorKind::Interrupted {
+                        return Err(error);
+                    }
+                }
+            }
+        }
+        Err(error) => return Err(error),
+    }
+    socket.set_nonblocking(false)?;
+    Ok(socket.into())
 }
 
 #[derive(Debug)]
@@ -531,6 +578,7 @@ fn environment_proxy() -> Result<Option<ureq::Proxy>> {
     builder.build().map(Some).map_err(|_| invalid())
 }
 
+#[derive(Clone)]
 pub(super) struct Transport {
     agent: Agent,
     #[cfg(test)]
@@ -543,6 +591,19 @@ impl Transport {
             environment_proxy()?,
             PollResolver::default(),
         ))
+    }
+
+    pub(super) fn assets(&self) -> Self {
+        // A stalled asset lookup must not hold the RPC resolver's lock.
+        Self {
+            agent: Agent::with_parts(
+                self.agent.config().clone(),
+                PollConnector::default(),
+                PollResolver::named("line-asset-dns"),
+            ),
+            #[cfg(test)]
+            base: self.base.clone(),
+        }
     }
 
     fn with_parts(proxy: Option<ureq::Proxy>, resolver: impl Resolver) -> Self {
@@ -702,6 +763,74 @@ impl Transport {
             bytes.extend_from_slice(&chunk[..n]);
         }
     }
+
+    pub(super) fn asset(&self, url: &str, headers: &[(&str, &str)], cap: usize) -> Result<Vec<u8>> {
+        let _scope = RequestScope::new(Duration::from_secs(15));
+        ACTIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut().unwrap();
+            state.connect_deadline = Instant::now() + Duration::from_secs(5);
+            state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+        });
+        check_request().map_err(transport_error)?;
+        #[cfg(test)]
+        let local_url = format!(
+            "{}{}",
+            self.base,
+            url.split_once("://")
+                .unwrap()
+                .1
+                .split_once('/')
+                .map(|(_, path)| format!("/{path}"))
+                .unwrap_or_default()
+        );
+        #[cfg(test)]
+        let url = if self.base == BASE { url } else { &local_url };
+        let mut request = self.agent.get(url);
+        for (name, value) in headers {
+            ensure!(!value.contains(['\r', '\n']), "invalid media header");
+            let mut value = HeaderValue::from_str(value)
+                .map_err(|_| anyhow::anyhow!("invalid media header"))?;
+            value.set_sensitive(true);
+            request = request.header(*name, value);
+        }
+        let mut response = request.call().map_err(transport_error)?;
+        ensure!(
+            response.status() == 200,
+            "image unavailable; HTTP response not logged"
+        );
+        ensure!(
+            response
+                .headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .is_none_or(|n| n <= cap as u64),
+            "image download too large"
+        );
+        let mut reader = response.body_mut().as_reader();
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 8192];
+        loop {
+            check_request().map_err(transport_error)?;
+            let n = reader.read(&mut chunk[..(cap - bytes.len() + 1).min(8192)]);
+            check_request().map_err(transport_error)?;
+            let n =
+                n.map_err(|_| anyhow::anyhow!("image transport failed; URL and body not logged"))?;
+            ensure!(bytes.len() + n <= cap, "image download too large");
+            if n == 0 {
+                return Ok(bytes);
+            }
+            bytes.extend_from_slice(&chunk[..n]);
+        }
+    }
+
+    #[cfg(test)]
+    pub(in crate::client) fn local(base: String) -> Self {
+        let mut transport = Self::with_parts(None, PollResolver::default());
+        transport.base = base;
+        transport
+    }
 }
 
 // The body and its thread-local request scope must stay on the calling worker.
@@ -841,6 +970,20 @@ pub(in crate::client) mod tests {
         stream.read_exact(&mut body).unwrap();
         assert_eq!(body, b"{}");
         true
+    }
+
+    #[test]
+    fn local_connect_wakes_before_the_poll_interval() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let _scope = RequestScope::new(Duration::from_secs(1));
+        let started = Instant::now();
+        let _stream =
+            connect_polled(listener.local_addr().unwrap(), Duration::from_secs(1)).unwrap();
+        assert!(
+            started.elapsed() < Duration::from_millis(25),
+            "local connect took {:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

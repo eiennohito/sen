@@ -7,6 +7,9 @@ const DISK_LIMIT: u64 = 128 * 1024 * 1024;
 const MEMORY_LIMIT: usize = 24 * 1024 * 1024;
 const MAX_DOWNLOAD: usize = 16 * 1024 * 1024;
 
+mod fetchers;
+pub use fetchers::{Completion, Failures, Fetchers, Payload, Priority, Purpose};
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Asset {
     url: String,
@@ -183,62 +186,28 @@ impl Asset {
         Some(original)
     }
 
-    pub(super) fn fetch(&self, access_token: Option<&str>) -> Result<Vec<u8>> {
-        // Assets are constructed only from known hosts and sanitized segments.
-        // Reject redirects so private headers cannot travel to another origin.
+    pub(super) fn fetch(
+        &self,
+        http: &http::Transport,
+        access_token: Option<&str>,
+    ) -> Result<Vec<u8>> {
         ensure!(allowed_url(&self.url), "unsupported asset host");
-        let mut config = format!(
-            "url = {}\nsilent\nshow-error\nproto = \"=https\"\nconnect-timeout = 5\nmax-time = 15\nmax-filesize = {MAX_DOWNLOAD}\nwrite-out = \"\\n%{{http_code}}\"\n",
-            quoted(&self.url)
-        );
+        let application = format!("CHROMEOS\t{VERSION}\tChrome_OS\t");
+        let mut headers = Vec::new();
         if self.private {
             let token = access_token.context("missing media token")?;
             ensure!(!token.contains(['\r', '\n']), "invalid media token");
-            config.push_str(&format!(
-                "header = {}\nheader = {}\n",
-                quoted(&format!("X-Line-Access: {token}")),
-                quoted(&format!(
-                    "X-Line-Application: CHROMEOS\t{VERSION}\tChrome_OS\t"
-                ))
-            ));
+            headers.push(("X-Line-Access", token));
+            headers.push(("X-Line-Application", application.as_str()));
             if let Some(meta) = &self.talk_meta {
-                config.push_str(&format!(
-                    "header = {}\n",
-                    quoted(&format!("X-Talk-Meta: {meta}"))
-                ));
+                headers.push(("X-Talk-Meta", meta.as_str()));
             }
         }
-        let mut child = Command::new("curl")
-            .args(["--config", "-"])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()?;
-        child
-            .stdin
-            .take()
-            .context("asset transport stdin")?
-            .write_all(config.as_bytes())?;
-        let cancel = REQUEST_CANCEL.with(|slot| slot.borrow().clone());
-        let (status, stdout) = wait_transport(child, cancel.as_deref(), MAX_DOWNLOAD as u64 + 100)?;
-        ensure!(
-            status.success(),
-            "image transport failed; URL and body not logged"
-        );
-        let split = stdout
-            .iter()
-            .rposition(|b| *b == b'\n')
-            .context("missing asset HTTP status")?;
-        ensure!(
-            &stdout[split + 1..] == b"200",
-            "image unavailable; HTTP response not logged"
-        );
-        ensure!(split <= MAX_DOWNLOAD, "image download too large");
-        let bytes = &stdout[..split];
+        let bytes = http.asset(&self.url, &headers, MAX_DOWNLOAD)?;
         if let Some(key) = &self.key_material {
-            decrypt_media(bytes, &decode(key)?)
+            decrypt_media(&bytes, &decode(key)?)
         } else {
-            Ok(bytes.to_vec())
+            Ok(bytes)
         }
     }
 }
@@ -339,50 +308,80 @@ impl ImageCache {
         self.stats
     }
 
-    pub fn read(&mut self, asset: &Asset) -> Result<Option<Arc<Pixels>>> {
-        let key = asset.key();
+    fn memory(&mut self, key: &str) -> Option<Arc<Pixels>> {
         self.tick += 1;
-        if let Some((pixels, used)) = self.memory.get_mut(&key) {
-            *used = self.tick;
-            self.stats.hits += 1;
-            return Ok(Some(pixels.clone()));
-        }
+        let (pixels, used) = self.memory.get_mut(key)?;
+        *used = self.tick;
+        self.stats.hits += 1;
+        Some(pixels.clone())
+    }
+
+    fn finish_read(&mut self, key: String, disk: DiskImage) -> Result<Option<Arc<Pixels>>> {
         let path = self.directory.join(format!("{key}.png"));
-        if let Ok(metadata) = path.metadata()
-            && metadata.len() <= MAX_DOWNLOAD as u64
-            && metadata.modified()?.elapsed().unwrap_or_default()
-                < Duration::from_secs(30 * 24 * 3600)
-        {
-            match fs::read(&path)
-                .ok()
-                .and_then(|v| pixels(&v, asset.dimension).ok())
-            {
-                Some(pixels) => {
-                    if let Ok(file) = OpenOptions::new().write(true).open(&path) {
-                        let _ =
-                            file.set_times(fs::FileTimes::new().set_accessed(SystemTime::now()));
-                    }
-                    self.stats.hits += 1;
-                    return Ok(Some(self.remember(key, pixels)));
+        match disk {
+            DiskImage::Pixels(pixels) => {
+                if let Ok(file) = OpenOptions::new().write(true).open(&path) {
+                    let _ = file.set_times(fs::FileTimes::new().set_accessed(SystemTime::now()));
                 }
-                None => {
+                self.stats.hits += 1;
+                Ok(Some(self.remember(key, pixels)))
+            }
+            disk => {
+                if matches!(disk, DiskImage::Invalid) {
                     let _ = fs::remove_file(path);
                 }
+                self.stats.misses += 1;
+                Ok(None)
             }
         }
-        self.stats.misses += 1;
-        Ok(None)
+    }
+
+    pub fn read(&mut self, asset: &Asset) -> Result<Option<Arc<Pixels>>> {
+        let key = asset.key();
+        if let Some(pixels) = self.memory(&key) {
+            return Ok(Some(pixels));
+        }
+        let disk = disk_image(&self.directory.join(format!("{key}.png")), asset.dimension)?;
+        self.finish_read(key, disk)
+    }
+
+    pub(super) fn read_shared(
+        cache: &std::sync::Mutex<Self>,
+        asset: &Asset,
+    ) -> Result<Option<Arc<Pixels>>> {
+        let key = asset.key();
+        let path = {
+            let mut cache = cache.lock().unwrap();
+            if let Some(pixels) = cache.memory(&key) {
+                return Ok(Some(pixels));
+            }
+            cache.directory.join(format!("{key}.png"))
+        };
+        let disk = disk_image(&path, asset.dimension)?;
+        cache.lock().unwrap().finish_read(key, disk)
     }
 
     pub fn store(&mut self, asset: &Asset, bytes: &[u8]) -> Result<Arc<Pixels>> {
-        let pixels = pixels(bytes, asset.dimension)?;
-        let image = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba.clone())
-            .context("invalid thumbnail pixels")?;
-        let mut png = Cursor::new(Vec::new());
-        image.write_to(&mut png, ImageFormat::Png)?;
-        self.prune(png.get_ref().len() as u64)?;
+        self.store_prepared(asset, prepare_image(bytes, asset.dimension)?)
+    }
+
+    pub(super) fn store_shared(
+        cache: &std::sync::Mutex<Self>,
+        asset: &Asset,
+        bytes: &[u8],
+    ) -> Result<Arc<Pixels>> {
+        let prepared = prepare_image(bytes, asset.dimension)?;
+        cache.lock().unwrap().store_prepared(asset, prepared)
+    }
+
+    fn store_prepared(
+        &mut self,
+        asset: &Asset,
+        (pixels, png): (Pixels, Vec<u8>),
+    ) -> Result<Arc<Pixels>> {
+        self.prune(png.len() as u64)?;
         let key = asset.key();
-        private_write(&self.directory.join(format!("{key}.png")), png.get_ref())?;
+        private_write(&self.directory.join(format!("{key}.png")), &png)?;
         self.stats.downloads += 1;
         Ok(self.remember(key, pixels))
     }
@@ -445,6 +444,35 @@ impl ImageCache {
         }
         Ok(())
     }
+}
+
+enum DiskImage {
+    Missing,
+    Invalid,
+    Pixels(Pixels),
+}
+fn disk_image(path: &Path, dimension: u32) -> Result<DiskImage> {
+    if let Ok(metadata) = path.metadata()
+        && metadata.len() <= MAX_DOWNLOAD as u64
+        && metadata.modified()?.elapsed().unwrap_or_default() < Duration::from_secs(30 * 24 * 3600)
+    {
+        return Ok(
+            match fs::read(path).ok().and_then(|v| pixels(&v, dimension).ok()) {
+                Some(pixels) => DiskImage::Pixels(pixels),
+                None => DiskImage::Invalid,
+            },
+        );
+    }
+    Ok(DiskImage::Missing)
+}
+
+fn prepare_image(bytes: &[u8], dimension: u32) -> Result<(Pixels, Vec<u8>)> {
+    let pixels = pixels(bytes, dimension)?;
+    let image = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba.clone())
+        .context("invalid thumbnail pixels")?;
+    let mut png = Cursor::new(Vec::new());
+    image.write_to(&mut png, ImageFormat::Png)?;
+    Ok((pixels, png.into_inner()))
 }
 
 fn pixels(bytes: &[u8], dimension: u32) -> Result<Pixels> {

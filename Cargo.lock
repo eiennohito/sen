@@ -2673,6 +2673,7 @@ dependencies = [
  "hkdf",
  "hmac",
  "image",
+ "libc",
  "qrcodegen",
  "rcgen",
  "rustls",

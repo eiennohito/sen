@@ -1,5 +1,5 @@
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc, sync::mpsc::SyncSender};
+use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
 mod account;
 mod attention;
 mod attention_policy;
@@ -1017,6 +1017,7 @@ fn start_saved_account(
     });
     state.borrow_mut().commands = Some(worker.commands.clone());
     state.borrow_mut().read_gate = Some(worker.read_gate.clone());
+    state.borrow_mut().asset_priority = Some(worker.asset_priority.clone());
     unread::set_gate(worker.read_gate.clone());
     state.borrow_mut().retain_send_requests();
     state.borrow_mut().pairing_cancel = Some(worker.pairing_cancel.clone());

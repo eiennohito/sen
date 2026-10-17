@@ -133,13 +133,13 @@ session or **Sign in again** to open phone-based QR/PIN sign-in inside the app.
 Pairing starts only after **Start sign-in** and may replace Chrome's active
 login. RPC HTTPS uses a persistent blocking `ureq` agent with rustls and WebPKI
 roots, without an async runtime. SSE uses a separate agent with the same
-transport; media still requires `curl`. QR encoding runs in Rust, with 10-pixel
-modules, a four-module quiet zone and Low
-error correction. The CLI supports `--qr-file FILE` for PNG output and
-`--display ascii|none` (default `ascii` on a TTY, `none` otherwise). Cancel
-clears the QR/PIN immediately; the current phone-verification request may need
-to finish before cancellation completes. Keep the app open to see success or a
-retriable error.
+transport and media uses the same pooled transport; `curl` is not required.
+QR encoding runs in Rust, with 10-pixel modules,
+a four-module quiet zone and Low error correction. The CLI supports
+`--qr-file FILE` for PNG output and `--display ascii|none` (default `ascii` on a
+TTY, `none` otherwise). Cancel clears the QR/PIN immediately; the current
+phone-verification request may need to finish before cancellation completes.
+Keep the app open to see success or a retriable error.
 
 A successful sign-in keeps the old session as
 `session.before-sign-in-<timestamp>.json`, then installs the new session and
@@ -185,7 +185,10 @@ keys are not written to cache metadata. Decrypted thumbnail pixels are private
 account data, so clearing this directory removes cached previews.
 
 Encoded thumbnails have a 128 MiB / 4096-file disk limit and expire after 30
-days. The decoded worker cache is bounded to 24 MiB. Downloads and decoding run
+days. The decoded cache is bounded to 24 MiB. Three blocking asset fetchers share
+the HTTP agent and cache, leaving the account worker free for commands. The
+256-key queue de-duplicates queued and active assets, prefers visible assets
+then the open chat, and deprioritises closed chats. Downloads and decoding run
 off the UI thread, with size limits; images are reduced before reaching Slint.
 Standard reactions use emoji, while paid reactions use cached static images.
 Stickers and reactions do not animate yet. Media authentication is checked

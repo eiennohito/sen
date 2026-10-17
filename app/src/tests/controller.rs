@@ -199,7 +199,7 @@ fn controller_scenario(stop: usize) {
     view.storage = Some(storage);
     view.demo = false;
     let (tx, rx) = std::sync::mpsc::sync_channel(8);
-    view.commands = Some(tx);
+    view.commands = Some(tx.into());
     ui.set_connected(true);
     for draft in ["", " \n\t"] {
         ui.set_draft(draft.into());

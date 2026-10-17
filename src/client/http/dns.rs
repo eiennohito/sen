@@ -37,6 +37,7 @@ struct State {
 // another abandoned helper. Successful answers avoid DNS before pooled requests.
 pub(super) struct PollResolver {
     lookup: Arc<Lookup>,
+    name: &'static str,
     state: Mutex<State>,
 }
 
@@ -55,9 +56,17 @@ impl Default for PollResolver {
 }
 
 impl PollResolver {
+    pub(super) fn named(name: &'static str) -> Self {
+        Self {
+            name,
+            ..Self::default()
+        }
+    }
+
     pub(super) fn new(lookup: Arc<Lookup>) -> Self {
         Self {
             lookup,
+            name: "line-rpc-dns",
             state: Mutex::new(State::default()),
         }
     }
@@ -103,7 +112,7 @@ impl Resolver for PollResolver {
                 let address = key.clone();
                 let started = Instant::now();
                 thread::Builder::new()
-                    .name("line-rpc-dns".into())
+                    .name(self.name.into())
                     .spawn(move || {
                         let _ = send.send(lookup(address));
                     })

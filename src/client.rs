@@ -1,5 +1,5 @@
 //! Debug QR pairing against the same endpoints as LINE Chrome.
-//! Rust owns protocol/state/WASM, RPC/SSE HTTPS and QR encoding; curl serves media.
+//! Rust owns protocol/state/WASM, all HTTPS (RPC, SSE, media) and QR encoding.
 use crate::{HASH, VERSION, locations::Locations, runtime::Runtime, sign};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{
@@ -11,10 +11,9 @@ use sha2::{Digest, Sha256};
 use std::{
     env, fmt,
     fs::{self, OpenOptions},
-    io::{self, IsTerminal, Read, Write},
+    io::{self, IsTerminal, Write},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
-    process::{Command, Stdio},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -157,50 +156,11 @@ impl fmt::Display for RpcError {
     }
 }
 impl std::error::Error for RpcError {}
-fn quoted(value: &str) -> String {
-    format!(
-        "\"{}\"",
-        value
-            .replace('\\', "\\\\")
-            .replace('"', "\\\"")
-            .replace('\n', "\\n")
-            .replace('\r', "\\r")
-    )
-}
 thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) }; }
 fn set_request_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
 }
-fn wait_transport(
-    mut child: std::process::Child,
-    cancel: Option<&std::sync::atomic::AtomicBool>,
-    limit: u64,
-) -> Result<(std::process::ExitStatus, Vec<u8>)> {
-    let stdout = child.stdout.take().context("transport stdout")?;
-    let reader = std::thread::spawn(move || {
-        let mut bytes = Vec::new();
-        stdout.take(limit).read_to_end(&mut bytes).map(|_| bytes)
-    });
-    let result = loop {
-        if cancel.is_some_and(|token| token.load(std::sync::atomic::Ordering::Relaxed)) {
-            let _ = child.kill();
-            break child.wait();
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => break Ok(status),
-            Ok(None) => std::thread::park_timeout(Duration::from_millis(20)),
-            Err(error) => {
-                let _ = child.kill();
-                let _ = child.wait();
-                break Err(error);
-            }
-        }
-    };
-    let bytes = reader
-        .join()
-        .map_err(|_| anyhow::anyhow!("transport reader stopped"))??;
-    Ok((result?, bytes))
-}
+
 struct Api {
     rt: Runtime,
     http: http::Transport,
@@ -681,7 +641,7 @@ fn run() -> Result<()> {
     let opts = Options::parse()?;
     if ["help", "--help", "-h"].contains(&opts.command.as_str()) {
         println!(
-            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nRPCs use built-in HTTPS; media and sync require curl. Default session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\nSaved desktop path choices are reused unless --state or --wasm is supplied.\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are stored in a mode-0600 debug file.\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
+            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\nSaved desktop path choices are reused unless --state or --wasm is supplied.\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are stored in a mode-0600 debug file.\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
         );
         return Ok(());
     }
@@ -842,44 +802,11 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn curl_config_keeps_body_and_headers_in_single_values() {
-        let raw = "[\"a\\b\",\"quote\\\"\",\"line\\n\"]";
-        assert_eq!(
-            quoted(raw),
-            format!("\"{}\"", raw.replace('\\', "\\\\").replace('"', "\\\""))
-        );
-        assert_eq!(
-            quoted("first\r\nheader: secret"),
-            "\"first\\r\\nheader: secret\""
-        );
-    }
-    #[test]
     fn qr_callback_encodes_public_key_as_query_parameter() {
         let url = callback("line://au/q/test?session=abc", &[0xfb; 32]).unwrap();
         assert!(url.starts_with("line://au/q/test?session=abc&secret="));
         assert!(url.contains("%2B"));
         assert!(url.ends_with("&e2eeVersion=1"));
         assert!(callback("file:///tmp/test", &[0; 32]).is_err());
-    }
-    #[test]
-    fn cancellation_kills_and_reaps_owned_transport_child() -> Result<()> {
-        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let child = Command::new("sleep")
-            .arg("60")
-            .stdout(Stdio::piped())
-            .spawn()?;
-        let id = child.id();
-        let signal = cancel.clone();
-        let thread = std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(40));
-            signal.store(true, std::sync::atomic::Ordering::Relaxed);
-        });
-        let started = Instant::now();
-        let (status, _) = wait_transport(child, Some(&cancel), 1024)?;
-        thread.join().unwrap();
-        assert!(!status.success());
-        assert!(started.elapsed() < Duration::from_secs(2));
-        assert!(!Path::new(&format!("/proc/{id}")).exists());
-        Ok(())
     }
 }

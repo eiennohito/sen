@@ -12,6 +12,8 @@ pub(crate) struct Reading {
 #[derive(Default)]
 pub(crate) struct View {
     pub(crate) unread: unread::Unread,
+    pub(crate) asset_priority:
+        Option<std::sync::Arc<line_wasm_poc::client::desktop::assets::Priority>>,
     pub(crate) read_activity: Option<bool>,
     pub(crate) read_gate: Option<std::sync::Arc<account::ReadGate>>,
     pub(crate) attention: Option<attention::Attention>,
@@ -30,7 +32,7 @@ pub(crate) struct View {
     pub(crate) history: HashMap<String, Reading>,
     pub(crate) generation: u64,
     pub(crate) query: String,
-    pub(crate) commands: Option<SyncSender<account::Command>>,
+    pub(crate) commands: Option<account::CommandSender>,
     pub(crate) demo: bool,
     pub(crate) saved: storage::Saved,
     pub(crate) storage: Option<storage::Storage>,
@@ -154,6 +156,9 @@ impl View {
         self.capture(ui);
         self.remember(ui);
         self.current = id;
+        if let Some(priority) = &self.asset_priority {
+            priority.set(self.current.clone(), std::iter::empty());
+        }
         if let Some(gate) = &self.read_gate {
             gate.revoke();
         }
@@ -854,7 +859,7 @@ impl View {
                 if cancelled {
                     ui.invoke_close_sign_in();
                 } else {
-                    ui.set_auth_error("Sign-in could not complete or the QR code expired. Check your connection and that curl is installed, then try again. Your previous local session has been kept.".into());
+                    ui.set_auth_error("Sign-in could not complete or the QR code expired. Check your connection, then try again. Your previous local session has been kept.".into());
                 }
             }
             account::Update::SessionChanged => {

@@ -426,6 +426,32 @@ impl View {
                 || self.unread_discovering(&self.current),
             has_exposed: !self.unread.exposed.is_empty(),
         };
+        if let Some(priority) = &self.asset_priority {
+            let exposed: HashSet<_> = self.unread.exposed.iter().map(String::as_str).collect();
+            let keys = self
+                .messages
+                .iter()
+                .filter(|m| eligibility.visible && exposed.contains(m.id.as_str()))
+                .flat_map(|m| {
+                    [m.sender_key.to_string(), m.image_key.to_string()]
+                        .into_iter()
+                        .chain(m.rich_runs.iter().map(|run| run.image_key.to_string()))
+                        .chain(
+                            m.reactions
+                                .iter()
+                                .map(|reaction| reaction.image_key.to_string()),
+                        )
+                })
+                .collect::<Vec<_>>();
+            priority.set(
+                if eligibility.visible {
+                    self.current.clone()
+                } else {
+                    String::new()
+                },
+                keys,
+            );
+        }
         let allowed = eligibility.allowed();
         if let Some(gate) = &self.read_gate {
             if allowed {
@@ -594,7 +620,7 @@ mod controller_tests {
         let (tx, rx) = std::sync::mpsc::sync_channel(16);
         let mut view = View {
             current: "chat".into(),
-            commands: Some(tx),
+            commands: Some(tx.into()),
             ..Default::default()
         };
         view.ids.push("chat".into());

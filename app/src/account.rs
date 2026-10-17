@@ -1,7 +1,7 @@
-//! A single account worker owns all tokens, WASM objects, requests and decoding.
+//! Account RPCs stay on one worker; bounded asset fetchers own downloads and decoding.
 use line_wasm_poc::client::desktop::{
     Chat, Client, Message, SendFailure,
-    assets::{Asset, Pixels},
+    assets::{Asset, Completion, Failures, Payload, Pixels, Priority, Purpose},
     send_failure,
     sync::{self, SyncState},
 };
@@ -275,17 +275,107 @@ impl ReadGate {
     }
 }
 
+#[derive(Clone)]
+pub struct CommandSender {
+    tx: SyncSender<Command>,
+    wake: Option<std::thread::Thread>,
+}
+impl CommandSender {
+    pub fn try_send(&self, command: Command) -> Result<(), mpsc::TrySendError<Command>> {
+        self.tx.try_send(command)?;
+        if let Some(wake) = &self.wake {
+            wake.unpark();
+        }
+        Ok(())
+    }
+}
+#[cfg(test)]
+impl From<SyncSender<Command>> for CommandSender {
+    fn from(tx: SyncSender<Command>) -> Self {
+        Self { tx, wake: None }
+    }
+}
+
+enum AssetEvent {
+    Asset {
+        epoch: u64,
+        completion: Completion,
+    },
+    MediaToken {
+        epoch: u64,
+        asset: Asset,
+        reply: SyncSender<Option<String>>,
+    },
+}
+
+#[derive(Clone)]
+struct AssetSender {
+    tx: SyncSender<AssetEvent>,
+    wake: std::thread::Thread,
+}
+impl AssetSender {
+    fn send(&self, mut event: AssetEvent, stop: &AtomicBool, global_stop: &AtomicBool) -> bool {
+        loop {
+            if stop.load(Ordering::Relaxed) || global_stop.load(Ordering::Relaxed) {
+                return false;
+            }
+            match self.tx.try_send(event) {
+                Ok(()) => {
+                    self.wake.unpark();
+                    return true;
+                }
+                Err(mpsc::TrySendError::Full(value)) => {
+                    event = value;
+                    std::thread::park_timeout(Duration::from_millis(20));
+                }
+                Err(_) => return false,
+            }
+        }
+    }
+}
+
+struct Inbox {
+    rx: mpsc::Receiver<Command>,
+    asset_rx: mpsc::Receiver<AssetEvent>,
+    asset_tx: AssetSender,
+    push_tx: CommandSender,
+    cancel: Arc<AtomicBool>,
+    pairing_stop: Arc<AtomicBool>,
+    exposure_gate: Arc<ReadGate>,
+    fetch_priority: Arc<Priority>,
+}
+
+enum Work {
+    Command(Command),
+    Asset(AssetEvent),
+}
+fn next_work(
+    rx: &mpsc::Receiver<Command>,
+    assets: &mpsc::Receiver<AssetEvent>,
+    pending: &mut Option<Command>,
+) -> Option<Work> {
+    rx.try_recv()
+        .ok()
+        .or_else(|| pending.take())
+        .map(Work::Command)
+        .or_else(|| assets.try_recv().ok().map(Work::Asset))
+}
+
 pub struct Worker {
-    pub commands: SyncSender<Command>,
+    pub commands: CommandSender,
     stop: Arc<AtomicBool>,
     pub pairing_cancel: Arc<AtomicBool>,
     pub read_gate: Arc<ReadGate>,
+    pub asset_priority: Arc<Priority>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         let _ = self.commands.try_send(Command::Stop);
+        if let Some(wake) = &self.commands.wake {
+            wake.unpark();
+        }
         self.pairing_cancel.store(true, Ordering::Relaxed);
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
@@ -293,16 +383,64 @@ impl Drop for Worker {
     }
 }
 
+impl Worker {
+    fn spawn(run: impl FnOnce(Inbox) + Send + 'static) -> Self {
+        let (tx, rx) = mpsc::sync_channel(8);
+        let (asset_tx, asset_rx) = mpsc::sync_channel(8);
+        let stop = Arc::new(AtomicBool::new(false));
+        let cancel = stop.clone();
+        let pairing_cancel = Arc::new(AtomicBool::new(false));
+        let pairing_stop = pairing_cancel.clone();
+        let read_gate = Arc::new(ReadGate::default());
+        let exposure_gate = read_gate.clone();
+        let asset_priority = Arc::new(Priority::default());
+        let fetch_priority = asset_priority.clone();
+        let push_tx = tx.clone();
+        let thread = std::thread::spawn(move || {
+            let wake = std::thread::current();
+            run(Inbox {
+                rx,
+                asset_rx,
+                asset_tx: AssetSender {
+                    tx: asset_tx,
+                    wake: wake.clone(),
+                },
+                push_tx: CommandSender {
+                    tx: push_tx,
+                    wake: Some(wake),
+                },
+                cancel,
+                pairing_stop,
+                exposure_gate,
+                fetch_priority,
+            });
+        });
+        Self {
+            commands: CommandSender {
+                tx,
+                wake: Some(thread.thread().clone()),
+            },
+            stop,
+            pairing_cancel,
+            read_gate,
+            asset_priority,
+            thread: Some(thread),
+        }
+    }
+}
+
 pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker {
-    let (tx, rx) = mpsc::sync_channel(8);
-    let stop = Arc::new(AtomicBool::new(false));
-    let cancel = stop.clone();
-    let pairing_cancel = Arc::new(AtomicBool::new(false));
-    let pairing_stop = pairing_cancel.clone();
-    let read_gate = Arc::new(ReadGate::default());
-    let exposure_gate = read_gate.clone();
-    let push_tx = tx.clone();
-    let thread = std::thread::spawn(move || {
+    Worker::spawn(move |inbox| {
+        let Inbox {
+            rx,
+            asset_rx,
+            asset_tx,
+            push_tx,
+            cancel,
+            pairing_stop,
+            exposure_gate,
+            fetch_priority,
+        } = inbox;
         line_wasm_poc::client::desktop::set_cancellation_token(cancel.clone());
         let Some(mut client) = connect(&paths, &rx, &cancel, &pairing_stop, &publish) else {
             return;
@@ -314,10 +452,18 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
         let mut marker_epochs = std::collections::HashMap::<String, u64>::new();
         let mut markers = line_wasm_poc::client::desktop::read::Markers::default();
         let mut pending = Some(Command::Chats { next: false });
-        let mut jobs: Vec<(String, Asset)> = Vec::new();
-        let mut failed_images = std::collections::HashMap::<String, Instant>::new();
+        let mut jobs = Jobs::default();
+        let failures = Failures::default();
+        let mut fetchers = Some(start_fetchers(
+            &client,
+            &asset_tx,
+            &cancel,
+            &fetch_priority,
+            &failures,
+            sync_epoch,
+        ));
         while !cancel.load(Ordering::Relaxed) {
-            let command = rx.try_recv().ok().or_else(|| pending.take());
+            let mut command = rx.try_recv().ok().or_else(|| pending.take());
 
             if command.is_none()
                 && sync_connected
@@ -344,19 +490,34 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     Err(_) => publish(Update::ReadFailed { chat }),
                 }
             }
+            let asset_event = if command.is_none() {
+                match next_work(&rx, &asset_rx, &mut pending) {
+                    Some(Work::Command(next)) => {
+                        command = Some(next);
+                        None
+                    }
+                    Some(Work::Asset(event)) => Some(event),
+                    None => None,
+                }
+            } else {
+                None
+            };
             if let Some(command) = command {
                 // Prefer user commands over outstanding images from an old view.
                 match command {
                     Command::Stop => break,
                     Command::ReadActivity { .. } => {},
                     Command::MarkReadExplicit { chat,up_to_message } => match client.mark_read(&chat,&up_to_message) {Ok(())=>{markers.confirmed(&chat,&up_to_message);publish(Update::ReadMarked{chat,up_to_message});},Err(_)=>publish(Update::ReadFailed{chat})},
-                    Command::SaveFile { chat,message_id,request } => match client.file_bytes(&chat,&message_id) {
-                        Ok((name,bytes)) => publish(Update::FileBytes { request,name,bytes:Arc::new(bytes) }),
+                    Command::SaveFile { chat,message_id,request } => match client.file_asset(&chat,&message_id) {
+                        Ok((name,asset)) => {
+                            let accepted = fetchers.as_ref().unwrap().enqueue(asset, Some(chat), Purpose::File { request, name });
+                            if !accepted { publish(Update::FileFailed { request }); }
+                        },
                         Err(_) => publish(Update::FileFailed { request }),
                     },
                     Command::RetainSendRequests { request_seqs } => { let _ = client.retain_send_requests(&request_seqs); },
                     Command::Older { chat, before_message, delivered_time } => match client.older(&chat, &before_message, delivered_time) {
-                        Ok((messages,reached_beginning)) => { publish_echoes(&chat,&messages,&publish); publish(Update::Older { chat, before_message, messages: messages.into_iter().map(|m| message_view(m,&mut jobs)).collect(), reached_beginning }); },
+                        Ok((messages,reached_beginning)) => { jobs.chat = Some(chat.clone()); publish_echoes(&chat,&messages,&publish); publish(Update::Older { chat, before_message, messages: messages.into_iter().map(|m| message_view(m,&mut jobs)).collect(), reached_beginning }); },
                         Err(_) => publish(Update::OlderFailed { chat, before_message }),
                     },
                     Command::MarkRead { chat, up_to_message, eligibility_epoch } => { if exposure_gate.accepts(eligibility_epoch) {marker_epochs.insert(chat.clone(),eligibility_epoch);markers.expose(chat,up_to_message,Instant::now());} },
@@ -368,7 +529,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                             match client.resync() {
                                 Ok((chats, pages)) => {
                                     publish(Update::Chats { chats: chats.into_iter().map(|c| chat_view(c, &mut jobs)).collect(), more: client.more_chats });
-                                    for (chat, messages) in pages { publish_echoes(&chat, &messages, &publish); publish(Update::Incoming { chat, messages: messages.into_iter().map(|m| message_view(m, &mut jobs)).collect(), replay: true }); }
+                                    for (chat, messages) in pages { jobs.chat = Some(chat.clone()); publish_echoes(&chat, &messages, &publish); publish(Update::Incoming { chat, messages: messages.into_iter().map(|m| message_view(m, &mut jobs)).collect(), replay: true }); }
                                     let _ = complete.send(true);
                                 },
                                 Err(_) => { let _ = complete.send(false); }
@@ -393,6 +554,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                             }
                             match client.operation(&operation) {
                                 Some((chat, message)) => {
+                                    jobs.chat = Some(chat.clone());
                                     publish(Update::Incoming { chat, messages: vec![message_view(message, &mut jobs)], replay: false });
                                     pending = Some(Command::Chats { next: false });
                                 },
@@ -402,19 +564,22 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     } },
                     Command::Original { chat, key, request } => {
                         let result = client.messages(&chat).and_then(|messages| {
-                            let asset = messages.into_iter().filter_map(|m| m.image).find(|asset| asset.key() == key).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "photo is no longer loaded"))?;
-                            client.original_image(&asset)
+                            messages.into_iter().filter_map(|m| m.image).find(|asset| asset.key() == key).and_then(|asset| asset.original()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "photo is no longer loaded").into())
                         });
-                        match result { Ok(pixels) => publish(Update::Original { request, pixels }), Err(_) => publish(Update::OriginalFailed { request }) }
+                        let accepted = result.ok().is_some_and(|asset| fetchers.as_ref().unwrap().enqueue(asset, Some(chat), Purpose::Original { request }));
+                        if !accepted { publish(Update::OriginalFailed { request }); }
                     }
                     command @ (Command::Reconnect | Command::Reauthenticate) => {
                         sync_epoch = sync_epoch.wrapping_add(1);
+                        drop(fetchers.take());
                         drop(sync_guard.take());
-                        if matches!(command, Command::Reauthenticate) && !reauthenticate(&paths, &cancel, &pairing_stop, &publish) { sync_guard = Some(start_sync(&paths, &push_tx, &cancel, sync_epoch)); continue; }
+                        if matches!(command, Command::Reauthenticate) && !reauthenticate(&paths, &cancel, &pairing_stop, &publish) { fetchers = Some(start_fetchers(&client, &asset_tx, &cancel, &fetch_priority, &failures, sync_epoch)); sync_guard = Some(start_sync(&paths, &push_tx, &cancel, sync_epoch)); continue; }
                         let Some(reconnected) = connect(&paths, &rx, &cancel, &pairing_stop, &publish) else { break; };
                         client = reconnected;
                         sync_guard = Some(start_sync(&paths, &push_tx, &cancel, sync_epoch));
-                        jobs.clear(); failed_images.clear();
+                        jobs = Jobs::default();
+                        failures.clear();
+                        fetchers = Some(start_fetchers(&client, &asset_tx, &cancel, &fetch_priority, &failures, sync_epoch));
                         publish(Update::Connected(client.account_name.clone()));
                         pending = Some(Command::Chats { next: false });
                     }
@@ -449,12 +614,13 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         generation,
                         refresh,
                     } => match if refresh {
-                        failed_images.clear();
+                        fetchers.as_ref().unwrap().clear_failures();
                         client.refresh_messages(&id)
                     } else {
                         client.messages(&id)
                     } {
                         Ok(messages) => {
+                            jobs.chat = Some(id.clone());
                             publish_echoes(&id, &messages, &publish);
                             pending = Some(Command::Receipts { chat: id.clone() });
                             publish(Update::Messages {
@@ -491,62 +657,109 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         },
                     },
                 }
-                let mut seen = HashSet::new();
-                jobs.retain(|(key, _)| seen.insert(key.clone()));
-                jobs.truncate(256);
-                jobs.reverse();
-            } else if let Some((key, asset)) = jobs.pop() {
-                if failed_images
-                    .get(&key)
-                    .is_some_and(|t| t.elapsed() < Duration::from_secs(300))
-                {
-                    publish(Update::ImageFailed { key });
-                    continue;
+                for (asset, chat) in jobs.entries.drain(..) {
+                    fetchers
+                        .as_ref()
+                        .unwrap()
+                        .enqueue(asset, chat, Purpose::Thumbnail);
                 }
-                match client.image(&asset) {
-                    Ok(pixels) => {
-                        let pixels = if asset.kind() == "avatar" {
-                            Arc::new(line_wasm_poc::client::desktop::assets::circular_avatar(
-                                &pixels,
-                            ))
-                        } else {
-                            pixels
-                        };
-                        publish(Update::Image { key, pixels });
-                    }
-                    Err(_) => {
-                        publish(Update::ImageFailed { key: key.clone() });
-                        if failed_images.len() >= 256 {
-                            failed_images.clear();
+                jobs.chat = None;
+            } else if let Some(event) = asset_event {
+                match event {
+                    AssetEvent::Asset { epoch, completion } => {
+                        if epoch == sync_epoch {
+                            publish_asset(completion, &publish);
                         }
-                        failed_images.insert(key, Instant::now());
+                    }
+                    AssetEvent::MediaToken {
+                        epoch,
+                        asset,
+                        reply,
+                    } => {
+                        let token = (epoch == sync_epoch)
+                            .then(|| client.media_token(&asset).ok().flatten())
+                            .flatten();
+                        let _ = reply.try_send(token);
                     }
                 }
+            } else if let Some(wait) = (sync_connected
+                && exposure_gate.accepts(exposure_gate.epoch()))
+            .then(|| markers.wait(Instant::now()))
+            .flatten()
+            {
+                std::thread::park_timeout(wait);
             } else {
-                if let Some(wait) = (sync_connected && exposure_gate.accepts(exposure_gate.epoch()))
-                    .then(|| markers.wait(Instant::now()))
-                    .flatten()
-                {
-                    match rx.recv_timeout(wait) {
-                        Ok(command) => pending = Some(command),
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                        Err(_) => break,
-                    }
-                } else {
-                    match rx.recv() {
-                        Ok(command) => pending = Some(command),
-                        Err(_) => break,
-                    }
-                }
+                std::thread::park();
             }
         }
-    });
-    Worker {
-        commands: tx,
-        stop,
-        pairing_cancel,
-        read_gate,
-        thread: Some(thread),
+    })
+}
+
+fn start_fetchers(
+    client: &Client,
+    tx: &AssetSender,
+    cancel: &Arc<AtomicBool>,
+    priority: &Arc<Priority>,
+    failures: &Failures,
+    epoch: u64,
+) -> line_wasm_poc::client::desktop::assets::Fetchers {
+    let tx = tx.clone();
+    let auth_tx = tx.clone();
+    let global_stop = cancel.clone();
+    let auth_stop = cancel.clone();
+    client.asset_fetchers(
+        cancel.clone(),
+        priority.clone(),
+        failures.clone(),
+        move |asset, stop| {
+            let (reply, rx) = mpsc::sync_channel(1);
+            if !auth_tx.send(
+                AssetEvent::MediaToken {
+                    epoch,
+                    asset: asset.clone(),
+                    reply,
+                },
+                stop,
+                &auth_stop,
+            ) {
+                return None;
+            }
+            loop {
+                if stop.load(Ordering::Relaxed) || auth_stop.load(Ordering::Relaxed) {
+                    return None;
+                }
+                match rx.recv_timeout(Duration::from_millis(20)) {
+                    Ok(token) => return token,
+                    Err(mpsc::RecvTimeoutError::Timeout) => {}
+                    Err(_) => return None,
+                }
+            }
+        },
+        move |completion, stop| {
+            tx.send(AssetEvent::Asset { epoch, completion }, stop, &global_stop);
+        },
+    )
+}
+
+fn publish_asset(completion: Completion, publish: &impl Fn(Update)) {
+    let Completion {
+        key,
+        purpose,
+        result,
+    } = completion;
+    match (purpose, result) {
+        (Purpose::Thumbnail, Ok(Payload::Image(pixels))) => publish(Update::Image { key, pixels }),
+        (Purpose::Original { request }, Ok(Payload::Image(pixels))) => {
+            publish(Update::Original { request, pixels })
+        }
+        (Purpose::File { request, name }, Ok(Payload::File(bytes))) => publish(Update::FileBytes {
+            request,
+            name,
+            bytes,
+        }),
+        (Purpose::Thumbnail, _) => publish(Update::ImageFailed { key }),
+        (Purpose::Original { request }, _) => publish(Update::OriginalFailed { request }),
+        (Purpose::File { request, .. }, _) => publish(Update::FileFailed { request }),
     }
 }
 
@@ -564,7 +777,7 @@ impl Drop for SyncGuard {
 }
 fn start_sync(
     paths: &Paths,
-    tx: &SyncSender<Command>,
+    tx: &CommandSender,
     global_stop: &Arc<AtomicBool>,
     epoch: u64,
 ) -> SyncGuard {
@@ -679,16 +892,21 @@ fn publish_echoes(chat: &str, messages: &[Message], publish: &impl Fn(Update)) {
     }
 }
 
-fn asset_key(asset: Option<Asset>, jobs: &mut Vec<(String, Asset)>) -> String {
+#[derive(Default)]
+struct Jobs {
+    chat: Option<String>,
+    entries: Vec<(Asset, Option<String>)>,
+}
+fn asset_key(asset: Option<Asset>, jobs: &mut Jobs) -> String {
     if let Some(asset) = asset {
         let key = asset.key();
-        jobs.push((key.clone(), asset));
+        jobs.entries.push((asset, jobs.chat.clone()));
         key
     } else {
         String::new()
     }
 }
-fn chat_view(chat: Chat, jobs: &mut Vec<(String, Asset)>) -> ChatView {
+fn chat_view(chat: Chat, jobs: &mut Jobs) -> ChatView {
     ChatView {
         id: chat.id,
         title: chat.title,
@@ -704,7 +922,7 @@ fn chat_view(chat: Chat, jobs: &mut Vec<(String, Asset)>) -> ChatView {
         group: chat.group,
     }
 }
-fn message_view(message: Message, jobs: &mut Vec<(String, Asset)>) -> MessageView {
+fn message_view(message: Message, jobs: &mut Jobs) -> MessageView {
     MessageView {
         id: message.id,
         sender_id: message.sender_id,
@@ -814,6 +1032,163 @@ pub fn check(paths: &Paths) -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn asset_backpressure_preserves_worker_command_capacity_during_an_rpc() {
+        let (ready, rpc_entered) = mpsc::channel();
+        let (finish_rpc, rpc) = mpsc::channel();
+        let (processed, commands_done) = mpsc::channel();
+        let worker = Worker::spawn(move |inbox| {
+            ready
+                .send((inbox.asset_tx.clone(), inbox.cancel.clone()))
+                .unwrap();
+            rpc.recv_timeout(Duration::from_secs(3)).unwrap();
+            let mut pending = None;
+            for index in 0..8 {
+                let Some(Work::Command(command)) =
+                    next_work(&inbox.rx, &inbox.asset_rx, &mut pending)
+                else {
+                    panic!("asset traffic ran ahead of UI/sync commands");
+                };
+                match (index, command) {
+                    (0, Command::Send { .. })
+                    | (1, Command::Push { .. })
+                    | (2..=7, Command::ReadActivity { .. }) => {}
+                    _ => panic!("worker command order changed"),
+                }
+            }
+            assert!(matches!(
+                next_work(&inbox.rx, &inbox.asset_rx, &mut pending),
+                Some(Work::Asset(_))
+            ));
+            processed.send(()).unwrap();
+        });
+        let (assets, cancel) = rpc_entered.recv_timeout(Duration::from_secs(1)).unwrap();
+        let (delivered, backlog) = mpsc::channel();
+        let producers: Vec<_> = (0..3)
+            .map(|producer| {
+                let assets = assets.clone();
+                let cancel = cancel.clone();
+                let delivered = delivered.clone();
+                std::thread::spawn(move || {
+                    let stop = AtomicBool::new(false);
+                    for index in 0..64 {
+                        let event = if index == 0 {
+                            let (reply, _rx) = mpsc::sync_channel(1);
+                            AssetEvent::MediaToken {
+                                epoch: 0,
+                                asset: Asset::attachment(
+                                    &serde_json::json!({"id":"42","contentType":14}),
+                                )
+                                .unwrap(),
+                                reply,
+                            }
+                        } else {
+                            AssetEvent::Asset {
+                                epoch: 0,
+                                completion: Completion {
+                                    key: format!("{producer}-{index}"),
+                                    purpose: Purpose::Thumbnail,
+                                    result: Ok(Payload::Image(Arc::new(Pixels {
+                                        width: 1,
+                                        height: 1,
+                                        rgba: vec![0; 4],
+                                    }))),
+                                },
+                            }
+                        };
+                        if !assets.send(event, &stop, &cancel) {
+                            break;
+                        }
+                        delivered.send(()).unwrap();
+                    }
+                })
+            })
+            .collect();
+        for _ in 0..8 {
+            backlog.recv_timeout(Duration::from_secs(1)).unwrap();
+        }
+        assert!(
+            worker
+                .commands
+                .try_send(Command::Send {
+                    request_seq: 1,
+                    id: "chat".into(),
+                    generation: 0,
+                    text: "synthetic".into(),
+                    local_id: "local".into(),
+                })
+                .is_ok()
+        );
+        assert!(
+            worker
+                .commands
+                .try_send(Command::Push {
+                    epoch: 0,
+                    event: sync::Event::State(SyncState::Connected)
+                })
+                .is_ok()
+        );
+        for _ in 0..6 {
+            assert!(
+                worker
+                    .commands
+                    .try_send(Command::ReadActivity { allowed: false })
+                    .is_ok()
+            );
+        }
+        assert!(matches!(
+            worker.commands.try_send(Command::Stop),
+            Err(mpsc::TrySendError::Full(_))
+        ));
+        finish_rpc.send(()).unwrap();
+        commands_done.recv_timeout(Duration::from_secs(1)).unwrap();
+        drop(worker);
+        for producer in producers {
+            producer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn ui_and_asset_senders_wake_the_idle_worker() {
+        let (ready, started) = mpsc::channel();
+        let (handled, events) = mpsc::channel();
+        let worker = Worker::spawn(move |inbox| {
+            ready.send(inbox.asset_tx.clone()).unwrap();
+            let mut pending = None;
+            let mut remaining = 2;
+            while remaining > 0 {
+                if let Some(work) = next_work(&inbox.rx, &inbox.asset_rx, &mut pending) {
+                    handled.send(matches!(work, Work::Command(_))).unwrap();
+                    remaining -= 1;
+                } else {
+                    std::thread::park();
+                }
+            }
+        });
+        let assets = started.recv_timeout(Duration::from_secs(1)).unwrap();
+        assert!(
+            worker
+                .commands
+                .try_send(Command::ReadActivity { allowed: false })
+                .is_ok()
+        );
+        assert!(events.recv_timeout(Duration::from_secs(1)).unwrap());
+        assert!(assets.send(
+            AssetEvent::Asset {
+                epoch: 0,
+                completion: Completion {
+                    key: "synthetic".into(),
+                    purpose: Purpose::Thumbnail,
+                    result: Err(())
+                }
+            },
+            &worker.stop,
+            &worker.stop
+        ));
+        assert!(!events.recv_timeout(Duration::from_secs(1)).unwrap());
+    }
+
     #[test]
     fn legacy_cached_text_remains_visible_without_assuming_unread_metadata() {
         let mut message: Message = serde_json::from_value(serde_json::json!({
@@ -822,12 +1197,12 @@ mod tests {
             "decryption_failed":false
         }))
         .unwrap();
-        let legacy = message_view(message.clone(), &mut Vec::new());
+        let legacy = message_view(message.clone(), &mut Jobs::default());
         assert_eq!(legacy.body, "cached text");
         assert!(legacy.skip_badge);
         assert!(!message.skip_badge);
         message.metadata_version = 2;
-        assert!(!message_view(message, &mut Vec::new()).skip_badge);
+        assert!(!message_view(message, &mut Jobs::default()).skip_badge);
     }
 
     #[test]

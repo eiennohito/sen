@@ -96,13 +96,33 @@ owns authenticated media retrieval and private thumbnail caching. The CLI is
 a thin frontend over the same transport, session, and WASM implementation.
 
 The GUI thread owns Slint models and text editing. The account worker owns its
-WASM runtime, tokens, key caches, RPC and media requests. A separate cancellable
-SSE transport thread delivers operations through the bounded worker queue;
+WASM runtime, tokens, key caches and RPC requests. Three blocking asset threads
+share one asset HTTP agent and the thumbnail cache; they own media downloads,
+decryption and decoding. Three slots allow visible images to overlap while
+bounding simultaneous encoded downloads to 48 MiB. The asset agent uses the
+shared HTTP implementation with a separate resolver/pool, so a stalled asset
+DNS lookup cannot hold the RPC resolver lock. Originals and files use the
+same pool, with explicit requests ahead of automatic thumbnails. A separate
+cancellable SSE transport thread delivers operations through the bounded worker queue;
 desktop D-Bus service/attention work runs outside the UI thread. Do not move a Wasmi store
 between threads or perform curl/network work on the GUI thread. Use a bounded
 command queue, publish plain view data through `upgrade_in_event_loop`, and
 discard a runtime after a WASM exception. Coalesce model updates; never ship
-private keys or credentials to the UI. Media keys remain in the worker too.
+private keys or credentials to the UI. Media keys stay on background workers.
+Asset cache misses request media authorisation from the account worker over the
+separate bounded asset channel; cache hits need no token RPC. Asset completions
+return over that channel and use the existing UI events, guarded by the connection
+epoch. UI commands and sync pushes share eight command slots; asset events have
+eight separate slots and are serviced after queued commands. Both senders wake
+the worker directly; idle waits do not poll. Disk reads and image decode/encode run outside the cache mutex; map, prune
+and atomic private-write bookkeeping remain serialised.
+The asset queue retains at most 256 distinct pending/active keys and de-duplicates
+in-flight requests. A latest-value mailbox carries the open chat and exposed
+asset keys directly from UI geometry: visible assets precede the open chat,
+background avatars, then closed chats; newest requests break ties. Queue overflow
+evicts lower-priority pending thumbnails. Reconnect/sign-in stops and joins the
+old fetchers before replacing credentials; shutdown cancels and joins them too.
+Thumbnail failures retain the current 300-second blacklist and refresh behaviour.
 Late history responses are checked against both chat ID and request generation.
 Submission saves a durable pending item before queueing a network command,
 then clears the submitted editor. Confirmation updates the item by local ID;
@@ -135,9 +155,9 @@ budget are discarded rather than cached. An OS lookup already running cannot
 be interrupted; its receiver is retained so repeated cancellations do not create
 more helpers.
 
-A custom TCP connector beneath the stock rustls/CONNECT connectors uses 50 ms
-socket read/write timeouts. It retries polling timeouts while checking the
-worker stop flag and absolute deadlines, preserving partial writes. Worker
+A custom TCP connector beneath the stock rustls/CONNECT connectors polls TCP
+connection establishment and uses 50 ms socket read/write timeouts. It retries
+polling timeouts while checking the worker stop flag and absolute deadlines, preserving partial writes. Worker
 cancellation shuts down the socket and prevents reuse. Sign-in Cancel uses a
 separate pairing flag and can wait for the current RPC to finish.
 
@@ -153,8 +173,12 @@ and can trigger the one fresh retry. No retry is allowed once the final body
 write starts, including an ambiguous TLS flush failure, or after a complete
 send. Fresh-connection failures, timeouts and cancellations are not retried. Pooled connections consult the current request's token and deadline.
 Transport errors never include tokens, proxy credentials, URLs, or bodies. No
-dependency is forked and RPC/SSE HTTPS uses no async runtime. Assets still use
-curl.
+dependency is forked and HTTPS uses no async runtime. Assets use the same
+transport with GET, a 5-second connect budget, a 15-second total deadline, no
+redirects and a 16 MiB encoded-body cap (including files and originals). Public
+avatars/stickers/reactions carry no RPC or media headers; private OBS assets
+carry only the existing media headers. The asset host allowlist and decoder
+limits are unchanged. No component spawns curl.
 
 SSE uses a separate agent with the same proxy selection, verified TLS, resolver
 and socket polling as RPCs, keeping its long-lived connection out of the RPC

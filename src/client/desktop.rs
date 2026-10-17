@@ -123,7 +123,7 @@ pub struct Client {
     obs_access: Option<String>,
     sequence: u64,
     request_seq: u32,
-    cache: ImageCache,
+    cache: Arc<std::sync::Mutex<ImageCache>>,
     messages: messages::MessageCache,
     detail_boxes: Vec<Value>,
     loaded_chats: Vec<String>,
@@ -168,7 +168,7 @@ impl Client {
             obs_access: None,
             sequence,
             request_seq: (sequence % 1_000_000_000) as u32,
-            cache,
+            cache: Arc::new(std::sync::Mutex::new(cache)),
             messages,
             detail_boxes: Vec::new(),
             loaded_chats: Vec::new(),
@@ -669,12 +669,12 @@ impl Client {
     }
 
     pub fn image(&mut self, asset: &Asset) -> Result<Arc<assets::Pixels>> {
-        if let Some(pixels) = self.cache.read(asset)? {
+        if let Some(pixels) = ImageCache::read_shared(&self.cache, asset)? {
             return Ok(pixels);
         }
         self.authorize_media(asset)?;
-        let data = asset.fetch(self.obs_access.as_deref())?;
-        self.cache.store(asset, &data)
+        let data = asset.fetch(&self.api.http, self.obs_access.as_deref())?;
+        ImageCache::store_shared(&self.cache, asset, &data)
     }
 
     fn authorize_media(&mut self, asset: &Asset) -> Result<()> {
@@ -691,15 +691,34 @@ impl Client {
         }
         Ok(())
     }
-    /// Fetch the source file rather than enlarging the bounded thumbnail.
-    pub fn original_image(&mut self, asset: &Asset) -> Result<Arc<assets::Pixels>> {
-        let original = asset.original().context("original image unavailable")?;
-        self.authorize_media(&original)?;
-        let data = original.fetch(self.obs_access.as_deref())?;
-        Ok(Arc::new(assets::original_pixels(&data)?))
+    pub fn media_token(&mut self, asset: &Asset) -> Result<Option<String>> {
+        self.authorize_media(asset)?;
+        Ok(self.obs_access.clone())
     }
 
-    pub fn file_bytes(&mut self, chat: &str, message: &str) -> Result<(String, Vec<u8>)> {
+    pub fn asset_fetchers(
+        &self,
+        stop: Arc<std::sync::atomic::AtomicBool>,
+        priority: Arc<assets::Priority>,
+        failures: assets::Failures,
+        authorize: impl Fn(&Asset, &std::sync::atomic::AtomicBool) -> Option<String>
+        + Send
+        + Sync
+        + 'static,
+        publish: impl Fn(assets::Completion, &std::sync::atomic::AtomicBool) + Send + Sync + 'static,
+    ) -> assets::Fetchers {
+        assets::Fetchers::start(
+            self.api.http.assets(),
+            self.cache.clone(),
+            stop,
+            priority,
+            failures,
+            authorize,
+            publish,
+        )
+    }
+
+    pub fn file_asset(&mut self, chat: &str, message: &str) -> Result<(String, Asset)> {
         let item = match self.messages.cached_message(message)? {
             Some(message) => message,
             None => self
@@ -717,16 +736,14 @@ impl Client {
             "file unavailable or exceeds 16 MiB download limit"
         );
         let asset = item.attachment.context("file download unavailable")?;
-        self.authorize_media(&asset)?;
-        let bytes = asset.fetch(self.obs_access.as_deref())?;
         Ok((
             item.rich.file_name.unwrap_or_else(|| "attachment".into()),
-            bytes,
+            asset,
         ))
     }
 
     pub fn cache_stats(&self) -> assets::CacheStats {
-        self.cache.stats()
+        self.cache.lock().unwrap().stats()
     }
 
     /// Called only after the user presses Send; diagnostics never call this.
