@@ -6,6 +6,12 @@
   "generator": "Go standard library crypto/ecdh + crypto/aes + crypto/cipher; fixed synthetic peer private key bytes 1..32",
   "peer_public_key": "B6N8vBQgk8i3VdwbEOhstCY3StFqqFPtC9/AsrhtHHw=",
   "plaintext": "{\"text\":\"Independent Go ciphertext -\u003e original LINE WASM: 日本語 🔐\"}",
+  "primitives": {
+    "aes_ciphertext": "AAECAwQFBgcICQoLo0XoHZ4P9qx0+3LaL7dzM2gcfCKR",
+    "derived_key": "tnGmJP7+5kAhDdmmzxQ2PMpAE86BAdM9OLoupS6YIYI=",
+    "hmac": "HyoZ4nhRqa3UK22n8WluZ4eTbDV6bII2sl1/uwst5i0="
+  },
   "public_key": "HD1QDeKpNds53wxn2RkbhwTZo4J+aTOy3o7pGHzODkU=",
+  "shared_secret": "5/SdicoGKi6wNTzzamZfGv38afqWBgNeWpk/ZjS+Wns=",
   "to": "u8ae764e8e69e6bd4ecdd9b6ea0c40fce"
 }

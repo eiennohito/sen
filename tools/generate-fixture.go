@@ -6,6 +6,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ecdh"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/binary"
@@ -35,6 +36,19 @@ func main() {
 	}
 	private := must(ecdh.X25519().NewPrivateKey(raw))
 	shared := must(private.ECDH(pub))
+	fixture["shared_secret"] = base64.StdEncoding.EncodeToString(shared)
+	derived := sha256.Sum256(append(append([]byte("salt"), shared...), []byte("info")...))
+	macHash := hmac.New(sha256.New, derived[:])
+	macHash.Write([]byte("probe"))
+	primitiveBlock := must(aes.NewCipher(derived[:]))
+	primitiveGCM := must(cipher.NewGCM(primitiveBlock))
+	primitiveNonce := []byte{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}
+	primitiveCiphertext := primitiveGCM.Seal(append([]byte{}, primitiveNonce...), primitiveNonce, []byte("probe"), nil)
+	fixture["primitives"] = map[string]string{
+		"derived_key":    base64.StdEncoding.EncodeToString(derived[:]),
+		"hmac":           base64.StdEncoding.EncodeToString(macHash.Sum(nil)),
+		"aes_ciphertext": base64.StdEncoding.EncodeToString(primitiveCiphertext),
+	}
 	salt := []byte("fixed-test-salt!")
 	if len(salt) != 16 {
 		panic("V2 salt must be 16 bytes")
