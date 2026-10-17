@@ -1,5 +1,5 @@
 //! Debug QR pairing against the same endpoints as LINE Chrome.
-//! Rust owns protocol/state/WASM, RPC HTTPS and QR encoding; curl serves media and sync.
+//! Rust owns protocol/state/WASM, RPC/SSE HTTPS and QR encoding; curl serves media.
 use crate::{HASH, VERSION, locations::Locations, runtime::Runtime, sign};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{

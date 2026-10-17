@@ -3,6 +3,7 @@ use super::*;
 use std::{
     io::{BufRead, BufReader, Read},
     sync::{
+        Arc,
         atomic::{AtomicBool, Ordering},
         mpsc,
     },
@@ -98,14 +99,18 @@ fn pause(stop: &AtomicBool, duration: Duration) {
 
 /// Runs on a dedicated thread with its own WASM runtime. `deliver` must return
 /// false on cancellation; callers use a bounded channel with cancellable sends.
+/// The same stop token is installed for RPCs and passed directly to socket waits.
 pub fn receive(
     state_path: &Path,
     wasm_path: &Path,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
     mut deliver: impl FnMut(Event) -> bool,
 ) -> Result<()> {
+    set_request_cancel(stop.clone());
     let mut state: Value = serde_json::from_slice(&fs::read(state_path)?)?;
     let mut api = Api::new(&fs::read(wasm_path)?)?;
+    // A separate agent keeps the long-lived stream out of the RPC pool.
+    let transport = http::Transport::new()?;
     let mut revisions = Revisions::default();
     let mut seeded = false;
     let mut refreshed_once = false;
@@ -151,12 +156,19 @@ pub fn receive(
                 }
             }
         }
-        let result = stream(access(&state)?, revisions.local, stop, |name, data| {
-            if name == "open" {
-                refreshed_once = false;
-            }
-            dispatch(name, data, &mut revisions, &mut attempt, stop, &mut deliver)
-        });
+        let result = stream(
+            &transport,
+            access(&state)?,
+            revisions.local,
+            stop,
+            PING_TIMEOUT,
+            |name, data| {
+                if name == "open" {
+                    refreshed_once = false;
+                }
+                dispatch(name, data, &mut revisions, &mut attempt, stop, &mut deliver)
+            },
+        );
         if stop.load(Ordering::Relaxed) {
             break;
         }
@@ -353,105 +365,59 @@ fn dispatch(
     Ok(true)
 }
 
+const MAX_LINE: u64 = 1024 * 1024;
+const PING_TIMEOUT: Duration = Duration::from_secs(30);
+
 fn stream(
+    transport: &http::Transport,
     access: &str,
     revision: u64,
-    stop: &AtomicBool,
+    stop: &Arc<AtomicBool>,
+    ping_timeout: Duration,
     mut event: impl FnMut(&str, Value) -> Result<bool>,
 ) -> Result<u16> {
     // Source uses EventSource withCredentials, not the signed POST mapper.
-    let config = format!(
-        "url = {}\nrequest = \"GET\"\nsilent\nshow-error\nno-buffer\ninclude\nconnect-timeout = 10\nheader = {}\nheader = \"Accept: text/event-stream\"\n",
-        quoted(&format!(
-            "{BASE}/api/operation/receive?localRev={revision}&version={VERSION}&language=en_US"
-        )),
-        quoted(&format!("Cookie: lct={access}"))
-    );
-    let mut child = Command::new("curl")
-        .args(["--config", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()?;
-    child
-        .stdin
-        .take()
-        .context("SSE stdin")?
-        .write_all(config.as_bytes())?;
-    let stdout = child.stdout.take().context("SSE stdout")?;
-    let (tx, rx) = mpsc::sync_channel(16);
-    let reader = thread::spawn(move || {
-        let mut reader = BufReader::new(stdout);
-        loop {
-            // Bound even a malicious unterminated line.
+    transport.stream(
+        &format!("/api/operation/receive?localRev={revision}&version={VERSION}&language=en_US"),
+        &[
+            ("Cookie", &format!("lct={access}")),
+            ("Accept", "text/event-stream"),
+        ],
+        stop.clone(),
+        ping_timeout,
+        |status, _headers, body| {
+            if status != 200 {
+                return Ok(status);
+            }
+            if stop.load(Ordering::Relaxed) || !event("open", Value::Null)? {
+                return Ok(status);
+            }
+            let mut reader = BufReader::new(body);
+            let mut decoder = Decoder::default();
             let mut line = Vec::new();
-            let result = reader
-                .by_ref()
-                .take(1024 * 1024 + 1)
-                .read_until(b'\n', &mut line);
-            if line.len() > 1024 * 1024 || !matches!(result, Ok(n) if n > 0) {
-                break;
-            }
-            if tx
-                .send(
-                    String::from_utf8_lossy(&line)
-                        .trim_end_matches(['\r', '\n'])
-                        .to_owned(),
-                )
-                .is_err()
-            {
-                break;
-            }
-        }
-    });
-    let result = (|| {
-        let mut decoder = Decoder::default();
-        let mut status = 0;
-        let mut headers = true;
-        let mut ping = Instant::now();
-        while !stop.load(Ordering::Relaxed) {
-            let line = match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(line) => line,
-                Err(mpsc::RecvTimeoutError::Timeout) => {
-                    ensure!(ping.elapsed() < Duration::from_secs(30), "SSE ping expired");
-                    continue;
-                }
-                Err(_) => break,
-            };
-            if headers {
-                if line.starts_with("HTTP/") {
-                    status = line
-                        .split_whitespace()
-                        .nth(1)
-                        .and_then(|s| s.parse().ok())
-                        .unwrap_or(0);
-                }
-                if line.is_empty() {
-                    if status == 200 {
-                        headers = false;
-                        if !event("open", Value::Null)? {
-                            break;
-                        }
-                    } else if status != 100 {
-                        return Ok(status);
-                    }
-                }
-            } else if let Some((name, data)) = decoder.line(&line)? {
-                if name == "ping" {
-                    ping = Instant::now();
-                }
-                if !event(&name, data)? {
+            while !stop.load(Ordering::Relaxed) {
+                line.clear();
+                let count = reader
+                    .by_ref()
+                    .take(MAX_LINE + 1)
+                    .read_until(b'\n', &mut line)?;
+                ensure!(line.len() as u64 <= MAX_LINE, "SSE line too large");
+                if count == 0 || stop.load(Ordering::Relaxed) {
                     break;
                 }
+                let line = String::from_utf8_lossy(&line);
+                if let Some((name, data)) = decoder.line(line.trim_end_matches(['\r', '\n']))? {
+                    if name == "ping" {
+                        reader.get_mut().ping();
+                    }
+                    if !event(&name, data)? {
+                        break;
+                    }
+                }
             }
-        }
-        Ok(status)
-    })();
-    let _ = child.kill();
-    let _ = child.wait();
-    drop(rx);
-    let _ = reader.join();
-    result
+            Ok(status)
+        },
+    )
 }
 #[cfg(test)]
 mod tests {
@@ -602,3 +568,6 @@ mod auth_tests {
         assert!(error.downcast_ref::<ExpiredSession>().is_some());
     }
 }
+
+#[cfg(test)]
+mod stream_tests;

@@ -153,8 +153,32 @@ and can trigger the one fresh retry. No retry is allowed once the final body
 write starts, including an ambiguous TLS flush failure, or after a complete
 send. Fresh-connection failures, timeouts and cancellations are not retried. Pooled connections consult the current request's token and deadline.
 Transport errors never include tokens, proxy credentials, URLs, or bodies. No
-dependency is forked and RPC HTTPS uses no async runtime. Assets and SSE still
-use curl.
+dependency is forked and RPC/SSE HTTPS uses no async runtime. Assets still use
+curl.
+
+SSE uses a separate agent with the same proxy selection, verified TLS, resolver
+and socket polling as RPCs, keeping its long-lived connection out of the RPC
+pool. Each stream attempt forces a fresh connection and closes it on return.
+The existing sync thread reads response lines directly, with no curl child,
+reader thread or line queue. Status comes from the HTTP response; HTTP 200 opens
+the stream regardless of content type, preserving the curl path's behaviour.
+HTTP 401/403 retain the existing token-refresh/expiry path. EOF and resets return
+immediately to the existing reconnect path. The stop token is passed directly to
+the stream request scope and installed for the sync thread's RPCs.
+
+The 30-second ping watchdog counts only time spent waiting in socket reads.
+Callbacks, catch-up and queue backpressure do not consume its budget. Only a
+decoded ping resets it; other events do not. Once the budget is spent, expiry
+is judged before the next socket read, including when a partial line trickles
+in. Data already buffered in HTTP or TLS is decoded first. Expiry reports
+`SSE ping expired` with the `TimedOut` I/O kind.
+
+Each raw line remains capped at 1 MiB (including its newline), with one extra
+byte read to detect overflow; decoder data remains capped at 1 MiB per frame.
+The reusable line buffer, bounded decoder event name/data, lossy UTF-8 conversion
+and fixed-size HTTP/line-reader buffers replace the former 16-line queue. No
+cumulative body cap applies to an indefinitely running stream, but retained
+buffering stays bounded even for unterminated lines and multiline frames.
 Authentication/signature compatibility remains unverified against an account.
 Do not add an async runtime, a browser process, JavaScript, or a database to draw
 the window. The sourced SSE path has cancellation, bounded delivery, reconnect

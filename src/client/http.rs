@@ -3,7 +3,9 @@ use anyhow::{Result, ensure};
 use std::{
     cell::RefCell,
     io::{self, Read, Write},
+    marker::PhantomData,
     net::{Shutdown, TcpStream},
+    rc::Rc,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -12,7 +14,10 @@ use std::{
 };
 use ureq::{
     Agent,
-    http::header::{HeaderName, HeaderValue},
+    http::{
+        HeaderMap,
+        header::{HeaderName, HeaderValue},
+    },
     unversioned::{
         resolver::Resolver,
         transport::{
@@ -24,6 +29,7 @@ use ureq::{
 
 const MAX_BODY: usize = 1048576;
 const POLL: Duration = Duration::from_millis(50);
+static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
 const CONNECT_BUDGET: Duration = Duration::from_secs(10);
 // Retire before the assumed >=30s gateway idle window; liveness checks and the
 // restricted retry still handle servers that close sooner. No live timing claim.
@@ -49,9 +55,25 @@ struct RequestState {
     body_remaining: usize,
     final_write_started: bool,
     force_fresh: bool,
+    pool: bool,
     write_failure: Option<io::ErrorKind>,
     socket: Option<Arc<Socket>>,
+    watchdog: Option<Watchdog>,
 }
+
+struct Watchdog {
+    timeout: Duration,
+    remaining: Duration,
+}
+
+#[derive(Debug)]
+struct PingExpired;
+impl std::fmt::Display for PingExpired {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SSE ping expired")
+    }
+}
+impl std::error::Error for PingExpired {}
 
 struct RequestScope;
 
@@ -70,8 +92,10 @@ impl RequestScope {
                 body_remaining: 0,
                 final_write_started: false,
                 force_fresh: false,
+                pool: true,
                 write_failure: None,
                 socket: None,
+                watchdog: None,
             });
         });
         Self
@@ -91,7 +115,7 @@ impl Drop for RequestScope {
                 .as_ref()
                 .is_some_and(|c| c.load(Ordering::Relaxed));
             if let Some(socket) = state.socket
-                && (cancelled || Instant::now() >= state.deadline)
+                && (!state.pool || cancelled || Instant::now() >= state.deadline)
             {
                 socket.close();
             }
@@ -113,7 +137,7 @@ fn check_request() -> Result<(), ureq::Error> {
             );
         }
         let now = Instant::now();
-        if now >= state.deadline {
+        if state.watchdog.is_none() && now >= state.deadline {
             return Err(ureq::Error::Timeout(ureq::Timeout::Global));
         }
         if state.connecting && now >= state.connect_deadline {
@@ -332,7 +356,7 @@ impl UreqTransport for RequestTransport {
         let force_fresh = ACTIVE.with(|slot| {
             let slot = slot.borrow();
             let state = slot.as_ref().unwrap();
-            state.force_fresh && self.last_attempt != state.attempt
+            !state.pool || (state.force_fresh && self.last_attempt != state.attempt)
         });
         if force_fresh {
             return false;
@@ -410,13 +434,33 @@ impl UreqTransport for PollTransport {
         loop {
             self.socket.check()?;
             check_phase(deadline, timeout)?;
-            match (&self.socket.stream).read(self.buffers.input_append_buf()) {
+            let expired = ACTIVE.with(|slot| {
+                slot.borrow()
+                    .as_ref()
+                    .unwrap()
+                    .watchdog
+                    .as_ref()
+                    .is_some_and(|watchdog| watchdog.remaining.is_zero())
+            });
+            if expired {
+                return Err(io::Error::new(io::ErrorKind::TimedOut, PingExpired).into());
+            }
+            let started = Instant::now();
+            let result = (&self.socket.stream).read(self.buffers.input_append_buf());
+            ACTIVE.with(|slot| {
+                if let Some(watchdog) = &mut slot.borrow_mut().as_mut().unwrap().watchdog {
+                    watchdog.remaining = watchdog.remaining.saturating_sub(started.elapsed());
+                }
+            });
+            match result {
                 Ok(n) => {
                     self.socket.check()?;
                     self.buffers.input_appended(n);
                     return Ok(n > 0);
                 }
-                Err(error) if retryable(&error) => continue,
+                Err(error) if retryable(&error) => {
+                    self.socket.check()?;
+                }
                 Err(error) => return Err(error.into()),
             }
         }
@@ -517,6 +561,48 @@ impl Transport {
         }
     }
 
+    pub(super) fn stream<T>(
+        &self,
+        path: &str,
+        headers: &[(&str, &str)],
+        stop: Arc<AtomicBool>,
+        timeout: Duration,
+        consume: impl FnOnce(u16, &HeaderMap, &mut StreamReader) -> Result<T>,
+    ) -> Result<T> {
+        let validated = validate(path, headers)?;
+        #[cfg(not(test))]
+        let base = BASE;
+        #[cfg(test)]
+        let base = &self.base;
+        let _scope = RequestScope::new(timeout);
+        ACTIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut().unwrap();
+            state.cancel = Some(stop);
+            state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+            state.pool = false;
+        });
+        check_request().map_err(transport_error)?;
+        let mut request = self.agent.get(format!("{base}{path}"));
+        for (name, value) in validated {
+            request = request.header(name, value);
+        }
+        let response = request.call();
+        check_request().map_err(transport_error)?;
+        let (parts, body) = response.map_err(transport_error)?.into_parts();
+        let mut reader = StreamReader {
+            body: body.into_reader(),
+            _worker: PhantomData,
+        };
+        ACTIVE.with(|slot| {
+            slot.borrow_mut().as_mut().unwrap().watchdog = Some(Watchdog {
+                timeout,
+                remaining: timeout,
+            });
+        });
+        consume(parts.status.as_u16(), &parts.headers, &mut reader)
+    }
+
     pub(super) fn request(
         &self,
         path: &str,
@@ -524,31 +610,14 @@ impl Transport {
         headers: &[(&str, &str)],
         timeout: u64,
     ) -> Result<(u16, Vec<u8>)> {
-        ensure!(
-            path.starts_with("/api/") && !path.contains(['\r', '\n']),
-            "invalid API path"
-        );
+        let validated = validate(path, headers)?;
         #[cfg(not(test))]
         let base = BASE;
         #[cfg(test)]
         let base = &self.base;
-        let mut validated = Vec::with_capacity(headers.len());
-        for (name, value) in headers {
-            ensure!(
-                !name.contains(['\r', '\n', ':']) && !value.contains(['\r', '\n']),
-                "invalid header"
-            );
-            let name = HeaderName::from_bytes(name.as_bytes())
-                .map_err(|_| anyhow::anyhow!("invalid header"))?;
-            let mut value =
-                HeaderValue::from_str(value).map_err(|_| anyhow::anyhow!("invalid header"))?;
-            value.set_sensitive(true);
-            validated.push((name, value));
-        }
         let _scope = RequestScope::new(Duration::from_secs(timeout));
         let mut response = loop {
             check_request().map_err(transport_error)?;
-            static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
             ACTIVE.with(|slot| {
                 let mut slot = slot.borrow_mut();
                 let state = slot.as_mut().unwrap();
@@ -635,11 +704,70 @@ impl Transport {
     }
 }
 
+// The body and its thread-local request scope must stay on the calling worker.
+pub(super) struct StreamReader {
+    body: ureq::BodyReader<'static>,
+    _worker: PhantomData<Rc<()>>,
+}
+
+impl StreamReader {
+    pub(super) fn ping(&mut self) {
+        ACTIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let watchdog = slot.as_mut().unwrap().watchdog.as_mut().unwrap();
+            watchdog.remaining = watchdog.timeout;
+        });
+    }
+}
+
+impl Read for StreamReader {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        check_request().map_err(|e| io::Error::other(transport_error(e)))?;
+        let result = self.body.read(bytes);
+        check_request().map_err(|e| io::Error::other(transport_error(e)))?;
+        result.map_err(|error| {
+            if error
+                .get_ref()
+                .is_some_and(|inner| inner.is::<PingExpired>())
+            {
+                error
+            } else {
+                io::Error::new(
+                    error.kind(),
+                    "HTTPS response read failed; response not logged",
+                )
+            }
+        })
+    }
+}
+
+fn validate(path: &str, headers: &[(&str, &str)]) -> Result<Vec<(HeaderName, HeaderValue)>> {
+    ensure!(
+        path.starts_with("/api/") && !path.contains(['\r', '\n']),
+        "invalid API path"
+    );
+    let mut validated = Vec::with_capacity(headers.len());
+    for (name, value) in headers {
+        ensure!(
+            !name.contains(['\r', '\n', ':']) && !value.contains(['\r', '\n']),
+            "invalid header"
+        );
+        let name = HeaderName::from_bytes(name.as_bytes())
+            .map_err(|_| anyhow::anyhow!("invalid header"))?;
+        let mut value =
+            HeaderValue::from_str(value).map_err(|_| anyhow::anyhow!("invalid header"))?;
+        value.set_sensitive(true);
+        validated.push((name, value));
+    }
+    Ok(validated)
+}
+
 fn transport_error(error: ureq::Error) -> anyhow::Error {
-    if REQUEST_CANCEL.with(|slot| {
+    if ACTIVE.with(|slot| {
         slot.borrow()
             .as_ref()
-            .is_some_and(|c| c.load(Ordering::Relaxed))
+            .and_then(|state| state.cancel.as_ref())
+            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
     }) {
         anyhow::anyhow!("HTTPS request cancelled")
     } else if matches!(error, ureq::Error::Timeout(_)) {
@@ -650,7 +778,7 @@ fn transport_error(error: ureq::Error) -> anyhow::Error {
 }
 
 #[cfg(test)]
-mod tests {
+pub(in crate::client) mod tests {
     use super::*;
     use std::{
         io::{BufRead, BufReader, Write},
@@ -660,7 +788,7 @@ mod tests {
         time::Instant,
     };
 
-    pub(super) fn local_server<T: Send + 'static>(
+    pub(in crate::client) fn local_server<T: Send + 'static>(
         serve: impl FnOnce(TcpListener) -> T + Send + 'static,
     ) -> (Transport, thread::JoinHandle<T>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -670,7 +798,7 @@ mod tests {
         (transport, thread::spawn(move || serve(listener)))
     }
 
-    pub(super) fn accept(listener: &TcpListener) -> TcpStream {
+    pub(in crate::client) fn accept(listener: &TcpListener) -> TcpStream {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
             match listener.accept() {
@@ -692,7 +820,7 @@ mod tests {
         }
     }
 
-    pub(super) fn read_request(stream: &mut BufReader<TcpStream>) -> bool {
+    pub(in crate::client) fn read_request(stream: &mut BufReader<TcpStream>) -> bool {
         let mut line = String::new();
         if stream.read_line(&mut line).unwrap() == 0 {
             return false;

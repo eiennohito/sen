@@ -132,8 +132,9 @@ If opening the saved account fails, use **Retry** to reconnect with the saved
 session or **Sign in again** to open phone-based QR/PIN sign-in inside the app.
 Pairing starts only after **Start sign-in** and may replace Chrome's active
 login. RPC HTTPS uses a persistent blocking `ureq` agent with rustls and WebPKI
-roots, without an async runtime. Media and sync still require `curl`. QR
-encoding runs in Rust, with 10-pixel modules, a four-module quiet zone and Low
+roots, without an async runtime. SSE uses a separate agent with the same
+transport; media still requires `curl`. QR encoding runs in Rust, with 10-pixel
+modules, a four-module quiet zone and Low
 error correction. The CLI supports `--qr-file FILE` for PNG output and
 `--display ascii|none` (default `ascii` on a TTY, `none` otherwise). Cancel
 clears the QR/PIN immediately; the current phone-verification request may need
