@@ -130,13 +130,15 @@ such as `--demo-photos`, `--demo-groups` and `--demo-rich` still apply.
 
 If opening the saved account fails, use **Retry** to reconnect with the saved
 session or **Sign in again** to open phone-based QR/PIN sign-in inside the app.
-Pairing starts only after **Start sign-in**. It requires `curl` and may replace
-Chrome's active login. QR encoding runs in Rust, with 10-pixel modules, a
-four-module quiet zone and Low error correction. The CLI supports `--qr-file FILE`
-for PNG output and `--display ascii|none` (default `ascii` on a TTY, `none`
-otherwise). Cancel clears the QR/PIN immediately;
-an in-flight phone-verification request may need to finish before cancellation
-completes. Keep the app open to see success or a retriable error.
+Pairing starts only after **Start sign-in** and may replace Chrome's active
+login. RPC HTTPS uses a persistent blocking `ureq` agent with rustls and WebPKI
+roots, without an async runtime. Media and sync still require `curl`. QR
+encoding runs in Rust, with 10-pixel modules, a four-module quiet zone and Low
+error correction. The CLI supports `--qr-file FILE` for PNG output and
+`--display ascii|none` (default `ascii` on a TTY, `none` otherwise). Cancel
+clears the QR/PIN immediately; the current phone-verification request may need
+to finish before cancellation completes. Keep the app open to see success or a
+retriable error.
 
 A successful sign-in keeps the old session as
 `session.before-sign-in-<timestamp>.json`, then installs the new session and

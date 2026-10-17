@@ -22,3 +22,9 @@ hkdf = "0.12"
 hmac = "0.12"
 qrcodegen = "1.8.0"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "webp"] }
+ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "rustls-webpki-roots"] }
+
+[dev-dependencies]
+rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+socket2 = "0.6"

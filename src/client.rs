@@ -1,5 +1,5 @@
 //! Debug QR pairing against the same endpoints as LINE Chrome.
-//! Rust owns protocol/state/WASM and QR encoding; system curl provides HTTPS.
+//! Rust owns protocol/state/WASM, RPC HTTPS and QR encoding; curl serves media and sync.
 use crate::{HASH, VERSION, locations::Locations, runtime::Runtime, sign};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{
@@ -23,6 +23,7 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 
 mod chat;
 pub mod desktop;
+mod http;
 pub mod pairing;
 mod qr;
 use qr::png as qr_png;
@@ -200,61 +201,9 @@ fn wait_transport(
         .map_err(|_| anyhow::anyhow!("transport reader stopped"))??;
     Ok((result?, bytes))
 }
-fn curl_request(
-    path: &str,
-    body: &str,
-    headers: &[(&str, &str)],
-    timeout: u64,
-) -> Result<(u16, Vec<u8>)> {
-    ensure!(
-        path.starts_with("/api/") && !path.contains(['\r', '\n']),
-        "invalid API path"
-    );
-    let mut config = format!(
-        "url = {}\nrequest = \"POST\"\nsilent\nshow-error\nconnect-timeout = 10\nmax-time = {}\nmax-filesize = 1048576\nwrite-out = \"\\n%{{http_code}}\"\ndata = {}\n",
-        quoted(&format!("{BASE}{path}")),
-        timeout,
-        quoted(body)
-    );
-    for (name, value) in headers {
-        ensure!(
-            !name.contains(['\r', '\n', ':']) && !value.contains(['\r', '\n']),
-            "invalid header"
-        );
-        config.push_str(&format!(
-            "header = {}\n",
-            quoted(&format!("{name}: {value}"))
-        ));
-    }
-    // Tokens and pairing secrets stay on stdin, never in process arguments.
-    let mut child = Command::new("curl")
-        .args(["--config", "-"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("start curl")?;
-    child
-        .stdin
-        .take()
-        .context("curl stdin")?
-        .write_all(config.as_bytes())?;
-    let cancel = REQUEST_CANCEL.with(|slot| slot.borrow().clone());
-    let (status, stdout) = wait_transport(child, cancel.as_deref(), 1048600)?;
-    ensure!(
-        status.success(),
-        "HTTPS transport failed (curl exit {}); response not logged",
-        status.code().unwrap_or(-1)
-    );
-    let split = stdout
-        .iter()
-        .rposition(|b| *b == b'\n')
-        .context("missing HTTP status")?;
-    let status = std::str::from_utf8(&stdout[split + 1..])?.trim().parse()?;
-    Ok((status, stdout[..split].to_vec()))
-}
 struct Api {
     rt: Runtime,
+    http: http::Transport,
     key_cache: std::collections::HashMap<String, Value>,
     channels: std::collections::HashMap<String, (u32, u64)>,
     channel_tick: u64,
@@ -263,6 +212,7 @@ impl Api {
     fn new(wasm: &[u8]) -> Result<Self> {
         Ok(Self {
             rt: Runtime::new(wasm)?,
+            http: http::Transport::new()?,
             key_cache: Default::default(),
             channels: Default::default(),
             channel_tick: 0,
@@ -318,7 +268,7 @@ impl Api {
         if poll_seconds > 0 {
             headers.push(("X-LST", millis.as_str()));
         }
-        let (http, bytes) = curl_request(
+        let (http, bytes) = self.http.request(
             path,
             &body,
             &headers,
@@ -731,7 +681,7 @@ fn run() -> Result<()> {
     let opts = Options::parse()?;
     if ["help", "--help", "-h"].contains(&opts.command.as_str()) {
         println!(
-            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nRequires curl. Default session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\nSaved desktop path choices are reused unless --state or --wasm is supplied.\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are stored in a mode-0600 debug file.\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
+            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nRPCs use built-in HTTPS; media and sync require curl. Default session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\nSaved desktop path choices are reused unless --state or --wasm is supplied.\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are stored in a mode-0600 debug file.\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
         );
         return Ok(());
     }

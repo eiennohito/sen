@@ -112,9 +112,51 @@ restart and are never retried automatically. Definite rejection and uncertain
 results have separate states. Recovery requires a deliberate Replace/Append
 choice when newer text exists; Resend warns about duplicate risk.
 
-Start with the verified system-curl transport behind a Rust interface. A later
-in-process transport can replace it after authentication/signature regression
-checks. Do not add Tokio, a browser process, JavaScript, or a database to draw
+Each `Api` owns one persistent `ureq::Agent` with rustls and WebPKI roots for
+HTTP/1.1 RPCs (no ALPN h2); the agent pool reuses connections. Requests use the
+fixed HTTPS gateway, disable redirects (`max_redirects(0)`), and return all HTTP
+statuses (including 3xx) without following them. RPCs honour HTTP(S) environment
+proxies using curl's HTTPS precedence: `https_proxy`, `HTTPS_PROXY`, then
+`all_proxy`/`ALL_PROXY`; `http_proxy`/`HTTP_PROXY` never apply to HTTPS. Empty
+values are skipped; a selected invalid or unsupported URL fails with a static
+error. `no_proxy`/`NO_PROXY` exclusions apply. CONNECT keeps TLS verified against
+the real gateway host. API paths and headers are validated before sending.
+Response bodies are capped at 1 MiB while reading,
+including chunked and close-delimited bodies. DNS, TCP and TLS share one 10-second
+connect budget; each request also has one total deadline covering the body and
+any permitted retry.
+
+A custom resolver polls cancellation/deadlines every 50 ms while an OS lookup
+runs on a helper thread. It caches successful answers for 30 seconds, including
+before pooled requests, and retains at most one outstanding lookup per agent
+across cancelled requests. Cache TTL starts when the lookup starts. An abandoned
+failure cannot fail a later request, and answers older than one 10-second connect
+budget are discarded rather than cached. An OS lookup already running cannot
+be interrupted; its receiver is retained so repeated cancellations do not create
+more helpers.
+
+A custom TCP connector beneath the stock rustls/CONNECT connectors uses 50 ms
+socket read/write timeouts. It retries polling timeouts while checking the
+worker stop flag and absolute deadlines, preserving partial writes. Worker
+cancellation shuts down the socket and prevents reuse. Sign-in Cancel uses a
+separate pairing flag and can wait for the current RPC to finish.
+
+The pool expires idle connections after 15 seconds: a conservative margin below
+an assumed gateway keep-alive window of at least 30 seconds, not a live gateway
+measurement. A non-blocking socket peek discards EOF or unexpected readable data
+before reuse. A connection I/O failure on a reused socket may retry once on a
+fresh socket only while the POST is known incomplete. Socket write failures are
+recorded below rustls and checked above it after header transmission and before
+body transmission, even when rustls accepts plaintext and suppresses the flush
+error. A header flush failure therefore returns before body plaintext is offered
+and can trigger the one fresh retry. No retry is allowed once the final body
+write starts, including an ambiguous TLS flush failure, or after a complete
+send. Fresh-connection failures, timeouts and cancellations are not retried. Pooled connections consult the current request's token and deadline.
+Transport errors never include tokens, proxy credentials, URLs, or bodies. No
+dependency is forked and RPC HTTPS uses no async runtime. Assets and SSE still
+use curl.
+Authentication/signature compatibility remains unverified against an account.
+Do not add an async runtime, a browser process, JavaScript, or a database to draw
 the window. The sourced SSE path has cancellation, bounded delivery, reconnect
 backoff, replay suppression and session fencing. Live protocol compatibility and
 refresh behavior still need authorized account verification.

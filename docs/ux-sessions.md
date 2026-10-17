@@ -19,7 +19,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| T1 | Every RPC spawns a `curl` child, pipes the token on stdin, drains stdout on a second thread, and polls `try_wait` every 20 ms. No connection reuse; one TLS handshake per request. | `src/client.rs:154`, `:211` | One persistent blocking HTTP client (`reqwest::blocking` with rustls, already in the cargo cache) owned by the worker. Keep the host allowlist, size caps and no-redirect rules. |
 | T2 | Every image (avatar, sticker, preview, reaction asset, file) is its own `curl` child, fetched serially on the single worker thread between commands. Queue capped at 256, processed newest-first. | `src/client/desktop/assets.rs:211`, `app/src/account.rs:499` | Two to four blocking fetcher threads with a shared client; prioritise assets for the visible range; keep the worker free for Send and Messages. |
 | T3 | SSE stream is `curl` stdout split into lines by a reader thread and polled every 100 ms; headers detected by string match; stream death noticed only by the 30 s ping watchdog. | `src/client/desktop/sync.rs:370`, `:413` | Blocking response reader on the existing sync thread, `read_line` with the stop flag checked per line. |
 | T4 | Image failures discard the error (`Err(_)`), blacklist the key for 300 s, and the placeholder says "Refresh to retry" while Refresh re-publishes the cached failure without a network call. | `app/src/account.rs:499`, `:516`; `app/ui/message.slint:149` | Keep the failure class (timeout, HTTP status, unsupported host, rejected OID). Retry on explicit user action. Placeholder wording must match what Retry will actually do. |
@@ -94,6 +93,7 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Resolution |
 | --- | --- |
+| T1 | RPCs go through one pooled `ureq` 3 agent per `Api` (rustls, HTTP/1.1, no async runtime) with the curl path's safety properties, prompt cancellation including DNS, and a single pre-body retry on stale reused connections. Live account unverified. |
 | T7 | QR encoded in-process with `qrcodegen` (PNG for the app and `--qr-file`, black-on-white ANSI or plain text in the CLI); kitty output removed. Verified by independent zxing decode. |
 | T8 | Already correct at `05cd26d`: `app/src/links.rs` spawns `xdg-open` on a helper thread and waits on it. The audit row was stale. |
 | T10 | `line-auth` resolves defaults through the app's XDG `Locations` (moved to `src/locations.rs`), lazily, honouring the saved paths choice. |
