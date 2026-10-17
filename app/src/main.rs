@@ -15,6 +15,10 @@ struct Reading {
 }
 #[derive(Default)]
 struct View {
+    friends: Vec<FriendRow>,
+    friends_loaded: bool,
+    profile_id: String,
+    friend_search_y: Option<f32>,
     rows: Vec<ChatRow>,
     ids: Vec<String>,
     current: String,
@@ -34,6 +38,115 @@ struct View {
     pairing_cancel: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
 }
 impl View {
+    fn browse(&mut self, ui: &AppWindow, section: i32) {
+        ui.set_section(section);
+        ui.set_show_conversation(false);
+        if section == 1 && !self.friends_loaded && !ui.get_loading_friends() {
+            self.load_friends(ui);
+        }
+    }
+    fn load_friends(&self, ui: &AppWindow) {
+        if self.demo {
+            return;
+        }
+        ui.set_friends_error("".into());
+        let queued = self.request(ui, account::Command::Friends);
+        ui.set_loading_friends(queued);
+        if !queued {
+            ui.set_friends_error("Friends could not be loaded. Try Refresh shortly.".into());
+        }
+    }
+    fn filter_friends(&mut self, ui: &AppWindow) {
+        let query = ui.get_friend_query().to_lowercase();
+        let y = ui.get_friends_y();
+        if !query.is_empty() && self.friend_search_y.is_none() {
+            self.friend_search_y = Some(y);
+        }
+        let old = ui.get_friends();
+        let focused = old
+            .row_data(ui.get_friend_result() as usize)
+            .map(|row| row.id);
+        let height = ui.get_friend_row_height();
+        let first = (-y / height).floor().max(0.) as usize;
+        let anchor = old.row_data(first).map(|row| row.id);
+        let mut rows: Vec<_> = self
+            .friends
+            .iter()
+            .filter(|row| {
+                (if row.group {
+                    ui.get_groups_expanded()
+                } else {
+                    ui.get_friends_expanded()
+                }) && row.name.to_lowercase().contains(&query)
+            })
+            .cloned()
+            .collect();
+        rows.sort_by(|a, b| {
+            a.group
+                .cmp(&b.group)
+                .then_with(|| a.name.cmp(&b.name))
+                .then_with(|| a.id.cmp(&b.id))
+        });
+        let restored = anchor
+            .and_then(|id| rows.iter().position(|row| row.id == id))
+            .map(|index| -(index as f32 * height) + (y + first as f32 * height))
+            .unwrap_or(0.);
+        ui.set_friend_result(
+            focused
+                .and_then(|id| rows.iter().position(|row| row.id == id))
+                .map(|i| i as i32)
+                .unwrap_or(-1),
+        );
+        ui.set_friends(ModelRc::new(VecModel::from(rows)));
+        ui.set_friends_y(if query.is_empty() {
+            self.friend_search_y.take().unwrap_or(restored)
+        } else {
+            restored
+        });
+    }
+    fn open_profile(&mut self, ui: &AppWindow, id: &str) {
+        let Some(friend) = self.friends.iter().find(|friend| friend.id == id) else {
+            return;
+        };
+        self.profile_id = id.into();
+        ui.set_profile_id(id.into());
+        ui.set_profile_name(friend.name.clone());
+        ui.set_profile_status(friend.status.clone());
+        ui.set_profile_group(friend.group);
+        ui.set_profile_avatar(friend.avatar.clone());
+        ui.set_profile_available(true);
+        ui.invoke_show_profile();
+    }
+    fn start_friend_chat(&mut self, ui: &AppWindow) {
+        let Some(friend) = self
+            .friends
+            .iter()
+            .find(|friend| friend.id == self.profile_id)
+            .cloned()
+        else {
+            return;
+        };
+        let index = if let Some(index) = self.ids.iter().position(|id| id == friend.id.as_str()) {
+            index
+        } else {
+            let index = self.ids.len();
+            self.ids.push(friend.id.to_string());
+            self.rows.push(ChatRow {
+                index: index as i32,
+                title: friend.name.clone(),
+                initial: friend.name.chars().next().unwrap_or('·').to_string().into(),
+                avatar: friend.avatar,
+                avatar_key: friend.avatar_key,
+                ..Default::default()
+            });
+            self.filter(ui);
+            index
+        };
+        ui.set_profile_open(false);
+        self.select(ui, index);
+        ui.set_show_conversation(true);
+        ui.invoke_focus_composer();
+    }
     fn filter(&self, ui: &AppWindow) {
         let y = ui.get_list_y();
         let old = ui.get_chats();
@@ -179,13 +292,22 @@ impl View {
             .map(|r| (r.y, r.latest, r.editor_y))
             .unwrap_or((0., true, 0.));
         if self.demo && self.messages.is_empty() {
-            self.messages = demo::examples()[index].messages.clone();
+            self.messages = demo::examples()
+                .get(index)
+                .map(|chat| chat.messages.clone())
+                .unwrap_or_default();
         }
         self.render(ui);
         ui.invoke_show_history(y, latest);
         ui.set_editor_y(editor_y);
         if self.demo {
-            ui.set_chat_subtitle(demo::examples()[index].subtitle.into());
+            ui.set_chat_subtitle(
+                demo::examples()
+                    .get(index)
+                    .map(|chat| chat.subtitle)
+                    .unwrap_or("Synthetic conversation")
+                    .into(),
+            );
         } else {
             ui.set_chat_subtitle("Recent history · read receipts unavailable".into());
             self.load(ui, false);
@@ -314,6 +436,50 @@ impl View {
             return;
         }
         match event {
+            account::Update::Friends(friends) => {
+                let old = &self.friends;
+                self.friends = friends
+                    .into_iter()
+                    .map(|friend| {
+                        let avatar = old
+                            .iter()
+                            .find(|row| row.id == friend.id && row.avatar_key == friend.avatar_key)
+                            .map(|row| row.avatar.clone())
+                            .unwrap_or_default();
+                        FriendRow {
+                            id: friend.id.into(),
+                            name: friend.name.into(),
+                            status: friend.status.into(),
+                            group: friend.group,
+                            avatar_key: friend.avatar_key.into(),
+                            avatar,
+                        }
+                    })
+                    .collect();
+                self.friends_loaded = true;
+                ui.set_loading_friends(false);
+                ui.set_friends_error("".into());
+                ui.set_profile_available(
+                    self.friends
+                        .iter()
+                        .any(|friend| friend.id == self.profile_id),
+                );
+                if ui.get_profile_open()
+                    && let Some(friend) = self
+                        .friends
+                        .iter()
+                        .find(|friend| friend.id == self.profile_id)
+                {
+                    ui.set_profile_name(friend.name.clone());
+                    ui.set_profile_status(friend.status.clone());
+                    ui.set_profile_avatar(friend.avatar.clone());
+                }
+                self.filter_friends(ui);
+            }
+            account::Update::FriendsFailed => {
+                ui.set_loading_friends(false);
+                ui.set_friends_error("Could not refresh friends and groups. Loaded entries are kept. Use Refresh to retry.".into());
+            }
             account::Update::Original { request, pixels } => {
                 if request != self.viewer_request || !ui.get_viewer_open() {
                     return;
@@ -395,6 +561,20 @@ impl View {
                 ui.set_viewer_open(false);
                 ui.set_viewer_image(Default::default());
                 ui.set_settings_open(false);
+                ui.set_profile_open(false);
+                ui.set_friends(ModelRc::default());
+                ui.set_friend_query("".into());
+                ui.set_friends_y(0.);
+                ui.set_loading_friends(false);
+                ui.set_friends_error("".into());
+                ui.set_profile_id("".into());
+                ui.set_profile_name("".into());
+                ui.set_profile_status("".into());
+                ui.set_profile_avatar(Default::default());
+                self.friends.clear();
+                self.friends_loaded = false;
+                self.profile_id.clear();
+                self.friend_search_y = None;
                 self.viewer_request = 0;
                 ui.set_connected(false);
                 self.storage.take();
@@ -440,6 +620,9 @@ impl View {
                 ui.set_loading_chats(true);
                 ui.set_status("Loading conversations…".into());
                 self.send_availability(ui);
+                if ui.get_section() == 1 {
+                    self.load_friends(ui);
+                }
             }
             account::Update::Chats { chats, more } => {
                 // Canonical indices retain identity while the visible list is
@@ -634,6 +817,25 @@ impl View {
                     pixels.width,
                     pixels.height,
                 ));
+                for friend in &mut self.friends {
+                    if friend.avatar_key == key {
+                        friend.avatar = image.clone();
+                        if friend.id == self.profile_id {
+                            ui.set_profile_avatar(image.clone());
+                        }
+                    }
+                }
+                let friends = ui.get_friends();
+                if let Some(rows) = friends.as_any().downcast_ref::<VecModel<FriendRow>>() {
+                    for i in 0..rows.row_count() {
+                        if let Some(mut row) = rows.row_data(i)
+                            && row.avatar_key == key
+                        {
+                            row.avatar = image.clone();
+                            rows.set_row_data(i, row);
+                        }
+                    }
+                }
                 for row in &mut self.rows {
                     if row.avatar_key == key {
                         row.avatar = image.clone();
@@ -1036,6 +1238,7 @@ struct Options {
     demo: bool,
     demo_photos: bool,
     demo_groups: bool,
+    demo_friends: bool,
     snapshot: Option<String>,
     snapshot_size: (u32, u32),
     snapshot_text_size: i32,
@@ -1056,6 +1259,7 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
         demo: false,
         demo_photos: false,
         demo_groups: false,
+        demo_friends: false,
         snapshot: None,
         snapshot_size: (980, 720),
         snapshot_text_size: 15,
@@ -1072,6 +1276,10 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                 std::process::exit(0);
             }
             "--demo" => out.demo = true,
+            "--demo-friends" => {
+                out.demo = true;
+                out.demo_friends = true;
+            }
             "--demo-photos" => {
                 out.demo = true;
                 out.demo_photos = true;
@@ -1106,7 +1314,7 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
+                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups | --demo-friends] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
                 );
                 std::process::exit(0);
             }
@@ -1183,6 +1391,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 ..Default::default()
             });
         }
+        {
+            let mut view = state.borrow_mut();
+            view.friends = view
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(i, row)| FriendRow {
+                    id: i.to_string().into(),
+                    name: row.title.clone(),
+                    status: "こんにちは 🌿\nSynthetic profile".into(),
+                    group: i == 1,
+                    avatar: row.avatar.clone(),
+                    ..Default::default()
+                })
+                .collect();
+            view.friends.push(FriendRow {
+                id: "new-friend".into(),
+                name: "新しい友だち 🌸".into(),
+                status: "まだ会話のない友だち".into(),
+                ..Default::default()
+            });
+            view.friends_loaded = true;
+            view.filter_friends(&ui);
+        }
         state.borrow().filter(&ui);
         state.borrow_mut().select(&ui, 0);
         None
@@ -1239,6 +1471,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     ui.on_cancel_sign_in(move || {
         if let Some(ui) = weak.upgrade() {
             view.borrow_mut().cancel_sign_in(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let view = state.clone();
+    ui.on_browse(move |section| {
+        if let Some(ui) = weak.upgrade() {
+            view.borrow_mut().browse(&ui, section);
+        }
+    });
+    let weak = ui.as_weak();
+    let view = state.clone();
+    ui.on_refresh_friends(move || {
+        if let Some(ui) = weak.upgrade() {
+            view.borrow().load_friends(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let view = state.clone();
+    ui.on_filter_friends(move || {
+        if let Some(ui) = weak.upgrade() {
+            view.borrow_mut().filter_friends(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let view = state.clone();
+    ui.on_open_profile(move |id| {
+        if let Some(ui) = weak.upgrade() {
+            view.borrow_mut().open_profile(&ui, &id);
+        }
+    });
+    let weak = ui.as_weak();
+    let view = state.clone();
+    ui.on_start_friend_chat(move || {
+        if let Some(ui) = weak.upgrade() {
+            view.borrow_mut().start_friend_chat(&ui);
         }
     });
     let weak = ui.as_weak();
@@ -1371,11 +1638,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if options.demo_groups {
         demo::scenario(&state, &ui, 7);
     }
+    if options.demo_friends {
+        state.borrow_mut().browse(&ui, 1);
+    }
     state.borrow().send_availability(&ui);
     if let (Some(window), Some(path)) = (snapshot, options.snapshot) {
         ui.show()?;
         ui.set_text_size(options.snapshot_text_size);
-        ui.set_show_conversation(true);
+        ui.set_show_conversation(!options.demo_friends);
         snapshot::save(&window, &path, options.snapshot_size)?;
         ui.hide()?;
     } else {
@@ -1895,6 +2165,80 @@ mod tests {
         key("\n", false);
         assert_eq!(submissions.get(), 1);
         assert_eq!(ui.get_draft().len(), before_enter.len() + 1);
+        // Friend browsing and profile activation never submit or replace a draft.
+        view.update(
+            &ui,
+            account::Update::Friends(vec![
+                account::FriendView {
+                    id: view.current.clone(),
+                    name: "葵 🌸".into(),
+                    status: "こんにちは\n日本語".into(),
+                    group: false,
+                    avatar_key: "".into(),
+                },
+                account::FriendView {
+                    id: "new-friend".into(),
+                    name: "New friend".into(),
+                    status: "".into(),
+                    group: false,
+                    avatar_key: "".into(),
+                },
+                account::FriendView {
+                    id: "new-group".into(),
+                    name: "Group".into(),
+                    status: "".into(),
+                    group: true,
+                    avatar_key: "".into(),
+                },
+            ]),
+        );
+        let current = view.current.clone();
+        let draft = ui.get_draft();
+        let count = view.ids.len();
+        view.browse(&ui, 1);
+        assert_eq!(view.current, current);
+        assert_eq!(ui.get_draft(), draft);
+        assert_eq!(ui.get_friends().row_count(), 3);
+        ui.set_friend_query("葵".into());
+        view.filter_friends(&ui);
+        assert_eq!(ui.get_friends().row_count(), 1);
+        view.open_profile(&ui, &current);
+        assert!(ui.get_profile_open());
+        assert_eq!(ui.get_profile_status(), "こんにちは\n日本語");
+        ui.invoke_close_profile();
+        assert_eq!(view.current, current);
+        assert_eq!(ui.get_draft(), draft);
+        ui.set_friend_query("".into());
+        ui.set_groups_expanded(false);
+        view.filter_friends(&ui);
+        assert_eq!(ui.get_friends().row_count(), 2);
+        view.update(&ui, account::Update::FriendsFailed);
+        assert_eq!(ui.get_friends().row_count(), 2);
+        assert!(!ui.get_friends_error().is_empty());
+        view.open_profile(&ui, &current);
+        view.start_friend_chat(&ui);
+        assert_eq!(view.ids.len(), count, "existing friend chat duplicated");
+        view.open_profile(&ui, "new-friend");
+        view.start_friend_chat(&ui);
+        assert_eq!(view.current, "new-friend");
+        assert_eq!(view.ids.len(), count + 1);
+        assert!(ui.get_draft().is_empty());
+        assert_eq!(
+            view.saved.drafts.get(&current).map(String::as_str),
+            Some(draft.as_str())
+        );
+        view.open_profile(&ui, "new-group");
+        view.update(&ui, account::Update::Friends(vec![]));
+        assert!(!ui.get_profile_available());
+        view.start_friend_chat(&ui);
+        assert_eq!(
+            view.current, "new-friend",
+            "removed group remained actionable"
+        );
+        view.update(&ui, account::Update::SessionChanged);
+        assert!(view.friends.is_empty());
+        assert!(!ui.get_profile_open());
+        assert_eq!(ui.get_friend_query(), "");
         ui.hide().unwrap();
     }
 }

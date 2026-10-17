@@ -375,3 +375,44 @@ test ignored; formatting and Clippy with warnings denied passed. Headless
 `--demo-groups` snapshots at 980×720/15 px and 360×520/24 px confirm bounded
 sender avatars, compact grouped text, and metadata outside bubbles. Snapshots
 remain under `/tmp`; the final release has the debug server disabled.
+
+
+### Friends and profiles follow-up — 2026-10-16
+
+Friends now loads account contacts and joined groups on the account worker,
+independently of loaded conversation pages. Metadata requests use batches of
+100. The browsing pane has Chats, Friends, and Add friend destinations; the
+last explains the unavailable addition/recommendation functions. Separate friend
+and chat queries, category expansion, and scroll offsets survive section changes.
+Friend search discloses its loaded-name scope, supports Clear/Escape and
+Up/Down/Enter outside native preedit, and retains a focused result by identity.
+The list preserves its visible row anchor during refresh/category filtering;
+clearing search restores the earlier offset.
+
+Selecting a friend or joined group opens one identified profile surface with
+full name, status, avatar, Back/Escape, and an explicit Open chat action.
+The surface hides the underlying composer and blocks its send shortcut.
+Open chat reuses the conversation by identity or adds a local entry, preserves
+the prior draft, and never sends a message. Dismissal returns to the friend
+search/row. A removed profile becomes unavailable; account handoff clears
+friends, profile identity, images, queries, and errors. Loading and refresh
+failure remain local and preserve previously loaded entries.
+
+Offline controller tests cover section/draft retention, name filtering,
+category collapse, refresh failure retention, existing-chat deduplication,
+new-chat draft isolation, removed-profile availability, and account cleanup.
+The combined Wayland software-rendered MCP run with `--friends --scenarios
+--layout-photos --auth-recovery` passed at scale 1.5, including keyboard profile
+activation, Escape, retained search, category toggles, and returning to the
+previous draft after opening a new friend. A headless 360×520 preview at 24 px
+text was inspected for bounded navigation, controls, and rows. Captures remain
+under `/tmp`. Workspace tests: 18 passed, one existing WASM-dependent test
+ignored; formatting and Clippy with warnings denied passed.
+
+A1–A3, N1/N2, and Q1/Q4/Q5 have partial synthetic coverage, not complete
+acceptance. Real friend/group retrieval, physical pointer/scrollbar behavior,
+Fcitx composition, and all display scales remain unverified. No live account
+connection, pairing, send, contact mutation, membership mutation, or read
+acknowledgement was used. Group creation/invites/member management and friend
+addition/block/hide/delete are still unavailable pending their full protocol
+and UX flows. No acceptance boxes were checked for these partial checks.

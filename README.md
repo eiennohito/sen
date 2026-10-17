@@ -26,6 +26,17 @@ Do not remove it when clearing thumbnails. A different pairing secret uses a
 separate state directory; drafts are never migrated across accounts automatically.
 Storage errors remain visible and prevent submission until resolved.
 
+Friends loads your friend list and joined groups independently of conversation
+paging. Search loaded names, expand or collapse either category, and open a
+profile to inspect its full name and status. **Open chat** reuses an existing
+conversation or opens one locally without sending. Browsing and dismissing a
+profile retain the current conversation and draft. Refresh failures keep loaded
+entries with a local retry explanation. Adding friends, recommendations, group
+creation, membership changes, and profile editing remain unavailable.
+
+Preview this flow without accessing the account with `--demo-friends`.
+`tools/check-ui-mcp.py --friends` exercises it in a running `--demo` debug UI.
+
 History follows arrivals only at latest. Scrolling or selecting message text
 pauses following; Latest resumes it. Reading and editor scroll positions are
 kept per chat during the session, with eight bounded cached conversation views.

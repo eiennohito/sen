@@ -22,6 +22,7 @@ pub struct Paths {
 }
 pub enum Command {
     Reconnect,
+    Friends,
     Reauthenticate,
     Original {
         chat: String,
@@ -51,6 +52,13 @@ pub struct ChatView {
     pub timestamp: i64,
     pub avatar_key: String,
 }
+pub struct FriendView {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub group: bool,
+    pub avatar_key: String,
+}
 pub struct ReactionView {
     pub label: String,
     pub image_key: String,
@@ -69,6 +77,8 @@ pub struct MessageView {
     pub reactions: Vec<ReactionView>,
 }
 pub enum Update {
+    Friends(Vec<FriendView>),
+    FriendsFailed,
     Original {
         request: u64,
         pixels: Arc<Pixels>,
@@ -162,6 +172,13 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         pending = Some(Command::Chats { next: false });
                     }
 
+                    Command::Friends => match client.friends() {
+                        Ok(friends) => publish(Update::Friends(friends.into_iter().map(|friend| FriendView {
+                            id: friend.id, name: friend.name, status: friend.status, group: friend.group,
+                            avatar_key: asset_key(friend.avatar, &mut jobs),
+                        }).collect())),
+                        Err(_) => publish(Update::FriendsFailed),
+                    },
                     Command::Chats { next } => match client.chats(next) {
                         Ok(chats) => {
                             let views = chats

@@ -1,6 +1,7 @@
 import { Button, LineEdit, TextEdit, ScrollView, ListView, ComboBox } from "std-widgets.slint";
 
 export struct ChatRow { index: int, title: string, preview: string, initial: string, activity: string, time: string, avatar: image, avatar-key: string }
+export struct FriendRow { id: string, name: string, status: string, group: bool, avatar: image, avatar-key: string }
 export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
     id: string, sticker: bool, photo: bool, sort-key: string, body: string, time: string, outgoing: bool,
@@ -68,6 +69,27 @@ component Pane inherits Rectangle {
 }
 
 export component AppWindow inherits Window {
+    in-out property <int> section: 0;
+    in property <[FriendRow]> friends;
+    in-out property <int> friend-result: -1;
+    out property <length> friend-row-height: max(70px, root.text-size * 3px + 16px);
+    in-out property <string> friend-query;
+    in-out property <bool> groups-expanded: true;
+    in-out property <bool> friends-expanded: true;
+    in-out property <length> friends-y <=> friend-list.content-y;
+    in property <bool> loading-friends;
+    in property <string> friends-error;
+    in-out property <bool> profile-open;
+    in property <string> profile-name;
+    in property <string> profile-id;
+    in property <string> profile-status;
+    in property <bool> profile-group;
+    in property <image> profile-avatar;
+    in property <bool> profile-available;
+    callback browse(int); callback refresh-friends(); callback filter-friends();
+    callback open-profile(string); callback start-friend-chat();
+    public function show-profile() { root.profile-open = true; profile-close.focus(); }
+    public function close-profile() { root.profile-open = false; friend-search.focus(); }
     in-out property <bool> ime-active: false;
     public function focus-composer() { composer.focus(); }
     title: root.demo ? "LINE · Preview" : "LINE · " + root.account-name;
@@ -188,7 +210,7 @@ export component AppWindow inherits Window {
     Rectangle {
         y: auth-notice.height;
         width: 100%; height: root.height - auth-notice.height;
-        visible: !root.auth-open && !root.settings-open && !root.viewer-open;
+        visible: !root.auth-open && !root.settings-open && !root.viewer-open && !root.profile-open;
         browser := Rectangle {
             x: 0px; y: 0px;
             height: parent.height;
@@ -196,7 +218,80 @@ export component AppWindow inherits Window {
             width: !self.visible ? 0px : root.narrow ? root.width : 286px;
             horizontal-stretch: 0;
             background: #f0f3ee; clip: true;
+            HorizontalLayout {
+                x: 8px; y: 8px; width: parent.width - 16px; height: 38px; spacing: 4px;
+                Button { text: "Chats"; enabled: root.section != 0; clicked => { root.browse(0); } }
+                Button { text: "Friends"; enabled: root.section != 1; clicked => { root.browse(1); } }
+                Button { text: "Add friend"; enabled: root.section != 2; clicked => { root.browse(2); } }
+            }
+            Rectangle {
+                y: 52px; width: parent.width; height: parent.height - self.y; visible: root.section == 1;
+                VerticalLayout {
+                    padding: 14px; spacing: 8px;
+                    HorizontalLayout {
+                        Text { text: "Friends"; font-size: 23px; color: #167446; font-weight: 800; }
+                        Button { text: root.loading-friends ? "Loading…" : "Refresh"; enabled: !root.loading-friends && root.connected; clicked => { root.refresh-friends(); } }
+                    }
+                    HorizontalLayout {
+                        friend-search := LineEdit {
+                            text <=> root.friend-query; placeholder-text: "Search friends and groups";
+                            accessible-label: "Search loaded friends and groups";
+                            edited => { root.filter-friends(); }
+                            key-pressed(event) => {
+                                if root.ime-active { return reject; }
+                                if event.text == Key.DownArrow || event.text == Key.UpArrow {
+                                    root.friend-result = max(0, min(root.friends.length - 1, root.friend-result + (event.text == Key.DownArrow ? 1 : -1)));
+                                    friend-list.content-y = -max(0px, root.friend-result * root.friend-row-height - friend-list.height / 2);
+                                    return accept;
+                                }
+                                if event.text == Key.Return && root.friend-result >= 0 && root.friend-result < root.friends.length { root.open-profile(root.friends[root.friend-result].id); return accept; }
+                                if event.text == Key.Escape && root.friend-query != "" { root.friend-query = ""; root.filter-friends(); return accept; }
+                                reject
+                            }
+                        }
+                        Button { text: "Clear"; enabled: root.friend-query != ""; clicked => { root.friend-query = ""; root.filter-friends(); friend-search.focus(); } }
+                    }
+                    Text { text: "Searches loaded friend and group names. Select a profile, then Open chat."; font-size: 11px; wrap: word-wrap; color: #647367; }
+                    HorizontalLayout {
+                        Button { text: root.friends-expanded ? "Friends ▾" : "Friends ▸"; clicked => { root.friends-expanded = !root.friends-expanded; root.filter-friends(); } }
+                        Button { text: root.groups-expanded ? "Groups ▾" : "Groups ▸"; clicked => { root.groups-expanded = !root.groups-expanded; root.filter-friends(); } }
+                    }
+                    if root.friends-error != "": Text { text: root.friends-error; wrap: word-wrap; color: #943824; }
+                    if root.friends.length == 0: Text { text: root.loading-friends ? "Loading friends and groups…" : root.friend-query != "" ? "No loaded friends or groups match" : "No entries in expanded categories"; wrap: word-wrap; }
+                    friend-list := ListView {
+                        horizontal-scrollbar-policy: always-off;
+                        content-width: self.visible-width;
+                        for friend[i] in root.friends: Rectangle {
+                            height: root.friend-row-height; width: friend-list.visible-width;
+                            background: friend-search.has-focus && root.friend-result == i ? #dce9dc : #f0f3ee;
+                            border-width: friend-search.has-focus && root.friend-result == i ? 2px : 0px;
+                            border-color: #167446;
+                            Rectangle { x: 4px; y: 12px; width: 36px; height: 36px; border-radius: 18px; background: #d0dfcf;
+                                Text { width: 100%; height: 100%; text: friend.group ? "G" : "●"; horizontal-alignment: center; vertical-alignment: center; visible: friend.avatar.width == 0; }
+                                Image { width: 100%; height: 100%; source: friend.avatar; image-fit: contain; }
+                            }
+                            Button {
+                                x: 46px; y: 4px; width: max(0px, parent.width - 50px); height: parent.height - 8px;
+                                property <bool> restore-profile-focus: !root.profile-open && root.profile-id == friend.id;
+                                changed restore-profile-focus => { if self.restore-profile-focus { self.focus(); } }
+                                text: (friend.group ? "Group · " : "") + friend.name;
+                                accessible-label: "Open profile: " + friend.name;
+                                clicked => { root.friend-result = i; root.open-profile(friend.id); }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                y: 52px; width: parent.width; height: parent.height - self.y; visible: root.section == 2;
+                VerticalLayout { padding: 14px;
+                    Text { text: "Add friend"; font-size: 23px; color: #167446; font-weight: 800; }
+                    Text { text: "Adding friends and recommendations are unavailable in this version. Use LINE on your phone, then refresh Friends here."; wrap: word-wrap; }
+                    Rectangle { vertical-stretch: 1; }
+                }
+            }
             VerticalLayout {
+                y: 52px; height: parent.height - self.y; visible: root.section == 0;
                 padding: 14px; spacing: 10px;
                 HorizontalLayout {
                     height: 42px;
@@ -204,7 +299,6 @@ export component AppWindow inherits Window {
                     Text { text: "Chats"; color: #167446; font-size: 23px; font-weight: 800; vertical-alignment: center; }
                     if !root.demo: Button { text: root.loading-chats ? "Refreshing…" : "Refresh"; enabled: root.connected && !root.loading-chats; clicked => { root.refresh(); } }
                 }
-                Text { text: "Friends · Add friend: unavailable in this version"; color: #647367; font-size: 11px; wrap: word-wrap; }
                 HorizontalLayout {
                     search := LineEdit {
                         text <=> root.query;
@@ -406,7 +500,7 @@ export component AppWindow inherits Window {
                                             TouchArea { mouse-cursor: pointer; clicked => { parent.focus(); root.open-photo(message.image-key); } }
                                             key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.open-photo(message.image-key); return accept; } reject }
                                             Rectangle { visible: parent.has-focus; border-width: 2px; border-color: #167446; background: transparent; }
-                                            changed has-focus => { if self.has-focus && !root.viewer-open { root.following = false; } }
+                                            changed has-focus => { if self.has-focus && !root.viewer-open && !root.profile-open { root.following = false; } }
                                             property <bool> restore-photo: !root.viewer-open && root.viewer-key == message.image-key;
                                             changed restore-photo => { if self.restore-photo { self.focus(); root.viewer-key = ""; } }
                                         }
@@ -458,7 +552,7 @@ export component AppWindow inherits Window {
                         font-size: root.text-size * 1px;
                         edited => { root.draft-edited(); }
                         key-pressed(event) => {
-                            if event.text == Key.Return && event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta && !root.ime-active && !root.auth-open && !root.settings-open && !root.viewer-open {
+                            if event.text == Key.Return && event.modifiers.control && !event.modifiers.alt && !event.modifiers.shift && !event.modifiers.meta && !root.ime-active && !root.auth-open && !root.settings-open && !root.viewer-open && !root.profile-open {
                                 if root.can-send && !event.repeat { root.send(); }
                                 return accept;
                             }
@@ -512,6 +606,23 @@ export component AppWindow inherits Window {
         }
     }
 
+    Rectangle {
+        width: 100%; height: 100%; visible: root.profile-open; background: #fafbf9;
+        FocusScope {
+            key-pressed(event) => { if event.text == Key.Escape { root.close-profile(); return accept; } reject }
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                profile-close := Button { text: "Back to friends"; clicked => { root.close-profile(); } }
+                Image { source: root.profile-avatar; height: 80px; image-fit: contain; }
+                Text { text: root.profile-group ? "Group profile" : "Friend profile"; color: #647367; }
+                Text { text: root.profile-name; font-size: (root.text-size + 5) * 1px; wrap: word-wrap; }
+                ScrollView { Text { text: root.profile-status; wrap: word-wrap; } }
+                if !root.profile-available: Text { text: "This entry is no longer in your friend/group list. Refresh Friends to update it."; wrap: word-wrap; color: #943824; }
+                Button { text: "Open chat"; enabled: root.profile-available; clicked => { root.start-friend-chat(); } }
+                Text { text: "Opens recent history or an empty conversation. No message is sent."; wrap: word-wrap; color: #647367; }
+            }
+        }
+    }
     Rectangle {
         x: 0px; y: 0px; width: 100%; height: 100%; visible: root.settings-open; background: #fafbf9;
         FocusScope {

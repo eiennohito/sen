@@ -16,6 +16,16 @@ pub struct Chat {
     pub avatar: Option<Asset>,
 }
 
+/// Read-only friend/group identity, independent of the loaded conversation list.
+#[derive(Clone)]
+pub struct Friend {
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub group: bool,
+    pub avatar: Option<Asset>,
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Reaction {
     pub label: String,
@@ -210,6 +220,69 @@ impl Client {
         self.more_chats = more_chats;
         self.chat_cursor = chat_cursor;
         Ok(chats)
+    }
+
+    pub fn friends(&mut self) -> Result<Vec<Friend>> {
+        let ids = self.talk("getAllContactIds", json!([0]))?;
+        let ids = ids.as_array().context("missing contact IDs")?;
+        let mut friends = Vec::new();
+        // Bound each metadata request; publish only a complete snapshot.
+        for chunk in ids.chunks(100) {
+            let response = self.talk(
+                "getContactsV2",
+                json!([{
+                "targetUserMids": chunk, "neededContactCalendarEvents": []
+            }, 0]),
+            )?;
+            let contacts = response["contacts"]
+                .as_object()
+                .context("missing contacts")?;
+            for id in chunk {
+                let id = id.as_str().context("invalid contact ID")?;
+                let contact = contacts.get(id).context("missing contact")?;
+                let contact = &contact["contact"];
+                friends.push(Friend {
+                    id: id.into(),
+                    name: contact_name(contact).unwrap_or("Unnamed friend").into(),
+                    status: contact["statusMessage"].as_str().unwrap_or_default().into(),
+                    group: false,
+                    avatar: contact["picturePath"].as_str().and_then(Asset::avatar),
+                });
+                self.contacts.insert(id.into(), contact.clone());
+            }
+        }
+        let response = self.talk(
+            "getAllChatMids",
+            json!([{
+            "withMemberChats": true, "withInvitedChats": false
+        }, 0]),
+        )?;
+        let groups = response["memberChatMids"]
+            .as_array()
+            .context("missing group IDs")?;
+        for chunk in groups.chunks(100) {
+            let response = self.talk(
+                "getChats",
+                json!([{
+                "chatMids": chunk, "withMembers": false, "withInvitees": false
+            }, 0]),
+            )?;
+            let chats = response["chats"].as_array().context("missing groups")?;
+            for chat in chats {
+                friends.push(Friend {
+                    id: required(chat, "chatMid")?.into(),
+                    name: chat["chatName"]
+                        .as_str()
+                        .filter(|s| !s.is_empty())
+                        .unwrap_or("Unnamed group")
+                        .into(),
+                    status: String::new(),
+                    group: true,
+                    avatar: chat["picturePath"].as_str().and_then(Asset::avatar),
+                });
+            }
+        }
+        Ok(friends)
     }
 
     pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {

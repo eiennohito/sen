@@ -11,6 +11,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--port", type=int, default=9447)
 parser.add_argument("--screenshot", type=Path)
 parser.add_argument("--scenarios", action="store_true", help="Run synthetic arrival, media, clipboard, and uncertain-send scenarios")
+parser.add_argument("--friends", action="store_true", help="Exercise offline friend search, profiles, categories and opening chats")
 parser.add_argument("--auth-recovery", action="store_true", help="Exercise the offline failed-login recovery UI without pairing")
 parser.add_argument("--layout-photos", action="store_true", help="Check bounded avatars/media, settings placement, and photo viewer")
 args = parser.parse_args()
@@ -186,6 +187,36 @@ if args.layout_photos:
             assert any(meta["absolutePosition"]["x"] >= body["absolutePosition"]["x"] + body["size"]["width"] and abs(meta["absolutePosition"]["y"] - body["absolutePosition"]["y"]) <= body["size"]["height"] + 12 for body in message_bodies), "group time added a footer row"
     assert sorted(times) == ["2026/10/15 09:18", "2026/10/15 09:20", "2026/10/15 09:21", "2026/10/15 09:27", "2026/10/16 09:18"], "five-minute/sender/day grouping showed the wrong timestamps"
     print("PASS: sender avatars/names, five-minute grouping, day boundaries, and compact time/status beside bubbles")
+
+if args.friends:
+    call("set_element_value", elementHandle=composer, value=draft)
+    call("click_element", elementHandle=element("Friends", "Button")["handle"])
+    friend_search = element("Search loaded friends and groups", "TextInput")["handle"]
+    call("set_element_value", elementHandle=friend_search, value="葵")
+    friend_rows = [item for item in tree() if item.get("accessibleLabel", "").startswith("Open profile:")]
+    assert len(friend_rows) == 1, "friend name search failed"
+    call("click_element", elementHandle=friend_search)
+    call("dispatch_key_event", windowHandle=window, text="\uf701")  # Down arrow
+    call("dispatch_key_event", windowHandle=window, text="\n")
+    element("Friend profile", "Text")
+    assert not any(item.get("accessibleLabel") == "Message draft" for item in tree()), "profile exposed background composer"
+    call("dispatch_key_event", windowHandle=window, text="\x1b")
+    element("Search loaded friends and groups", "TextInput")
+    call("click_element", elementHandle=element("Chats", "Button")["handle"])
+    assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == draft, "friend browsing lost draft"
+    call("click_element", elementHandle=element("Friends", "Button")["handle"])
+    assert call("get_element_properties", elementHandle=friend_search).get("accessibleValue") == "葵", "section switch lost friend query"
+    call("set_element_value", elementHandle=friend_search, value="")
+    call("click_element", elementHandle=element("Groups ▾", "Button")["handle"])
+    assert not any(item.get("accessibleLabel", "").startswith("Open profile:") and "Weekend plans" in item.get("accessibleLabel", "") for item in tree()), "collapsed groups remained visible"
+    call("click_element", elementHandle=element("Groups ▸", "Button")["handle"])
+    call("click_element", elementHandle=element("Open profile: 新しい友だち 🌸", "Button")["handle"])
+    call("click_element", elementHandle=element("Open chat", "Button")["handle"])
+    assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "") == "", "new friend inherited another draft"
+    call("click_element", elementHandle=element("Chats", "Button")["handle"])
+    call("click_element", elementHandle=element("葵", "Button")["handle"])
+    assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == draft, "opening a new friend lost prior draft"
+    print("PASS: friend search keyboard activation, profile Escape, retained query/categories, new-chat isolation and prior draft")
 
 if args.auth_recovery:
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
