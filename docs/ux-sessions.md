@@ -42,8 +42,8 @@ debugger. Keep only request/response shapes (methods, paths, field names,
 | --- | --- | --- | --- |
 | P2 | Sticker sending does not exist: no picker, no send path. Listed as "later". For a LINE client it is a daily-use blocker. | `app/ui/composer.slint`, `app/src/composer.rs` | Trace one sticker send (STKID/STKPKGID/STKVER shape is in the HAR), implement the send, then a picker as a panel in wide and a sheet in narrow. Traced 2026-10-18: send is plain `sendMessage` contentType 7 with `STKPKGID/STKID/STKVER/STKTXT`, no E2EE; owned packages from `getOwnedProductSummaries`, package contents from `productInfo.meta`. |
 | P3 | Attachment sending, paste and drop of media do not exist (CMP8 media, CMP9, OS10). | composer | After P2. Traced 2026-10-18: `acquireEncryptedAccessToken`, `negotiateE2EEPublicKey`, `determineMediaMessageFlow`, encrypted upload to `obs…/r/talk/emi/<oid>` (image + preview) or `/emf/<oid>` (file) with `x-obs-params`, then `sendMessage` (contentType 1 or 14, `SID`/`OID`, key material in E2EE chunks). The encrypted file format and key-material JSON still need checking against the WASM. Chrome zips files with extensions outside the server's `function.file.extension.whitelist` after a "Send compressed" prompt; decide whether to mirror that. |
-| P5 | Group membership changes are not possible: no pending invitations to accept or reject, no invite, remove, leave, or group name/image edit; membership freshness follows chat refreshes only (no local trace of membership operations, roles or join times). Minor from P5a: the `members-offline` snapshot scene at 980×720 renders wrong (no strip, stray Retry, sheet at y≈198; live is correct), and the conversation header above the strip shows an empty band behind the members sheet. | `src/client/desktop.rs` (`members`), `docs/chromium-ui-map.md:235–270`, `app/src/main.rs` snapshot scenes | Invitations, then invite/remove/leave/rename, each needing a trace and confirmation design; mutating calls cannot be verified without the device slot. Fix the snapshot scene to match live. Traced 2026-10-18: `updateChat` (full chat object; operation 121), `deleteSelfFromChat` (127, 41); invite/remove/accept/reject named in `main.js`, shapes not captured. |
-| P6 | Profile actions have no protocol path (U1, U4): 1:1 chat creation with a non-friend (`createChat` appears in Chrome `main.js`), Add friend (`findAndAddContactsByMid`/`addFriendByMid`), Block/Unblock (`blockContact`/`unblockContact`), favourite/rename (`updateContactSetting`), Mute chat, cover image field, shared photos/links/files ("Show all images", "View all URLs"). Names from the installed Chrome source; request shapes unknown. | `docs/chromium-ui-map.md:72-73,219,233` | Add to the live Chrome capture list; mutating calls verified only with the device slot. Traced 2026-10-18: there is no non-friend chat in LINE (profile offers Report, Block, Add friend + fraud notice from `getTargetProfileNotice`); `addFriendByMid`, rename via `updateContactSetting(…, 2, name)`, cover via `timeline/getCover` + `obs…/r/myhome/c/…`; Block/Unblock not captured. |
+| P5 | Phase 6 implements group info, members/invitees, mute via full-object `updateChat` and confirmed leave via `deleteSelfFromChat`; operations 121/122, 127/128 and 41 queue chat refreshes. **live unverified**. | `detail.slint`, engine, Backend, migration 002 | Invite, accept/reject invitations and remove member remain blocked: untraced. Group editing remains out of scope. |
+| P6 | Phase 6 implements relation-aware profiles, Rename (`updateContactSetting`), Add friend (`addFriendByMid`), fraud notice and Notifications; contact operations 4/49 queue contact refreshes. **live unverified**. | `detail.slint`, engine, Backend | Block, Report and Unblock remain untraced. Favourite is read-only; optional cover skipped (new channel auth); shared media remains blocked pending traces. |
 
 ## S — Shell and layout
 
@@ -51,30 +51,9 @@ S23 and S24 are resolved below.
 
 ## U — Profiles, members and groups
 
-Recorded 2026-10-18. The user's verdict: the profile surfaces look bad and have
-no flows (e.g. no way to message a group member). Audit screenshots (local,
-not in Git): `/tmp/claude-1000/prof/`. The user's verdict on the profile page
-specifically: it looks bad; it is the initial PoC design and was never
-designed. Replace it, do not polish it: no incremental fixes to
-`layers.slint:110-125` count as progress on U.
-
-ux-model.md only specifies where profiles sit (panel/sheet placement,
-§85–116), never what they contain or how they look, which is how the PoC
-design survived. U0 comes first.
-
-| ID | Problem | Where | Fix |
-| --- | --- | --- | --- |
-| U0 | No design exists for profile, member and group surfaces: content, hierarchy, sizes, actions and states are unspecified. | `docs/ux-model.md` §85–116 | Write the design into ux-model before any code: reference the real LINE client (screenshots of its profile, group info and member list, taken during the live Chrome capture, kept locally), list content per surface (own, friend, non-friend member, unknown member, group), action row per relation, empty/unknown/loading states, wide and narrow mock-ups. Reference screenshots taken 2026-10-18 (friend, non-friend, group info, invite picker): `artifacts/captures/2026-10-18T07-17-15-989Z/*popup*.png`, summarised in [protocol-traces.md](protocol-traces.md#reference-screenshots-u0). The user reviews it before U1–U6 are implemented. |
-| U1 | Dead ends: a member's profile has no action unless they are already a friend or already have a chat (`app/src/members.rs:82-85`, `app/ui/layers.slint:122`); no Add friend, no message, no More. Every profile's only possible action is Open chat. | as cited | Per relation, as LINE does (reference screenshots, P6 trace): friend — Chat, favourite, rename; non-friend — Add friend, Block, Report, fraud notice, no chat; More for Copy name. |
-| U2 | Missing entry points: 1:1 header title is plain text (`app/ui/conversation.slint:55`); sender avatars and names in a group are inert (`app/ui/message.slint:66-83`); no own profile (Settings shows only the account name, `layers.slint:216`) though `getProfile` is already fetched. | as cited | Header title, sender avatar/name and member rows all open the same card; own profile (read-only) from Settings or the rail. |
-| U3 | Layout defects, seen in screenshots: hidden Back and avatar still reserve space (~44 px band, ~80 px hole; `layers.slint:114,116`); the unknown-member fallback avatar is a full-width blue bar with "U" (`:118`); the status message floats mid-panel inside a stretching ScrollView (`:120`); caption "Friend/Member profile" sits between avatar and name (`:117`); Close/Back are full-width text buttons; Open chat is a pale button pinned to the window bottom; avatars pixelated at 80 px; narrow sheets mostly empty; emoji in names/status dropped. | `app/ui/layers.slint:110-125` | Rebuild from the U0 design; the audit's starting proposal, to be checked against the LINE reference: cover band, centred 96 px circular avatar (opens in the viewer), name, "name set by friend" when renamed, status message, icon action row; absent parts collapse; header with back arrow and × icon. Render names/status through the rich-text path so emoji appear. |
-| U4 | Groups have no info surface: Members is reached only through the header title; the "Group profile" from Friends shows name and status only, no member count or path to members; a group profile can open beside an unrelated conversation. | `app/ui/members.slint`, `app/ui/layers.slint`, `app/src/browser.rs` | Group info panel: photo, name, member count, Members row (drill-in), then Photos/Links/Files and Mute (P6), and a danger-styled Leave with confirmation (P5). Header icons for members and More. Opening a group's info from Friends opens that group's chat with it. |
-| U5 | Member list rows show only a name: no status line, no Friend marker, no row action. | `app/ui/members.slint` | Avatar, name, status line, Friend badge; hover/focus Chat action. |
-| U6 | Profile, members and group profile share one `profile-open` flag, a panel at ≥1060 px and a sheet below, with focus special-casing across `app/ui/app.slint:212-262`, `app/ui/state.slint:33-35`, `app/ui/members.slint:15-24`. | as cited | One right-panel navigation stack (group info → members → member profile), one Back/Escape rule, one focus-restoration path; same stack as a sheet in narrow layouts. Update ux-model §8.2 Tab cycles. |
-
-Buildable now from existing data: U2, U3, U5, U6, and U1/U4 without the traced
-actions. Needs P6 first: messaging a non-friend, Add friend, Block, Mute,
-shared media.
+U0–U6 are resolved in Phase 6 under the user-approved [§3.4 design](ux-model.md#34-profile-member-and-group-surfaces-u0-approved).
+The PoC block was replaced with the shared detail stack; see the Resolved rows.
+Remaining protocol work stays in P5/P6.
 
 ## M — Messages
 
@@ -91,12 +70,19 @@ C6 and C7 are resolved below.
 | ID | Problem | Fix |
 | --- | --- | --- |
 | V5 | No physical verification at all (Fcitx, scrollbar drag, 100/150/200 % scale, dark theme, notifications, tray, single-instance raise) and no account verification. | A person at the desktop, then assign the device slot. |
-| V6 | Acceptance rows reconciled on 2026-10-18 (core model phase 3): resolved defects point to their resolution; remaining defects are `part` with their IDs. | Keep Impl separate from verification; physical and account checks remain pending (V5). |
+| V6 | Acceptance rows reconciled on 2026-10-18 (core model phase 3): resolved defects point to their resolution; remaining defects are `part` with their IDs. | Keep Impl separate from verification; physical and account checks remain pending (V5). The separate composer checker still assumes pre-6a Sending/Not sent image labels and an Edit button; its recovery section needs updating independently of the passing Phase 6 primary groups. |
 
 ## Resolved
 
 | ID | Resolution |
 | --- | --- |
+| U0 | Phase 6: user-approved §3.4 is the normative design, including relations, stack, focus, responsive placement and traced action states. |
+| U1 | Phase 6: relation-aware Chat/Rename/Add friend, read-only Favourite, fraud notice, More → Copy name; own and unknown profiles are read-only. Writes use engine intents and Backend. **live unverified**; Block and Report remain untraced (P6). |
+| U2 | Phase 6: header avatar/title, group sender avatar/name, member and Friends rows, Settings account and rail account open the shared detail stack; group Friends rows select that chat. |
+| U3 | Phase 6: PoC block replaced by detail.slint: accent cover tint, circular 96 px avatar/viewer, rich name/status, original name, compact icon actions and header. Optional cover fetch skipped because it needs channel auth. |
+| U4 | Phase 6: group info → Members, Notifications switch and confirmed Leave; full getChats wire object is stored for updateChat. Rooms omit writes. Left chats remain read-only in the list. **live unverified**. |
+| U5 | Phase 6: searchable avatar/name/status rows, Friend marker, self first, friend Chat on hover/focus; invitees form Invited (N), without profile actions. |
+| U6 | Phase 6: controller-owned DetailPage stack (Profile, GroupInfo, Members), one pop/close rule, one opener-focus restoration adapter; same stack at 1060/740 breakpoints. §8.2 updated. |
 | T5 | Phase 5: traced 139 replaces/removes the own actor entry through `set_reactions`; 140 uses an explicit actor MID when present, otherwise queues a quiet Recent refresh. Raw actor entries persist alongside display grouping; no notification, unread increment or view jump. FakeBackend raw injection and core-flow regression cover replacement, removal and actorless refresh. **live unverified** (140 shape remains inferred). |
 | P1 | Phase 5: OA images without SID/OID use PREVIEW_URL for thumbnails and DOWNLOAD_URL for originals, restricted to exactly `https://manager.line-scdn.net/`, unencrypted and without LINE auth headers. Existing asset URL tests cover host rejection and local transport headers; demo Protocol fixtures exercises thumbnail/original through FakeBackend. Generic image 404 wording replaces the OA sender special case. **live unverified**. |
 | P7 | Phase 5: own confirmed, non-withdrawn messages offer Unsend in their context menu. A modal asks “Unsend message?” / “It will be removed for everyone.” with Unsend and Cancel; Escape cancels. The worker calls traced `unsendMessage [reqSeq, serverId]`, withdraws only on success, and ignores the later 64 echo. Failures keep the row with one transient “Couldn't unsend.” beside it. Withdrawn rows read “Message unsent”. FakeBackend, core flows and the layers MCP group cover success/failure and the dialog. **live unverified**. |

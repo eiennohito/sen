@@ -1,0 +1,162 @@
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { IconButton } from "icon-button.slint";
+import { Avatar } from "avatar.slint";
+import { Button } from "button.slint";
+import { RichFlow } from "rich-flow.slint";
+import { Members } from "members.slint";
+import { ScrollView } from "std-widgets.slint";
+
+component NameField inherits Rectangle {
+    in-out property <string> text;
+    out property <bool> has-focus: input.has-focus;
+    public function focus-field() { input.focus(); }
+    height: 36px; border-radius: 8px; background: Tokens.surface-2;
+    input := TextInput { x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; text <=> root.text; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name"; }
+    Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; border-radius: 12px; background: transparent; border-width: root.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+}
+component DetailRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger;
+    in property <bool> enabled: true;
+    in property <bool> toggle;
+    in property <bool> checked;
+    out property <bool> has-focus: focus.has-focus;
+    callback activated();
+    public function focus-row() { focus.focus(); }
+    height: 52px; border-radius: 8px;
+    background: touch.has-hover ? Tokens.surface-hover : transparent;
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled; accessible-checked: root.checked; accessible-value: root.toggle ? (root.checked ? "On" : "Off") : ""; accessible-description: root.has-focus ? "Focused" : "";
+    accessible-action-default => { if root.enabled { root.activated(); } }
+    Text { x: 12px; width: parent.width - 72px; height: parent.height; text: root.label; color: root.danger ? Tokens.danger : Tokens.text; vertical-alignment: center; }
+    if !root.toggle && !root.danger: Image { x: parent.width - 28px; y: 16px; width: 20px; height: 20px; source: @image-url("../assets/icons/next.svg"); colorize: Tokens.secondary; }
+    if root.toggle: Rectangle { x: parent.width - 52px; y: 14px; width: 40px; height: 24px; border-radius: 12px; background: root.checked ? Tokens.accent : Tokens.surface-2;
+        Rectangle { x: root.checked ? 18px : 2px; y: 2px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.bg; }
+    }
+    focus := FocusScope {
+        enabled: root.enabled;
+        accessible-role: none;
+        key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.activated(); return accept; } reject }
+        Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: 8px; background: transparent; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
+}
+component ProfileActionButton inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> enabled: true;
+    out property <bool> has-focus: button.has-focus;
+    callback activated();
+    public function focus-button() { button.focus-button(); }
+    width: 72px; height: 72px;
+    button := IconButton { x: (parent.width - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: root.label; icon: root.icon; enabled: root.enabled; focus-description: "Focused"; activated => { root.activated(); } }
+    Text { y: 48px; width: parent.width; text: root.label; horizontal-alignment: center; font-size: Tokens.small; color: Tokens.text; }
+}
+export component Detail inherits FocusScope {
+    property <length> name-width: 288px;
+    focus-on-tab-navigation: false;
+    public function focus-first() { if State.detail-depth > 1 { back.focus-button(); } else { root.focus-open(); } }
+    public function focus-open() { if State.detail-page == 0 { more.focus-button(); } else { close.focus-button(); } }
+    public function focus-member-list() { members.focus-list(); }
+    public function focus-last() {
+        if State.detail-page == 2 { members.focus-last(); }
+        else if State.detail-page == 1 { if !State.group-room && !State.group-left { leave.focus-row(); } else { member-row.focus-row(); } }
+        else if State.profile-friend { rename.focus-button(); }
+        else if State.profile-addable { add.focus-button(); }
+        else if State.profile-available { chat.focus-button(); }
+        else { avatar-focus.focus(); }
+    }
+    function open-dialog(kind: string) { State.detail-dialog = kind; rename-value.text = State.profile-name; if kind == "rename" { rename-value.focus-field(); } else { cancel.focus(); } }
+    capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
+    key-pressed(event) => {
+        if State.ime-active { return reject; }
+        if event.text == Key.Escape { State.pop-detail(false); return accept; }
+        if State.browser-key(event) == accept { return accept; }
+        if event.text == Key.Tab {
+            if event.modifiers.shift && (State.detail-depth > 1 ? back.has-focus : State.detail-page == 0 ? more.has-focus : close.has-focus) { State.focus-before-layer(); return accept; }
+            if !event.modifiers.shift {
+                if (State.detail-page == 0 && ((State.profile-friend && rename.has-focus) || (State.profile-addable && add.has-focus) || (!State.profile-friend && !State.profile-addable && State.profile-available && chat.has-focus) || (!State.profile-friend && !State.profile-addable && !State.profile-available && avatar-focus.has-focus))) || (State.detail-page == 1 && ((!State.group-room && !State.group-left && leave.has-focus) || ((State.group-room || State.group-left) && member-row.has-focus))) { State.focus-after-layer(); return accept; }
+            }
+        }
+        reject
+    }
+    Rectangle {
+        HorizontalLayout { y: 0px; width: parent.width; height: 56px; padding: 12px; spacing: 8px;
+            back := IconButton { visible: State.detail-depth > 1; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Back"; icon: @image-url("../assets/icons/back.svg"); focus-description: "Focused"; activated => { State.pop-detail(false); } }
+            Text { text: State.detail-page == 0 ? "Profile" : State.detail-page == 1 ? "Group info" : "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : ""); font-size: Tokens.heading; font-weight: 600; vertical-alignment: center; }
+            more := IconButton { visible: State.detail-page == 0; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Profile more"; icon: @image-url("../assets/icons/more.svg"); focus-description: "Focused"; activated => { menu.show(); } }
+            close := IconButton { label: "Close details"; icon: @image-url("../assets/icons/close.svg"); focus-description: "Focused"; activated => { State.pop-detail(true); } }
+        }
+        if State.detail-page == 0: Rectangle { y: 56px; width: parent.width; height: 96px; background: Tokens.accent.with-alpha(0.25); }
+        ScrollView { y: State.detail-page == 0 ? 88px : 56px; width: parent.width; visible: State.detail-page != 2; height: self.visible ? parent.height - self.y : 0px; horizontal-scrollbar-policy: always-off; content-width: self.width;
+            VerticalLayout { padding: 16px; spacing: 12px; alignment: start;
+                HorizontalLayout { alignment: center;
+                    Rectangle { width: 96px; height: 96px;
+                        Avatar { width: 96px; height: 96px; identity: State.profile-id; initial: State.profile-initial; picture: State.profile-avatar; }
+                        avatar-focus := FocusScope { accessible-role: button; accessible-label: "Open profile photo"; accessible-description: self.has-focus ? "Focused" : "";
+                            accessible-action-default => { State.profile-photo(); }
+                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.profile-photo(); return accept; } reject }
+                            Rectangle { background: transparent; border-radius: 48px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+                        }
+                        TouchArea { clicked => { avatar-focus.focus(); State.profile-photo(); } }
+                    }
+                }
+                HorizontalLayout { alignment: center; spacing: 8px;
+                    RichFlow { width: min(root.name-width, root.width - 32px - (State.profile-favourite ? 28px : 0px)); runs: State.profile-name-runs; text-size: Tokens.heading; max-lines: 2; elide-overflow: true; accessible-role: text; accessible-label: State.profile-name; natural-width(value) => { root.name-width = max(24px,value * 1px); } }
+                    if State.profile-favourite: Image { height: 20px; width: 20px; source: @image-url("../assets/icons/star.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Favourite"; }
+                }
+                if State.profile-original != "": Text { text: State.profile-original; color: Tokens.secondary; wrap: word-wrap; horizontal-alignment: center; }
+                if State.detail-page == 0 && State.profile-status != "": RichFlow { runs: State.profile-status-runs; centered: true; text-color: Tokens.secondary; max-lines: 4; accessible-role: text; accessible-label: State.profile-status; }
+                if State.detail-page == 0 && State.profile-notice != "": Text { text: State.profile-notice; color: Tokens.secondary; wrap: word-wrap; }
+                HorizontalLayout { visible: State.detail-page == 0; height: self.visible && (State.profile-available || State.profile-friend || State.profile-addable) ? 72px : 0px; alignment: center; spacing: 8px;
+                    chat := ProfileActionButton { visible: State.profile-available; enabled: self.visible; width: self.visible ? 72px : 0px; label: "Chat"; icon: @image-url("../assets/icons/chats.svg"); activated => { State.start-friend-chat(); } }
+                    rename := ProfileActionButton { visible: State.profile-friend; enabled: self.visible && !State.detail-busy; width: self.visible ? 72px : 0px; label: State.detail-running == "rename" ? "Renaming…" : "Rename"; icon: @image-url("../assets/icons/rename.svg"); activated => { root.open-dialog("rename"); } }
+                    add := ProfileActionButton { visible: State.profile-addable; enabled: self.visible && !State.detail-busy; width: self.visible ? 72px : 0px; label: State.detail-running == "add" ? "Adding…" : "Add friend"; icon: @image-url("../assets/icons/add-friend.svg"); activated => { State.detail-action("add", ""); } }
+                }
+                if State.detail-page == 1: Text { text: State.group-count >= 0 ? State.group-count + " members" : ""; color: Tokens.secondary; horizontal-alignment: center; }
+                member-row := DetailRow { visible: State.detail-page == 1; height: self.visible ? 52px : 0px; label: "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : ""); activated => { State.open-members(); } }
+                mute := DetailRow { accessible-role: checkbox; visible: State.detail-page == 1 && !State.group-room && !State.group-left; height: self.visible ? 52px : 0px; enabled: State.group-writable && !State.detail-busy; label: State.detail-running == "mute" ? "Updating…" : "Notifications"; toggle: true; checked: !State.group-muted; activated => { State.detail-action("mute", ""); } }
+                leave := DetailRow { visible: State.detail-page == 1 && !State.group-room && !State.group-left; height: self.visible ? 52px : 0px; enabled: !State.detail-busy; label: State.detail-running == "leave" ? "Leaving…" : "Leave group"; danger: true; activated => { root.open-dialog("leave"); } }
+                if State.detail-error != "": Text { text: State.detail-error; color: Tokens.danger; wrap: word-wrap; }
+            }
+        }
+        members := Members { y: 56px; width: parent.width; visible: State.detail-page == 2; height: self.visible ? parent.height - 56px : 0px; }
+    }
+    menu := PopupWindow { x: max(0px, root.width - 176px); y: 48px; width: 168px; height: 40px;
+        Rectangle { background: Tokens.bg; border-width: 1px; border-color: Tokens.divider; border-radius: 8px;
+            Button { x: 4px; y: 4px; text: "Copy name"; text-button: true; clicked => { copy.text = State.profile-name; copy.select-all(); copy.copy(); menu.close(); more.focus-button(); } }
+            copy := TextInput { visible: false; }
+        }
+    }
+    Rectangle { visible: State.detail-dialog != ""; x: -root.absolute-position.x; y: -root.absolute-position.y; width: State.window-width; height: State.window-height; background: Tokens.scrim; TouchArea {}
+        Rectangle { width: min(400px, parent.width - 32px); height: dialog-content.preferred-height; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: Tokens.divider;
+            FocusScope {
+                key-pressed(event) => { if event.text == Key.Escape { State.detail-dialog = ""; root.focus-last(); return accept; } if event.text == Key.Tab {
+                    if event.modifiers.shift {
+                        if dialog-close.has-focus { confirm.focus(); }
+                        else if confirm.has-focus { cancel.focus(); }
+                        else if cancel.has-focus && State.detail-dialog == "rename" { rename-value.focus-field(); }
+                        else { dialog-close.focus-button(); }
+                    } else {
+                        if confirm.has-focus { dialog-close.focus-button(); }
+                        else if dialog-close.has-focus && State.detail-dialog == "rename" { rename-value.focus-field(); }
+                        else if cancel.has-focus { confirm.focus(); }
+                        else { cancel.focus(); }
+                    } return accept;
+                } reject }
+                dialog-content := VerticalLayout { padding: 24px; spacing: 16px;
+                    HorizontalLayout { Text { text: State.detail-dialog == "rename" ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
+                        dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.detail-dialog = ""; root.focus-last(); } }
+                    }
+                    rename-value := NameField { visible: State.detail-dialog == "rename"; height: self.visible ? 36px : 0px; }
+                    if State.detail-dialog == "leave": Text { text: "You will no longer receive messages in this group."; wrap: word-wrap; }
+                    HorizontalLayout { alignment: end; spacing: 8px;
+                        cancel := Button { text: "Cancel"; clicked => { State.detail-dialog = ""; root.focus-last(); } }
+                        confirm := Button { text: State.detail-dialog == "rename" ? "Save" : "Leave"; primary: true; danger: State.detail-dialog == "leave"; clicked => { let kind = State.detail-dialog; State.detail-dialog = ""; State.detail-action(kind, rename-value.text); root.focus-first(); } }
+                    }
+                }
+            }
+        }
+    }
+}

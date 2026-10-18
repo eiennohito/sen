@@ -68,7 +68,7 @@ export component Message inherits VerticalLayout {
                         if root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
                         if !root.message.outgoing && root.message.sender-name != "": VerticalLayout {
                             width: 32px; spacing: 0px;
-                            Avatar { width: 32px; height: 32px; visible: root.message.group-start; identity: root.message.sender-id; initial: root.message.sender-initial; picture: root.message.sender-avatar; label: root.message.sender-name + " avatar"; }
+                            Avatar { width: 32px; height: 32px; visible: root.message.group-start; identity: root.message.sender-id; initial: root.message.sender-initial; picture: root.message.sender-avatar; label: root.message.sender-name + " avatar"; TouchArea { accessible-role: button; accessible-label: "Profile: " + root.message.sender-name; accessible-action-default => { State.open-member(root.message.sender-id); } clicked => { State.open-member(root.message.sender-id); } } }
                             Rectangle { vertical-stretch: 1; }
                         }
                         message-column := VerticalLayout {
@@ -80,6 +80,7 @@ export component Message inherits VerticalLayout {
                             if root.message.group-start && !root.message.outgoing && root.message.sender-name != "": Text {
                                 text: root.message.sender-name; accessible-label: "Sender: " + root.message.sender-name;
                                 color: Tokens.secondary; font-size: Tokens.small; overflow: elide;
+                                TouchArea { accessible-role: button; accessible-label: "Sender profile: " + root.message.sender-name; accessible-action-default => { State.open-member(root.message.sender-id); } clicked => { State.open-member(root.message.sender-id); } }
                             }
                             message-bubble := ContextMenuArea {
                                 Menu {

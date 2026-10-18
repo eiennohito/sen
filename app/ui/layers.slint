@@ -7,7 +7,7 @@ import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { FeedbackRect } from "connection-notice.slint";
 import { Pane } from "scrollpane.slint";
-import { Members } from "members.slint";
+import { Detail } from "detail.slint";
 import { IconButton } from "icon-button.slint";
 
 component SettingsSections inherits FocusScope {
@@ -98,32 +98,11 @@ export component Layers inherits Rectangle {
 
     profile := Rectangle {
         x: State.profile-sheet ? (State.narrow ? 0px : State.rail-width + State.browser-width) : parent.width - State.panel-width;
-        y: State.members-open && State.profile-sheet && State.connection-feedback-visible ? State.connection-area-y + State.connection-notice-height : 0px; width: State.profile-sheet ? parent.width - self.x : State.panel-width; height: parent.height - self.y;
-        visible: State.profile-open && !State.auth-open && !State.viewer-open; background: Tokens.background;
+        y: State.profile-sheet && State.connection-feedback-visible ? State.connection-area-y + State.connection-notice-height : 0px; width: State.profile-sheet ? parent.width - self.x : State.panel-width; height: parent.height - self.y;
+        visible: State.detail-open && !State.auth-open && !State.viewer-open; background: Tokens.background;
         TouchArea { scroll-event(event) => { accept } }
         border-width: 1px; border-color: Tokens.border;
-        members := Members { visible: State.members-open && !State.member-profile; }
-        FocusScope {
-            visible: !State.members-open || State.member-profile;
-            capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
-            key-pressed(event) => { if State.browser-key(event) == accept { return accept; } if event.text == Key.Escape { if State.members-open { root.back-to-members(); } else { State.close-profile(); } return accept; }
-                if event.text == Key.Tab {
-                    if event.modifiers.shift && (State.members-open ? profile-back.has-focus : profile-close.has-focus) { State.focus-before-layer(); return accept; }
-                    if !event.modifiers.shift && (State.profile-available ? profile-chat.has-focus : profile-close.has-focus) { State.focus-after-layer(); return accept; }
-                } reject }
-            VerticalLayout {
-                padding: 20px; spacing: 12px;
-                profile-back := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; visible: State.members-open; enabled: self.visible; text: "Back to members"; clicked => { root.back-to-members(); } }
-                profile-close := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Close profile"; clicked => { State.close-profile(); } }
-                Image { source: State.profile-avatar; visible: !State.members-open || State.profile-avatar.width > 0; height: 80px; image-fit: contain; }
-                Text { text: State.profile-group ? "Group profile" : State.members-open ? "Member profile" : "Friend profile"; color: Tokens.secondary; }
-                if State.members-open && State.profile-avatar.width == 0: Rectangle { height: 80px; background: Tokens.selection; border-radius: 12px; Text { text: State.profile-initial; color: Tokens.selection-foreground; font-size: Tokens.heading; horizontal-alignment: center; vertical-alignment: center; } }
-                Text { text: State.profile-name; font-size: Tokens.heading; wrap: word-wrap; }
-                ScrollView { Text { text: State.profile-status; wrap: word-wrap; } }
-                if !State.profile-available && !State.members-open && State.profile-id != "self": Text { text: "This person or group is no longer in your list."; wrap: word-wrap; color: Tokens.danger; }
-                profile-chat := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; visible: !State.members-open || State.profile-available; text: "Open chat"; enabled: State.profile-available; clicked => { State.start-friend-chat(); } }
-            }
-        }
+        detail := Detail {}
     }
     // The overlay intercepts pointer input while the underlying shell stays visible.
     Rectangle {
@@ -214,7 +193,7 @@ export component Layers inherits Rectangle {
                             if root.settings-section == 4: VerticalLayout {
                                 spacing: 12px;
                                 Text { text: "LINE"; font-size: Tokens.heading; }
-                                Text { text: State.account-name; wrap: word-wrap; }
+                                Button { text: State.account-name; text-button: true; clicked => { State.open-profile("self"); } }
                                 Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
                                 if State.desktop-warning != "": Text { text: State.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
                             }
@@ -297,8 +276,8 @@ export component Layers inherits Rectangle {
                 original-size := IconButton { label: "Original size"; focus-description: "Focused"; icon: @image-url("../assets/icons/actual-size.svg"); icon-color: white; activated => { root.original-photo(); } }
                 viewer-save := IconButton { label: "Save photo"; icon: @image-url("../assets/icons/save.svg"); icon-color: white; enabled: !State.viewer-saving && !State.viewer-loading && State.viewer-error == "" && State.viewer-image.width > 0; activated => { State.save-photo(); } }
             }
-            viewer-previous := IconButton { x: 16px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; label: "Previous"; icon: @image-url("../assets/icons/previous.svg"); icon-color: white; visible: State.viewer-has-previous; enabled: self.visible; activated => { State.viewer-step(-1); State.focus-viewer-close(); } }
-            viewer-next := IconButton { x: parent.width - 56px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; label: "Next"; icon: @image-url("../assets/icons/next.svg"); icon-color: white; visible: State.viewer-has-next; enabled: self.visible; activated => { State.viewer-step(1); State.focus-viewer-close(); } }
+            viewer-previous := IconButton { x: 16px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Previous"; icon: @image-url("../assets/icons/previous.svg"); icon-color: white; visible: State.viewer-has-previous; enabled: self.visible; activated => { State.viewer-step(-1); State.focus-viewer-close(); } }
+            viewer-next := IconButton { x: parent.width - 56px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Next"; icon: @image-url("../assets/icons/next.svg"); icon-color: white; visible: State.viewer-has-next; enabled: self.visible; activated => { State.viewer-step(1); State.focus-viewer-close(); } }
             VerticalLayout { x: 16px; y: parent.height - self.preferred-height - 16px; width: parent.width - 32px; height: self.preferred-height; alignment: start;
                 if State.viewer-error != "": Text { text: State.viewer-error; wrap: word-wrap; color: Tokens.danger; }
                 if State.viewer-error != "" && State.viewer-retryable: Button { text: "Retry"; enabled: !State.viewer-loading; clicked => { State.open-photo(State.viewer-key); } }
@@ -349,11 +328,11 @@ export component Layers inherits Rectangle {
     }
     public function fit-photo() { State.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
     public function original-photo() { State.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
-    public function focus-member-list() {members.focus-list();}
-    public function back-to-members() { State.request-panel(PanelState.members); members.focus-list(); }
-    public function focus-profile-close() { if State.members-open && !State.member-profile { members.focus-first(); } else { profile-close.focus(); } }
-    public function focus-profile-last() { if State.members-open && !State.member-profile { members.focus-last(); } else if State.profile-available { profile-chat.focus(); } else { profile-close.focus(); } }
-    public function focus-profile() { if State.members-open && !State.member-profile { members.focus-first(); } else if State.members-open { profile-back.focus(); } else { profile-close.focus(); } }
+    public function focus-member-list() { detail.focus-member-list(); }
+    public function back-to-members() { State.pop-detail(false); }
+    public function focus-profile-close() { detail.focus-open(); }
+    public function focus-profile-last() { detail.focus-last(); }
+    public function focus-profile() { detail.focus-first(); }
     public function focus-settings() { root.settings-section = 0; settings-close.focus-button(); }
     public function focus-auth() { if State.auth-busy { auth-back.focus(); } else { auth-start.focus(); } }
     public function focus-viewer() { viewer-close.focus-button(); }

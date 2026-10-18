@@ -31,6 +31,8 @@ pub struct Chat {
 /// Read-only friend/group identity, independent of the loaded conversation list.
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Friend {
+    #[serde(default)]
+    pub profile: Value,
     pub id: String,
     pub name: String,
     pub status: String,
@@ -49,6 +51,7 @@ fn member_identity(id: &str, contact: &Value, my_mid: &str) -> Member {
     Member {
         is_self: id == my_mid,
         contact: Friend {
+            profile: contact.clone(),
             id: id.into(),
             name: contact_name(contact).unwrap_or("Unknown member").into(),
             status: contact["statusMessage"].as_str().unwrap_or_default().into(),
@@ -144,6 +147,7 @@ pub struct Client {
     pub more_chats: bool,
     contacts: HashMap<String, Value>,
     members: HashMap<String, Vec<String>>,
+    invitees: HashMap<String, Vec<String>>,
     member_contacts: HashMap<String, Value>,
     chat_cursor: Option<String>,
     obs_access: Option<String>,
@@ -199,6 +203,7 @@ impl Client {
             more_chats: false,
             contacts: HashMap::from([(my_mid.clone(), profile.clone())]),
             members: HashMap::new(),
+            invitees: HashMap::new(),
             member_contacts: HashMap::new(),
             chat_cursor: None,
             obs_access: None,
@@ -423,6 +428,58 @@ impl Client {
         Ok(chats)
     }
 
+    pub fn contact(&mut self, mid: &str) -> Result<Friend> {
+        let response = self.talk("getContactsV2", json!([{"targetUserMids":[mid]}, 2]))?;
+        let contact = &response["contacts"][mid]["contact"];
+        ensure!(contact.is_object(), "missing contact");
+        self.contacts.insert(mid.into(), contact.clone());
+        Ok(member_identity(mid, contact, &self.my_mid).contact)
+    }
+    pub fn profile_notice(&mut self, mid: &str) -> Result<Value> {
+        self.api.call(
+            "/api/talk/thrift/Relation/RelationService/getTargetProfileNotice",
+            &json!([{"targetUserMid":mid}]),
+            access(&self.state)?,
+            "",
+            0,
+        )
+    }
+    pub fn rename_contact(&mut self, mid: &str, name: &str, seq: u32) -> Result<()> {
+        self.talk("updateContactSetting", json!([seq, mid, 2, name]))?;
+        Ok(())
+    }
+    pub fn add_friend(&mut self, mid: &str, chat_mid: &str, seq: u32) -> Result<()> {
+        self.api.call("/api/talk/thrift/Relation/RelationService/addFriendByMid", &json!([{"reqSeq":seq,"userMid":mid,"tracking":{"reference":"","trackingMetaV2":{"chat":{"chatMid":chat_mid}}}}]), access(&self.state)?, "", 0)?;
+        Ok(())
+    }
+    pub fn full_chat(&mut self, mid: &str) -> Result<Value> {
+        let response = self.talk(
+            "getChats",
+            json!([{"chatMids":[mid],"withMembers":true,"withInvitees":true},1]),
+        )?;
+        let full = response["chats"]
+            .as_array()
+            .and_then(|c| c.first())
+            .cloned()
+            .context("missing chat")?;
+        self.remember_members(&full);
+        Ok(full)
+    }
+    pub fn mute_chat(&mut self, mid: &str, disabled: bool, seq: u32) -> Result<()> {
+        let mut chat = self.full_chat(mid)?;
+        ensure!(chat.is_object(), "missing full chat");
+        chat["notificationDisabled"] = disabled.into();
+        self.talk(
+            "updateChat",
+            json!([{"reqSeq":seq,"chat":chat,"updatedAttribute":8}]),
+        )?;
+        Ok(())
+    }
+    pub fn leave_chat(&mut self, mid: &str, seq: u32) -> Result<()> {
+        self.talk("deleteSelfFromChat", json!([{"reqSeq":seq,"chatMid":mid}]))?;
+        Ok(())
+    }
+
     pub fn friends(&mut self) -> Result<Vec<Friend>> {
         let ids = self.talk("getAllContactIds", json!([0]))?;
         let ids = ids.as_array().context("missing contact IDs")?;
@@ -443,6 +500,7 @@ impl Client {
                 let contact = contacts.get(id).context("missing contact")?;
                 let contact = &contact["contact"];
                 friends.push(Friend {
+                    profile: contact.clone(),
                     id: id.into(),
                     name: contact_name(contact).unwrap_or("Unnamed friend").into(),
                     status: contact["statusMessage"].as_str().unwrap_or_default().into(),
@@ -473,6 +531,7 @@ impl Client {
             for chat in chats {
                 self.remember_members(chat);
                 friends.push(Friend {
+                    profile: Default::default(),
                     id: required(chat, "chatMid")?.into(),
                     name: chat["chatName"]
                         .as_str()
@@ -498,7 +557,15 @@ impl Client {
                 && let Some(old) = self.members.keys().next().cloned()
             {
                 self.members.remove(&old);
+                self.invitees.remove(&old);
             }
+            self.invitees.insert(
+                id.into(),
+                chat.pointer("/extra/groupExtra/inviteeMids")
+                    .and_then(Value::as_object)
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default(),
+            );
             self.members.insert(id.into(), members);
         }
     }
@@ -509,14 +576,22 @@ impl Client {
             let response = self.talk(
                 "getChats",
                 json!([{
-                "chatMids":[chat],"withMembers":true,"withInvitees":false
+                "chatMids":[chat],"withMembers":true,"withInvitees":true
             },0]),
             )?;
             for info in response["chats"].as_array().context("missing groups")? {
                 self.remember_members(info);
             }
         }
-        let ids = self.members.get(chat).context("missing members")?.clone();
+        let invited = self.invitees.get(chat).cloned().unwrap_or_default();
+        let mut ids = self.members.get(chat).context("missing members")?.clone();
+        ids.extend(
+            invited
+                .iter()
+                .filter(|id| !ids.contains(id))
+                .cloned()
+                .collect::<Vec<_>>(),
+        );
         let unknown: Vec<_> = ids
             .iter()
             .filter(|id| {
@@ -549,14 +624,21 @@ impl Client {
         Ok((
             ids.iter()
                 .map(|id| {
-                    member_identity(
+                    let mut member = member_identity(
                         id,
                         self.contacts
                             .get(id)
                             .or_else(|| self.member_contacts.get(id))
                             .unwrap_or(&Value::Null),
                         &self.my_mid,
-                    )
+                    );
+                    if invited.contains(id) {
+                        if member.contact.profile.is_null() {
+                            member.contact.profile = json!({});
+                        }
+                        member.contact.profile["invited"] = true.into();
+                    }
+                    member
                 })
                 .collect(),
             failed,

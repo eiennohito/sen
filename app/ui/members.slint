@@ -1,4 +1,5 @@
-import { Button } from "std-widgets.slint";
+import { IconButton } from "icon-button.slint";
+import { Avatar } from "avatar.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { SearchField } from "search-field.slint";
@@ -8,7 +9,7 @@ export component Members inherits FocusScope {
     focus-on-tab-navigation: false;
     in-out property <int> selected <=> State.member-result;
     property <length> row-height: max(64px, Tokens.base * 2.8 + 16px);
-    public function focus-first() { close.focus(); }
+    public function focus-first() { State.focus-profile-close(); }
     public function focus-last() { if list.visible { list.focus(); } else { search.focus-last(); } }
     public function focus-list() { list.focus(); }
     function reveal() { if root.selected * root.row-height < -pane.offset { pane.jump(-root.selected * root.row-height); } else if (root.selected + 1) * root.row-height > -pane.offset + pane.visible-height { pane.jump(pane.visible-height - (root.selected + 1) * root.row-height); } }
@@ -16,9 +17,9 @@ export component Members inherits FocusScope {
     key-pressed(event) => {
         if State.ime-active { return reject; }
         if State.browser-key(event) == accept { return accept; }
-        if event.text == Key.Escape { State.close-profile(); return accept; }
+        if event.text == Key.Escape { State.pop-detail(false); return accept; }
         if event.text == Key.Tab {
-            if event.modifiers.shift && close.has-focus { State.focus-before-layer(); return accept; }
+
             if !event.modifiers.shift && (list.has-focus) { State.focus-after-layer(); return accept; }
             if event.modifiers.shift && list.has-focus { search.focus-last(); return accept; }
         }
@@ -26,15 +27,13 @@ export component Members inherits FocusScope {
     }
     VerticalLayout {
         padding: 16px; spacing: 12px;
-        close := Button { text: "Close members"; accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; clicked => { State.close-profile(); } }
-        Text { text: "Members" + (State.member-count >= 0 ? " (" + State.member-count + ")" : ""); font-size: Tokens.heading; font-weight: 700; }
         search := SearchField {
             text <=> State.member-query; label: "Search members"; placeholder-text: "Search members";
             edited(value) => { root.selected = 0; State.filter-members(); pane.jump(0px); }
             clear => { State.member-query = ""; root.selected = 0; State.filter-members(); pane.jump(0px); }
             key-pressed(event) => {
-                if event.text == Key.Escape { State.close-profile(); return accept; }
-                if event.text == Key.Tab { if event.modifiers.shift { close.focus(); } else { list.focus(); } return accept; }
+                if event.text == Key.Escape { State.pop-detail(false); return accept; }
+                if event.text == Key.Tab { if event.modifiers.shift { State.focus-profile-close(); } else { list.focus(); } return accept; }
                 if event.text == Key.DownArrow { list.focus(); return accept; }
                 reject
             }
@@ -49,29 +48,32 @@ export component Members inherits FocusScope {
                 if event.text == Key.DownArrow { root.selected = min(State.members.length - 1, root.selected + 1); root.reveal(); return accept; }
                 if event.text == Key.Home { root.selected = 0; pane.jump(0px); return accept; }
                 if event.text == Key.End { root.selected = State.members.length - 1; pane.jump(-pane.extent); return accept; }
-                if event.text == Key.Return && State.members.length > 0 { State.open-member(State.members[min(State.members.length - 1, max(0, root.selected))].id); return accept; }
+                if event.text == Key.Return && State.members.length > 0 && !State.members[min(State.members.length - 1, max(0, root.selected))].invited { State.open-member(State.members[min(State.members.length - 1, max(0, root.selected))].id); return accept; }
                 reject
             }
             pane := Pane {
                 VerticalLayout {
                     spacing: 0px;
-                    for member[i] in State.members: Rectangle {
+                    for member[i] in State.members: VerticalLayout {
+                      if member.invited && (i == 0 || !State.members[i - 1].invited): Text { text: "Invited (" + State.invitee-count + ")"; color: Tokens.secondary; }
+                      Rectangle {
                         width: pane.visible-width; height: root.row-height;
                         background: touch.has-hover ? Tokens.surface : transparent;
                         border-width: list.has-focus && root.selected == i ? 2px : 0px; border-color: Tokens.accent; border-radius: 6px;
-                        accessible-role: button; accessible-label: "Open member: " + member.name + (member.is-self ? ", You" : "");
-                        accessible-action-default => { root.selected = i; State.open-member(member.id); }
-                        Rectangle {
-                            x: 8px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.selection;
-                            Text { width: 100%; height: 100%; text: member.initial; color: Tokens.selection-foreground; horizontal-alignment: center; vertical-alignment: center; visible: member.avatar.width == 0; }
-                            Image { width: 100%; height: 100%; source: member.avatar; image-fit: contain; }
-                        }
+                        if !member.invited: Rectangle { width: 100%; height: 100%; accessible-role: button; accessible-label: "Open member: " + member.name + (member.is-self ? ", You" : ""); accessible-action-default => { root.selected=i;list.focus();State.open-member(member.id); } }
+                        Avatar { x: 8px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; identity: member.id; initial: member.initial; picture: member.avatar; }
                         VerticalLayout {
-                            x: 60px; width: max(0px, parent.width - 68px); height: parent.height; alignment: center; spacing: 4px;
-                            Text { text: member.name; overflow: elide; font-weight: 600; }
-                            if member.is-self: Text { text: "You"; font-size: Tokens.small; color: Tokens.secondary; }
+                            x: 60px; width: max(0px, parent.width - 108px); height: parent.height; alignment: center; spacing: 4px;
+                            HorizontalLayout { spacing: 8px;
+                                Text { text: member.name; overflow: elide; font-weight: 600; horizontal-stretch: 1; }
+                                if member.is-self || member.friend: Text { horizontal-stretch: 0; text: member.is-self ? "You" : "Friend"; font-size: Tokens.small; color: Tokens.secondary; }
+                            }
+                            if member.status != "": Text { text: member.status; overflow: elide; color: Tokens.secondary; font-size: Tokens.small; }
                         }
-                        touch := TouchArea { mouse-cursor: pointer; clicked => { root.selected = i; State.open-member(member.id); } }
+                        touch := TouchArea { enabled: !member.invited; mouse-cursor: pointer; clicked => { root.selected = i; list.focus(); if !member.invited { State.open-member(member.id); } } }
+                        IconButton { x: parent.width - 40px; y: (parent.height - 32px) / 2; visible: member.friend && !member.invited && !member.is-self && (touch.has-hover || (list.has-focus && root.selected == i)); enabled: self.visible; label: "Chat with " + member.name; icon: @image-url("../assets/icons/chats.svg"); activated => { State.detail-action("member-chat", member.id); } }
+
+                      }
                     }
                 }
             }

@@ -287,7 +287,7 @@ impl Store {
              LEFT JOIN message m ON m.key=(SELECT key FROM message WHERE chat_id=c.chat_id
                  ORDER BY sort_ts DESC,sort_id DESC LIMIT 1)
              LEFT JOIN draft d ON d.chat_id=c.chat_id
-             WHERE c.left=0 AND (?3 IS NULL OR c.chat_id=?3)
+             WHERE c.removed=0 AND (?3 IS NULL OR c.chat_id=?3)
              AND (?4='' OR c.title LIKE ?5 OR json_extract(m.body_json,'$.body') LIKE ?5)
              ORDER BY activity DESC,c.list_rank,c.chat_id LIMIT ?1 OFFSET ?2",
         )?;
@@ -367,7 +367,7 @@ impl Store {
                     "INSERT INTO chat(chat_id, kind, title, avatar, member_count, muted, left, last_key,
                     last_activity, server_unread, unread_stale, last_read_server_id, list_rank)
                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(chat_id) DO UPDATE
-                    SET kind=excluded.kind, title=excluded.title, avatar=excluded.avatar,
+                    SET removed=0, kind=excluded.kind, title=excluded.title, avatar=excluded.avatar,
                     member_count=excluded.member_count, muted=excluded.muted, left=excluded.left,
                     last_key=excluded.last_key, last_activity=excluded.last_activity,
                     server_unread=excluded.server_unread, unread_stale=excluded.unread_stale,
@@ -389,15 +389,12 @@ impl Store {
                     ],
                 )?;
                 c.chats_changed.insert(input.id.clone());
-                if input.left {
-                    c.chats_removed.insert(input.id.clone());
-                }
             }
             if complete_sweep {
                 let seen: std::collections::BTreeSet<_> = list.iter().map(|i| &i.id).collect();
                 for chat in chats(tx)? {
-                    if !chat.left && !seen.contains(&chat.id) {
-                        tx.execute("UPDATE chat SET left=1 WHERE chat_id=?", [&chat.id.0])?;
+                    if !seen.contains(&chat.id) {
+                        tx.execute("UPDATE chat SET removed=1 WHERE chat_id=?", [&chat.id.0])?;
                         c.chats_changed.insert(chat.id.clone());
                         c.chats_removed.insert(chat.id);
                     }
@@ -628,7 +625,7 @@ impl Store {
     pub fn members(&self, chat: &ChatId) -> Result<Vec<Value>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT profile_json FROM member WHERE chat_id=? ORDER BY mid")?;
+            .prepare("SELECT profile_json FROM member WHERE chat_id=? ORDER BY rowid")?;
         let rows = stmt
             .query_map([&chat.0], |r| r.get::<_, String>(0))?
             .collect::<std::result::Result<Vec<_>, _>>()?;
@@ -732,4 +729,48 @@ pub(super) fn head_needs_refresh(conn: &Connection, chat: &ChatId) -> Result<boo
     Ok(!segments(conn, chat)?
         .iter()
         .any(|s| s.lo <= newest.sort && newest.sort <= s.hi))
+}
+
+impl Store {
+    pub fn full_chat(&self, chat: &ChatId) -> Result<Value> {
+        let raw: Option<String> = self
+            .conn
+            .query_row(
+                "SELECT wire_json FROM chat_detail WHERE chat_id=?",
+                [&chat.0],
+                |r| r.get(0),
+            )
+            .optional()?;
+        Ok(raw
+            .map(|s| serde_json::from_str(&s))
+            .transpose()?
+            .unwrap_or(Value::Null))
+    }
+    pub fn save_full_chat(&mut self, chat: &ChatId, raw: Value) -> Result<Changes> {
+        self.mutate(|tx,_| { tx.execute("INSERT INTO chat_detail VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET wire_json=excluded.wire_json",params![chat.0,raw.to_string()])?; Ok(()) })
+    }
+}
+
+impl Store {
+    pub fn set_chat_membership(&mut self, chat: &ChatId, left: bool) -> Result<Changes> {
+        self.mutate(|tx, c| {
+            tx.execute(
+                "UPDATE chat SET left=? WHERE chat_id=?",
+                params![left, chat.0],
+            )?;
+            c.chats_changed.insert(chat.clone());
+            Ok(())
+        })
+    }
+}
+
+impl Store {
+    pub fn remove_chat(&mut self, chat: &ChatId) -> Result<Changes> {
+        self.mutate(|tx, c| {
+            tx.execute("UPDATE chat SET removed=1 WHERE chat_id=?", [&chat.0])?;
+            c.chats_changed.insert(chat.clone());
+            c.chats_removed.insert(chat.clone());
+            Ok(())
+        })
+    }
 }

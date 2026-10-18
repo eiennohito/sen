@@ -9,6 +9,14 @@ use std::time::Duration;
 
 pub use crate::client::error::{Error, NetCause, RejectReason};
 pub type Result<T> = std::result::Result<T, Error>;
+/// Traced writes; live account verification remains pending.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProfileAction {
+    Rename { mid: String, name: String },
+    AddFriend { mid: String, chat: String },
+    Mute { chat: ChatId, disabled: bool },
+    Leave { chat: ChatId },
+}
 #[derive(Clone, Debug)]
 pub struct Profile {
     pub mid: String,
@@ -88,6 +96,10 @@ pub trait Backend: Send {
         asset: &crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>>;
+    fn contact(&mut self, mid: &str) -> Result<crate::client::desktop::Friend>;
+    fn notice(&mut self, mid: &str) -> Result<Value>;
+    fn full_chat(&mut self, chat: &ChatId) -> Result<Value>;
+    fn profile_action(&mut self, action: &ProfileAction, full_chat: Value, seq: u32) -> Result<()>;
     fn profile(&mut self) -> Result<Profile>;
     fn chats(&mut self, next: bool) -> Result<ChatPage>;
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>>;
@@ -109,6 +121,8 @@ pub trait Backend: Send {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FakeRpc {
     Profile,
+    Action(ProfileAction),
+    Contact(String),
     Chats,
     Details(ChatId),
     Messages(ChatId),
@@ -232,7 +246,15 @@ impl FakeBackend {
         }
         Ok(())
     }
-    pub fn set_friends(&self, rows: Vec<crate::client::desktop::Friend>) {
+    pub fn set_friends(&self, mut rows: Vec<crate::client::desktop::Friend>) {
+        for row in &mut rows {
+            if !row.group && row.profile["relation"].is_null() {
+                if row.profile.is_null() {
+                    row.profile = json!({});
+                }
+                row.profile["relation"] = 0.into();
+            }
+        }
         self.0.lock().unwrap().friends = Some(rows);
     }
     pub fn set_members(&self, rows: Vec<crate::client::desktop::Member>) {
@@ -300,7 +322,7 @@ impl FakeBackend {
         }
     }
     pub fn asset(photo: bool) -> crate::client::desktop::assets::Asset {
-        serde_json::from_value(json!({"url":if photo {"https://obs.line-apps.com/r/talk/m/synthetic/preview"}else{"https://stickershop.line-scdn.net/stickershop/v1/sticker/1/android/sticker.png"},"private":photo,"key_material":null,"talk_meta":null,"dimension":384,"original_suffix":"","failure":null})).unwrap()
+        serde_json::from_value(json!({"url":if photo {"https://obs.line-apps.com/r/talk/m/synthetic/preview"}else{"https://stickershop.line-scdn.net/stickershop/v1/sticker/1/android/sticker.png"},"private":photo,"key_material":null,"talk_meta":null,"dimension":384,"original_suffix":"","failure":null,"name":"Synthetic original"})).unwrap()
     }
     pub fn official_image(chat: &str, id: i64) -> MessageInput {
         let mut row = Self::message(chat, id, "", false);
@@ -406,6 +428,7 @@ impl Backend for FakeBackend {
             .chats
             .iter()
             .map(|c| crate::client::desktop::Friend {
+                profile: json!({"relation":0}),
                 id: c.id.0.clone(),
                 name: c.title.clone(),
                 status: String::new(),
@@ -532,6 +555,80 @@ impl Backend for FakeBackend {
                 rgba: [80, 180, 130, 255].repeat(384 * 256),
             })),
         }))
+    }
+    fn contact(&mut self, mid: &str) -> Result<crate::client::desktop::Friend> {
+        self.rpc(FakeRpc::Contact(mid.into()))?;
+        self.friends()?
+            .into_iter()
+            .chain(
+                self.members(&ChatId("weekend".into()))?
+                    .into_iter()
+                    .map(|m| m.contact),
+            )
+            .find(|f| f.id == mid)
+            .ok_or(Error::Decode)
+    }
+    fn notice(&mut self, _mid: &str) -> Result<Value> {
+        self.online()?;
+        Ok(json!({"notice":{"noticeAntiFraudGeneral":{}}}))
+    }
+    fn full_chat(&mut self, chat: &ChatId) -> Result<Value> {
+        self.online()?;
+        Ok(
+            json!({"chatMid":chat.0,"chatName":self.0.lock().unwrap().chats.iter().find(|c| c.id == *chat).map(|c| &c.title),"notificationDisabled":false,"extra":{"groupExtra":{}}}),
+        )
+    }
+    fn profile_action(&mut self, action: &ProfileAction, _full: Value, _seq: u32) -> Result<()> {
+        self.rpc(FakeRpc::Action(action.clone()))?;
+        match action {
+            ProfileAction::Rename { mid, name } | ProfileAction::AddFriend { mid, chat: name } => {
+                let mut f = self.contact(mid)?;
+                if matches!(action, ProfileAction::Rename { .. }) {
+                    let original = f.profile["displayName"]
+                        .as_str()
+                        .unwrap_or(&f.name)
+                        .to_owned();
+                    if f.profile.is_null() {
+                        f.profile = json!({});
+                    }
+                    f.profile["relation"] = 0.into();
+                    f.profile["displayName"] = original.into();
+                    f.profile["displayNameOverridden"] = name.clone().into();
+                    f.name = name.clone();
+                } else {
+                    f.profile["relation"] = 0.into();
+                }
+                let mut rows = self.friends()?;
+                rows.retain(|r| r.id != *mid);
+                rows.push(f);
+                self.0.lock().unwrap().friends = Some(rows);
+            }
+            ProfileAction::Mute { chat, disabled } => {
+                if let Some(c) = self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .chats
+                    .iter_mut()
+                    .find(|c| c.id == *chat)
+                {
+                    c.muted = *disabled;
+                }
+            }
+            ProfileAction::Leave { chat } => {
+                if let Some(c) = self
+                    .0
+                    .lock()
+                    .unwrap()
+                    .chats
+                    .iter_mut()
+                    .find(|c| c.id == *chat)
+                {
+                    c.left = true;
+                }
+            }
+        }
+        Ok(())
     }
     fn profile(&mut self) -> Result<Profile> {
         self.rpc(FakeRpc::Profile)?;
@@ -859,6 +956,26 @@ impl Backend for LineBackend {
             .unwrap()
             .enqueue(asset.clone(), None, purpose);
         Ok(None)
+    }
+    fn contact(&mut self, mid: &str) -> Result<crate::client::desktop::Friend> {
+        self.client.contact(mid).map_err(rpc)
+    }
+    fn notice(&mut self, mid: &str) -> Result<Value> {
+        self.client.profile_notice(mid).map_err(rpc)
+    }
+    fn full_chat(&mut self, chat: &ChatId) -> Result<Value> {
+        self.client.full_chat(&chat.0).map_err(rpc)
+    }
+    fn profile_action(&mut self, action: &ProfileAction, _full: Value, seq: u32) -> Result<()> {
+        match action {
+            ProfileAction::Rename { mid, name } => self.client.rename_contact(mid, name, seq),
+            ProfileAction::AddFriend { mid, chat } => self.client.add_friend(mid, chat, seq),
+            ProfileAction::Mute { chat, disabled } => {
+                self.client.mute_chat(&chat.0, *disabled, seq)
+            }
+            ProfileAction::Leave { chat } => self.client.leave_chat(&chat.0, seq),
+        }
+        .map_err(rpc)
     }
     fn profile(&mut self) -> Result<Profile> {
         let data = self.client.online_profile().map_err(rpc)?;

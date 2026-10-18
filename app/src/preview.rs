@@ -22,7 +22,16 @@ pub(crate) fn small(image: &slint::Image, size: i32) -> slint::Image {
 }
 
 pub(crate) fn set(row: &mut ChatRow, message: &MessageRow, size: i32) {
-    row.preview = single_line(&message.body).into();
+    row.preview = match message.kind {
+        MessageKind::Sticker => "Sticker".into(),
+        MessageKind::Photo => "Photo".into(),
+        MessageKind::Video => "Video".into(),
+        MessageKind::Voice => "Voice".into(),
+        MessageKind::File => "File".into(),
+        MessageKind::Location => "Location".into(),
+        MessageKind::Contact => "Contact".into(),
+        _ => single_line(&message.body).into(),
+    };
     row.outgoing_preview = message.outgoing;
     let mut runs = Vec::new();
     let mut pictures = HashMap::new();
@@ -42,15 +51,7 @@ pub(crate) fn set(row: &mut ChatRow, message: &MessageRow, size: i32) {
         });
         runs.push(RichRun {
             text: row.preview.clone(),
-            thumbnail_text: row
-                .preview
-                .strip_prefix(
-                    links::placeholder(message.kind)
-                        .and_then(|text| text.find(' ').map(|end| &text[..end + 1]))
-                        .unwrap_or(""),
-                )
-                .unwrap_or(&row.preview)
-                .into(),
+            thumbnail_text: row.preview.clone(),
             ..Default::default()
         });
     } else if message.rich_runs.iter().any(|run| run.emoji) && !message.rich_fallback {

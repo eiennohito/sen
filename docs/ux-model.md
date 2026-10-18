@@ -133,7 +133,7 @@ conversation shows the conversation pane and focuses the composer. The
 rail collapses to a bottom or top bar with the same destinations. Unread
 state must be reachable from the conversation pane (badge on Back or rail).
 
-### 3.4 Profile, member and group surfaces (U0, draft for review)
+### 3.4 Profile, member and group surfaces (U0, approved)
 
 Reference: LINE Chrome's profile and group popups (local screenshots, summary in
 [protocol-traces.md](protocol-traces.md#reference-screenshots-u0)). LINE opens
@@ -454,10 +454,15 @@ not configurable in v1.
 - A side panel follows Send (or the composer when Send is disabled), then
   wraps to the rail. A conversation sheet replaces the conversation stops;
   the browser list leads to the sheet, and its last control wraps to the rail.
-  A narrow sheet cycles within its visible controls. Members keeps visible
-  recovery actions before the sheet controls. Profile controls follow reading
-  order: Back to members (when present), Close, Open chat (when available).
-  Members follows Close, search, Retry (when present), list (when available).
+  A narrow sheet cycles within its visible controls. The controller owns one
+  detail stack: Back and Escape pop one page; × closes the whole stack.
+  Every push records the focused opener, and every pop uses the same restoration
+  path to that opener (or the nearest surviving control).
+  Header order is Back (when depth > 1), More (profiles only), ×.
+  Profile content follows with avatar, Chat, Rename or Add friend as available.
+  Group info follows with avatar, Members, Notifications and Leave as available.
+  Members follows with search, Clear (when present), then the member list.
+  Recovery feedback never changes the stack's position or focus cycle.
   Shift+Tab is the exact reverse of each cycle.
 - Messages are click-focusable for selection but not Tab stops. Slint 1.18
   cannot style links or inline images inside a selectable TextInput. Messages

@@ -4,6 +4,9 @@ import { Tokens } from "tokens.slint";
 
 export component RichFlow inherits Rectangle {
     in property <[RichRun]> runs;
+    in property <int> max-lines;
+    in property <bool> elide-overflow;
+    in property <bool> centered;
     in property <brush> text-color: Tokens.foreground;
     callback select-text();
     background: transparent;
@@ -12,9 +15,10 @@ export component RichFlow inherits Rectangle {
     callback natural-width(float);
     property <[RichRun]> source: State.rich-source(root.runs);
     property <[RichRun]> lines;
-    property <length> text-size: Tokens.base;
+    in property <length> text-size: Tokens.base;
     property <bool> measuring;
     function reflow() {
+        if root.source.length == 0 { root.lines = []; return; }
         if !root.measuring && root.width >= 1px {
             root.measuring = true;
             root.lines = State.rich-layout(root.source, root.width / 1px, root.text-size / 1px, root.lines);
@@ -27,13 +31,14 @@ export component RichFlow inherits Rectangle {
     changed width => { root.reflow(); }
     changed text-size => { root.reflow(); }
     init => { root.reflow(); }
-    height: root.lines.length == 0 ? 0px : root.lines[root.lines.length - 1].y * 1px + root.lines[root.lines.length - 1].measured-height * 1px;
+    property <length> natural-height: root.lines.length == 0 ? 0px : root.lines[root.lines.length - 1].y * 1px + root.lines[root.lines.length - 1].measured-height * 1px;
+    height: root.max-lines > 0 && root.lines.length > 0 ? min(root.natural-height, root.lines[0].measured-height * root.max-lines * 1px) : root.natural-height;
     for run in root.lines: Rectangle {
-        x: run.x * 1px; y: run.y * 1px;
+        x: run.x * 1px + (root.centered ? max(0px, (root.width - run.line-width * 1px) / 2) : 0px); y: run.y * 1px;
         width: run.measured-width * 1px;
         height: run.measured-height * 1px;
         background: transparent;
-        Text { x: 0px; y: 0px; width: parent.width; height: parent.height; min-width: 0px; min-height: 0px; preferred-width: parent.width; preferred-height: parent.height; accessible-role: none; wrap: no-wrap; visible: !run.emoji || !run.has-picture; text: run.text; font-size: run.emoji ? Tokens.small : Tokens.base; color: run.url != "" ? Tokens.accent-strong : root.text-color; vertical-alignment: center; overflow: clip; }
+        Text { x: 0px; y: 0px; width: parent.width; height: parent.height; min-width: 0px; min-height: 0px; preferred-width: parent.width; preferred-height: parent.height; accessible-role: none; wrap: no-wrap; visible: !run.emoji || !run.has-picture; text: run.text; font-size: run.emoji ? max(11px,root.text-size - 2px) : root.text-size; color: run.url != "" ? Tokens.accent-strong : root.text-color; vertical-alignment: center; overflow: clip; }
         if run.emoji && run.has-picture: Image { width: parent.width; height: parent.height; source: run.picture; image-fit: contain; accessible-role: image; accessible-label: run.text; }
         if run.link-start: ContextMenuArea {
             x: 0px; y: 0px;
@@ -68,4 +73,10 @@ export component RichFlow inherits Rectangle {
             }
         }
     }
+    if root.elide-overflow && root.natural-height > root.height: Rectangle {
+        x: max(0px, root.width - root.text-size * 1.5); y: max(0px, root.height - root.text-size * 1.4);
+        width: root.text-size * 1.5; height: root.text-size * 1.4; background: Tokens.bg;
+        Text { text: "…"; font-size: root.text-size; color: root.text-color; horizontal-alignment: right; vertical-alignment: center; }
+    }
+
 }

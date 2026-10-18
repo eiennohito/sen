@@ -64,7 +64,7 @@ export component Friends inherits Rectangle {
                 reject
             }
             friend-list := Pane {
-                connection-feedback: State.narrow && !State.show-conversation && State.section == 1 && !(State.profile-open && State.profile-sheet);
+                connection-feedback: State.narrow && !State.show-conversation && State.section == 1 && !(State.detail-open && State.profile-sheet);
                 offset <=> State.friends-y;
                 VerticalLayout {
                     spacing: 0px;

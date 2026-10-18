@@ -56,7 +56,7 @@ export component AppWindow inherits Window {
     public function focus-member-list() {layers.focus-member-list();}
     public function back-to-members() { layers.back-to-members(); }
     public function focus-members-header() { conversation.focus-members(); }
-    out property <bool> profile-open <=> State.profile-open;
+    out property <bool> detail-open <=> State.detail-open;
     in-out property <string> profile-name <=> State.profile-name;
     in-out property <string> profile-id <=> State.profile-id;
     in-out property <string> profile-status <=> State.profile-status;
@@ -67,10 +67,10 @@ export component AppWindow inherits Window {
     callback filter-category(); callback switch-chat(int);
     callback browse(int); callback refresh-friends(); callback filter-friends();
     callback open-profile(string); callback start-friend-chat();
-    public function show-profile() { State.request-panel(PanelState.profile); State.focus-profile-close(); }
-    public function close-profile() { if root.members-open { State.request-panel(PanelState.none); conversation.focus-members(); } else { State.request-panel(PanelState.none); State.focus-friend-list(); } }
+    public function show-profile() { State.focus-profile-close(); }
+    public function close-profile() { State.pop-detail(true); }
     in-out property <bool> ime-active <=> State.ime-active;
-    public function focus-composer() { if root.profile-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
+    public function focus-composer() { if root.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
     public function focus-reading-before-editor() { conversation.focus-reading-before-editor(); }
     title: root.demo ? "LINE (preview · F12: scenarios)" : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
     icon: @image-url("../assets/icon.svg");
@@ -114,7 +114,7 @@ export component AppWindow inherits Window {
     property <float> viewer-zoom <=> State.viewer-zoom;
     callback open-photo(string); callback photo-closed();
     public function show-viewer(key: string) { State.request-panel(PanelState.viewer); root.viewer-key = key; root.viewer-zoom = 1; State.reset-viewer(); State.focus-viewer-close(); }
-    public function close-viewer() { State.request-panel(PanelState.none); State.focus-history(); State.viewer-return-key = root.viewer-key; State.viewer-return-serial += 1; root.viewer-key = ""; root.photo-closed(); }
+    public function close-viewer() { let from-detail = State.viewer-from-detail; State.request-panel(PanelState.none); if !from-detail { State.focus-history(); } State.viewer-return-key = root.viewer-key; State.viewer-return-serial += 1; root.viewer-key = ""; root.photo-closed(); }
     out property <bool> connected <=> State.connected;
     out property <bool> connection-failed <=> State.connection-failed;
     out property <bool> auth-expired <=> State.auth-expired;
@@ -171,7 +171,7 @@ export component AppWindow inherits Window {
         key-pressed(event) => { if root.demo && !State.modal-open && event.text == Key.F12 { scenarios.open(); return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: 0px;
         width: 100%; height: root.height;
-        visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.profile-open);
+        visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.detail-open);
         rail := Rail { x: 0px; y: root.narrow ? parent.height - 48px : 0px; width: root.narrow ? parent.width : State.rail-width; height: root.narrow ? 48px : parent.height; visible: !root.narrow || !root.show-conversation; }
         browser := Rectangle {
             x: root.narrow ? 0px : State.rail-width; y: 0px;
@@ -184,43 +184,44 @@ export component AppWindow inherits Window {
  chats-surface := Chats {}
 }
 
-        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!State.profile-sheet && root.profile-open ? State.panel-width : 0px)); height: parent.height; visible: (!root.narrow || root.show-conversation) && !(root.profile-open && State.profile-sheet); }
+        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!State.profile-sheet && root.detail-open ? State.panel-width : 0px)); height: parent.height; visible: (!root.narrow || root.show-conversation) && !(root.detail-open && State.profile-sheet); }
     }
     property <length> token-base: root.text-size * 1px;
     changed token-base => { Tokens.base = root.token-base; }
     property <length> state-window-width: root.width;
     changed state-window-width => {
         State.browser-focus-hidden = State.window-width >= State.narrow-width && root.width < State.narrow-width && root.show-conversation && (rail.has-focus || (root.section == 1 ? friends-surface.has-focus : chats-surface.has-focus));
-        State.window-width = root.width;
+        State.window-width = root.width; State.window-height = root.height;
     }
-    init => { State.window-width = root.width; Tokens.base = root.text-size * 1px; }
+    changed height => { State.window-height = root.height; }
+    init => { State.window-width = root.width; State.window-height = root.height; Tokens.base = root.text-size * 1px; }
     out property <length> chat-list-height: chats-surface.viewport-height;
     public function reveal-chat(index: int) { chats-surface.reveal(index); }
     public function focus-cycle-end() {
-        if root.profile-open { layers.focus-profile-last(); }
+        if root.detail-open { layers.focus-profile-last(); }
         else if !root.narrow || root.show-conversation { conversation.focus-last(); }
         else if root.section == 1 { friends-surface.focus-list(); }
         else { chats-surface.focus-list(); }
     }
     public function focus-after-browser() {
-        if root.profile-open && State.profile-sheet { if root.members-open && State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
+        if root.detail-open && State.profile-sheet { if State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
         else if root.narrow && !root.show-conversation { rail.focus-navigation(); }
         else { conversation.focus-first(); }
     }
     public function focus-after-conversation() {
-        if root.profile-open { layers.focus-profile(); }
+        if root.detail-open { layers.focus-profile(); }
         else if root.narrow { conversation.focus-first(); }
         else { rail.focus-navigation(); }
     }
     public function focus-before-layer() {
-        if State.profile-sheet && root.members-open && State.connection-actions-enabled { auth-notice.focus-action(); }
+        if State.profile-sheet && State.connection-actions-enabled { auth-notice.focus-action(); }
         else if State.narrow { layers.focus-profile-last(); }
         else if !State.profile-sheet { conversation.focus-last(); }
         else if root.section == 1 { friends-surface.focus-list(); }
         else { chats-surface.focus-list(); }
     }
     public function focus-after-layer() {
-        if State.narrow { if root.members-open && State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
+        if State.narrow { if State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
         else { rail.focus-navigation(); }
     }
     public function focus-search() { chats-surface.focus-search(); }
@@ -232,7 +233,7 @@ export component AppWindow inherits Window {
     public function focus-profile-close() { layers.focus-profile-close(); }
     public function focus-auth-start() { layers.focus-auth(); }
     public function focus-viewer-close() { layers.focus-viewer(); }
-    public function focus-history() { if root.profile-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-history(); } }
+    public function focus-history() { if root.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-history(); } }
     public function focus-connection-first() { auth-notice.focus-first(); }
     public function focus-sign-in-opener() { auth-notice.focus-action(); }
     public function reset-viewer() { layers.reset-viewer(); }
@@ -245,7 +246,7 @@ export component AppWindow inherits Window {
         visible: State.connection-feedback-visible;
         scenarios-requested => { scenarios.open(); }
         leave(back) => {
-            if root.profile-open && State.profile-sheet && root.members-open {
+            if root.detail-open && State.profile-sheet {
                 if !back { layers.focus-profile(); }
                 else if root.narrow { layers.focus-profile-last(); }
                 else if root.section == 1 { friends-surface.focus-list(); }

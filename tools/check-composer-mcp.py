@@ -117,18 +117,18 @@ if editors:
 key('\x11', 'Press')
 key('\n')
 key('\x11', 'Release')
-element('Close profile', 'Button')
+element('Close details', 'Button')
 if editors:
     assert value() == '', 'Ctrl+Enter beside the profile panel did not send'
     wait_for(lambda: message_count('Profile shortcut draft') == 1)
 else:
     assert not any(item.get('accessibleLabel') == 'Message history' for item in tree()), 'sheet exposed the covered history'
 if editors:
-    click('Close profile')
+    click('Close details')
 else:
     click('Search friends and groups', 'TextInput')
     key('\x1b')
-assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Escape from browser did not close the sheet/profile'
+assert not any(item.get('accessibleLabel') == 'Close details' for item in tree()), 'Escape from browser did not close the sheet/profile'
 assert value() == ('' if editors else 'Profile shortcut draft'), 'profile Ctrl+Enter changed the wrong draft'
 assert element('Search friends and groups', 'TextInput').get('accessibleValue') == '葵', 'Escape cleared the browser query before closing the sheet'
 click('Friends')
@@ -137,12 +137,12 @@ click('Search friends and groups', 'TextInput')
 key('\x11', 'Press')
 key('2')
 key('\x11', 'Release')
-assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Ctrl+2 from browser left profile open'
+assert not any(item.get('accessibleLabel') == 'Close details' for item in tree()), 'Ctrl+2 from browser left profile open'
 assert element('Chats', 'Button').get('accessibleItemSelected') is True
 click('Friends')
 click('Open profile: 葵')
 click('Settings')
-assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Settings left the profile open'
+assert not any(item.get('accessibleLabel') == 'Close details' for item in tree()), 'Settings left the profile open'
 key('\x1b')
 click('Friends')
 click('Open profile: 葵')
@@ -150,7 +150,7 @@ click('Search friends and groups', 'TextInput')
 key('\x12', 'Press')
 key('\uf701')
 key('\x12', 'Release')
-assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Alt+Down left an unrelated profile open'
+assert not any(item.get('accessibleLabel') == 'Close details' for item in tree()), 'Alt+Down left an unrelated profile open'
 click('Chats')
 click('葵')
 set_draft('日本語 🐈\nsecond line\n')

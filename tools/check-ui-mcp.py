@@ -65,7 +65,7 @@ if args.wide:
     assert (properties["size"]["width"] / scale, properties["size"]["height"] / scale) == (1280, 900), "--wide requires a 1280×900 window"
 
 def tree():
-    result = call("get_element_tree", elementHandle=root, maxElements=700)
+    result = call("get_element_tree", elementHandle=root, maxElements=1500)
     assert not result.get("truncated"), "UI tree exceeded test bound"
     return result["elements"]
 
@@ -77,7 +77,8 @@ def element(label, role, read_tree=tree):
             return next(item for item in read_tree() if (item.get("accessibleLabel") == label or item.get("accessibleLabel", "").startswith(label + ", ")) and item.get("accessibleRole") == role)
         except StopIteration:
             if time.monotonic() > deadline:
-                raise
+                labels=[(item.get("accessibleRole"),item.get("accessibleLabel"),item.get("size")) for item in read_tree() if item.get("accessibleLabel")]
+                raise AssertionError(f"Missing {role} {label!r}; visible controls: {labels}") from None
             time.sleep(0.05)
 
 def scenario_element(label):
@@ -272,18 +273,18 @@ if args.focus:
             check_chain(f"conversation {chat} {suffix}", expected, ("Message draft", "TextInput"))
             if chat == "Weekend plans":
                 click_focus("Members")
-                layer = ["Close members", "Search members", "Group members"]
+                layer = ["Close details", "Search members", "Group members"]
                 prefix = expected if panel else [] if narrow else ["Navigation", "Find a conversation", "All", "Conversations"]
-                layer_recovery = [] if panel else recovery
-                check_chain(f"members {layer_kind} {suffix}", prefix + layer_recovery + layer, ("Close members", "Button"))
+                layer_recovery = []
+                check_chain(f"members {layer_kind} {suffix}", prefix + layer_recovery + layer, ("Close details", "Button"))
                 call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="葵")
-                check_chain(f"members search clear {suffix}", prefix + layer_recovery + layer[:2] + ["Clear search"] + layer[2:], ("Close members", "Button"))
+                check_chain(f"members search clear {suffix}", prefix + layer_recovery + layer[:2] + ["Clear search"] + layer[2:], ("Close details", "Button"))
                 click_focus("Open member: 葵")
-                check_chain(f"member profile {layer_kind} {suffix}", prefix + layer_recovery + ["Back to members", "Close profile", "Open chat"], ("Close profile", "Button"))
+                check_chain(f"member profile {layer_kind} {suffix}", prefix + layer_recovery + ["Back", "Profile more", "Close details", "Open profile photo", "Chat", "Rename"], ("Close details", "Button"))
                 focus_key("\x1b")
                 call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="蓮")
                 click_focus("Open member: 蓮")
-                check_chain(f"member profile without chat {layer_kind} {suffix}", prefix + layer_recovery + ["Back to members", "Close profile"], ("Close profile", "Button"))
+                check_chain(f"member profile without chat {layer_kind} {suffix}", prefix + layer_recovery + ["Back", "Profile more", "Close details", "Open profile photo", "Add friend"], ("Close details", "Button"))
                 focus_key("\x1b")
                 focus_key("\x1b")
             browser()
@@ -293,7 +294,7 @@ if args.focus:
         if panel:
             prefix += ["Weekend plans", element("Members", "Button")["accessibleLabel"], "More"] + recovery + ["Message history", "Message draft"]
             if element("Send", "Button").get("accessibleEnabled"): prefix.append("Send")
-        check_chain(f"profile {layer_kind} {suffix}", prefix + ["Close profile", "Open chat"], ("Close profile", "Button"))
+        check_chain(f"profile {layer_kind} {suffix}", prefix + ["Profile more", "Close details", "Open profile photo", "Chat", "Rename"], ("Close details", "Button"))
         focus_key("\x1b")
         click_focus("Settings")
         check_chain(f"settings {suffix}", ["Close settings", "Settings section", "Message text size", "Enter sends"], ("Close settings", "Button"))
@@ -434,12 +435,13 @@ if args.layout_photos:
     assert timestamp["size"]["height"] <= 32, "timestamp exceeded a single line at the supported time type scale"
     call("click_element", elementHandle=element("Open photo", "Button")["handle"])
     element("Close photo", "Button")
-    assert any("Synthetic original · 1200 × 800" in item.get("accessibleLabel", "") for item in tree()), "viewer did not request original resolution"
+    assert any("photo-landscape · 1200 × 800" in item.get("accessibleLabel", "") for item in tree()), "viewer did not request original resolution"
     call("click_element", elementHandle=element("Original size", "Button")["handle"])
     original = element("Photo in viewer", "Image")
     assert original["size"]["width"] >= 1199, "original-size view only enlarged the thumbnail"
     call("click_element", elementHandle=element("Fit", "Button")["handle"])
-    assert element("Photo in viewer", "Image")["size"]["width"] < original["size"]["width"], "Fit did not restore a bounded view"
+    fitted=element("Photo in viewer", "Image")["size"]
+    assert fitted["width"] <= properties["size"]["width"] + 1 and fitted["height"] <= properties["size"]["height"] + 1, "Fit did not restore a bounded view"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "viewer changed the draft"
     element("Open photo", "Button")
@@ -497,7 +499,50 @@ if args.layout_photos:
     assert len(times) == 5 and yesterday_times <= times and times - yesterday_times <= fixture_times("09:18"), "five-minute/sender/day grouping showed the wrong timestamps"
     print("PASS: sender avatars/names, five-minute grouping, day boundaries, and compact time/status beside bubbles")
 
+def check_detail_stack():
+    def click(label, role="Button"):
+        if label.startswith("Open member: "):
+            call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"],value=label.removeprefix("Open member: "))
+        call("click_element", elementHandle=element(label, role)["handle"])
+    def key(text):
+        call("dispatch_key_event", windowHandle=window, text=text)
+    def focused(label, role="Button"):
+        assert "Focused" in element(label, role).get("accessibleDescription", ""), f"focus not restored to {label}: {[item.get('accessibleLabel') for item in tree() if 'Focused' in item.get('accessibleDescription','')]}"
+    click("Friends")
+    search=element("Search friends and groups", "TextInput")
+    call("set_element_value",elementHandle=search["handle"],value="")
+    click("Open profile: Weekend plans")
+    element("Group info", "Text")
+    assert any(item.get("accessibleLabel")=="Weekend plans" for item in tree()), "group info is not bound to its chat"
+    click("Members (25)")
+    element("Search members", "TextInput")
+    click("Open member: 葵")
+    element("Profile", "Text")
+    click("Open profile photo")
+    element("Photo in viewer", "Image")
+    key("\x1b")
+    focused("Open profile photo")
+    click("Back")
+    focused("Group members", "List")
+    click("Back")
+    focused("Members (25)")
+    click("Members (25)")
+    click("Open member: 葵")
+    key("\x1b")
+    focused("Group members", "List")
+    key("\x1b")
+    focused("Members (25)")
+    click("Members (25)")
+    click("Open member: 葵")
+    click("Close details")
+    assert not any(item.get("accessibleLabel")=="Close details" for item in tree()), "close did not clear the stack"
+    focused("Friends and groups", "List")
+    click("Chats")
+    smoke_chat("葵")
+    print("PASS: group info → members → profile, Back/Escape pop, × closes stack, opener focus restoration")
+
 if args.friends:
+    check_detail_stack()
     call("set_element_value", elementHandle=composer, value=draft)
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     friend_search = element("Search friends and groups", "TextInput")["handle"]
@@ -509,10 +554,10 @@ if args.friends:
     call("dispatch_key_event", windowHandle=window, text="\uf701")  # Category header
     call("dispatch_key_event", windowHandle=window, text="\uf701")  # First friend
     call("dispatch_key_event", windowHandle=window, text="\n")
-    element("Friend profile", "Text")
+    element("Profile", "Text")
     assert any(item.get("accessibleLabel") == "Message draft" for item in tree()) == args.wide, "profile composer visibility disagrees with panel/sheet layout"
     call("click_element", elementHandle=element("Chats", "Button")["handle"])
-    assert not any(item.get("accessibleLabel") == "Close profile" for item in tree()), "destination switch left profile open"
+    assert not any(item.get("accessibleLabel") == "Close details" for item in tree()), "destination switch left profile open"
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     call("dispatch_key_event", windowHandle=window, text="\x1b")
@@ -526,7 +571,7 @@ if args.friends:
     assert not any(item.get("accessibleLabel", "").startswith("Open profile:") and "Weekend plans" in item.get("accessibleLabel", "") for item in tree()), "collapsed groups remained visible"
     call("click_element", elementHandle=element("Groups", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 新しい友だち 🌸", "Button")["handle"])
-    call("click_element", elementHandle=element("Open chat", "Button")["handle"])
+    call("click_element", elementHandle=element("Chat", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "") == "", "new friend inherited another draft"
     element("No messages yet", "Text")
     assert element("Chats", "Button").get("accessibleItemSelected") is True, "Open chat left the rail on Friends"
@@ -539,7 +584,7 @@ if args.friends:
     demo_scenario("Long chat list")
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 新しい友だち 🌸", "Button")["handle"])
-    call("click_element", elementHandle=element("Open chat", "Button")["handle"])
+    call("click_element", elementHandle=element("Chat", "Button")["handle"])
     row = element("新しい友だち 🌸", "Button")
     viewport = element("Conversations", "List")
     assert row["absolutePosition"]["y"] >= viewport["absolutePosition"]["y"], "far row was not revealed"
@@ -548,7 +593,7 @@ if args.friends:
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("set_element_value", elementHandle=friend_search, value="葵")
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
-    call("click_element", elementHandle=element("Open chat", "Button")["handle"])
+    call("click_element", elementHandle=element("Chat", "Button")["handle"])
     call("click_element", elementHandle=element("葵", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == draft, "opening a new friend lost prior draft"
     print("PASS: friend search keyboard activation, profile Escape/destination closure, retained query/categories, Chats selection/empty state, new-chat isolation and prior draft")
@@ -602,6 +647,7 @@ if args.auth_recovery:
     print("PASS: offline/expired feedback placement, F6/Tab order, sign-in dismissal and draft preservation")
 
 if args.layers:
+    check_detail_stack()
     demo_scenario("Protocol fixtures")
     # Public OA metadata assets use the same offline media paths as other photos.
     call("click_element", elementHandle=element("Open photo", "Button")["handle"])
@@ -671,7 +717,7 @@ if args.layers:
     friend_search = element("Search friends and groups", "TextInput")["handle"]
     call("set_element_value", elementHandle=friend_search, value="葵")
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
-    profile_close_y = element("Close profile", "Button")["absolutePosition"].get("y", 0)
+    profile_close_y = element("Close details", "Button")["absolutePosition"].get("y", 0)
     profile = bounds_by_id("Layers::profile")
     if args.wide:
         assert profile["absolutePosition"].get("x", 0) > browser_edge, "panel covered the conversation"
@@ -715,7 +761,7 @@ if args.layers:
     demo_scenario("Expired sign-in")
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
-    close = element("Close profile", "Button")
+    close = element("Close details", "Button")
     assert bounds_by_id("Layers::profile")["absolutePosition"].get("x", 0) == profile["absolutePosition"].get("x", 0)
     assert close["absolutePosition"].get("y", 0) == profile_close_y, "connection feedback moved the profile"
     assert any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()) == args.wide, "profile recovery visibility disagrees with panel/sheet layout"
@@ -727,13 +773,16 @@ if args.layers:
     strip = element("Connection needs attention", "Banner")
     strip_bottom = strip["absolutePosition"].get("y", 0) + strip["size"]["height"]
     call("click_element", elementHandle=element("Members", "Button")["handle"])
+    element("Members (25)", "Text")
+    for name in ("葵", "蓮"):
+        element("Open member: " + name, "Button")
     members = bounds_by_id("Layers::profile")
     if args.wide:
         assert members["absolutePosition"].get("x", 0) > browser_edge, "members panel covered the conversation"
         assert members["absolutePosition"].get("y", 0) == 0, "members panel moved for the recovery strip"
     else:
         assert abs(members["absolutePosition"].get("x", 0) - browser_edge) <= 1, "members sheet covered the browser"
-        assert abs(members["absolutePosition"].get("y", 0) - strip_bottom) <= 1, "members sheet covered the recovery strip"
+        assert members["absolutePosition"].get("y", 0) == 0, "detail sheet changed its position for recovery"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     print("PASS: Settings modal focus, profile reading/focus/browser/connection-strip placement, viewer keys/wheel/pan/loaded-photo navigation, isolated PNG export, opener restoration, draft retention")
 
@@ -866,76 +915,84 @@ if args.rich:
     reply = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Jump to replied message")
     def emoji_body():
         return next(item for item in rich_tree() if item.get("accessibleRole") == "Text" and "日😀[笑]本🌸" in item.get("accessibleLabel", ""))
-    for _ in range(2):
+    if any(item.get("accessibleRole")=="Button" and item.get("accessibleLabel","").startswith("Latest") for item in rich_tree()):
+        for _ in range(2):
+            latest = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest"))
+            call("click_element", elementHandle=latest["handle"])
+            assert not any(item.get("accessibleLabel") == "Return to message" for item in rich_tree()), "Latest retained the return anchor"
+            latest_y = emoji_body()["absolutePosition"]["y"]
+            call("click_element", elementHandle=rich_element("Jump to replied message", "Button")["handle"])
+            assert abs(emoji_body()["absolutePosition"]["y"] - latest_y) > 1, "reply jump after Latest did not scroll"
+            call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
+            assert abs(emoji_body()["absolutePosition"]["y"] - latest_y) <= 1, "Return after Latest lost its origin"
+        print("PASS: Latest → reply jump → Return → Latest → reply jump → Return")
+        call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
+        reply = rich_element("Jump to replied message", "Button")
+        origin_y = emoji_body()["absolutePosition"]["y"]
+        call("click_element", elementHandle=reply["handle"])
+        demo_scenario("Offline")
+        rich_element("Return to message", "Button")
         latest = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest"))
-        call("click_element", elementHandle=latest["handle"])
-        assert not any(item.get("accessibleLabel") == "Return to message" for item in rich_tree()), "Latest retained the return anchor"
-        latest_y = emoji_body()["absolutePosition"]["y"]
-        call("click_element", elementHandle=rich_element("Jump to replied message", "Button")["handle"])
-        assert abs(emoji_body()["absolutePosition"]["y"] - latest_y) > 1, "reply jump after Latest did not scroll"
+        return_pill = rich_element("Return to message", "Button")
+        assert abs(latest["absolutePosition"]["y"] - return_pill["absolutePosition"]["y"]) <= 1, "history pills stacked vertically"
+        assert latest["absolutePosition"]["x"] + latest["size"]["width"] <= return_pill["absolutePosition"]["x"], "history pills overlap"
+        strip = rich_element("Connection needs attention", "Banner")
+        history = rich_element("Message history", "List")
+        editor = rich_element("Message draft", "TextInput")
+        assert strip["absolutePosition"]["y"] == history["absolutePosition"]["y"], "strip left the history top"
+        for pill in (latest, return_pill):
+            assert strip["absolutePosition"]["y"] + strip["size"]["height"] <= pill["absolutePosition"]["y"], "strip covered a history pill"
+            assert pill["absolutePosition"]["y"] + pill["size"]["height"] <= editor["absolutePosition"]["y"], "history pill covered the composer"
+        call("click_element", elementHandle=composer)
+        for label, role in [("Return to message", "Button"), (latest["accessibleLabel"], "Button"), ("Message history", "List")]:
+            call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
+            call("dispatch_key_event", windowHandle=window, text="\t")
+            call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
+            assert rich_element(label, role).get("accessibleDescription", "").startswith("Focused"), f"reverse Tab skipped {label}"
+        assert rich_element("Message history", "List").get("accessibleDescription") == "Focused history", "reverse Tab skipped a history pill"
+        for label, role in [(latest["accessibleLabel"], "Button"), ("Return to message", "Button"), ("Message draft", "TextInput")]:
+            call("dispatch_key_event", windowHandle=window, text="\t")
+            assert rich_element(label, role).get("accessibleDescription", "").startswith("Focused"), f"forward Tab skipped {label}"
+        assert call("get_element_properties", elementHandle=composer).get("accessibleDescription") == "Focused message draft", "history/Latest/Return/composer Tab order changed"
         call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
-        assert abs(emoji_body()["absolutePosition"]["y"] - latest_y) <= 1, "Return after Latest lost its origin"
-    print("PASS: Latest → reply jump → Return → Latest → reply jump → Return")
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
-    reply = rich_element("Jump to replied message", "Button")
-    origin_y = emoji_body()["absolutePosition"]["y"]
-    call("click_element", elementHandle=reply["handle"])
-    demo_scenario("Offline")
-    rich_element("Return to message", "Button")
-    latest = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest"))
-    return_pill = rich_element("Return to message", "Button")
-    assert abs(latest["absolutePosition"]["y"] - return_pill["absolutePosition"]["y"]) <= 1, "history pills stacked vertically"
-    assert latest["absolutePosition"]["x"] + latest["size"]["width"] <= return_pill["absolutePosition"]["x"], "history pills overlap"
-    strip = rich_element("Connection needs attention", "Banner")
-    history = rich_element("Message history", "List")
-    editor = rich_element("Message draft", "TextInput")
-    assert strip["absolutePosition"]["y"] == history["absolutePosition"]["y"], "strip left the history top"
-    for pill in (latest, return_pill):
-        assert strip["absolutePosition"]["y"] + strip["size"]["height"] <= pill["absolutePosition"]["y"], "strip covered a history pill"
-        assert pill["absolutePosition"]["y"] + pill["size"]["height"] <= editor["absolutePosition"]["y"], "history pill covered the composer"
-    call("click_element", elementHandle=composer)
-    for label, role in [("Return to message", "Button"), (latest["accessibleLabel"], "Button"), ("Message history", "List")]:
-        call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
-        call("dispatch_key_event", windowHandle=window, text="\t")
-        call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
-        assert rich_element(label, role).get("accessibleDescription", "").startswith("Focused"), f"reverse Tab skipped {label}"
-    assert rich_element("Message history", "List").get("accessibleDescription") == "Focused history", "reverse Tab skipped a history pill"
-    for label, role in [(latest["accessibleLabel"], "Button"), ("Return to message", "Button"), ("Message draft", "TextInput")]:
-        call("dispatch_key_event", windowHandle=window, text="\t")
-        assert rich_element(label, role).get("accessibleDescription", "").startswith("Focused"), f"forward Tab skipped {label}"
-    assert call("get_element_properties", elementHandle=composer).get("accessibleDescription") == "Focused message draft", "history/Latest/Return/composer Tab order changed"
-    call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
-    restored_y = emoji_body()["absolutePosition"]["y"]
-    assert abs(restored_y - origin_y) <= 1, f"Offline appearing moved reply return: {origin_y} -> {restored_y}"
-    print(f"PASS: reply return with Offline appearing: y={origin_y} -> {restored_y}")
-    # Capture with the strip present, then let the local reconnect fixture clear it.
-    origin_y = emoji_body()["absolutePosition"]["y"]
-    reply = rich_element("Jump to replied message", "Button")
-    quote_y = reply["absolutePosition"]["y"]
-    call("click_element", elementHandle=reply["handle"])
-    demo_scenario("Reconnect blip")
-    deadline = time.monotonic() + 7
-    while any(item.get("accessibleRole") == "Banner" and item.get("accessibleLabel") in ("Connection needs attention", "Connection restored") for item in rich_tree()):
-        assert time.monotonic() < deadline, "synthetic reconnect did not clear the strip"
-        time.sleep(0.1)
-    call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
-    restored_y = emoji_body()["absolutePosition"]["y"]
-    assert abs(restored_y - origin_y) <= 1, f"Offline disappearing moved reply return: {origin_y} -> {restored_y}"
-    reply = rich_element("Jump to replied message", "Button")
-    assert abs(reply["absolutePosition"]["y"] - quote_y) <= 1, "Return moved the reply quote"
-    history = rich_element("Message history", "List")
-    viewports = call("find_elements_by_id", windowHandle=window, elementsId="Pane::viewport")["elementHandles"]
-    viewport = next(item for handle in viewports
-                    if -1 <= (item := call("get_element_properties", elementHandle=handle))["absolutePosition"].get("x", 0) - history["absolutePosition"].get("x", 0) <= 16
-                    and abs(item["size"]["width"] - (history["size"]["width"] - 12)) <= 1)
-    assert abs(viewport["absolutePosition"]["y"] - history["absolutePosition"]["y"]) <= 1, "Return left a blank residual band above the anchor"
-    print(f"PASS: reply return with Offline disappearing: y={origin_y} -> {restored_y}")
-    # Retain the unchanged-inset regression as well.
-    origin_y = restored_y
-    call("click_element", elementHandle=rich_element("Jump to replied message", "Button")["handle"])
-    rich_element("Return to message", "Button")  # The restored quote must accept another jump.
-    call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
-    assert abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor with unchanged inset"
+        restored_y = emoji_body()["absolutePosition"]["y"]
+        assert abs(restored_y - origin_y) <= 1, f"Offline appearing moved reply return: {origin_y} -> {restored_y}"
+        print(f"PASS: reply return with Offline appearing: y={origin_y} -> {restored_y}")
+        # Capture with the strip present, then let the local reconnect fixture clear it.
+        origin_y = emoji_body()["absolutePosition"]["y"]
+        reply = rich_element("Jump to replied message", "Button")
+        quote_y = reply["absolutePosition"]["y"]
+        call("click_element", elementHandle=reply["handle"])
+        demo_scenario("Reconnect blip")
+        deadline = time.monotonic() + 7
+        while any(item.get("accessibleRole") == "Banner" and item.get("accessibleLabel") in ("Connection needs attention", "Connection restored") for item in rich_tree()):
+            assert time.monotonic() < deadline, "synthetic reconnect did not clear the strip"
+            time.sleep(0.1)
+        call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
+        restored_y = emoji_body()["absolutePosition"]["y"]
+        assert abs(restored_y - origin_y) <= 1, f"Offline disappearing moved reply return: {origin_y} -> {restored_y}"
+        reply = rich_element("Jump to replied message", "Button")
+        assert abs(reply["absolutePosition"]["y"] - quote_y) <= 1, "Return moved the reply quote"
+        history = rich_element("Message history", "List")
+        viewports = call("find_elements_by_id", windowHandle=window, elementsId="Pane::viewport")["elementHandles"]
+        viewport = next(item for handle in viewports
+                        if -1 <= (item := call("get_element_properties", elementHandle=handle))["absolutePosition"].get("x", 0) - history["absolutePosition"].get("x", 0) <= 16
+                        and abs(item["size"]["width"] - (history["size"]["width"] - 12)) <= 1)
+        assert abs(viewport["absolutePosition"]["y"] - history["absolutePosition"]["y"]) <= 1, "Return left a blank residual band above the anchor"
+        print(f"PASS: reply return with Offline disappearing: y={origin_y} -> {restored_y}")
+        # Retain the unchanged-inset regression as well.
+        origin_y = restored_y
+        call("click_element", elementHandle=rich_element("Jump to replied message", "Button")["handle"])
+        rich_element("Return to message", "Button")  # The restored quote must accept another jump.
+        call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
+        assert abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor with unchanged inset"
+    else:
+        # At 1280×900 this eight-row fixture fits; no Latest pill or scroll is needed.
+        origin_y=emoji_body()["absolutePosition"]["y"]
+        call("click_element",elementHandle=rich_element("Jump to replied message","Button")["handle"])
+        call("click_element",elementHandle=rich_element("Return to message","Button")["handle"])
+        assert abs(emoji_body()["absolutePosition"]["y"]-origin_y)<=1, "fit-history reply return moved content"
+        print("PASS: rich fixture fits viewport; reply/Return preserve content without a Latest pill")
     call("click_element", elementHandle=emoji_body()["handle"])
     rich_element("[笑]", "Image")
     assert not any(item.get("accessibleLabel") == "Show emoji" for item in rich_tree()), "click entered emoji fallback mode"
@@ -996,7 +1053,9 @@ print(f"PASS: MCP draft retention, chat selection, filtering, local demo Ctrl+En
 
 if args.unread:
     demo_scenario("Long history")
+    time.sleep(.15)  # Let the fixture's store window and first geometry reports settle.
     call("dispatch_pointer_scroll",windowHandle=window,position={"x":600,"y":280},deltaY=700,deltaX=0)
+    time.sleep(.1)
     candidates=[item for item in tree() if item.get("accessibleRole")=="TextInput" and any(base.get("id","").endswith("::body") for base in item.get("typeNamesAndIds",[])) and 120<item["absolutePosition"]["y"]<380]
     anchor=candidates[0] if candidates else None
     demo_scenario("Unread scenario")
@@ -1005,8 +1064,8 @@ if args.unread:
     assert ", 3 unread" in current["accessibleLabel"],"open-chat arrivals lost unread before exposure"
     assert ", 2 unread" in other["accessibleLabel"],"other-chat unread badge did not update"
     if anchor:
-        after=call("get_element_properties",elementHandle=anchor["handle"])
-        assert after["absolutePosition"]["y"]==anchor["absolutePosition"]["y"],"unread arrivals moved the reading anchor"
+        after=next(item for item in tree() if item.get("accessibleRole")==anchor.get("accessibleRole") and item.get("accessibleValue")==anchor.get("accessibleValue"))
+        assert abs(after["absolutePosition"]["y"]-anchor["absolutePosition"]["y"])<=1, f"unread arrivals moved content: {anchor['absolutePosition']} -> {after['absolutePosition']}"
     element("Latest · 3 new","Button")
     # The divider can be outside the bounded rendered range while scrolled up.
     call("click_element",elementHandle=element("Latest · 3 new","Button")["handle"])

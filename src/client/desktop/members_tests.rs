@@ -57,6 +57,7 @@ fn client(transport: http::Transport) -> (Client, PathBuf) {
         more_chats: false,
         contacts: HashMap::from([("uself".into(), json!({"displayName":"Self"}))]),
         members: HashMap::new(),
+        invitees: HashMap::new(),
         member_contacts: HashMap::new(),
         chat_cursor: None,
         obs_access: None,
@@ -78,7 +79,7 @@ fn chats(ids: Vec<String>) -> (&'static str, Reply) {
         Box::new(move |args| {
             assert_eq!(
                 args,
-                json!([{"chatMids":["group"],"withMembers":true,"withInvitees":false},0])
+                json!([{"chatMids":["group"],"withMembers":true,"withInvitees":true},0])
             );
             (200, json!({"chats":[{"chatMid":"group","memberMids":ids}]}))
         }),

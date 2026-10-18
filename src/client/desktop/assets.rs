@@ -25,9 +25,21 @@ pub struct Asset {
     original_url: Option<String>,
     #[serde(default)]
     failure: Option<Failure>,
+    #[serde(default)]
+    name: Option<String>,
 }
 
 impl Asset {
+    pub fn display_name(&self) -> &str {
+        self.name.as_deref().unwrap_or_else(|| {
+            self.url
+                .trim_end_matches("/preview")
+                .trim_end_matches("/original")
+                .rsplit('/')
+                .next()
+                .unwrap_or("Photo")
+        })
+    }
     pub fn failure(&self) -> Option<Failure> {
         self.failure
     }
@@ -54,7 +66,7 @@ impl Asset {
         )
     }
 
-    pub(super) fn avatar(path: &str) -> Option<Self> {
+    pub fn avatar(path: &str) -> Option<Self> {
         if path.is_empty() {
             return None;
         }
@@ -70,9 +82,10 @@ impl Asset {
             private: false,
             key_material: None,
             talk_meta: None,
-            dimension: 64,
+            dimension: 256,
             original_url: None,
             original_suffix: None,
+            name: None,
             failure: None,
         })
     }
@@ -97,6 +110,7 @@ impl Asset {
             dimension: 256,
             original_url: None,
             original_suffix: None,
+            name: None,
             failure: None,
         })
     }
@@ -118,6 +132,7 @@ impl Asset {
             dimension: 32,
             original_url: None,
             original_suffix: None,
+            name: None,
             failure: None,
         })
     }
@@ -138,6 +153,7 @@ impl Asset {
                 dimension: 384,
                 original_suffix: None,
                 original_url: download.map(str::to_owned),
+                name: None,
                 failure: (!official_url(url) || download.is_some_and(|u| !official_url(u)))
                     .then_some(Failure::UnsupportedHost),
             });
@@ -157,6 +173,7 @@ impl Asset {
             key_material: key,
             talk_meta: Some(talk_meta(id)),
             dimension: 384,
+            name: None,
             failure,
             original_url: None,
             original_suffix: Some(
@@ -198,6 +215,7 @@ impl Asset {
             dimension: 0,
             original_url: None,
             original_suffix: None,
+            name: None,
             failure: route_failure(sid, oid).or_else(|| {
                 ["DOWNLOAD_URL", "DOWNLOAD_URL_RENEWAL"]
                     .iter()

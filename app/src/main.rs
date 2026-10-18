@@ -1,6 +1,6 @@
 use line_wasm_poc::{
-    backend::{FakeBackend, LineBackend},
-    controller::{ActionQueue, AppState, Panel},
+    backend::{FakeBackend, LineBackend, ProfileAction},
+    controller::{ActionQueue, AppState, DetailPage, Panel},
     engine::{Connection, Delta, Intent, Sender, StoreLocation, Worker},
     store::*,
 };
@@ -43,6 +43,48 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     });
     ui.global::<State>()
         .on_has_text(|text| !text.trim().is_empty());
+    {
+        use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
+        let saved = Rc::new(RefCell::new(Vec::new()));
+        let record = saved.clone();
+        let weak = ui.as_weak();
+        ui.global::<State>().on_remember_detail_focus(move |reset| {
+            if let Some(ui) = weak.upgrade() {
+                if reset {
+                    record.borrow_mut().clear();
+                }
+                record.borrow_mut().push(
+                    WindowInner::from_pub(ui.window())
+                        .focus_item
+                        .borrow()
+                        .clone(),
+                );
+            }
+        });
+        let weak = ui.as_weak();
+        ui.global::<State>().on_restore_detail_focus(move |all| {
+            if let Some(ui) = weak.upgrade() {
+                let item = if all {
+                    let first = saved.borrow().first().cloned();
+                    saved.borrow_mut().clear();
+                    first
+                } else {
+                    saved.borrow_mut().pop()
+                };
+                if let Some(item) = item.and_then(|i| i.upgrade()).filter(|i| i.is_visible()) {
+                    WindowInner::from_pub(ui.window()).set_focus_item(
+                        &item,
+                        true,
+                        FocusReason::PopupActivation,
+                    );
+                } else if ui.get_detail_open() {
+                    ui.invoke_focus_profile_close();
+                } else {
+                    ui.invoke_focus_composer();
+                }
+            }
+        });
+    }
     {
         use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
         let saved = Rc::new(RefCell::new(None));
@@ -567,6 +609,17 @@ impl Desktop {
             .chain(self.state.friends.iter().filter_map(|f| f.avatar.clone()))
             .chain(
                 self.state
+                    .contacts
+                    .values()
+                    .filter_map(|f| f.avatar.clone()),
+            )
+            .chain(
+                self.state.profile["picturePath"]
+                    .as_str()
+                    .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar),
+            )
+            .chain(
+                self.state
                     .members
                     .iter()
                     .filter_map(|m| m.contact.avatar.clone()),
@@ -700,6 +753,8 @@ impl Desktop {
                 .set_viewer_has_previous(index.is_some_and(|i| i > 0));
             ui.global::<State>()
                 .set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
+            ui.global::<State>()
+                .set_viewer_name(asset.display_name().into());
             self.viewer_asset = Some(asset.key());
             if let Some(preview) = self.presenter.images.get(key) {
                 ui.set_viewer_image(preview.clone());
@@ -840,6 +895,7 @@ impl Desktop {
             Delta::PairFailed { cancelled } => {
                 if *cancelled {
                     self.state.panel = Panel::Chats;
+                    self.state.detail.clear();
                 }
                 ui.set_auth_error(
                     "Sign-in did not finish. Your cached conversations are still available.".into(),
@@ -847,6 +903,7 @@ impl Desktop {
             }
             Delta::Connection(Connection::Online) if ui.get_auth_busy() => {
                 self.state.panel = Panel::Chats;
+                self.state.detail.clear();
             }
             Delta::Notify(m) => {
                 if self.state.selected.as_ref() == Some(&m.chat_id) && !ui.get_following() {
@@ -896,12 +953,8 @@ impl Desktop {
                     ui.set_viewer_loading(false);
                     ui.set_viewer_status(
                         format!(
-                            "{}{} × {}",
-                            if ui.get_demo() {
-                                "Synthetic original · "
-                            } else {
-                                ""
-                            },
+                            "{} · {} × {}",
+                            ui.global::<State>().get_viewer_name(),
                             pixels.width,
                             pixels.height
                         )
@@ -999,34 +1052,107 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
         invoke_focus_reading_before_editor
     );
     global_callback!(on_request_panel, |ui, d, panel| {
-        let member_profile = matches!(d.state.panel, Panel::MemberProfile(_));
-        let members = matches!(d.state.panel, Panel::Members | Panel::MemberProfile(_));
+        let restore_avatar = panel == PanelState::None
+            && matches!(d.state.panel, Panel::Viewer)
+            && ui.global::<State>().get_viewer_from_detail();
         d.state.panel = match panel {
             PanelState::None => {
-                if ui.get_section() == 1 {
+                if !d.state.detail.is_empty() && matches!(d.state.panel, Panel::Viewer) {
+                    Panel::Detail
+                } else if ui.get_section() == 1 {
                     Panel::Friends
                 } else {
                     Panel::Chats
                 }
             }
             PanelState::Settings => Panel::Settings,
-            PanelState::Profile => Panel::Profile(ui.get_profile_id().to_string()),
-            PanelState::Members => Panel::Members,
-            PanelState::MemberProfile => Panel::MemberProfile(ui.get_profile_id().to_string()),
+            PanelState::Detail => Panel::Detail,
             PanelState::Viewer => Panel::Viewer,
             PanelState::SignIn => Panel::SignIn,
         };
         d.render(&ui);
+        if restore_avatar {
+            ui.global::<State>().set_viewer_from_detail(false);
+            ui.global::<State>().invoke_finish_detail_restore(false);
+        }
         match panel {
             PanelState::Settings => ui.invoke_focus_settings_close(),
             PanelState::SignIn => ui.invoke_focus_auth_start(),
-            PanelState::Members if member_profile => ui.invoke_focus_member_list(),
-            PanelState::Members | PanelState::MemberProfile | PanelState::Profile => {
-                ui.invoke_focus_profile_close()
-            }
-            PanelState::None if members => ui.invoke_focus_members_header(),
             _ => {}
         }
+    });
+    global_callback!(on_pop_detail, |ui, d, all| {
+        d.state.pop_detail(all);
+        d.render(&ui);
+        ui.global::<State>().invoke_finish_detail_restore(all);
+    });
+    global_callback!(on_finish_detail_restore, |ui, _d, all| {
+        ui.global::<State>().invoke_restore_detail_focus(all);
+    });
+    global_callback!(on_detail_action, |ui, d, kind, value| {
+        if kind == "member-chat" {
+            d.capture_draft(&ui);
+            let id = ChatId(value.to_string());
+            d.reveal = Some(id.clone());
+            d.sender.send(d.state.select(id));
+            d.state.detail.clear();
+            d.state.panel = Panel::Chats;
+            ui.set_section(0);
+            ui.set_show_conversation(true);
+            d.render(&ui);
+            ui.invoke_focus_composer();
+            return;
+        }
+        if d.state.action.is_some() {
+            return;
+        }
+        let Some(page) = d.state.detail_page().cloned() else {
+            return;
+        };
+        let action = match (kind.as_str(), page) {
+            ("rename", DetailPage::Profile(mid)) => ProfileAction::Rename {
+                mid,
+                name: value.to_string(),
+            },
+            ("add", DetailPage::Profile(mid)) => ProfileAction::AddFriend {
+                mid,
+                chat: d
+                    .state
+                    .selected
+                    .as_ref()
+                    .map(|c| c.0.clone())
+                    .unwrap_or_default(),
+            },
+            ("mute", DetailPage::GroupInfo(chat)) => ProfileAction::Mute {
+                disabled: !ui.global::<State>().get_group_muted(),
+                chat,
+            },
+            ("leave", DetailPage::GroupInfo(chat)) => ProfileAction::Leave { chat },
+            _ => return,
+        };
+        d.state.action_error.clear();
+        d.state.action = Some(action.clone());
+        d.sender.send(Intent::ProfileAction(action));
+        d.render(&ui);
+    });
+    global_callback!(on_profile_photo, |ui, d| {
+        if ui.get_profile_avatar().size().width == 0 {
+            return;
+        }
+        ui.global::<State>().invoke_remember_detail_focus(false);
+        ui.global::<State>().set_viewer_from_detail(true);
+        ui.global::<State>().set_viewer_has_previous(false);
+        ui.global::<State>().set_viewer_has_next(false);
+        ui.set_viewer_loading(false);
+        ui.set_viewer_error("".into());
+        d.viewer_asset = None;
+        ui.set_viewer_key(format!("profile:{}", ui.get_profile_id()).into());
+        ui.invoke_reset_viewer();
+        ui.set_viewer_image(ui.get_profile_avatar());
+        ui.set_viewer_status(ui.get_profile_name());
+        d.state.panel = Panel::Viewer;
+        d.render(&ui);
+        ui.invoke_focus_viewer_close();
     });
     callback!(on_select_chat, |ui, d, index| {
         d.select(&ui, index as usize);
@@ -1135,6 +1261,7 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
         } else {
             Panel::Chats
         };
+        d.state.detail.clear();
         ui.set_section(section);
         if section == 1 {
             d.sender.send(Intent::Friends);
@@ -1148,12 +1275,17 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
         d.render(&ui);
     });
     callback!(on_open_members, |ui, d| {
-        if let Some(chat) = &d.state.selected {
-            if !matches!(d.state.panel, Panel::Members | Panel::MemberProfile(_)) {
-                ui.set_member_query("".into());
+        if let Some(chat) = d.state.selected.clone() {
+            let push =
+                matches!(d.state.detail_page(),Some(DetailPage::GroupInfo(id)) if id == &chat);
+            if !push {
+                d.state.detail.clear();
             }
-            d.state.panel = Panel::Members;
-            d.sender.send(Intent::Members(chat.clone()));
+            ui.global::<State>().invoke_remember_detail_focus(!push);
+            ui.set_member_query("".into());
+            d.state
+                .push_detail(DetailPage::Members(chat.clone()), "members".into());
+            d.sender.send(Intent::Members(chat));
             d.render(&ui);
             ui.invoke_focus_profile_close();
         }
@@ -1162,21 +1294,53 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
         d.render(&ui);
     });
     callback!(on_open_profile, |ui, d, id| {
-        d.state.panel = Panel::Profile(id.to_string());
+        d.state.detail.clear();
+        ui.global::<State>().invoke_remember_detail_focus(true);
+        let id = id.to_string();
+        let group = d.state.friends.iter().any(|f| f.id == id && f.group)
+            || d.state
+                .chats
+                .get(&ChatId(id.clone()))
+                .is_some_and(|c| c.chat.kind != 0);
+        if group {
+            let chat = ChatId(id);
+            if d.state.selected.as_ref() != Some(&chat) {
+                d.capture_draft(&ui);
+                d.sender.send(d.state.select(chat.clone()));
+            }
+            ui.set_show_conversation(true);
+            d.state
+                .push_detail(DetailPage::GroupInfo(chat.clone()), "header".into());
+            d.sender.send(Intent::GroupInfo(chat.clone()));
+            d.sender.send(Intent::Members(chat));
+        } else {
+            d.state
+                .push_detail(DetailPage::Profile(id.clone()), "profile".into());
+            if id != "self" {
+                d.sender.send(Intent::Contact(id));
+            }
+        }
         d.render(&ui);
-        ui.invoke_show_profile();
+        ui.invoke_focus_profile_close();
     });
     callback!(on_open_member, |ui, d, id| {
-        d.state.panel = Panel::MemberProfile(id.to_string());
+        ui.global::<State>()
+            .invoke_remember_detail_focus(d.state.detail.is_empty());
+        let id = id.to_string();
+        d.state
+            .push_detail(DetailPage::Profile(id.clone()), "member".into());
+        d.sender.send(Intent::Contact(id));
         d.render(&ui);
         ui.invoke_focus_profile_close();
     });
     callback!(on_start_friend_chat, |ui, d| {
-        if let Panel::Profile(id) | Panel::MemberProfile(id) = &d.state.panel {
+        d.capture_draft(&ui);
+        if let Some(DetailPage::Profile(id)) = d.state.detail_page() {
             let id = ChatId(id.clone());
             d.reveal = Some(id.clone());
             let intent = d.state.select(id);
             d.sender.send(intent);
+            d.state.detail.clear();
             d.state.panel = Panel::Chats;
             ui.set_section(0);
             ui.set_show_conversation(true);

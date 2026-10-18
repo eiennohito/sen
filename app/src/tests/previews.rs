@@ -100,7 +100,13 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
             m.rich.caption = Some("walk".into());
         }
         m.image_key = if kind == 14 { "" } else { "media-key" }.into();
-        let text = message_text(&m);
+        let text = match kind {
+            1 => "Photo",
+            2 => "Video",
+            7 => "Sticker",
+            14 => "File",
+            _ => unreachable!(),
+        };
         let mut message = message_row(m);
         let mut row = ChatRow::default();
         preview::set(&mut row, &message, 15);

@@ -256,14 +256,20 @@ impl Presenter {
             &mut self.friend_keys,
             grouped.into_iter().map(|r| (r.id.to_string(), r)).collect(),
         );
-        let members = state
-            .members
-            .iter()
+        let mut ordered_members = state.members.iter().collect::<Vec<_>>();
+        ordered_members.sort_by_key(|m| {
+            (
+                m.contact.profile["invited"].as_bool().unwrap_or(false),
+                !m.is_self,
+            )
+        });
+        let members = ordered_members
+            .into_iter()
             .filter(|m| {
-                m.contact
-                    .name
-                    .to_lowercase()
-                    .contains(&ui.get_member_query().to_lowercase())
+                let query = ui.get_member_query().to_lowercase();
+                m.contact.name.to_lowercase().contains(&query)
+                    || m.contact.status.to_lowercase().contains(&query)
+                    || (m.is_self && "you".contains(&query))
             })
             .map(|m| MemberRow {
                 id: m.contact.id.clone().into(),
@@ -271,6 +277,12 @@ impl Presenter {
                 initial: name_initial(&m.contact.name),
                 status: m.contact.status.clone().into(),
                 is_self: m.is_self,
+                friend: state
+                    .friends
+                    .iter()
+                    .any(|f| f.id == m.contact.id && !f.group)
+                    || m.contact.profile["relation"] == 0,
+                invited: m.contact.profile["invited"].as_bool().unwrap_or(false),
                 avatar_key: m
                     .contact
                     .avatar
@@ -292,51 +304,178 @@ impl Presenter {
             &mut self.member_keys,
             members.into_iter().map(|r| (r.id.to_string(), r)).collect(),
         );
-        if let Panel::Profile(id) | Panel::MemberProfile(id) = &state.panel
-            && let Some(f) = state
-                .friends
+        let g = ui.global::<State>();
+        g.set_detail_depth(state.detail.len() as i32);
+        g.set_invitee_count(
+            state
+                .members
                 .iter()
-                .chain(state.members.iter().map(|m| &m.contact))
-                .find(|f| &f.id == id)
-        {
-            ui.set_profile_name(f.name.clone().into());
-            ui.global::<State>()
-                .set_profile_initial(name_initial(&f.name));
-            ui.set_profile_id(f.id.clone().into());
-            ui.set_profile_status(f.status.clone().into());
-            ui.set_profile_group(f.group);
-            ui.set_profile_available(
-                !state
+                .filter(|m| m.contact.profile["invited"] == true)
+                .count() as i32,
+        );
+        g.set_detail_busy(state.action.is_some());
+        g.set_detail_running(
+            state
+                .action
+                .as_ref()
+                .map(|a| match a {
+                    line_wasm_poc::backend::ProfileAction::Rename { .. } => "rename",
+                    line_wasm_poc::backend::ProfileAction::AddFriend { .. } => "add",
+                    line_wasm_poc::backend::ProfileAction::Mute { .. } => "mute",
+                    line_wasm_poc::backend::ProfileAction::Leave { .. } => "leave",
+                })
+                .unwrap_or("")
+                .into(),
+        );
+        g.set_detail_error(state.action_error.clone().into());
+        g.set_chat_left(
+            state
+                .selected
+                .as_ref()
+                .is_some_and(|id| state.chats.get(id).is_none_or(|c| c.chat.left)),
+        );
+        if let Some(page) = state.detail_page() {
+            use line_wasm_poc::controller::DetailPage;
+            let (id, kind) = match page {
+                DetailPage::Profile(id) => (id.as_str(), 0),
+                DetailPage::GroupInfo(id) => (id.0.as_str(), 1),
+                DetailPage::Members(id) => (id.0.as_str(), 2),
+            };
+            g.set_detail_page(kind);
+            let own = id == "self"
+                || state.profile["mid"].as_str() == Some(id)
+                || state
                     .members
                     .iter()
-                    .any(|m| m.is_self && &m.contact.id == id)
-                    && (!matches!(state.panel, Panel::MemberProfile(_))
-                        || state.chats.contains_key(&ChatId(id.clone()))
-                        || state.friends.iter().any(|f| &f.id == id)),
+                    .any(|m| m.is_self && m.contact.id == id);
+            let f = state
+                .contacts
+                .get(id)
+                .or_else(|| state.friends.iter().find(|f| f.id == id))
+                .or_else(|| {
+                    state
+                        .members
+                        .iter()
+                        .find(|m| m.contact.id == id)
+                        .map(|m| &m.contact)
+                });
+            let c = state.chats.get(&ChatId(id.into())).map(|c| &c.chat);
+            let name = if own {
+                state.profile["displayName"].as_str().unwrap_or("You")
+            } else if kind != 0 {
+                c.map(|c| c.title.as_str())
+                    .or_else(|| f.map(|f| f.name.as_str()))
+                    .unwrap_or("Group")
+            } else {
+                f.map(|f| f.name.as_str()).unwrap_or("Unknown member")
+            };
+            let room_title = state
+                .members
+                .iter()
+                .filter(|m| !m.is_self && m.contact.profile["invited"] != true)
+                .map(|m| m.contact.name.as_str())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let name = if kind != 0
+                && (id.starts_with('r') || c.is_some_and(|c| c.kind == 2))
+                && !room_title.is_empty()
+            {
+                room_title.as_str()
+            } else {
+                name
+            };
+            let status = if own {
+                state.profile["statusMessage"].as_str().unwrap_or("")
+            } else {
+                f.map(|f| f.status.as_str()).unwrap_or("")
+            };
+            let friend = !own
+                && kind == 0
+                && f.is_some_and(|f| f.name != "Unknown member")
+                && f.is_some_and(|f| {
+                    f.profile["relation"] == 0
+                        || (f.profile["relation"].is_null()
+                            && state.friends.iter().any(|r| r.id == id && !r.group))
+                });
+            let official = f.is_some_and(|f| f.profile["type"].as_i64().is_some_and(|t| t != 0));
+            let friend = friend && !official;
+            ui.set_profile_id(id.into());
+            ui.set_profile_name(name.into());
+            ui.set_profile_status(status.into());
+            g.set_profile_initial(name_initial(name));
+            g.set_profile_own(own);
+            g.set_profile_friend(friend);
+            g.set_profile_addable(
+                !own && kind == 0
+                    && !friend
+                    && !official
+                    && f.is_some_and(|f| f.name != "Unknown member"),
             );
+            ui.set_profile_available(
+                !own && kind == 0 && name != "Unknown member" && (friend || c.is_some()),
+            );
+            ui.set_profile_group(kind != 0);
+            g.set_profile_original(
+                f.and_then(|f| {
+                    let original = f.profile["displayName"].as_str()?;
+                    (original != name).then_some(original)
+                })
+                .unwrap_or("")
+                .into(),
+            );
+            g.set_profile_favourite(f.is_some_and(|f| {
+                f.profile["favoriteTime"]
+                    .as_i64()
+                    .or_else(|| f.profile["favoriteTime"].as_str()?.parse().ok())
+                    .unwrap_or(0)
+                    > 0
+            }));
+            g.set_profile_notice(
+                if !friend
+                    && state
+                        .notices
+                        .get(id)
+                        .is_some_and(|v| v["notice"].as_object().is_some_and(|o| !o.is_empty()))
+                {
+                    "Be careful when sharing personal information or sending money."
+                } else {
+                    ""
+                }
+                .into(),
+            );
+            g.set_profile_name_runs(rich_content::runs(name, &[]));
+            g.set_profile_status_runs(rich_content::runs(status, &[]));
+            let avatar = if own {
+                state.profile["picturePath"]
+                    .as_str()
+                    .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar)
+            } else {
+                f.and_then(|f| f.avatar.clone()).or_else(|| {
+                    c.and_then(|c| c.avatar.as_ref())
+                        .and_then(|a| serde_json::from_str(a).ok())
+                })
+            };
             ui.set_profile_avatar(
-                f.avatar
+                avatar
                     .as_ref()
                     .and_then(|a| self.images.get(&a.key()))
                     .cloned()
                     .unwrap_or_default(),
             );
-        }
-
-        if matches!(&state.panel, Panel::Profile(id) if id == "self") {
-            ui.set_profile_name(
-                state.profile["displayName"]
-                    .as_str()
-                    .unwrap_or("LINE")
-                    .into(),
+            g.set_group_count(
+                c.and_then(|c| c.member_count)
+                    .map(|n| n as i32)
+                    .unwrap_or(-1),
             );
-            ui.global::<State>()
-                .set_profile_initial(name_initial(&ui.get_profile_name()));
-            ui.set_profile_id("self".into());
-            ui.set_profile_status(state.profile["statusMessage"].as_str().unwrap_or("").into());
-            ui.set_profile_group(false);
-            ui.set_profile_available(false);
-            ui.set_profile_avatar(slint::Image::default());
+            g.set_group_muted(c.is_some_and(|c| c.muted));
+            g.set_group_left(c.is_some_and(|c| c.left));
+            g.set_group_room(id.starts_with('r') || c.is_some_and(|c| c.kind == 2));
+            g.set_group_writable(
+                state
+                    .group_info
+                    .get(&ChatId(id.into()))
+                    .is_some_and(|v| v.is_object()),
+            );
         }
         let mut chats = Vec::new();
         for (index, id) in state.chat_order.iter().enumerate() {
@@ -471,9 +610,7 @@ impl Presenter {
         ui.global::<State>().set_panel(match &state.panel {
             Panel::Chats | Panel::Friends => PanelState::None,
             Panel::Settings => PanelState::Settings,
-            Panel::Members => PanelState::Members,
-            Panel::Profile(_) => PanelState::Profile,
-            Panel::MemberProfile(_) => PanelState::MemberProfile,
+            Panel::Detail => PanelState::Detail,
             Panel::Viewer => PanelState::Viewer,
             Panel::SignIn => PanelState::SignIn,
         });
@@ -667,22 +804,45 @@ impl Presenter {
             {
                 ui.global::<State>().set_chat_avatar(image.clone());
             }
-            let profile = match &state.panel {
-                Panel::Profile(id) | Panel::MemberProfile(id) => {
-                    state.friends.iter().find(|f| &f.id == id).or_else(|| {
+            let profile = match state.detail_page() {
+                Some(line_wasm_poc::controller::DetailPage::Profile(id)) => state
+                    .contacts
+                    .get(id)
+                    .or_else(|| state.friends.iter().find(|f| &f.id == id))
+                    .or_else(|| {
                         state
                             .members
                             .iter()
                             .find(|m| &m.contact.id == id)
                             .map(|m| &m.contact)
-                    })
-                }
+                    }),
                 _ => None,
             };
             if profile
                 .and_then(|f| f.avatar.as_ref())
                 .is_some_and(|a| a.key() == key)
             {
+                ui.set_profile_avatar(image.clone());
+            }
+            let other_avatar = match state.detail_page() {
+                Some(line_wasm_poc::controller::DetailPage::Profile(id))
+                    if id == "self" || state.profile["mid"].as_str() == Some(id) =>
+                {
+                    state.profile["picturePath"]
+                        .as_str()
+                        .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar)
+                }
+                Some(line_wasm_poc::controller::DetailPage::GroupInfo(id)) => state
+                    .chats
+                    .get(id)
+                    .and_then(|c| c.chat.avatar.as_ref())
+                    .and_then(|a| {
+                        serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(a)
+                            .ok()
+                    }),
+                _ => None,
+            };
+            if other_avatar.is_some_and(|a| a.key() == key) {
                 ui.set_profile_avatar(image.clone());
             }
         }

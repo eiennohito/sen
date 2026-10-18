@@ -16,6 +16,20 @@ fn test_window() -> AppWindow {
             ui.global::<State>().set_panel(panel);
         }
     });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_pop_detail(move |all| {
+        if let Some(ui) = weak.upgrade() {
+            let g = ui.global::<State>();
+            g.set_detail_depth(if all {
+                0
+            } else {
+                (g.get_detail_depth() - 1).max(0)
+            });
+            if g.get_detail_depth() == 0 {
+                g.set_panel(PanelState::None);
+            }
+        }
+    });
     ui
 }
 mod grouping;

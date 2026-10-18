@@ -321,11 +321,11 @@ fn reentrant_panel_requests_are_queued_without_borrowing_the_controller() {
     actions.push(move |state| {
         state.panel = Panel::Settings;
         // A presenter-triggered callback only records another action.
-        callbacks.push(|state| state.panel = Panel::Members);
+        callbacks.push(|state| state.panel = Panel::Detail);
         assert_eq!(state.panel, Panel::Settings);
     });
     actions.drain(&mut app.state);
-    assert_eq!(app.state.panel, Panel::Members);
+    assert_eq!(app.state.panel, Panel::Detail);
 }
 
 #[test]
@@ -651,6 +651,24 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         }
     }
     impl Backend for Blocked {
+        fn contact(&mut self, mid: &str) -> Result<line_wasm_poc::client::desktop::Friend> {
+            self.0.contact(mid)
+        }
+        fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
+            self.0.notice(mid)
+        }
+        fn full_chat(&mut self, chat: &ChatId) -> Result<serde_json::Value> {
+            self.0.full_chat(chat)
+        }
+        fn profile_action(
+            &mut self,
+            action: &line_wasm_poc::backend::ProfileAction,
+            full: serde_json::Value,
+            seq: u32,
+        ) -> Result<()> {
+            self.0.profile_action(action, full, seq)
+        }
+
         fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
             self.0.sign_in(c, d)
         }
@@ -800,6 +818,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     let mut state = AppState::default();
     state.members.push(line_wasm_poc::client::desktop::Member {
         contact: line_wasm_poc::client::desktop::Friend {
+            profile: Default::default(),
             id: "old".into(),
             name: "Old chat".into(),
             status: String::new(),
@@ -928,6 +947,24 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         calls: Arc<AtomicUsize>,
     }
     impl Backend for BlockedSend {
+        fn contact(&mut self, mid: &str) -> Result<line_wasm_poc::client::desktop::Friend> {
+            self.fake.contact(mid)
+        }
+        fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
+            self.fake.notice(mid)
+        }
+        fn full_chat(&mut self, chat: &ChatId) -> Result<serde_json::Value> {
+            self.fake.full_chat(chat)
+        }
+        fn profile_action(
+            &mut self,
+            action: &line_wasm_poc::backend::ProfileAction,
+            full: serde_json::Value,
+            seq: u32,
+        ) -> Result<()> {
+            self.fake.profile_action(action, full, seq)
+        }
+
         fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
             self.fake.sign_in(c, d)
         }
@@ -1055,4 +1092,167 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
             .count(),
         1
     );
+}
+
+fn profile_action(app: &mut App, action: line_wasm_poc::backend::ProfileAction) {
+    app.state.action = Some(action.clone());
+    app.send(Intent::ProfileAction(action));
+    app.until(|s| s.action.is_none());
+}
+#[test]
+fn rename_contact_failure_then_success_updates_the_store_page() {
+    use line_wasm_poc::backend::{Error, FakeRpc, ProfileAction};
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.send(Intent::Friends);
+    app.until(|s| !s.friends.is_empty());
+    let action = ProfileAction::Rename {
+        mid: "alice".into(),
+        name: "Aoi 🌿".into(),
+    };
+    fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
+    profile_action(&mut app, action.clone());
+    assert_eq!(app.state.contacts["alice"].name, "葵");
+    assert_eq!(app.state.action_error, "Couldn't rename.");
+    profile_action(&mut app, action);
+    assert_eq!(app.state.contacts["alice"].name, "Aoi 🌿");
+    assert_eq!(app.state.contacts["alice"].profile["displayName"], "葵");
+    assert!(app.state.action_error.is_empty());
+    app.send(Intent::Contact("alice".into()));
+    app.until(|s| s.contacts["alice"].profile["displayNameOverridden"] == "Aoi 🌿");
+}
+#[test]
+fn add_friend_failure_then_success_changes_relation_in_place() {
+    use line_wasm_poc::backend::{Error, FakeRpc, ProfileAction};
+    let fake = FakeBackend::canned();
+    let mut members = fake.clone();
+    use line_wasm_poc::backend::Backend;
+    let mut rows = members.members(&ChatId("weekend".into())).unwrap();
+    rows[0].contact.profile = serde_json::json!({"relation":2});
+    let mid = rows[0].contact.id.clone();
+    fake.set_members(rows);
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.send(Intent::Contact(mid.clone()));
+    app.until(|s| s.contacts.contains_key(&mid));
+    // Synthetic contact source prefers the friend record, so provide the observed non-friend snapshot.
+    let mut row = app.state.contacts[&mid].clone();
+    row.profile = serde_json::json!({"relation":2});
+    fake.set_friends(vec![row]);
+    app.send(Intent::Contact(mid.clone()));
+    app.until(|s| s.contacts[&mid].profile["relation"] == 2);
+    let action = ProfileAction::AddFriend {
+        mid: mid.clone(),
+        chat: "weekend".into(),
+    };
+    fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
+    profile_action(&mut app, action.clone());
+    assert_eq!(app.state.contacts[&mid].profile["relation"], 2);
+    assert_eq!(app.state.action_error, "Couldn't add friend.");
+    profile_action(&mut app, action);
+    assert_eq!(app.state.contacts[&mid].profile["relation"], 0);
+    assert!(app.state.action_error.is_empty());
+}
+#[test]
+fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
+    use line_wasm_poc::backend::{Error, FakeRpc, ProfileAction};
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    let chat = ChatId("weekend".into());
+    app.send(Intent::GroupInfo(chat.clone()));
+    app.until(|s| {
+        s.group_info
+            .get(&ChatId("weekend".into()))
+            .is_some_and(|v| v.is_object())
+    });
+    let action = ProfileAction::Mute {
+        chat: chat.clone(),
+        disabled: true,
+    };
+    fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
+    profile_action(&mut app, action.clone());
+    assert!(!app.state.chats[&chat].chat.muted);
+    assert_eq!(app.state.action_error, "Couldn't change notifications.");
+    profile_action(&mut app, action);
+    assert!(app.state.chats[&chat].chat.muted);
+    assert_eq!(app.state.group_info[&chat]["notificationDisabled"], true);
+    assert!(app.state.group_info[&chat]["extra"]["groupExtra"].is_object());
+    assert!(app.state.action_error.is_empty());
+}
+#[test]
+fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
+    use line_wasm_poc::backend::{Error, FakeRpc, ProfileAction};
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("weekend");
+    app.until(|s| !s.window_loading);
+    let chat = ChatId("weekend".into());
+    let action = ProfileAction::Leave { chat: chat.clone() };
+    fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
+    profile_action(&mut app, action.clone());
+    assert!(!app.state.chats[&chat].chat.left);
+    assert_eq!(app.state.action_error, "Couldn't leave group.");
+    profile_action(&mut app, action);
+    assert!(app.state.chats[&chat].chat.left);
+    assert!(app.state.chat_order.contains(&chat));
+    app.state.composer = "still here".into();
+    assert!(!app.state.can_send());
+    assert!(app.state.action_error.is_empty());
+}
+#[test]
+fn detail_stack_pop_and_close_use_the_recorded_opener() {
+    use line_wasm_poc::controller::DetailPage;
+    let mut state = AppState::default();
+    let chat = ChatId("weekend".into());
+    state.push_detail(DetailPage::GroupInfo(chat.clone()), "header".into());
+    state.push_detail(DetailPage::Members(chat), "members row".into());
+    state.push_detail(DetailPage::Profile("alice".into()), "alice row".into());
+    assert_eq!(state.pop_detail(false).as_deref(), Some("alice row"));
+    assert!(matches!(state.detail_page(), Some(DetailPage::Members(_))));
+    assert_eq!(state.pop_detail(true).as_deref(), Some("header"));
+    assert!(state.detail.is_empty());
+}
+
+#[test]
+fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
+    use line_wasm_poc::backend::{Backend, FakeRpc};
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    for kind in [4, 49] {
+        let mut source = fake.clone();
+        let mut rows = source.friends().unwrap();
+        rows[0].name = format!("Changed {kind}");
+        rows[0].profile = serde_json::json!({"relation":0});
+        fake.set_friends(rows);
+        fake.inject_raw(serde_json::json!({"type":kind,"param1":"alice"}));
+        app.until(|s| {
+            s.contacts
+                .get("alice")
+                .is_some_and(|f| f.name == format!("Changed {kind}"))
+        });
+    }
+    let chat = ChatId("weekend".into());
+    for kind in [121, 122, 127, 128] {
+        fake.add_chat(line_wasm_poc::store::ChatInput {
+            id: chat.clone(),
+            title: format!("Group {kind}"),
+            kind: 1,
+            ..Default::default()
+        });
+        fake.inject_raw(serde_json::json!({"type":kind,"param1":"weekend"}));
+        app.until(|s| {
+            s.chats
+                .get(&ChatId("weekend".into()))
+                .is_some_and(|c| c.chat.title == format!("Group {kind}"))
+        });
+    }
+    fake.inject_raw(serde_json::json!({"type":41,"param1":"weekend"}));
+    app.until(|s| !s.chats.contains_key(&chat));
+    assert!(fake.calls().contains(&FakeRpc::Contact("alice".into())));
+    assert!(fake.calls().contains(&FakeRpc::Details(chat)));
+    assert_eq!(app.notifications, 0);
 }

@@ -118,6 +118,7 @@ Request shapes read from the extension's call sites. Response handling is
 inferred.
 
 - React: `TalkService/react` `[{"reqSeq","messageId","reactionType":{"predefinedReactionType":N}}]`, with N one of 2 NICE, 3 LOVE, 4 FUN, 5 AMAZING, 6 SAD, 7 OMG. Picking the current reaction again cancels it: `TalkService/cancelReaction` `[{"reqSeq","messageId"}]`.
+- Update a chat: `TalkService/updateChat` `[{"reqSeq","chat":{…full chat with the one field changed},"updatedAttribute":N}]`, where N is one of 1 NAME, 2 PICTURE_STATUS, 4 PREVENTED_JOIN_BY_TICKET, 8 NOTIFICATION_SETTING (`notificationDisabled`), 16 INVITATION_TICKET, 32 FAVORITE_TIMESTAMP (`favoriteTimestamp` as a string, "0" to clear), 64 CHAT_TYPE.
 - Create a group or room: `TalkService/createChat` `[{"reqSeq","type":0 GROUP|1 ROOM,"name":"<trimmed or empty>","targetUserMids":[…without self]}]` → `{chat:{chatMid,…}}`. A 1:1 chat with a friend needs no call: the first `sendMessage` to the friend's MID creates it.
 
 ## Unsend

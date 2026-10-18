@@ -15,10 +15,13 @@ fn resizing_layers_keeps_focus_on_visible_content() {
                 ui.invoke_focus_settings_close();
             } else {
                 ui.global::<State>().set_panel(match layer {
-                    "profile" => PanelState::Profile,
-                    "members" => PanelState::Members,
-                    _ => PanelState::MemberProfile,
+                    "profile" => PanelState::Detail,
+                    "members" => PanelState::Detail,
+                    _ => PanelState::Detail,
                 });
+                ui.global::<State>().set_detail_depth(1);
+                ui.global::<State>()
+                    .set_detail_page(if layer == "members" { 2 } else { 0 });
                 ui.invoke_focus_profile_close();
             }
             snapshot::render(&window, (980, 720)).unwrap();
@@ -196,7 +199,8 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
         ui.set_draft(draft.into()); // Programmatic restoration emits no typing event.
         assert!(ui.get_can_send());
         ui.show().unwrap();
-        ui.global::<State>().set_panel(PanelState::Profile);
+        ui.global::<State>().set_detail_depth(1);
+        ui.global::<State>().set_panel(PanelState::Detail);
         for width in [740, 800] {
             ui.window()
                 .set_size(slint::LogicalSize::new(width as f32, 720.));
@@ -206,12 +210,15 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
                 "profile left an unusable reading width at {width}"
             );
             assert_eq!(ui.get_draft(), draft);
-            assert!(ui.get_profile_open());
+            assert!(ui.get_detail_open());
         }
         ui.invoke_close_profile();
-        assert!(!ui.get_profile_open());
+        assert!(!ui.get_detail_open());
         assert_eq!(ui.get_draft(), draft);
-        ui.global::<State>().set_panel(PanelState::MemberProfile);
+        ui.global::<State>().set_detail_depth(1);
+        ui.global::<State>().set_panel(PanelState::Detail);
+        ui.global::<State>().set_detail_depth(2);
+        ui.global::<State>().set_detail_page(0);
         ui.invoke_focus_profile_close();
         assert!(ui.get_member_profile());
         use slint::private_unstable_api::re_exports::WindowInner;

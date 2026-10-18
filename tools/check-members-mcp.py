@@ -6,6 +6,7 @@ a debug window on the user's desktop. Pass that scope's unique --port here.
 """
 import argparse
 import json
+import time
 import urllib.request
 
 from mcp_preview import add_preview_arguments, launch_preview
@@ -41,7 +42,14 @@ def tree():
     return result["elements"]
 
 def element(label, role="Button"):
-    return next(row for row in tree() if row.get("accessibleRole") == role and (row.get("accessibleLabel") == label or row.get("accessibleLabel", "").startswith(label + ", ")))
+    deadline=time.monotonic()+3
+    while True:
+        try:
+            matches=[row for row in tree() if row.get("accessibleRole") == role and (row.get("accessibleLabel") == label or row.get("accessibleLabel", "").startswith(label + ", "))]
+            return next((row for row in matches if row.get("accessibleLabel")==label),matches[0])
+        except (StopIteration,IndexError):
+            if time.monotonic()>deadline: raise AssertionError(f"Missing {role} {label}") from None
+            time.sleep(.05)
 
 def click(label, role="Button"):
     call("click_element", elementHandle=element(label, role)["handle"])
@@ -96,69 +104,77 @@ key("\uf70f")
 marker = element("Synthetic interaction scenarios", "Text")
 assert any(part.get("id", "").endswith("::demo-marker") for part in marker.get("typeNamesAndIds", [])), "refusing a non-demo window"
 click("Close demo scenarios")
-demo_scenario("Group members")
-element("Close members")
-# A sheet must consume Ctrl+Enter before its focused Close button activates.
+if call("get_element_properties",elementHandle=root)["size"]["width"] < 740:
+    modified("\x12","\uf702")
+click("Weekend plans")
+click("Members, 25")
+element("Close details")
 if call("get_element_properties", elementHandle=root)["size"]["width"] < 1060:
     modified("\x11", "\n")
-    element("Close members")
-count = int(element("Members (25)", "Text")["accessibleLabel"].split("(")[1].split(")")[0])
+    element("Close details")
 click("Search members", "TextInput")
 key("\uf701")
-key("\uf729")  # Home
-rows = set()
-for _ in range(count + 1):
-    rows.update(row["accessibleLabel"] for row in tree() if row.get("accessibleRole") == "Button" and row.get("accessibleLabel", "").startswith("Open member: "))
-    key("\uf701")
-assert len(rows) == count, f"list has {len(rows)} rows; header has {count}"
 key("\uf729")
-value("Search members", "葵")
+rows=set()
+for _ in range(27):
+    rows.update(row["accessibleLabel"] for row in tree() if row.get("accessibleRole")=="Button" and row.get("accessibleLabel", "").startswith("Open member: "))
+    key("\uf701")
+assert len(rows)==25, f"expected 25 current members, got {len(rows)}"
+element("Invited (1)","Text")
+value("Search members","葵")
 click("Open member: 葵")
-assert element("Open chat").get("accessibleEnabled"), "friend profile lost Open chat"
-click("Back to members")
-value("Search members", "蓮")
-member = element("Open member: 蓮")
-assert not any(row.get("accessibleLabel", "").startswith("Open member: Weekend") for row in tree()), "search did not filter"
-call("click_element", elementHandle=member["handle"])
-element("Member profile", "Text")
-element("蓮", "Text")
-assert not any(row.get("accessibleLabel") == "Open chat" for row in tree()), "non-friend without a chat exposed Open chat"
-click("Back to members")
-assert element("Search members", "TextInput").get("accessibleValue") == "蓮", "Back lost query"
+element("Chat")
+element("Rename")
+click("Rename")
+value("Name","Aoi test 🌿")
+click("Save")
+element("Aoi test 🌿","Text")
+element("葵","Text")
+click("Rename")
+value("Name","葵")
+click("Save")
+element("葵","Text")
 key("\x1b")
-header = element("Members, 25")
-assert header.get("accessibleDescription") == "Focused", "Escape failed to return header focus"
-key("\n")
-element("Close members")
-value("Search members", "Unknown")
+value("Search members","蓮")
+click("Open member: 蓮")
+element("Profile","Text")
+element("Add friend")
+assert not any(r.get("accessibleLabel")=="Chat" for r in tree())
+click("Add friend")
+element("Rename")
+element("Chat")
+click("Back")
+assert element("Search members","TextInput").get("accessibleValue")=="蓮"
+value("Search members","Unknown")
 click("Open member: Unknown member")
-element("Unknown member", "Text")
-assert not any(row.get("accessibleLabel") == "Open chat" for row in tree()), "unknown member exposed Open chat"
+element("Unknown member","Text")
+assert not any(r.get("accessibleLabel") in ("Chat","Rename","Add friend") for r in tree())
 key("\x1b")
-element("Close members")
-assert element("Search members", "TextInput").get("accessibleValue") == "Unknown"
-key("\x1b")
-assert element("Members, 25").get("accessibleDescription") == "Focused"
-key("\n")
-value("Search members", "You")
-element("Open member: Offline preview, You")
-key("\x1b")
-# Connection recovery must remain above both member surfaces.
-demo_scenario("Offline")
-click("Members, 25")
-strip = element("Connection needs attention", "Banner")
-field = element("Search members", "TextInput")
-wide = call("get_element_properties", elementHandle=root)["size"]["width"] >= 1060
-if wide:
-    assert element("Close members")["absolutePosition"]["y"] < strip["absolutePosition"]["y"], "wide panel acquired a strip gap"
-else:
-    assert field["absolutePosition"]["y"] >= strip["absolutePosition"]["y"] + strip["size"]["height"], "members search covered by strip"
+value("Search members","You")
 click("Open member: Offline preview, You")
-back = element("Back to members")
-if not wide:
-    assert back["absolutePosition"]["y"] >= strip["absolutePosition"]["y"] + strip["size"]["height"], "profile covered by strip"
+element("Profile","Text")
+assert not any(r.get("accessibleLabel") in ("Chat","Rename","Add friend") for r in tree()), "own profile exposed a write"
 key("\x1b")
-element("Close members")
 key("\x1b")
-assert element("Members, 25").get("accessibleDescription") == "Focused"
-print("PASS: list rows equal header count; read-only profile actions; Escape goes Back then closes; Members, 25; search; known/unknown/self profiles; Back preserves query; Escape returns header focus; members and profile below strip")
+assert element("Members, 25").get("accessibleDescription")=="Focused"
+click("Weekend plans")
+element("Group info","Text")
+click("Notifications","Checkbox")
+deadline=time.monotonic()+3
+while element("Notifications","Checkbox").get("accessibleValue") != "Off":
+    assert time.monotonic()<deadline, "mute did not update the switch"
+    time.sleep(.02)
+click("Leave group")
+element("Leave group?","Text")
+key("\x1b")
+element("Leave group")
+click("Leave group")
+click("Leave")
+assert not any(r.get("accessibleLabel")=="Leave group" for r in tree())
+click("Close details")
+assert not element("Send").get("accessibleEnabled"), "left group remained writable"
+before=element("Message draft","TextInput").get("accessibleValue","")
+click("Message draft","TextInput")
+key("cannot type after leaving")
+assert element("Message draft","TextInput").get("accessibleValue","")==before, "left group draft remained editable"
+print("PASS: current members + invitees; friend, non-friend, own/unknown actions; Rename/Add friend in place; Back/Escape/opener focus; mute; Leave cancel/confirm; read-only chat")

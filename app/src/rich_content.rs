@@ -370,8 +370,10 @@ fn layout(
             .iter()
             .map(|r| r.measured_height)
             .fold(size * 1.5, f32::max);
+        let line_width = width(line).min(available);
         let mut x = 0.;
         for mut run in line.drain(..) {
+            run.line_width = line_width;
             if output.len() == 2048 {
                 return false;
             }

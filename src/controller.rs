@@ -7,13 +7,28 @@ pub enum Panel {
     Chats,
     Friends,
     Settings,
-    Members,
-    Profile(String),
-    MemberProfile(String),
+    Detail,
     Viewer,
     SignIn,
 }
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DetailPage {
+    Profile(String),
+    GroupInfo(ChatId),
+    Members(ChatId),
+}
+#[derive(Clone, Debug)]
+pub struct DetailEntry {
+    pub page: DetailPage,
+    pub opener: String,
+}
 pub struct AppState {
+    pub detail: Vec<DetailEntry>,
+    pub contacts: BTreeMap<String, crate::client::desktop::Friend>,
+    pub group_info: BTreeMap<ChatId, serde_json::Value>,
+    pub notices: BTreeMap<String, serde_json::Value>,
+    pub action: Option<crate::backend::ProfileAction>,
+    pub action_error: String,
     pub friends: Vec<crate::client::desktop::Friend>,
     pub members: Vec<crate::client::desktop::Member>,
     pub connection: Connection,
@@ -41,6 +56,12 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            detail: vec![],
+            contacts: BTreeMap::new(),
+            group_info: BTreeMap::new(),
+            notices: BTreeMap::new(),
+            action: None,
+            action_error: String::new(),
             friends: vec![],
             members: vec![],
             connection: Connection::Local,
@@ -68,14 +89,48 @@ impl Default for AppState {
     }
 }
 impl AppState {
+    pub fn push_detail(&mut self, page: DetailPage, opener: String) {
+        self.detail.push(DetailEntry { page, opener });
+        self.panel = Panel::Detail;
+        self.action_error.clear();
+    }
+    pub fn pop_detail(&mut self, all: bool) -> Option<String> {
+        let entry = if all {
+            let first = self.detail.first().cloned();
+            self.detail.clear();
+            first
+        } else {
+            self.detail.pop()
+        };
+        if self.detail.is_empty() {
+            self.panel = Panel::Chats;
+        } else {
+            self.panel = Panel::Detail;
+        }
+        self.action_error.clear();
+        entry.map(|e| e.opener)
+    }
+    pub fn detail_page(&self) -> Option<&DetailPage> {
+        self.detail.last().map(|e| &e.page)
+    }
     pub fn can_send(&self) -> bool {
         self.connection == Connection::Online
-            && self.selected.is_some()
+            && self
+                .selected
+                .as_ref()
+                .is_some_and(|id| self.chats.get(id).is_some_and(|c| !c.chat.left))
             && self.submitting.is_none()
             && !self.composer.trim().is_empty()
     }
     pub fn submit(&mut self) -> Option<Intent> {
-        if self.composer.trim().is_empty() || self.submitting.is_some() {
+        if self.composer.trim().is_empty()
+            || self.submitting.is_some()
+            || self
+                .selected
+                .as_ref()
+                .and_then(|id| self.chats.get(id))
+                .is_some_and(|c| c.chat.left)
+        {
             return None;
         }
         let chat = self.selected.clone()?;
@@ -87,6 +142,9 @@ impl AppState {
     pub fn select(&mut self, chat: ChatId) -> Intent {
         if self.selected.as_ref() != Some(&chat) {
             self.composer.clear();
+        }
+        if self.selected.as_ref() != Some(&chat) {
+            self.detail.clear();
         }
         self.window_sub += 1;
         self.window_anchor = Anchor::Unread;
@@ -170,7 +228,53 @@ impl AppState {
                 }
                 self.submitting = None;
             }
-            Delta::Friends(rows) => self.friends = rows,
+            Delta::Contact(row) => {
+                for m in &mut self.members {
+                    if m.contact.id == row.id {
+                        m.contact = row.clone();
+                    }
+                }
+                for f in &mut self.friends {
+                    if f.id == row.id {
+                        *f = row.clone();
+                    }
+                }
+                self.contacts.insert(row.id.clone(), row);
+            }
+            Delta::GroupInfo { chat, data } => {
+                self.group_info.insert(chat, data);
+            }
+            Delta::Notice { mid, data } => {
+                self.notices.insert(mid, data);
+            }
+            Delta::ProfileAction { action, error } if self.action.as_ref() == Some(&action) => {
+                let relevant = match (self.detail_page(), &action) {
+                    (None, _) => true,
+                    (
+                        Some(DetailPage::Profile(id)),
+                        crate::backend::ProfileAction::Rename { mid, .. }
+                        | crate::backend::ProfileAction::AddFriend { mid, .. },
+                    ) => id == mid,
+                    (
+                        Some(DetailPage::GroupInfo(id)),
+                        crate::backend::ProfileAction::Mute { chat, .. }
+                        | crate::backend::ProfileAction::Leave { chat },
+                    ) => id == chat,
+                    _ => false,
+                };
+                self.action = None;
+                self.action_error = if relevant {
+                    error.unwrap_or_default()
+                } else {
+                    String::new()
+                };
+            }
+            Delta::Friends(rows) => {
+                for r in &rows {
+                    self.contacts.insert(r.id.clone(), r.clone());
+                }
+                self.friends = rows;
+            }
             Delta::Members { chat, rows } if self.selected.as_ref() == Some(&chat) => {
                 self.members = rows
             }

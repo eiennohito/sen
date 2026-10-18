@@ -119,7 +119,7 @@ export component Chats inherits Rectangle {
                         reject
                     }
                 chat-list := Pane {
-                    connection-feedback: State.narrow && !State.show-conversation && State.section == 0 && !(State.profile-open && State.profile-sheet);
+                    connection-feedback: State.narrow && !State.show-conversation && State.section == 0 && !(State.detail-open && State.profile-sheet);
                     offset <=> State.list-y;
                     content-width: self.visible-width;
                 virtual: true;

@@ -130,7 +130,7 @@ export component Conversation inherits Rectangle {
                 }
               }
               history := Pane {
-                connection-feedback: (!State.narrow || State.show-conversation) && !(State.profile-open && State.profile-sheet);
+                connection-feedback: (!State.narrow || State.show-conversation) && !(State.detail-open && State.profile-sheet);
                 focus-requested => { history-focus.focus(); }
                 changed extent => { State.history-extent = self.extent; if State.following && !self.dragging { self.jump(-self.extent); } }
                 changed dragging => { State.history-dragging = self.dragging; }

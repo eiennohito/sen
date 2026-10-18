@@ -273,6 +273,7 @@ fn upsert(
     }
     receipt(conn, &mut row)?;
     save(conn, &row)?;
+    conn.execute("UPDATE chat SET removed=0 WHERE chat_id=?", [&chat.0])?;
     changes.messages_upserted.insert(row.key);
     changes.chats_changed.insert(chat.clone());
     Ok(row)

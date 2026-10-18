@@ -382,6 +382,7 @@ fn chat_list_sweeps_metadata_and_activity_do_not_regress() {
     assert!(!s.needs_refresh(&chat()).unwrap());
     let changes = s.upsert_chats(&[a], true).unwrap();
     assert!(changes.chats_removed.contains(&b.id));
+    assert!(!s.chat(&b.id).unwrap().unwrap().left);
     assert_eq!(s.chat_list(10, 0).unwrap().len(), 1);
     s.upsert_chats(&[b], false).unwrap();
     assert_eq!(s.chat_list(1, 1).unwrap().len(), 1);
@@ -525,11 +526,11 @@ fn newer_schema_is_refused_without_migration() {
     let dir = TempDir::new();
     {
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 3).unwrap();
+        s.conn.pragma_update(None, "user_version", 4).unwrap();
     }
     assert!(matches!(
         Store::open(&dir.0),
-        Err(StoreError::NewerSchema(3))
+        Err(StoreError::NewerSchema(4))
     ));
 }
 
@@ -658,4 +659,23 @@ fn linked_send_extends_only_a_continuous_head() {
             assert!(s.needs_refresh(&chat()).unwrap());
         }
     }
+}
+
+#[test]
+fn member_cache_preserves_backend_order_and_contact_names() {
+    let mut s = store();
+    let rows = vec![
+        ("self".into(), json!({"contact":{"name":"You"}})),
+        ("alice".into(), json!({"contact":{"name":"葵"}})),
+        ("member-2".into(), json!({"contact":{"name":"蓮"}})),
+        (
+            "member-10".into(),
+            json!({"contact":{"name":"Weekend walker 10"}}),
+        ),
+    ];
+    s.save_members(&chat(), &rows).unwrap();
+    assert_eq!(
+        s.members(&chat()).unwrap(),
+        rows.into_iter().map(|(_, row)| row).collect::<Vec<_>>()
+    );
 }

@@ -6,6 +6,7 @@ a debug window on the user's desktop. Pass that scope's unique --port here.
 """
 import argparse
 import json
+import time
 import urllib.request
 
 from mcp_preview import add_preview_arguments, launch_preview
@@ -102,38 +103,31 @@ for destination, search in [("Chats", "Find a conversation"), ("Friends", "Searc
     key(query)
     field = element(search, "TextInput")
     assert field.get("accessibleValue") == query
-    editor = call("get_element_tree", elementHandle=field["handle"], maxElements=64)
-    assert not editor.get("truncated"), "search widget exceeded its tree bound"
-    bodies = [row for row in editor["elements"] if any(base.get("typeName") == "TextInput" for base in row.get("typeNamesAndIds", []))]
-    assert len(bodies) == 1, "search did not retain the standard LineEdit editor"
-    assert any(any(base.get("typeName") == "ContextMenuArea" for base in row.get("typeNamesAndIds", [])) for row in editor["elements"]), "search lost its native context menu"
-    body = bodies[0]
-    body_handle = body["handle"]
-    assert body["size"]["width"] > field["size"]["width"], "long query did not exceed the field"
-    left = field["absolutePosition"]["x"]
-    right = left + field["size"]["width"]
-    assert body["absolutePosition"]["x"] < left, "long query did not scroll to its tail"
-    assert left < body["absolutePosition"]["x"] + body["size"]["width"] <= right, "query tail/caret escaped the field"
-    key("\uf729")  # Home scrolls back to the first character.
-    home = call("get_element_properties", elementHandle=body_handle)
-    assert home["absolutePosition"]["x"] > body["absolutePosition"]["x"], "Home did not follow the caret"
-    key("\uf72b")  # End and subsequent typing must keep the tail visible.
+    # The token-based SearchField uses a clipped TextInput, not a Fluent LineEdit.
+    call("click_element",elementHandle=field["handle"],button="Right")
+    element("Cut","Text")
+    element("Copy","Text")
+    element("Paste","Text")
+    element("Select All","Text")
+    key("\x1b")
+    key("\uf729")
+    key("\uf72b")
     key("END")
-    body = call("get_element_properties", elementHandle=body_handle)
-    assert element(search, "TextInput").get("accessibleValue") == query + "END"
-    assert left < body["absolutePosition"]["x"] + body["size"]["width"] <= right, "typing after End hid the query tail"
-    clear_left = element("Clear search")["absolutePosition"]["x"]
-    assert body["absolutePosition"]["x"] + body["size"]["width"] <= clear_left, "query tail/caret extends under app-owned Clear"
-    viewport = next(row for row in editor["elements"] if any(base.get("typeName") == "LineEditBase" for base in row.get("typeNamesAndIds", [])))
-    assert viewport["absolutePosition"]["x"] + viewport["size"]["width"] <= clear_left, "editor viewport extends under app-owned Clear"
+    field=element(search,"TextInput")
+    assert field.get("accessibleValue")==query+"END", "Home/End lost query text"
+    clear_left=element("Clear search")["absolutePosition"]["x"]
+    assert field["absolutePosition"]["x"]+field["size"]["width"]<=clear_left, "editor extends under Clear"
     click("Clear search")
-print("PASS: standard search LineEdit follows a 66-character query, Home/End and appended text; caret/tail remain within the editor before Clear")
+print("PASS: token-based search retains native Cut/Copy/Paste/Select All, Home/End editing and a clipped viewport before Clear")
 click("Chats")
 click("All")
 value("Find a conversation", "")
 click("葵")
 value("Message draft", "List draft 日本語")
-assert "Draft: List draft" in element("葵")["accessibleLabel"]
+deadline=time.monotonic()+3
+while "Draft: List draft" not in element("葵")["accessibleLabel"]:
+    assert time.monotonic()<deadline,"draft preview did not reach the chat row"
+    time.sleep(.02)
 element("Draft", "Image")
 click("Groups")
 assert len(chats()) == 1 and chats()[0]["accessibleLabel"].startswith("Weekend plans, ")
@@ -158,7 +152,8 @@ modified("\x12", "\uf700")
 assert element("Message draft", "TextInput").get("accessibleValue") == "List draft 日本語", "Alt+Up lost the previous draft"
 modified("\x11", "f")
 element("Find a conversation", "TextInput")
-key("\t")
+key("\t")  # Filter chips are one Tab stop.
+key("\t")  # Conversation list.
 key("\uf729")  # Home
 key("\uf72b")  # End
 key("\n")

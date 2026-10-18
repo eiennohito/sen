@@ -129,6 +129,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
     d.state.selected = None;
     let contacts = (0..300)
         .map(|i| line_wasm_poc::client::desktop::Friend {
+            profile: Default::default(),
             id: format!("contact-{i}"),
             name: format!("Contact {i}"),
             status: "Available".into(),
@@ -153,7 +154,10 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
                     is_self: false,
                 })
                 .collect();
-            d.state.panel = Panel::Members;
+            d.state.push_detail(
+                DetailPage::Members(d.state.selected.clone().unwrap()),
+                "header".into(),
+            );
         }
         d.render(ui);
         draw();

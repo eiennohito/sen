@@ -113,6 +113,7 @@ pub(super) fn avatar(index: usize) -> slint::Image {
 pub fn image_asset(fake: &FakeBackend, name: &str, image: slint::Image) -> Asset {
     let mut value = serde_json::to_value(FakeBackend::asset(true)).unwrap();
     value["url"] = format!("https://obs.line-apps.com/r/talk/m/{name}/preview").into();
+    value["name"] = name.into();
     let asset: Asset = serde_json::from_value(value).unwrap();
     let pixels = image.to_rgba8().unwrap();
     fake.set_pixels(
@@ -339,6 +340,7 @@ pub fn seed(fake: &FakeBackend) {
         .iter()
         .enumerate()
         .map(|(i, c)| line_wasm_poc::client::desktop::Friend {
+            profile: Default::default(),
             id: c.id.0.clone(),
             name: c.title.clone(),
             status: [
@@ -353,6 +355,7 @@ pub fn seed(fake: &FakeBackend) {
         })
         .collect::<Vec<_>>();
     friends.push(line_wasm_poc::client::desktop::Friend {
+        profile: Default::default(),
         id: "new-friend".into(),
         name: "新しい友だち 🌸".into(),
         status: "まだ会話のない友だち".into(),
@@ -362,10 +365,10 @@ pub fn seed(fake: &FakeBackend) {
     });
     fake.set_friends(friends);
     fake.set_members(
-        (0..25)
+        (0..26)
             .map(|i| line_wasm_poc::client::desktop::Member {
                 is_self: i == 0,
-                contact: line_wasm_poc::client::desktop::Friend {
+                contact: line_wasm_poc::client::desktop::Friend { profile: serde_json::json!({"relation":if i == 1 {0} else {2},"invited":i == 25}),
                     id: match i {
                         0 => "self".into(),
                         1 => "alice".into(),

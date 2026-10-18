@@ -69,6 +69,9 @@ pub enum Intent {
     MoreChats,
     SignIn,
     Friends,
+    Contact(String),
+    GroupInfo(ChatId),
+    ProfileAction(ProfileAction),
     Members(ChatId),
     Asset(crate::client::desktop::assets::Asset),
     Original(crate::client::desktop::assets::Asset),
@@ -118,6 +121,19 @@ pub enum Delta {
     },
     Connection(Connection),
     Profile(Value),
+    Contact(crate::client::desktop::Friend),
+    Notice {
+        mid: String,
+        data: Value,
+    },
+    GroupInfo {
+        chat: ChatId,
+        data: Value,
+    },
+    ProfileAction {
+        action: ProfileAction,
+        error: Option<String>,
+    },
     MoreChats(bool),
     Notify(crate::store::MessageInput),
     Friends(Vec<crate::client::desktop::Friend>),
@@ -174,6 +190,9 @@ enum Refresh {
     Stream,
     Send(Key),
     Friends,
+    Contact(String),
+    Notice(String),
+    GroupInfo(ChatId),
     Members(ChatId),
     ChatList,
     MoreChats,
@@ -565,7 +584,12 @@ impl Engine {
             Refresh::Send(_) => 2,
             Refresh::ChatList | Refresh::MoreChats => 3,
             Refresh::Read(_) | Refresh::Older(..) | Refresh::Newer(..) | Refresh::Receipts(_) => 4,
-            Refresh::Stream | Refresh::Friends | Refresh::Members(_) => 5,
+            Refresh::Stream
+            | Refresh::Friends
+            | Refresh::Members(_)
+            | Refresh::Notice(_)
+            | Refresh::Contact(_)
+            | Refresh::GroupInfo(_) => 5,
             Refresh::Recent(_) => 6,
             Refresh::Details(_) => 7,
         }
@@ -870,9 +894,16 @@ impl Engine {
             .store
             .contacts()?
             .into_iter()
-            .map(serde_json::from_value)
+            .map(serde_json::from_value::<crate::client::desktop::Friend>)
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        self.emit(Delta::Friends(rows));
+        for row in &rows {
+            self.emit(Delta::Contact(row.clone()));
+        }
+        self.emit(Delta::Friends(
+            rows.into_iter()
+                .filter(|r: &crate::client::desktop::Friend| r.group || r.profile["relation"] == 0)
+                .collect(),
+        ));
         Ok(())
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
@@ -930,6 +961,99 @@ impl Engine {
                                 });
                             }
                         }
+                        Ok(())
+                    },
+                );
+            }
+            Intent::Contact(mid) => {
+                if let Some(row) = self.store.contacts()?.into_iter().find(|v| v["id"] == mid) {
+                    self.emit(Delta::Contact(serde_json::from_value(row)?));
+                }
+                self.inbox.refresh(Refresh::Contact(mid));
+            }
+            Intent::GroupInfo(chat) => {
+                self.emit(Delta::GroupInfo {
+                    chat: chat.clone(),
+                    data: self.store.full_chat(&chat)?,
+                });
+                self.inbox.refresh(Refresh::GroupInfo(chat.clone()));
+                self.inbox.refresh(Refresh::Details(chat));
+            }
+            Intent::ProfileAction(action) => {
+                let seq = self.next_seq()?;
+                let net_action = action.clone();
+                self.rpc_completion(
+                    move |b| b.profile_action(&net_action, Value::Null, seq),
+                    move |engine, result, _| {
+                        let error = result.err().map(|_| {
+                            match action {
+                                ProfileAction::Rename { .. } => "Couldn't rename.",
+                                ProfileAction::AddFriend { .. } => "Couldn't add friend.",
+                                ProfileAction::Mute { .. } => "Couldn't change notifications.",
+                                ProfileAction::Leave { .. } => "Couldn't leave group.",
+                            }
+                            .to_owned()
+                        });
+                        if error.is_none() {
+                            match &action {
+                                ProfileAction::Rename { mid, name }
+                                | ProfileAction::AddFriend { mid, chat: name } => {
+                                    if let Some(raw) = engine
+                                        .store
+                                        .contacts()?
+                                        .into_iter()
+                                        .find(|v| v["id"] == *mid)
+                                    {
+                                        let mut row: crate::client::desktop::Friend =
+                                            serde_json::from_value(raw)?;
+                                        if row.profile.is_null() {
+                                            row.profile = serde_json::json!({});
+                                        }
+                                        if matches!(&action, ProfileAction::Rename { .. }) {
+                                            if row.profile["displayName"].is_null() {
+                                                row.profile["displayName"] =
+                                                    row.name.clone().into();
+                                            }
+                                            row.profile["displayNameOverridden"] =
+                                                name.clone().into();
+                                            row.name = name.clone();
+                                        } else {
+                                            row.profile["relation"] = 0.into();
+                                        }
+                                        engine.store.save_contacts(&[(
+                                            mid.clone(),
+                                            serde_json::to_value(&row)?,
+                                        )])?;
+                                        engine.emit(Delta::Contact(row));
+                                        engine.emit_friends()?;
+                                    }
+                                    engine.inbox.refresh(Refresh::Contact(mid.clone()));
+                                }
+                                ProfileAction::Mute { chat, disabled } => {
+                                    if let Some(mut row) = engine.store.chat(chat)? {
+                                        row.muted = *disabled;
+                                        engine.store.upsert_details(&[row])?;
+                                    }
+                                    let mut full = engine.store.full_chat(chat)?;
+                                    if full.is_object() {
+                                        full["notificationDisabled"] = (*disabled).into();
+                                        engine.store.save_full_chat(chat, full.clone())?;
+                                        engine.emit(Delta::GroupInfo {
+                                            chat: chat.clone(),
+                                            data: full,
+                                        });
+                                    }
+                                }
+                                ProfileAction::Leave { chat } => {
+                                    if let Some(mut row) = engine.store.chat(chat)? {
+                                        row.left = true;
+                                        engine.store.upsert_details(&[row])?;
+                                    }
+                                }
+                            }
+                            engine.publish()?;
+                        }
+                        engine.emit(Delta::ProfileAction { action, error });
                         Ok(())
                     },
                 );
@@ -995,6 +1119,9 @@ impl Engine {
                 }
             }
             Intent::Send { chat, text } => {
+                if self.store.chat(&chat)?.is_some_and(|c| c.left) {
+                    return Ok(());
+                }
                 let seq = self.next_seq()?;
                 let (key, _) = self.store.insert_pending(
                     &chat,
@@ -1264,12 +1391,83 @@ impl Engine {
         match r {
             Refresh::Stream => self.start_stream()?,
             Refresh::Send(key) => self.send(key)?,
+            Refresh::Notice(mid) => {
+                let net = mid.clone();
+                self.rpc(
+                    move |b| b.notice(&net),
+                    move |engine, result| {
+                        match result {
+                            Ok(data) => engine.emit(Delta::Notice { mid, data }),
+                            Err(e) => engine.rpc_failed(Refresh::Notice(mid), e),
+                        };
+                        Ok(())
+                    },
+                );
+            }
+            Refresh::Contact(mid) => {
+                let net = mid.clone();
+                self.rpc(
+                    move |b| b.contact(&net),
+                    move |engine, result| {
+                        match result {
+                            Ok(row) => {
+                                if row.profile["relation"] == 2 {
+                                    engine.inbox.refresh(Refresh::Notice(mid.clone()));
+                                }
+                                engine
+                                    .store
+                                    .save_contacts(&[(mid.clone(), serde_json::to_value(&row)?)])?;
+                                engine.emit(Delta::Contact(row));
+                            }
+                            Err(e) => engine.rpc_failed(Refresh::Contact(mid), e),
+                        };
+                        Ok(())
+                    },
+                );
+            }
+            Refresh::GroupInfo(chat) => {
+                let net = chat.clone();
+                self.rpc(
+                    move |b| b.full_chat(&net),
+                    move |engine, result| {
+                        match result {
+                            Ok(data) => {
+                                engine.store.save_full_chat(&chat, data.clone())?;
+                                if let Some(members) = data
+                                    .pointer("/extra/groupExtra/memberMids")
+                                    .and_then(Value::as_object)
+                                {
+                                    let own = engine.store.account()?.own_mid;
+                                    if !own.is_empty() {
+                                        engine.store.set_chat_membership(
+                                            &chat,
+                                            !members.contains_key(&own),
+                                        )?;
+                                        engine.publish()?;
+                                    }
+                                }
+                                engine.emit(Delta::GroupInfo { chat, data });
+                            }
+                            Err(e) => engine.rpc_failed(Refresh::GroupInfo(chat), e),
+                        }
+                        Ok(())
+                    },
+                );
+            }
             Refresh::Friends => {
                 self.rpc(
                     move |backend| backend.friends(),
                     move |engine, result| {
                         match result {
-                            Ok(rows) => {
+                            Ok(mut rows) => {
+                                for row in &mut rows {
+                                    if !row.group && row.profile["relation"].is_null() {
+                                        if row.profile.is_null() {
+                                            row.profile = serde_json::json!({});
+                                        }
+                                        row.profile["relation"] = 0.into();
+                                    }
+                                }
                                 engine.store.save_contacts(
                                     &rows
                                         .iter()
@@ -1291,6 +1489,24 @@ impl Engine {
                     move |engine, result| {
                         match result {
                             Ok(rows) => {
+                                let existing = engine.store.contacts()?;
+                                let contacts = rows
+                                    .iter()
+                                    .filter(|m| !m.is_self && !m.contact.profile.is_null())
+                                    .filter_map(|m| {
+                                        let mut contact = m.contact.clone();
+                                        contact.profile.as_object_mut()?.remove("invited");
+                                        let old = existing.iter().find(|v| v["id"] == contact.id);
+                                        if old.is_some_and(|v| v["profile"]["relation"] == 0) {
+                                            return None;
+                                        }
+                                        Some((
+                                            contact.id.clone(),
+                                            serde_json::to_value(contact).unwrap(),
+                                        ))
+                                    })
+                                    .collect::<Vec<_>>();
+                                engine.store.save_contacts(&contacts)?;
                                 engine.store.save_members(
                                     &chat,
                                     &rows
@@ -1467,6 +1683,40 @@ impl Engine {
                 }
             }
             StreamEvent::Raw(raw) => {
+                if raw["revision"]
+                    .as_i64()
+                    .or_else(|| raw["revision"].as_str()?.parse().ok())
+                    .is_some_and(|r| r > self.store.sync_revision().unwrap_or(0))
+                {
+                    let id = raw["param1"].as_str().unwrap_or_default().to_owned();
+                    match raw["type"].as_u64() {
+                        Some(4 | 49) => self.inbox.refresh(Refresh::Contact(id)),
+                        Some(41)
+                            if self
+                                .store
+                                .chat(&ChatId(id.clone()))?
+                                .is_some_and(|c| c.kind != 0) =>
+                        {
+                            self.store.remove_chat(&ChatId(id))?;
+                            self.publish()?;
+                            self.inbox.refresh(Refresh::ChatList);
+                        }
+                        Some(121 | 122 | 127 | 128) => {
+                            if matches!(raw["type"].as_u64(), Some(127))
+                                && let Some(mut row) = self.store.chat(&ChatId(id.clone()))?
+                            {
+                                row.left = true;
+                                self.store.upsert_details(&[row])?;
+                                self.publish()?;
+                            }
+                            self.inbox.refresh(Refresh::Members(ChatId(id.clone())));
+                            self.inbox.refresh(Refresh::Details(ChatId(id.clone())));
+                            self.inbox.refresh(Refresh::GroupInfo(ChatId(id)));
+                        }
+                        _ => {}
+                    }
+                }
+
                 self.rpc(
                     move |backend| backend.decode(raw),
                     move |engine, result| {

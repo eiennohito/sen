@@ -27,7 +27,7 @@ export component DraftEditor inherits Rectangle {
     Text {
         x: 12px; y: 8px; width: parent.width - 24px;
         visible: State.draft == "" && !State.ime-active && !input.has-focus;
-        text: "Message"; font-size: Tokens.base; color: Tokens.placeholder;
+        text: State.chat-left ? "You left this group." : "Message"; font-size: Tokens.base; color: Tokens.placeholder;
         accessible-role: none;
     }
     editor-pane := Pane {
@@ -39,8 +39,9 @@ export component DraftEditor inherits Rectangle {
             height: max(self.preferred-height, root.height - 16px);
             text <=> State.draft;
             enabled: State.has-chat;
+            read-only: State.chat-left;
             accessible-label: "Message draft";
-            accessible-placeholder-text: "Message";
+            accessible-placeholder-text: State.chat-left ? "You left this group." : "Message";
             accessible-description: self.has-focus ? "Focused message draft" : "Message draft";
             single-line: false; wrap: word-wrap;
             font-size: Tokens.base; color: Tokens.foreground;

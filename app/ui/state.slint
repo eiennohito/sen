@@ -37,9 +37,9 @@ export global State {
     callback focus-friend-list();
     public function browser-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
-        if event.text == Key.Escape && self.profile-open && self.profile-sheet && !self.window-modal-open { if self.members-open && self.member-profile { self.back-to-members(); } else { self.close-profile(); } return accept; }
-        if !self.window-modal-open && !(self.profile-open && self.profile-sheet && !self.members-open) && self.connection-actions-enabled && event.text == Key.F6 { self.focus-sign-in-opener(); return accept; }
-        if self.window-modal-open || (self.narrow && self.profile-open) { return reject; }
+        if event.text == Key.Escape && self.detail-open && !self.window-modal-open { self.pop-detail(false); return accept; }
+        if !self.window-modal-open && !(self.detail-open && self.profile-sheet ) && self.connection-actions-enabled && event.text == Key.F6 { self.focus-sign-in-opener(); return accept; }
+        if self.window-modal-open || (self.narrow && self.detail-open) { return reject; }
         if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
             if event.text == "f" || event.text == "F" { self.show-conversation = false; if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
             if event.text == "1" || event.text == "2" { self.browse(event.text == "1" ? 1 : 0); if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
@@ -65,8 +65,38 @@ export global State {
     in-out property <length> friends-y;
     in-out property <int> member-result;
     callback back-to-members();
-    out property <bool> members-open: self.panel == PanelState.members || self.member-profile;
-    out property <bool> member-profile: self.panel == PanelState.member-profile;
+    callback pop-detail(bool);
+    callback remember-detail-focus(bool);
+    callback restore-detail-focus(bool);
+    callback finish-detail-restore(bool);
+    callback detail-action(string, string);
+    callback profile-photo();
+    in-out property <int> detail-depth;
+    changed detail-depth => { if self.detail-depth == 0 { self.detail-dialog = ""; } }
+    in-out property <int> detail-page;
+    in-out property <bool> detail-busy;
+    in-out property <string> detail-running;
+    in-out property <bool> viewer-from-detail;
+    in-out property <string> detail-error;
+    in-out property <bool> profile-friend;
+    in-out property <bool> profile-addable;
+    in-out property <bool> profile-own;
+    in-out property <bool> profile-favourite;
+    in-out property <string> profile-original;
+    in-out property <string> profile-notice;
+    in-out property <[RichRun]> profile-name-runs;
+    in-out property <[RichRun]> profile-status-runs;
+    in-out property <bool> group-room;
+    in-out property <bool> group-muted;
+    in-out property <bool> group-left;
+    in-out property <bool> group-writable;
+    in-out property <int> group-count;
+    in-out property <int> invitee-count;
+    in-out property <bool> chat-left;
+    in-out property <string> detail-dialog;
+
+    out property <bool> members-open: self.detail-page == 2;
+    out property <bool> member-profile: self.detail-page == 0 && self.detail-depth > 1;
     in-out property <[MemberRow]> members;
     in-out property <string> member-query;
     in-out property <bool> chat-group;
@@ -74,25 +104,28 @@ export global State {
     callback open-members();
     callback filter-members();
     callback open-member(string);
-    out property <bool> profile-open: self.panel == PanelState.profile || self.members-open;
+    out property <bool> detail-open: self.panel == PanelState.detail && self.detail-depth > 0;
     out property <length> rail-width: 56px;
     out property <length> browser-width: 286px;
     out property <length> panel-width: 320px;
     out property <length> narrow-width: 740px;
     out property <length> conversation-min-width: self.narrow-width - self.rail-width - self.browser-width;
     out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
-    property <int> covered-content: self.window-modal-open || (self.profile-open && self.narrow) ? 2 : self.profile-open && self.profile-sheet ? 1 : self.narrow && self.show-conversation ? 3 : 0;
+    property <int> covered-content: self.window-modal-open || (self.detail-open && self.narrow) ? 2 : self.detail-open && self.profile-sheet ? 1 : self.narrow && self.show-conversation ? 3 : 0;
     in-out property <bool> browser-focus-hidden;
     property <int> previous-covered-content;
     changed covered-content => {
+        let previous = self.previous-covered-content;
         let browser-hidden = self.covered-content == 3 && self.previous-covered-content == 0 && self.browser-focus-hidden;
         self.browser-focus-hidden = false;
         self.previous-covered-content = self.covered-content;
-        if self.recovery-kind != "" || self.demo-scenarios-open { return; }
+        if self.recovery-kind != "" || self.demo-scenarios-open || self.detail-dialog != "" { return; }
+        // Closing a modal back to the stack restores its recorded opener.
+        if previous == 2 && self.detail-open && !self.window-modal-open { return; }
         if self.auth-open { self.focus-auth-start(); }
         else if self.viewer-open { self.focus-viewer-close(); }
         else if self.settings-open { self.focus-settings-close(); }
-        else if self.profile-open && self.profile-sheet { self.focus-profile-close(); }
+        else if self.detail-open && self.profile-sheet { self.focus-profile-close(); }
         else if browser-hidden { self.focus-composer(); }
     }
     in-out property <string> profile-initial;
@@ -126,7 +159,7 @@ export global State {
     callback quit();
     in-out property <bool> send-pending;
     pure callback has-text(string) -> bool;
-    out property <bool> can-send: self.connected && self.has-chat && !self.send-pending && self.has-text(self.draft);
+    out property <bool> can-send: self.connected && !self.chat-left && self.has-chat && !self.send-pending && self.has-text(self.draft);
     in-out property <string> send-reason;
     in-out property <bool> list-pressed;
     in-out property <bool> list-release-pending;
@@ -150,6 +183,7 @@ export global State {
     out property <bool> viewer-open: self.panel == PanelState.viewer;
     in-out property <image> viewer-image;
     in-out property <string> viewer-status;
+    in-out property <string> viewer-name;
     in-out property <string> viewer-error;
     in-out property <bool> viewer-retryable;
     in-out property <bool> viewer-loading;
@@ -161,8 +195,8 @@ export global State {
     in-out property <bool> viewer-saving;
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
-    out property <bool> window-modal-open: self.auth-open || self.viewer-open || self.settings-open || (self.demo && self.demo-scenarios-open) || self.recovery-kind != "";
-    in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.profile-open);
+    out property <bool> window-modal-open: self.auth-open || self.viewer-open || self.settings-open || (self.demo && self.demo-scenarios-open) || self.recovery-kind != "" || self.detail-dialog != "";
+    in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
     callback viewer-step(int);
     callback save-photo();
     callback close-settings();
@@ -172,7 +206,7 @@ export global State {
     out property <bool> auth-expired: self.connection == ConnectionState.auth-expired;
     out property <bool> session-unavailable: self.connection == ConnectionState.session-invalid;
     out property <bool> sign-in-available: self.auth-expired || self.session-unavailable;
-    out property <bool> connection-feedback-visible: self.connection-failed && !self.window-modal-open && !(self.profile-open && self.profile-sheet && !self.members-open);
+    out property <bool> connection-feedback-visible: self.connection-failed && !self.window-modal-open && !(self.detail-open && self.profile-sheet );
     out property <bool> connection-actions-enabled: self.sign-in-available && self.connection-feedback-visible && !self.retrying-connection && !self.auth-busy;
     out property <length> connection-notice-height: 36px;
     in-out property <length> connection-area-x;
@@ -212,6 +246,7 @@ export global State {
     in-out property <int> result-focus: -1;
     in-out property <bool> narrow: self.window-width < self.narrow-width;
     in-out property <length> window-width;
+    in-out property <length> window-height;
     in-out property <length> conversation-height;
     in-out property <length> history-width;
     in-out property <length> history-extent;
