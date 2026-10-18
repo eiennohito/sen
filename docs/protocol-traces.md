@@ -121,6 +121,21 @@ inferred.
 - Update a chat: `TalkService/updateChat` `[{"reqSeq","chat":{…full chat with the one field changed},"updatedAttribute":N}]`, where N is one of 1 NAME, 2 PICTURE_STATUS, 4 PREVENTED_JOIN_BY_TICKET, 8 NOTIFICATION_SETTING (`notificationDisabled`), 16 INVITATION_TICKET, 32 FAVORITE_TIMESTAMP (`favoriteTimestamp` as a string, "0" to clear), 64 CHAT_TYPE.
 - Create a group or room: `TalkService/createChat` `[{"reqSeq","type":0 GROUP|1 ROOM,"name":"<trimmed or empty>","targetUserMids":[…without self]}]` → `{chat:{chatMid,…}}`. A 1:1 chat with a friend needs no call: the first `sendMessage` to the friend's MID creates it.
 
+## Media upload, E2EE V2 (from `main.js` source)
+
+This complements the captured flow in "Image and file sending (P3)". The
+pieces the capture redacted come from the extension's upload code.
+
+1. The message's `contentMetadata.ENC_KM` holds the key material: random, base64-encoded 32 bytes. Both the file and its preview are encrypted with it, using the same scheme received media are decrypted with (`assets.rs`). It travels inside the sealed chunks, never in plaintext metadata.
+2. The client picks a temporary object id `reqid-<uuid>` and uploads the encrypted original:
+   - `POST https://obs.line-apps.com/r/talk/<sid>/reqid-<uuid>`, where `sid` is `emi` for an image, `emv` video, `ema` audio, `emf` file;
+   - the body is the ciphertext;
+   - header `X-Obs-Params: base64(JSON {"ver":"2.0","name":"<Date.now() digits>","type":"file"})`. In V2, `type` is always "file" and `cat` is absent;
+   - plus the auth headers.
+3. The response header **`x-obs-oid`** carries the real object id. That becomes `OID`.
+4. Image or video preview: `POST …/r/talk/<sid>/<oid>__ud-preview`, with the encrypted preview as the body and `X-Obs-Params` `name` set to the preview file's name. Video also uploads chunk hashes to `<oid>__ud-hash`, which is not needed for images or files.
+5. Then `sendMessage` with `contentMetadata` `SID`, `OID`, `FILE_NAME` and `FILE_SIZE` (files and images), the media info (`MEDIA_CONTENT_INFO`, `MEDIA_THUMB_INFO` for images) and `e2eeVersion` "2", sealed like a text message. Progress is local only.
+
 ## Unsend
 
 `TalkService/unsendMessage` `[<reqSeq>, "<server message id>"]` → `{}` (observed
