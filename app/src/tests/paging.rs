@@ -1,6 +1,46 @@
 use super::*;
 
 #[test]
+fn latest_keeps_geometry_for_repeated_reply_jumps_without_a_layout_change() {
+    std::thread::spawn(|| {
+        let _window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let mut view = View {
+            current: "chat".into(),
+            demo: true,
+            messages: ["10", "11"]
+                .map(|id| MessageRow {
+                    id: id.into(),
+                    body: "text".into(),
+                    ..Default::default()
+                })
+                .into(),
+            ..Default::default()
+        };
+        view.render(&ui);
+        let state = ui.global::<State>();
+        state.set_history_viewport_height(400.);
+        view.history_geometry(&ui, "10", 250., 40.);
+        view.history_geometry(&ui, "11", 500., 40.);
+        assert!(view.jump_to_message(&ui, "10"));
+        for _ in 0..2 {
+            view.history_latest(&ui);
+            assert!(!state.get_return_visible());
+            assert!(state.get_highlight_message().is_empty());
+            ui.set_history_y(-225.);
+            assert!(view.jump_to_message(&ui, "11"));
+            assert_eq!(ui.get_history_y(), 400. / 3. - 500.);
+            assert!(state.get_return_visible());
+            view.return_to_anchor(&ui);
+            assert_eq!(ui.get_history_y(), -225.);
+            assert!(!state.get_return_visible());
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn reply_return_preserves_screen_position_across_visible_top_changes() {
     std::thread::spawn(|| {
         let _window = snapshot::install().unwrap();

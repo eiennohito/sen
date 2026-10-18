@@ -73,7 +73,14 @@ export global State {
     out property <length> narrow-width: 740px;
     out property <length> conversation-min-width: self.narrow-width - self.rail-width - self.browser-width;
     out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
-    changed profile-sheet => { if self.profile-open && self.profile-sheet { self.focus-profile-close(); } }
+    property <int> covered-content: self.window-modal-open || (self.profile-open && self.narrow) ? 2 : self.profile-open && self.profile-sheet ? 1 : 0;
+    changed covered-content => {
+        if self.recovery-kind != "" || self.demo-scenarios-open { return; }
+        if self.auth-open { self.focus-auth-start(); }
+        else if self.viewer-open { self.focus-viewer-close(); }
+        else if self.settings-open { self.focus-settings-close(); }
+        else if self.profile-open && self.profile-sheet { self.focus-profile-close(); }
+    }
     in-out property <string> profile-initial;
     in-out property <string> profile-name;
     in-out property <string> profile-id;
@@ -190,7 +197,6 @@ export global State {
     in-out property <bool> searching;
     in-out property <int> result-focus: -1;
     in-out property <bool> narrow: self.window-width < self.narrow-width;
-    changed narrow => { if self.members-open && self.profile-sheet { self.focus-profile-close(); } }
     in-out property <length> window-width;
     in-out property <length> conversation-height;
     in-out property <length> history-width;

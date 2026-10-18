@@ -10,6 +10,7 @@ import json
 import time
 import tempfile
 import datetime
+import sys
 from pathlib import Path
 import urllib.request
 
@@ -29,6 +30,7 @@ parser.add_argument("--reading", action="store_true", help="Check reading focus,
 parser.add_argument("--rich", action="store_true", help="Check rich emoji fallback copy, reply jump/return, durations and file Save")
 parser.add_argument("--media", action="store_true", help="Check each media failure reason and its item Retry")
 parser.add_argument("--layers", action="store_true", help="Check dialogs, profile panels, viewer input, export, and opener focus")
+parser.add_argument("--focus", action="store_true", help="Check every forward/reverse Tab stop on chats, friends and conversation, with and without recovery")
 add_preview_arguments(parser)
 args = parser.parse_args()
 launch_preview(args)
@@ -130,6 +132,68 @@ assert last_scenario.get("accessibleDescription") == "Focused", "reverse Tab did
 call("dispatch_key_event", windowHandle=window, text="\t", eventType="PressAndRelease")
 assert element("Close demo scenarios", "Button").get("accessibleDescription") == "Focused", "Tab did not wrap from the last scenario to Close"
 call("click_element", elementHandle=element("Close demo scenarios", "Button")["handle"])
+if args.focus:
+    def focus_key(text, event_type="PressAndRelease"):
+        call("dispatch_key_event", windowHandle=window, text=text, eventType=event_type)
+
+    def focus_label():
+        focused = [item for item in tree() if item.get("accessibleDescription", "").startswith("Focused")]
+        assert len(focused) == 1, f"unlabelled or ambiguous Tab stop: {focused}"
+        label = focused[0].get("accessibleLabel", "")
+        assert label, "focused control has no label"
+        assert focused[0]["size"]["width"] > 0 and focused[0]["size"]["height"] > 0, f"hidden focus: {label}"
+        return label
+
+    def check_chain(surface, seeds):
+        visited = set()
+        for label, role in seeds:
+            for reverse in (False, True):
+                call("click_element", elementHandle=element(label, role)["handle"])
+                assert focus_label() == label, f"{surface}: seed did not focus {label}"
+                seen = []
+                for _ in range(20):
+                    if reverse: focus_key("\x10", "Press")
+                    focus_key("\t")
+                    if reverse: focus_key("\x10", "Release")
+                    current = focus_label()
+                    visited.add(current)
+                    if current in seen: break
+                    seen.append(current)
+                else:
+                    raise AssertionError(f"{surface}: Tab chain did not cycle: {seen}")
+                assert len(seen) >= 3, f"{surface}: trapped Tab chain: {seen}"
+                print(f"PASS: {surface} {'reverse' if reverse else 'forward'} from {label}: {' → '.join(seen)}")
+
+        return visited
+
+    narrow = properties["size"]["width"] / properties.get("scaleFactor", 1) < 740
+    for offline in (False, True):
+        if offline: demo_scenario("Login recovery")
+        suffix = "with strip" if offline else "without strip"
+        for surface, search_label, list_label in [("chats", "Find a conversation", "Conversations"), ("friends", "Search friends and groups", "Friends and groups")]:
+            if surface == "friends": call("click_element", elementHandle=element("Friends", "Button")["handle"])
+            expected = {"Navigation", search_label, list_label}
+            seeds = [(search_label, "TextInput")]
+            if not narrow:
+                seeds.append(("Message draft", "TextInput"))
+                expected |= {"Message history", "Message draft"}
+            if offline: expected |= {"Retry connection", "Sign in again"}
+            visited = check_chain(f"{surface} {suffix}", seeds)
+            assert expected <= visited, f"{surface}: unchecked stops: {expected - visited}"
+        call("click_element", elementHandle=element("Chats", "Button")["handle"])
+        for chat in ("葵", "Weekend plans"):
+            call("click_element", elementHandle=element(chat, "Button")["handle"])
+            call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value="Focus check")
+            expected = {"Message history", "Message draft"}
+            if narrow: expected.add("Back")
+            else: expected |= {"Navigation", "Find a conversation", "Conversations"}
+            if chat == "Weekend plans": expected.add(element("Members", "Button")["accessibleLabel"])
+            if element("Send", "Button").get("accessibleEnabled"): expected.add("Send")
+            if offline: expected |= {"Retry connection", "Sign in again"}
+            visited = check_chain(f"conversation {chat} {suffix}", [("Message draft", "TextInput")])
+            assert expected <= visited, f"conversation: unchecked stops: {expected - visited}"
+            if narrow: call("click_element", elementHandle=element("Back", "Button")["handle"])
+    sys.exit(0)
 deadline = time.monotonic() + 5
 while True:
     try:
@@ -453,6 +517,14 @@ if args.auth_recovery:
     print(f"PASS: quiet reconnect/no header overlap, transient expiry, network/startup/expired recovery, pending Retry, F6/Tab order, offline pairing guard, footer Retry; unchanged shell y={positions}; strip y={strip['absolutePosition'].get('y', 0)} height={strip['size']['height']}")
 
 if args.layers:
+    def bounds_by_id(qualified_id):
+        handles = call("find_elements_by_id", windowHandle=window, elementsId=qualified_id)["elementHandles"]
+        assert len(handles) == 1, f"non-unique geometry: {qualified_id}"
+        return call("get_element_properties", elementHandle=handles[0])
+
+    rail = bounds_by_id("AppWindow::rail")
+    browser = bounds_by_id("AppWindow::browser")
+    browser_edge = rail["size"]["width"] + browser["size"]["width"]
     call("click_element", elementHandle=composer)
     for dismiss in ("escape", "close"):
         call("dispatch_key_event", windowHandle=window, text="\uf70f")
@@ -481,6 +553,8 @@ if args.layers:
     call("set_element_value", elementHandle=friend_search, value="葵")
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     profile_close_y = element("Close profile", "Button")["absolutePosition"].get("y", 0)
+    profile = bounds_by_id("Layers::profile")
+    assert abs(profile["absolutePosition"].get("x", 0) - browser_edge) <= 1, "sheet did not start after rail and browser"
     assert not any(item.get("accessibleLabel") == "Message draft" for item in tree()), "sheet exposed the covered conversation"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert element("Friends and groups", "List").get("accessibleDescription") == "Focused friends and groups", "profile did not restore its list opener"
@@ -521,10 +595,20 @@ if args.layers:
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     close = element("Close profile", "Button")
+    assert bounds_by_id("Layers::profile")["absolutePosition"].get("x", 0) == profile["absolutePosition"].get("x", 0)
     assert close["absolutePosition"].get("y", 0) == profile_close_y, "connection feedback moved the profile"
     assert not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()), "sheet did not cover the conversation feedback"
     browser_search = element("Search friends and groups", "TextInput")
     assert browser_search["absolutePosition"]["x"] + browser_search["size"]["width"] <= close["absolutePosition"]["x"], "profile hid the browser"
+    call("dispatch_key_event", windowHandle=window, text="\x1b")
+    call("click_element", elementHandle=element("Chats", "Button")["handle"])
+    call("click_element", elementHandle=element("Weekend plans", "Button")["handle"])
+    strip = element("Connection needs attention", "Banner")
+    strip_bottom = strip["absolutePosition"].get("y", 0) + strip["size"]["height"]
+    call("click_element", elementHandle=element("Members", "Button")["handle"])
+    members = bounds_by_id("Layers::profile")
+    assert abs(members["absolutePosition"].get("x", 0) - browser_edge) <= 1, "members sheet covered the browser"
+    assert abs(members["absolutePosition"].get("y", 0) - strip_bottom) <= 1, "members sheet covered the recovery strip"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     print("PASS: Settings modal focus, profile reading/focus/browser/connection-strip placement, viewer keys/wheel/pan/loaded-photo navigation, isolated PNG export, opener restoration, draft retention")
 
@@ -663,6 +747,22 @@ if args.rich:
     reply = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Jump to replied message")
     def emoji_body():
         return next(item for item in rich_tree() if item.get("accessibleRole") == "Text" and "日😀[笑]本🌸" in item.get("accessibleLabel", ""))
+    for _ in range(2):
+        latest = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest"))
+        call("click_element", elementHandle=latest["handle"])
+        time.sleep(0.05)
+        assert not any(item.get("accessibleLabel") == "Return to message" for item in rich_tree()), "Latest retained the return anchor"
+        latest_y = emoji_body()["absolutePosition"]["y"]
+        call("click_element", elementHandle=rich_element("Jump to replied message", "Button")["handle"])
+        time.sleep(0.05)
+        assert abs(emoji_body()["absolutePosition"]["y"] - latest_y) > 1, "reply jump after Latest did not scroll"
+        call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
+        time.sleep(0.05)
+        assert abs(emoji_body()["absolutePosition"]["y"] - latest_y) <= 1, "Return after Latest lost its origin"
+    print("PASS: Latest → reply jump → Return → Latest → reply jump → Return")
+    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
+    time.sleep(0.05)
+    reply = rich_element("Jump to replied message", "Button")
     origin_y = emoji_body()["absolutePosition"]["y"]
     call("click_element", elementHandle=reply["handle"])
     time.sleep(0.05)
@@ -681,13 +781,15 @@ if args.rich:
         assert strip["absolutePosition"]["y"] + strip["size"]["height"] <= pill["absolutePosition"]["y"], "strip covered a history pill"
         assert pill["absolutePosition"]["y"] + pill["size"]["height"] <= editor["absolutePosition"]["y"], "history pill covered the composer"
     call("click_element", elementHandle=composer)
-    for _ in range(3):
+    for label, role in [("Return to message", "Button"), (latest["accessibleLabel"], "Button"), ("Message history", "List")]:
         call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
         call("dispatch_key_event", windowHandle=window, text="\t")
         call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
+        assert rich_element(label, role).get("accessibleDescription", "").startswith("Focused"), f"reverse Tab skipped {label}"
     assert rich_element("Message history", "List").get("accessibleDescription") == "Focused history", "reverse Tab skipped a history pill"
-    for _ in range(3):
+    for label, role in [(latest["accessibleLabel"], "Button"), ("Return to message", "Button"), ("Message draft", "TextInput")]:
         call("dispatch_key_event", windowHandle=window, text="\t")
+        assert rich_element(label, role).get("accessibleDescription", "").startswith("Focused"), f"forward Tab skipped {label}"
     assert call("get_element_properties", elementHandle=composer).get("accessibleDescription") == "Focused message draft", "history/Latest/Return/composer Tab order changed"
     call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
     time.sleep(0.05)

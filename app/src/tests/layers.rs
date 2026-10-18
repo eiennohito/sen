@@ -1,4 +1,48 @@
 use super::*;
+
+#[test]
+fn resizing_layers_keeps_focus_on_visible_content() {
+    std::thread::spawn(|| {
+        use slint::private_unstable_api::re_exports::WindowInner;
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        ui.show().unwrap();
+        for layer in ["profile", "members", "member-profile", "settings"] {
+            ui.set_settings_open(false);
+            ui.set_profile_open(false);
+            snapshot::render(&window, (980, 720)).unwrap();
+            if layer == "settings" {
+                ui.set_settings_open(true);
+                ui.invoke_focus_settings_close();
+            } else {
+                ui.set_profile_open(true);
+                ui.set_members_open(layer != "profile");
+                ui.set_member_profile(layer == "member-profile");
+                ui.invoke_focus_profile_close();
+            }
+            snapshot::render(&window, (980, 720)).unwrap();
+            if layer != "settings" {
+                ui.invoke_focus_search();
+            }
+            for width in [739, 740, 1059, 1060, 1059, 739] {
+                snapshot::render(&window, (width, 720)).unwrap();
+                let item = WindowInner::from_pub(ui.window())
+                    .focus_item
+                    .borrow()
+                    .upgrade()
+                    .expect("resize lost keyboard focus");
+                assert!(item.is_visible(), "{layer} at {width}: focus is hidden");
+                if layer != "settings" && width == 1059 {
+                    ui.invoke_focus_search();
+                }
+            }
+        }
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
 #[test]
 fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
     std::thread::spawn(|| {

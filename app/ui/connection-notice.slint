@@ -51,6 +51,7 @@ export component ConnectionNotice inherits Rectangle {
     }
     TouchArea { scroll-event(event) => { accept } }
     FocusScope {
+        focus-on-tab-navigation: false;
         key-pressed(event) => { if event.text == Key.F6 { root.leave(false); return accept; } if State.demo && !State.modal-open && event.text == Key.F12 { root.scenarios-requested(); return accept; } State.browser-key(event) }
         HorizontalLayout {
             padding: 4px; spacing: 2px; alignment: start;

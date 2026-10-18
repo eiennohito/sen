@@ -108,7 +108,6 @@ impl HistoryWindow {
         self.failed = None;
         self.anchor = None;
         self.return_anchor = None;
-        self.measurements.clear();
     }
     /// Slide the rendered range while keeping the exposed identity and offset.
     pub fn slide(&mut self, ids: &[String], following: bool) -> bool {

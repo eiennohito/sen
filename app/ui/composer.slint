@@ -24,7 +24,7 @@ draft-measure := Text {
                     HorizontalLayout {
                         height: root.footer-height; spacing: 8px; alignment: end;
                         send-caption := Text { visible: State.send-reason != ""; max-width: self.visible ? max(0px, root.width - 112px) : 0px; height: self.visible ? self.preferred-height : 0px; horizontal-stretch: self.visible ? 1 : 0; text: State.send-reason; color: Tokens.secondary; font-size: Tokens.time; wrap: word-wrap; vertical-alignment: center; }
-                        send-button := Button { text: "Send"; enabled: State.can-send; width: 80px; horizontal-stretch: 0; clicked => { State.send(); State.focus-composer(); } }
+                        send-button := Button { text: "Send"; accessible-description: self.has-focus ? "Focused" : ""; enabled: State.can-send; width: 80px; horizontal-stretch: 0; clicked => { State.send(); State.focus-composer(); } }
                     }
                 }
             }

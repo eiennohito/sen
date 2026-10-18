@@ -21,6 +21,7 @@ component HistoryPill inherits Rectangle {
     label := Text { x: 8px; width: parent.width - 16px; height: parent.height; text: root.text; font-size: Tokens.small; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; overflow: elide; accessible-role: none; }
     focus := FocusScope {
         enabled: root.enabled; accessible-role: button; accessible-label: root.label;
+        accessible-description: self.has-focus ? "Focused" : "";
         accessible-action-default => { root.activated(); }
         key-pressed(event) => {
             if State.ime-active { return reject; }
@@ -47,6 +48,7 @@ export component Conversation inherits Rectangle {
             header := Rectangle {
                 height: max(64px, Tokens.heading * 1.4 + 28px) + (State.chat-subtitle != "" ? Tokens.small * 1.4 + 5px : 0px) + (State.unread-locating || State.unread-boundary-unknown ? Tokens.small * 1.4 + 5px : 0px); background: Tokens.surface;
                 FocusScope {
+                    focus-on-tab-navigation: false;
                     members-button := FocusScope {
                         x: title.absolute-position.x - header.absolute-position.x - 4px; y: 8px;
                         width: title.width + 8px; height: header.height - 16px;
@@ -69,7 +71,7 @@ export component Conversation inherits Rectangle {
                 VerticalLayout {
                     padding: 14px; spacing: 5px;
                     HorizontalLayout {
-                        back-button := IconButton { visible: State.narrow; enabled: State.narrow; width: State.narrow ? 40px : 0px; label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } } }
+                        back-button := IconButton { visible: State.narrow; enabled: State.narrow; width: State.narrow ? 40px : 0px; label: "Back"; focus-description: "Focused"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } } }
                         if State.narrow && State.unread-conversations > 0: Rectangle { width: 24px; height: 22px; border-radius: 11px; background: Tokens.accent; Text { text: State.unread-stale ? "•" : "" + State.unread-conversations; color: Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
                         title := Text { text: State.chat-title; color: Tokens.foreground; font-size: Tokens.heading; font-weight: 700; overflow: elide; vertical-alignment: center; }
                         Text { width: Tokens.small * 6.5; horizontal-stretch: 0; text: State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }

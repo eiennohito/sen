@@ -178,6 +178,7 @@ export component AppWindow inherits Window {
         conversation.jump(-State.history-extent);
     }
     shell := FocusScope {
+        focus-on-tab-navigation: false;
         key-pressed(event) => { if root.demo && !State.modal-open && event.text == Key.F12 { scenarios.open(); return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: 0px;
         width: 100%; height: root.height;

@@ -639,6 +639,8 @@ impl View {
         ui.set_following(true);
         ui.set_new_count(0);
         ui.global::<State>().set_history_needs_refresh(false);
+        ui.global::<State>().set_highlight_message("".into());
+        ui.global::<State>().set_jump_error("".into());
         let needs_fetch = self
             .paging
             .borrow()
