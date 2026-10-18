@@ -437,3 +437,11 @@ pub struct LiveOperation {
     pub replay: bool,
     pub op: Operation,
 }
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct StickerPackage {
+    pub id: String,
+    pub name: String,
+    pub version: String,
+    pub stickers: Vec<Content>,
+}

@@ -487,6 +487,9 @@ impl Store {
         })
     }
     pub fn save_draft(&mut self, chat: &ChatId, draft: &Draft) -> Result<Changes> {
+        if draft.text.is_empty() && self.chat(chat)?.is_none() {
+            return Ok(Changes::default());
+        }
         self.mutate(|tx, c| {
             ensure_chat(tx, chat)?;
             tx.execute(

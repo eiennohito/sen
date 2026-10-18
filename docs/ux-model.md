@@ -442,8 +442,8 @@ not configurable in v1.
 - Focus order: rail → browser search → list (one Tab stop; arrows move
   within) → conversation header actions → visible connection recovery actions →
   history (one Tab stop) → Latest → Return to message (when visible) →
-  composer → Send.
-- Chats filter chips are one Tab stop after browser search (and Clear when present) and before the list; Left/Right moves between chips and Space/Enter activates.
+  composer → Stickers (when enabled) → Send.
+- Chats filter chips are one Tab stop after browser search (and Clear when present), then New chat, then the list; Left/Right moves between chips and Space/Enter activates.
 - Friends category headers are rows in the friends list; arrow navigation reaches them and Enter/Space toggles collapse.
 - F6 enters the visible recovery strip. Without a layer, F6 or Tab after its
   last action moves to history, or the browser list in narrow browser layout. Shift+Tab before
@@ -451,7 +451,7 @@ not configurable in v1.
   browser layout the strip belongs between browser search and the list.
 - Friends uses the same recovery-action order as Chats. A nonempty search
   adds Clear immediately after the field in either browser and in members.
-- A side panel follows Send (or the composer when Send is disabled), then
+- A side panel follows Send (or the last enabled composer control), then
   wraps to the rail. A conversation sheet replaces the conversation stops;
   the browser list leads to the sheet, and its last control wraps to the rail.
   A narrow sheet cycles within its visible controls. The controller owns one
@@ -584,7 +584,7 @@ not belong in the shell.
 - No tray and no background mode by default.
 - The Add friend destination and group management are absent until their
   protocol operations exist; they are not shown as placeholder pages.
-- Reactions are displayed but not editable in v1.
+- Reactions are editable: hover/focus or React opens six choices (NICE, LOVE, FUN, AMAZING, SAD, OMG). The own choice is highlighted; choosing it again cancels. Changes are optimistic, revert on failure, and show one transient danger line.
 - Profiles and group info open in the detail panel or sheet (§3.4), not in a
   separate popup window.
 

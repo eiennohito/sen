@@ -66,6 +66,7 @@ impl Store {
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS sticker_packages (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);")?;
         conn.execute_batch("CREATE INDEX IF NOT EXISTS message_pending_chat ON message(chat_id,delivery) WHERE server_id IS NULL;
             CREATE INDEX IF NOT EXISTS message_server_order ON message(chat_id,sort_id) WHERE server_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS message_incoming_order ON message(chat_id,sort_id) WHERE outgoing=0 AND server_id IS NOT NULL;")?;
@@ -75,6 +76,48 @@ impl Store {
             changes: Changes::default(),
             settings_changed: false,
         })
+    }
+    pub fn sticker_packages(&self) -> Result<Vec<StickerPackage>> {
+        let value: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM sticker_packages WHERE id=1", [], |r| {
+                r.get(0)
+            })
+            .optional()?;
+        Ok(value
+            .map(|v| serde_json::from_str(&v))
+            .transpose()?
+            .unwrap_or_default())
+    }
+    pub fn save_sticker_packages(&mut self, rows: &[StickerPackage]) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO sticker_packages VALUES(1,?)",
+            [serde_json::to_string(rows)?],
+        )?;
+        Ok(())
+    }
+    /// Replace only one actor, preserving the server revision for subsequent echoes.
+    pub fn own_reaction(
+        &mut self,
+        key: Key,
+        actor: &str,
+        kind: Option<ReactionKind>,
+    ) -> Result<()> {
+        self.mutate(|tx, changes| {
+            let mut row = messages::by_key(tx, key)?;
+            row.reactions.retain(|r| r.actor != actor);
+            if let Some(kind) = kind {
+                row.reactions.push(Reaction {
+                    actor: actor.into(),
+                    kind,
+                });
+            }
+            messages::save(tx, &row)?;
+            changes.messages_upserted.insert(key);
+            changes.chats_changed.insert(row.chat_id);
+            Ok(())
+        })?;
+        Ok(())
     }
     /// Carry only work created before the first account identity was known.
     pub fn carry_local_to(&self, target: &mut Store) -> Result<Vec<Key>> {

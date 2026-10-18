@@ -90,7 +90,7 @@ impl Asset {
         })
     }
 
-    pub(super) fn sticker(meta: &Value) -> Option<Self> {
+    pub fn sticker(meta: &Value) -> Option<Self> {
         let id = segment(meta["STKID"].as_str()?)?;
         let hash = meta["STKHASH"].as_str().and_then(segment);
         let version = if hash.is_some() { 2 } else { 1 };

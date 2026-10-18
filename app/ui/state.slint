@@ -1,3 +1,4 @@
+import { StickerTab, StickerItem, ComposeFriend } from "types.slint";
 import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
@@ -56,6 +57,28 @@ export global State {
         }
         return reject;
     }
+    callback react(string, int);
+    in-out property <string> reaction-error-id;
+    in-out property <[StickerTab]> sticker-tabs;
+    in-out property <[StickerItem]> sticker-items;
+    in-out property <int> sticker-package;
+    callback load-stickers();
+    callback select-sticker-package(int);
+    callback send-sticker(int);
+    in-out property <bool> new-chat-open;
+    in-out property <bool> new-chat-busy;
+    in-out property <bool> new-chat-uncertain;
+    in-out property <string> new-chat-error;
+    in-out property <string> new-chat-query;
+    in-out property <string> new-chat-name;
+    in-out property <string> new-chat-placeholder;
+    in-out property <int> new-chat-count;
+    in-out property <[ComposeFriend]> new-chat-friends;
+    in-out property <[ComposeFriend]> new-chat-selected;
+    callback new-chat-filter();
+    callback new-chat-toggle(string);
+    callback new-chat-submit();
+    callback open-new-chat();
     in-out property <[FriendRow]> friends;
     in-out property <int> friend-result: -1;
     in-out property <length> friend-row-height;
@@ -195,7 +218,7 @@ export global State {
     in-out property <bool> viewer-saving;
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
-    out property <bool> window-modal-open: self.auth-open || self.viewer-open || self.settings-open || (self.demo && self.demo-scenarios-open) || self.recovery-kind != "" || self.detail-dialog != "";
+    out property <bool> window-modal-open: self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || (self.demo && self.demo-scenarios-open) || self.recovery-kind != "" || self.detail-dialog != "";
     in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
     callback viewer-step(int);
     callback save-photo();

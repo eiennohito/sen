@@ -23,6 +23,9 @@ pub struct DetailEntry {
     pub opener: String,
 }
 pub struct AppState {
+    pub sticker_packages: Vec<StickerPackage>,
+    pub reaction_failure: Option<Key>,
+    pub created_chat: Option<std::result::Result<ChatId, String>>,
     pub detail: Vec<DetailEntry>,
     pub contacts: BTreeMap<String, crate::store::Friend>,
     pub group_info: BTreeMap<ChatId, serde_json::Value>,
@@ -56,6 +59,9 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            sticker_packages: vec![],
+            reaction_failure: None,
+            created_chat: None,
             detail: vec![],
             contacts: BTreeMap::new(),
             group_info: BTreeMap::new(),
@@ -118,7 +124,7 @@ impl AppState {
             && self
                 .selected
                 .as_ref()
-                .is_some_and(|id| self.chats.get(id).is_some_and(|c| !c.chat.left))
+                .is_some_and(|id| self.chats.get(id).is_none_or(|c| !c.chat.left))
             && self.submitting.is_none()
             && !self.composer.trim().is_empty()
     }
@@ -191,6 +197,9 @@ impl AppState {
     }
     pub fn apply(&mut self, delta: Delta) {
         match delta {
+            Delta::StickerPackages(rows) => self.sticker_packages = rows,
+            Delta::ReactionFailed(key) => self.reaction_failure = Some(key),
+            Delta::CreatedChat(result) => self.created_chat = Some(result),
             Delta::Fatal => {
                 self.connection = Connection::Fatal;
                 self.error = Some("Something went wrong — restart".into());

@@ -590,6 +590,30 @@ impl Desktop {
             n.drain(ui, &mut self.state, &self.sender);
         }
     }
+    fn request_sticker_assets(&mut self, ui: &AppWindow) {
+        let selected = ui.global::<State>().get_sticker_package() as usize;
+        for asset in self
+            .state
+            .sticker_packages
+            .iter()
+            .enumerate()
+            .flat_map(|(index, package)| {
+                package
+                    .stickers
+                    .iter()
+                    .take(if index == selected {
+                        package.stickers.len()
+                    } else {
+                        1
+                    })
+                    .filter_map(|sticker| sticker.image())
+            })
+        {
+            if self.requested_assets.insert(asset.key()) {
+                self.sender.send(Intent::Asset(asset.clone()));
+            }
+        }
+    }
     fn render(&mut self, ui: &AppWindow) {
         #[cfg(feature = "ui-debug")]
         latency::RENDERS.set(latency::RENDERS.get() + 1);
@@ -629,6 +653,8 @@ impl Desktop {
                 self.sender.send(Intent::Asset(asset));
             }
         }
+
+        self.request_sticker_assets(ui);
 
         *self.reading.borrow_mut() = self.state.selected.clone().zip(
             self.state
@@ -855,6 +881,40 @@ impl Desktop {
             Delta::Asset { .. } | Delta::MediaFailed { .. } | Delta::Draft { .. }
         );
         match &d {
+            Delta::CreatedChat(result) => {
+                ui.global::<State>().set_new_chat_busy(false);
+                match result {
+                    Ok(id) => {
+                        ui.global::<State>().set_new_chat_open(false);
+                        self.capture_draft(ui);
+                        let intent = self.state.select(id.clone());
+                        self.sender.send(intent);
+                        self.reveal = Some(id.clone());
+                        self.state.panel = Panel::Chats;
+                        ui.set_section(0);
+                        ui.set_show_conversation(true);
+                        ui.invoke_focus_composer();
+                    }
+                    Err(error) => {
+                        let global = ui.global::<State>();
+                        global.set_new_chat_uncertain(error == "The group may have been created.");
+                        global.set_new_chat_error(error.into());
+                    }
+                }
+            }
+            Delta::ReactionFailed(key) => {
+                ui.global::<State>()
+                    .set_reaction_error_id(key.0.to_string().into());
+                let weak = ui.as_weak();
+                let id = key.0.to_string();
+                slint::Timer::single_shot(std::time::Duration::from_secs(4), move || {
+                    if let Some(ui) = weak.upgrade()
+                        && ui.global::<State>().get_reaction_error_id() == id
+                    {
+                        ui.global::<State>().set_reaction_error_id("".into());
+                    }
+                });
+            }
             Delta::UnsendFailed(key) => {
                 if self.state.messages.contains_key(key) {
                     ui.set_unsend_feedback_id(key.0.to_string().into());
@@ -1007,6 +1067,102 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
             });
         };
     }
+    global_callback!(on_react, |ui, d, id, kind| {
+        if let Ok(key) = id.parse() {
+            ui.global::<State>().set_reaction_error_id("".into());
+            d.sender.send(Intent::React {
+                key: Key(key),
+                kind: kind as u32,
+            });
+        }
+    });
+    global_callback!(on_load_stickers, |ui, d| {
+        d.request_sticker_assets(&ui);
+        d.sender.send(Intent::StickerPackages);
+    });
+    global_callback!(on_select_sticker_package, |ui, d, index| {
+        ui.global::<State>().set_sticker_package(index);
+        d.request_sticker_assets(&ui);
+        d.presenter.present_compose(&ui, &d.state);
+    });
+    global_callback!(on_send_sticker, |ui, d, index| {
+        if let Some(chat) = d.state.selected.clone()
+            && let Some(sticker) = d
+                .state
+                .sticker_packages
+                .get(ui.global::<State>().get_sticker_package() as usize)
+                .and_then(|p| p.stickers.get(index as usize))
+        {
+            d.sender.send(Intent::SendSticker {
+                chat,
+                sticker: Box::new(sticker.clone()),
+            });
+        }
+    });
+    global_callback!(on_open_new_chat, |ui, d| {
+        let global = ui.global::<State>();
+        global.set_new_chat_busy(false);
+        global.set_new_chat_uncertain(false);
+        global.set_new_chat_query("".into());
+        global.set_new_chat_name("".into());
+        global.set_new_chat_error("".into());
+        global.set_new_chat_selected(ModelRc::new(VecModel::<ComposeFriend>::default()));
+        d.presenter.present_compose(&ui, &d.state);
+        global.set_new_chat_open(true);
+        d.sender.send(Intent::Friends);
+    });
+    global_callback!(on_new_chat_filter, |ui, d| {
+        d.presenter.present_compose(&ui, &d.state);
+    });
+    global_callback!(on_new_chat_toggle, |ui, d, id| {
+        let global = ui.global::<State>();
+        let mut selected = global.get_new_chat_selected().iter().collect::<Vec<_>>();
+        if selected.iter().any(|f| f.id == id) {
+            selected.retain(|f| f.id != id);
+        } else if let Some(mut friend) = global.get_new_chat_friends().iter().find(|f| f.id == id) {
+            friend.selected = true;
+            selected.push(friend);
+        }
+        global.set_new_chat_selected(ModelRc::new(VecModel::from(selected)));
+        d.presenter.present_compose(&ui, &d.state);
+    });
+    global_callback!(on_new_chat_submit, |ui, d| {
+        let global = ui.global::<State>();
+        if global.get_new_chat_uncertain() {
+            global.set_new_chat_open(false);
+            d.state.panel = Panel::Chats;
+            ui.set_section(0);
+            ui.set_show_conversation(false);
+            d.render(&ui);
+            ui.invoke_focus_search();
+            return;
+        }
+        let targets = global
+            .get_new_chat_selected()
+            .iter()
+            .map(|f| f.id.to_string())
+            .collect::<Vec<_>>();
+        if targets.len() == 1 {
+            d.capture_draft(&ui);
+            let id = ChatId(targets[0].clone());
+            d.reveal = Some(id.clone());
+            let intent = d.state.select(id);
+            d.sender.send(intent);
+            d.state.panel = Panel::Chats;
+            ui.set_section(0);
+            ui.set_show_conversation(true);
+            global.set_new_chat_open(false);
+            d.render(&ui);
+            ui.invoke_focus_composer();
+        } else if targets.len() > 1 {
+            global.set_new_chat_busy(true);
+            global.set_new_chat_error("".into());
+            d.sender.send(Intent::CreateChat {
+                name: global.get_new_chat_name().to_string(),
+                targets,
+            });
+        }
+    });
     global_callback!(on_read_state_changed, |ui, d| {
         d.observe_reading(&ui);
     });

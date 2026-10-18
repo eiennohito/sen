@@ -83,7 +83,32 @@ export component Message inherits VerticalLayout {
                                 TouchArea { accessible-role: button; accessible-label: "Sender profile: " + root.message.sender-name; accessible-action-default => { State.open-member(root.message.sender-id); } clicked => { State.open-member(root.message.sender-id); } }
                             }
                             message-bubble := ContextMenuArea {
+                                    reactions := PopupWindow {
+                                        x: root.message.outgoing ? min(0px, message-bubble.width - 216px) : 0px; y: -48px;
+                                        width: 216px; height: 44px;
+                                        Rectangle { background: Tokens.bg; border-radius: 20px; border-width: 1px; border-color: Tokens.border;
+                                            FocusScope {
+                                                key-pressed(event) => { if State.ime-active { return reject; } if event.text == Key.Escape { reactions.close(); return accept; } reject }
+                                                HorizontalLayout { padding: 6px; spacing: 2px;
+                                                    for label[i] in ["👍", "❤️", "😆", "😮", "😢", "😰"]: Rectangle {
+                                                        width: 32px; height: 32px; border-radius: 16px;
+                                                        background: root.message.own-reaction == i + 2 ? Tokens.surface-selected : reaction-touch.has-hover ? Tokens.surface-hover : transparent;
+                                                        Text { text: label; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                                                        FocusScope { accessible-description: self.has-focus ? "Focused" : "";
+                                                            Rectangle { background: transparent; border-radius: 16px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+                                                            accessible-role: button; accessible-label: ["NICE", "LOVE", "FUN", "AMAZING", "SAD", "OMG"][i]; accessible-item-selected: root.message.own-reaction == i + 2;
+                                                            accessible-action-default => { State.react(root.message.id, i + 2); reactions.close(); }
+                                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.react(root.message.id, i + 2); reactions.close(); return accept; } reject }
+                                                        }
+                                                        reaction-touch := TouchArea { clicked => { State.react(root.message.id, i + 2); reactions.close(); } }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
                                 Menu {
+                                    if root.message.can-react: MenuItem { title: "React"; activated => { reactions.show(); } }
                                     if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
                                     if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
                                 }
@@ -94,6 +119,7 @@ export component Message inherits VerticalLayout {
                                 border-color: parent.selected ? Tokens.bubble-selection-border : Tokens.border;
                                 border-radius: 16px;
                                 }
+                                bubble-hover := TouchArea { }
                                 height: bubble-content.preferred-height;
                                 body-measure := Text { visible: false; text: root.showing-rich ? "" : root.message.body; font-size: Tokens.base; wrap: word-wrap; }
                                 bubble-content := VerticalLayout {
@@ -118,6 +144,7 @@ export component Message inherits VerticalLayout {
                                         visible: !root.rich-fallback;
                                         height: self.visible ? rich-flow.height : 0px;
                                         Menu {
+                                            if root.message.can-react: MenuItem { title: "React"; activated => { reactions.show(); } }
                                             MenuItem { title: "Select text"; activated => { root.selecting-rich = true; body.focus(); } }
                                             MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
                                             if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
@@ -149,6 +176,7 @@ export component Message inherits VerticalLayout {
                                         visible: !root.message.photo && !root.card && root.message.body != "" && (!root.message.sticker || root.message.image-key == "") && (root.message.rich-runs.length == 0 || root.selecting-rich || root.rich-fallback);
                                         height: self.visible ? body.preferred-height : 0px;
                                         Menu {
+                                            if root.message.can-react: MenuItem { title: "React"; activated => { reactions.show(); } }
                                             MenuItem { title: "Copy selection"; activated => { body.copy(); } }
                                             MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
                                             if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
@@ -205,7 +233,7 @@ export component Message inherits VerticalLayout {
                                         // Geometry does not change when a thumbnail arrives or fails.
                                         height: root.message.sticker ? 120px : 180px;
                                         border-radius: 12px; clip: true;
-                                        Image { source: root.message.picture; width: 100%; height: 100%; image-fit: contain; visible: root.message.has-picture; accessible-role: image; accessible-label: root.message.photo ? "Photo preview" : "Message image"; }
+                                        Image { source: root.message.picture; width: 100%; height: 100%; image-fit: contain; visible: root.message.has-picture; accessible-role: image; accessible-label: root.message.photo ? "Photo preview" : root.message.sticker ? "Sticker" : "Message image"; }
                                         // Software clips are rectangular: cover the four outside corners
                                         // at the contained image's actual bounds, without touching cached pixels.
                                         if root.message.photo && root.message.has-picture: Rectangle {
@@ -235,6 +263,7 @@ export component Message inherits VerticalLayout {
                                     }
                                 }
                             }
+                            if State.reaction-error-id == root.message.id: Text { text: "Couldn't react."; color: Tokens.danger; font-size: Tokens.time; }
                             if State.unsend-feedback-id == root.message.id: Text { text: "Couldn't unsend."; color: Tokens.danger; font-size: Tokens.time; }
                             if root.message.recoverable: HorizontalLayout {
                                 spacing: 8px; alignment: start;
@@ -249,17 +278,27 @@ export component Message inherits VerticalLayout {
                                 }
                                 TextAction { text: "Discard"; clicked => { State.discard-message(root.message.id); } }
                             }
-                            HorizontalLayout {
-                                spacing: 4px;
-                                for reaction in root.message.reactions: HorizontalLayout {
-                                    if reaction.has-picture: Image { source: reaction.picture; width: 24px; height: 24px; image-fit: contain; }
-                                    Text { text: reaction.label; font-size: Tokens.small; color: Tokens.foreground; }
+                            if root.message.reaction-count > 0: Rectangle {
+                                height: 28px; width: reaction-pill.preferred-width + 16px; horizontal-stretch: 0;
+                                border-radius: 14px; background: Tokens.bg; border-width: 1px; border-color: Tokens.divider;
+                                reaction-pill := HorizontalLayout { padding-left: 8px; padding-right: 8px; spacing: 4px;
+                                    for reaction in root.message.reactions: HorizontalLayout {
+                                        if reaction.has-picture: Image { source: reaction.picture; width: 20px; height: 20px; image-fit: contain; }
+                                        Text { text: reaction.label; font-size: Tokens.small; color: Tokens.foreground; vertical-alignment: center; }
+                                    }
+                                    Text { text: root.message.reaction-count; font-size: Tokens.small; color: Tokens.foreground; vertical-alignment: center; }
                                 }
                             }
                         }
                         // Time appears once per sender/time group, beside the
                         // bubble. Status has a fixed slot and never adds a row.
                         Rectangle {
+                            if root.message.can-react: IconButton {
+                                y: max(0px, message-column.y + message-bubble.y + message-bubble.height - 48px); width: 28px; height: 28px; border-radius: 14px;
+                                label: "React"; icon: @image-url("../assets/icons/react.svg");
+                                opacity: bubble-hover.has-hover || message-bubble.selected || self.has-focus ? 1 : 0;
+                                activated => { reactions.show(); }
+                            }
                             width: root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8;
                             HorizontalLayout {
                                 y: max(0px, message-column.y + message-bubble.y + message-bubble.height - self.height);
@@ -278,3 +317,4 @@ export component Message inherits VerticalLayout {
                         }
                     
 }
+

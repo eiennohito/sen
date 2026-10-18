@@ -88,6 +88,19 @@ pub enum Intent {
         chat: ChatId,
         text: String,
     },
+    React {
+        key: Key,
+        kind: u32,
+    },
+    StickerPackages,
+    SendSticker {
+        chat: ChatId,
+        sticker: Box<Content>,
+    },
+    CreateChat {
+        name: String,
+        targets: Vec<String>,
+    },
     Unsend(Key),
     Retry(Key),
     Resend(Key),
@@ -106,6 +119,9 @@ pub enum Intent {
 }
 #[derive(Clone)]
 pub enum Delta {
+    ReactionFailed(Key),
+    StickerPackages(Vec<StickerPackage>),
+    CreatedChat(std::result::Result<ChatId, String>),
     Fatal,
     Reset,
     Pair(PairEvent),
@@ -390,6 +406,8 @@ impl Worker {
                                 net_pending: 0,
                                 generation: 0,
                                 in_flight: BTreeSet::new(),
+                                reaction_flights: Default::default(),
+                                group_requests: Default::default(),
                                 media: None,
                                 waiting_assets: VecDeque::new(),
                                 waiting_retries: Vec::new(),
@@ -466,6 +484,8 @@ struct Engine {
     net_pending: usize,
     generation: u64,
     in_flight: BTreeSet<Key>,
+    reaction_flights: std::collections::BTreeMap<Key, Option<Option<u32>>>,
+    group_requests: std::collections::BTreeMap<(String, Vec<String>), u32>,
     media: Option<AssetRequests>,
     waiting_assets: VecDeque<(
         crate::client::desktop::assets::Asset,
@@ -847,8 +867,68 @@ impl Engine {
         self.store.set_prefs(&prefs)?;
         Ok(self.seq)
     }
+    fn send_reaction(
+        &mut self,
+        key: Key,
+        id: ServerId,
+        actor: String,
+        previous: Option<ReactionKind>,
+        next: Option<u32>,
+    ) -> Result<()> {
+        let seq = self.next_seq()?;
+        self.reaction_flights.insert(key, None);
+        let net_id = id.clone();
+        self.rpc_completion(
+            move |backend| backend.react(&net_id, next, seq),
+            move |engine, result, current| {
+                let queued = engine.reaction_flights.remove(&key).flatten();
+                let sent = next.map(ReactionKind::Predefined);
+                let failed = result.is_err();
+                if failed && current {
+                    let row = engine.store.message(key)?;
+                    let stored = row
+                        .reactions
+                        .iter()
+                        .find(|r| r.actor == actor)
+                        .map(|r| r.kind.clone());
+                    if stored == sent {
+                        engine.store.own_reaction(key, &actor, previous.clone())?;
+                    }
+                }
+                if current
+                    && let Some(desired) = queued
+                    && (failed || desired != next)
+                {
+                    engine.store.own_reaction(
+                        key,
+                        &actor,
+                        desired.map(ReactionKind::Predefined),
+                    )?;
+                    engine.send_reaction(
+                        key,
+                        id,
+                        actor,
+                        if failed { previous } else { sent },
+                        desired,
+                    )?;
+                }
+                engine.publish()?;
+                if failed {
+                    engine.emit(Delta::ReactionFailed(key));
+                }
+                Ok(())
+            },
+        );
+        Ok(())
+    }
     fn open(&mut self, w: WindowSub) -> Result<()> {
-        if self.store.chat(&w.chat)?.is_none() {
+        let exists = self.store.chat(&w.chat)?.is_some();
+        let friend = self
+            .store
+            .contacts()?
+            .iter()
+            .any(|f| f.id == w.chat.0 && !f.group);
+        if !exists && !friend {
             self.inbox.refresh(Refresh::Details(w.chat.clone()));
         }
         let mut prefs = self.store.prefs()?;
@@ -860,7 +940,9 @@ impl Engine {
                 draft: self.store.load_draft(&w.chat)?,
             });
         }
-        self.inbox.refresh(Refresh::Recent(w.chat.clone()));
+        if exists || !friend || self.connection == Connection::Online {
+            self.inbox.refresh(Refresh::Recent(w.chat.clone()));
+        }
         self.window = Some(w);
         self.force_window = true;
         self.publish()
@@ -1075,6 +1157,136 @@ impl Engine {
                     self.defer_page(chat, kind);
                 }
             }
+            Intent::React { key, kind } => {
+                if !(2..=7).contains(&kind) {
+                    return Ok(());
+                }
+                let row = self.store.message(key)?;
+                let Some(id) = row.server_id else {
+                    return Ok(());
+                };
+                if row.body.is_withdrawn() {
+                    return Ok(());
+                }
+                let actor = self.store.account()?.own_mid;
+                let previous = row
+                    .reactions
+                    .iter()
+                    .find(|r| r.actor == actor)
+                    .map(|r| r.kind.clone());
+                let next = if previous == Some(ReactionKind::Predefined(kind)) {
+                    None
+                } else {
+                    Some(kind)
+                };
+                self.store
+                    .own_reaction(key, &actor, next.map(ReactionKind::Predefined))?;
+                self.publish()?;
+                if let Some(queued) = self.reaction_flights.get_mut(&key) {
+                    *queued = Some(next);
+                } else {
+                    self.send_reaction(key, id, actor, previous, next)?;
+                }
+            }
+            Intent::StickerPackages => {
+                self.emit(Delta::StickerPackages(self.store.sticker_packages()?));
+                self.rpc(
+                    |backend| backend.sticker_packages(),
+                    |engine, result| {
+                        if let Ok(rows) = result {
+                            engine.store.save_sticker_packages(&rows)?;
+                            engine.emit(Delta::StickerPackages(rows));
+                        }
+                        Ok(())
+                    },
+                );
+            }
+            Intent::CreateChat { name, targets } => {
+                let request = (|| {
+                    let own = self.store.account()?.own_mid;
+                    let mut targets = targets
+                        .into_iter()
+                        .filter(|id| id != &own)
+                        .collect::<Vec<_>>();
+                    targets.sort();
+                    targets.dedup();
+                    if targets.len() < 2 {
+                        return Err(StoreError::Invalid("Select at least two friends.".into()));
+                    }
+                    let identity = (own, targets.clone());
+                    let seq = if let Some(seq) = self.group_requests.get(&identity) {
+                        *seq
+                    } else {
+                        let seq = self.next_seq()?;
+                        self.group_requests.insert(identity.clone(), seq);
+                        seq
+                    };
+                    Ok((targets, identity, seq))
+                })();
+                let (targets, identity, seq) = match request {
+                    Ok(request) => request,
+                    Err(error) => {
+                        self.emit(Delta::CreatedChat(Err(error.to_string())));
+                        return Ok(());
+                    }
+                };
+                self.rpc_completion(
+                    move |backend| backend.create_chat(name.trim(), &targets, seq),
+                    move |engine, result, current| {
+                        let outcome = if !current {
+                            engine.inbox.refresh(Refresh::ChatList);
+                            Err("The group may have been created.".into())
+                        } else {
+                            match result {
+                                Ok(chat) => {
+                                    let saved = (|| {
+                                        engine.store.upsert_details(std::slice::from_ref(&chat))?;
+                                        engine.publish()
+                                    })();
+                                    engine.inbox.refresh(Refresh::Details(chat.id.clone()));
+                                    match saved {
+                                        Ok(()) => {
+                                            engine.group_requests.remove(&identity);
+                                            Ok(chat.id)
+                                        }
+                                        Err(_) => {
+                                            engine.inbox.refresh(Refresh::ChatList);
+                                            Err("The group may have been created.".into())
+                                        }
+                                    }
+                                }
+                                Err(Error::Rejected(_)) => {
+                                    engine.group_requests.remove(&identity);
+                                    Err("Couldn't create group.".into())
+                                }
+                                Err(_) => {
+                                    engine.inbox.refresh(Refresh::ChatList);
+                                    Err("The group may have been created.".into())
+                                }
+                            }
+                        };
+                        engine.emit(Delta::CreatedChat(outcome));
+                        Ok(())
+                    },
+                );
+            }
+            Intent::SendSticker { chat, sticker } => {
+                if !matches!(*sticker, Content::Sticker { .. })
+                    || self.store.chat(&chat)?.is_some_and(|c| c.left)
+                {
+                    return Ok(());
+                }
+                let seq = self.next_seq()?;
+                let (key, _) = self.store.insert_pending(
+                    &chat,
+                    LocalId(format!("{}-{seq}", now_ms())),
+                    seq,
+                    *sticker,
+                    now_ms(),
+                )?;
+                self.publish()?;
+                self.inbox.refresh(Refresh::Send(key));
+            }
             Intent::Send { chat, text } => {
                 if self.store.chat(&chat)?.is_some_and(|c| c.left) {
                     return Ok(());
@@ -1198,15 +1410,20 @@ impl Engine {
     }
     fn send(&mut self, key: Key) -> Result<()> {
         let m = self.store.message(key)?;
-        let text = m.body.as_text();
+        let body = m.body.clone();
         let seq = m
             .request_seq
             .ok_or_else(|| StoreError::Invalid("send sequence missing".into()))?;
         let chat = m.chat_id.clone();
-        let text = text.to_owned();
         self.in_flight.insert(key);
         self.rpc_completion(
-            move |backend| backend.send(&chat, &text, seq),
+            move |backend| {
+                if matches!(body, Content::Sticker { .. }) {
+                    backend.send_sticker(&chat, &body, seq)
+                } else {
+                    backend.send(&chat, body.as_text(), seq)
+                }
+            },
             move |engine, result, current| {
                 engine.in_flight.remove(&key);
                 match result {
@@ -1221,6 +1438,13 @@ impl Engine {
                                     None => break,
                                 }
                             }
+                        }
+                        if engine
+                            .store
+                            .chat(&row.chat_id)?
+                            .is_none_or(|c| c.title.is_empty())
+                        {
+                            engine.inbox.refresh(Refresh::Details(row.chat_id.clone()));
                         }
                         engine.store.link_sent(seq, row.server_id, row.created_ms)?;
                     }

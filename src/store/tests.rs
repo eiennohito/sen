@@ -330,6 +330,7 @@ fn empty_start_and_newer_page_segments() {
             .is_empty()
     );
     let mut empty = store();
+    ensure_chat(&empty.conn, &chat()).unwrap();
     page(&mut empty, &[], true);
     assert!(
         empty
@@ -337,6 +338,33 @@ fn empty_start_and_newer_page_segments() {
             .unwrap()
             .reaches_start
     );
+}
+#[test]
+fn empty_recent_does_not_create_chat_until_fetched_or_sent_message() {
+    for reaches_start in [false, true] {
+        for fetched in [false, true] {
+            let mut s = store();
+            let changes = s
+                .apply_page(&chat(), PageKind::Recent, &[], reaches_start)
+                .unwrap();
+            assert!(changes.chats_changed.is_empty());
+            assert!(s.take_changes().chats_changed.is_empty());
+            assert!(s.chat(&chat()).unwrap().is_none());
+            assert!(s.chat_list(10, 0).unwrap().is_empty());
+            assert!(messages::segments(&s.conn, &chat()).unwrap().is_empty());
+
+            if fetched {
+                page(&mut s, &[1], true);
+            } else {
+                pending(&mut s, 1);
+            }
+            assert_eq!(s.chat_list(10, 0).unwrap().len(), 1);
+            let key = all(&s)[0].key;
+            page(&mut s, &[], true);
+            assert_eq!(s.chat_list(10, 0).unwrap().len(), 1);
+            assert_eq!(all(&s)[0].key, key);
+        }
+    }
 }
 #[test]
 fn live_failure_rolls_back_row_segment_chat_and_revision() {

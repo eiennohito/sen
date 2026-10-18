@@ -98,13 +98,14 @@ observations below do not verify the current build.
 | MSG1 | Pointer and keyboard selection inside a message, Copy without entering an editor | part (plain messages selectable; inline-image messages use Select text to expose the intact fallback text for selection; cross-run drag selection unavailable in Slint 1.18) | S M (selection mode for rich messages) |
 | MSG2 | Copy yields visible text with line breaks and emoji fallback, no timestamps or labels | yes (rich Copy message and Select text retain the original fallback text) | S M |
 | MSG3 | Right click keeps an existing selection and targets the message; incoming updates keep selection and menu | part (stable message identity preserves unchanged selection/menu; native menu has no open-state callback for full mutation deferral) | S M (unchanged-row and selected-body chat-switch scenarios) |
-| MSG4 | Context menu offers Copy selection, Copy message, Copy link, Open photo and confirmed-own Unsend as applicable; menus stay on screen | part (S5 URL actions add full address, Open link and Copy link; P7 Unsend confirmation implemented, live unverified) | M (layers covers Unsend menu, cancellation, success and failure) |
+| MSG4 | Context menu offers Copy selection, Copy message, Copy link, Open photo and confirmed-own Unsend and React as applicable; menus stay on screen | part (S5 URL actions add full address, Open link and Copy link; P7 Unsend confirmation and Phase 7 React implemented, live unverified) | M (layers covers Unsend menu, cancellation, success and failure) |
 | MSG5 | Links are detected, shown distinctly, inspectable (full URL), and opened only on deliberate activation | yes (synthetic links tests and reading checker) | S M |
 | MSG6 | Reply previews jump to the referenced message with highlight and a return path | yes (within retained history; absent targets show local unavailable feedback) | S M (retained replies) |
 | MSG7 | Photo, video, voice, file, location, contact, sticker, system, withdrawn, undecryptable, and unknown content each have a distinct placeholder or presentation; one bad message hides nothing | yes (typed rows; file name/size/Save, video/voice duration, contact name, literal system text, withdrawal “Message unsent”; no playback) | S M |
 | MSG8 | Inline LINE emoji render as runs within text | part (native measured grapheme/image flow; cross-run ligatures/contextual shaping unavailable; static bitmap fallback for animated emoji; Select text switches to the intact fallback body for selection; bodies over 2048 runs use plain fallback) | S M (partial implementation as listed) |
 | MSG9 | Accessible label of a message includes direction, sender, time, and delivery state | yes (S5 incoming sender with conversation fallback; outgoing time and delivery) | S M |
-| MSG10 | Stickers have no bubble; photos keep aspect ratio in a reserved frame; reactions sit under the bubble | yes | M |
+| MSG10 | Stickers have no bubble; photos keep aspect ratio in a reserved frame; reactions sit under the bubble | yes (Phase 7 reaction pill, three icons and total) | M |
+| MSG11 | React from hover/focus or context menu; six choices, own highlight and repeat-to-cancel; optimistic update and transient failure rollback; op 139 dedup | yes; live unverified | S; compose MCP |
 
 ## CMP — Composer (model §8.1, app-design IME checks)
 
@@ -120,14 +121,16 @@ observations below do not verify the current build.
 | CMP8 | Pasting text keeps line breaks; pasting or dropping media opens the attachment preview | part (multiline text preserved; media preview absent) | S M |
 | CMP9 | Attachment selection shows a preview with destination, remove, cancel, Send; nothing transmits on selection or drop | no | — |
 | CMP10 | Shortcut help is in Settings, not a permanent caption under the composer | yes | S M |
+| CMP11 | Sticker popover uses cached owned packages, tabs and four-column images; activation sends immediately and closes; Escape closes | yes; live unverified | S; compose MCP |
+| CMP12 | New chat selects one friend locally; first send works without an existing chat. Multiple friends create a named group with progress/failure and open on success | yes; live unverified | S; compose MCP |
 
 ## OUT — Outgoing lifecycle (model §6)
 
 | ID | Requirement | Impl | Verified |
 | --- | --- | --- | --- |
-| OUT1 | Submit creates a durable Pending item before any network call | yes | S |
+| OUT1 | Submit creates a durable Pending item before any network call | yes (text and stickers) | S |
 | OUT2 | Pending, Confirmed, Read, Rejected, Uncertain are visually and accessibly distinct in a fixed slot | yes ([M6–M8 resolved](ux-sessions.md#resolved): fixed delivery slot) | S M (Sending, Sent, Not sent, Unconfirmed) |
-| OUT3 | Confirmation updates the same item; refresh, reconnect, restart never duplicate it; Confirmed never implies Read | yes | S |
+| OUT3 | Confirmation updates the same item; refresh, reconnect, restart never duplicate it; Confirmed never implies Read | yes (Phase 7 adds sticker echo/retry coverage) | S |
 | OUT4 | The user can keep composing while sends are pending | yes | S |
 | OUT5 | Definite rejection is classified separately from an uncertain result | yes | S M |
 | OUT6 | Rejected offers safe Retry and Edit; Uncertain offers Resend with duplicate warning and Edit; Edit never overwrites a newer draft | yes (safe Retry; duplicate-confirmed Resend keeps original; Edit confirms Replace/Append) | S M |
@@ -163,7 +166,7 @@ observations below do not verify the current build.
 
 | ID | Requirement | Impl | Verified |
 | --- | --- | --- | --- |
-| IN1 | Focus order per model §8.2; messages and friend rows are not Tab stops | part (S4 browser lists and S5 history are single Tab stops; search-to-composer takes four Tabs; full layer traversal S7) | S M |
+| IN1 | Focus order per model §8.2; messages and friend rows are not Tab stops | part (browser/history lists remain single Tab stops; New chat and Stickers join the forward/reverse cycles; full layer traversal S7) | S M |
 | IN2 | Selection and focus are visually distinct | yes | M |
 | IN3 | Escape closes only the topmost layer; never the window; never cancels an in-flight pairing without confirmation | yes (top layer only; busy sign-in requires confirmation) | S M (layer escape/focus checks); physical input P— |
 | IN4 | Layers restore focus to their opener | yes | M |
@@ -270,6 +273,7 @@ Keep account contents and private screenshots out of Git. Newest first.
 
 | Date | Build | Covered | Environment | Result |
 | --- | --- | --- | --- | --- |
+| 2026-10-19 | basic chat flows phase 7 | P2, editable T5, new chats; MSG4/MSG10–11, CMP11–12, OUT1/OUT3, IN1 | Offline workspace; release ui-debug headless software; fresh private instances | PASS: fmt, workspace/all-target Clippy with warnings denied (including ui-debug), workspace tests (195 passed, 5 ignored), release ui-debug build. Base plus every existing group passes; layers, focus, friends and scenarios also pass with --wide. New --compose passes react/cancel, owned-package image picker/send/Escape/cached reopen, typed first send to a friend without a chat, and group creation. Three core flows cover reaction set/cancel/failure rollback and op 139 dedup, sticker echo dedup/retry, and local friend/group success/failure. Inspected all three surfaces and the selected-group variant in light/dark at 980×720 and 420×760; corrected popover anchoring, narrow picker width, tabs/images and dialog controls. Synthetic data and loopback only; no real account, external network or Git operations. All new LineBackend writes remain **live unverified**. |
 | 2026-10-18 | profiles phase 6 | U0–U6, traced P5/P6, SH8, WIN7; 6a viewer/rail/preview leftovers | Offline workspace; release ui-debug software renderer; fresh private instance for every group at 980×720 and 1280×900 | PASS: fmt, all-target Clippy with ui-debug and warnings denied, workspace tests (192 passed, 5 ignored), release ui-debug build. All 11 primary groups (base, unread, scenarios, friends, layout-photos, reading, rich, media, auth-recovery, layers, focus) pass at both sizes (22 fresh instances). Members/action checker passes at 420×760, default and wide sizes, including Rename/Add friend/mute/Leave, invitees and read-only draft; layers also checks avatar-viewer opener restoration. 420 px capture inspected: round avatars and selected rail icon without a left bar. Synthetic data and loopback fixtures only; no real account, external network or Git operations. Traced writes remain **live unverified**; Block, Report, Invite, accept/reject invitations and remove member remain untraced. The separate legacy composer checker still has stale pre-6a recovery assertions (V6), outside these primary groups. |
 | 2026-10-18 | protocol phase 5 | T5, P1, P7; RD3/RD8, MSG4/MSG7, FB1 | Offline workspace; release ui-debug headless software, ten fresh private instances via run-ui-debug.py + check-ui-mcp.py | fmt, Clippy with warnings denied, workspace tests (197 passed, 6 ignored), and ui-debug release build pass. scenarios, reading, rich, layers, friends, focus, layout-photos, media, unread and auth-recovery all pass. Layers adds OA thumbnail/original, live reaction, Unsend menu/dialog, Escape/Cancel, failure feedback and success. Synthetic data and loopback fixtures only; live unverified. T9 remains blocked and crypto is unchanged. |
 | 2026-10-18 | core model phase 3 | Media LRU, cleanup, all ten UI check groups | Offline release workspace; ui-debug headless software, fresh private instance per group via run-ui-debug.py | fmt and all-target clippy (`-D warnings`, including ui-debug) pass; 194 tests pass, 6 ignored. scenarios, reading, rich, layers, friends, focus, layout-photos, media, unread and auth-recovery all pass. Synthetic data only. |

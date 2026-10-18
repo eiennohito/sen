@@ -1,3 +1,4 @@
+import { NewChat } from "new-chat.slint";
 import { PanelState } from "types.slint";
 export { State } from "state.slint";
 export { Palette } from "std-widgets.slint";
@@ -167,6 +168,7 @@ export component AppWindow inherits Window {
         conversation.jump(-State.history-extent);
     }
     shell := FocusScope {
+        enabled: !State.new-chat-open;
         focus-on-tab-navigation: false;
         key-pressed(event) => { if root.demo && !State.modal-open && event.text == Key.F12 { scenarios.open(); return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: 0px;
@@ -240,6 +242,7 @@ export component AppWindow inherits Window {
     public function history-scroll(delta: length) { conversation.scroll(delta); }
     public function history-jump(y: length) { conversation.jump(y); }
     layers := Layers {}
+    NewChat { width: parent.width; height: parent.height; }
     auth-notice := ConnectionNotice {
         x: State.connection-area-x; y: State.connection-area-y;
         width: State.connection-area-width;

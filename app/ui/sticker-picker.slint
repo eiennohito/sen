@@ -1,0 +1,42 @@
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { Pane } from "scrollpane.slint";
+import { ScrollView } from "std-widgets.slint";
+export component StickerPicker inherits Rectangle {
+    callback close();
+    background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: Tokens.border;
+    FocusScope {
+        key-pressed(event) => { if State.ime-active { return reject; } if event.text == Key.Escape { root.close(); return accept; } reject }
+        VerticalLayout { padding: 12px; spacing: 8px;
+            ScrollView { height: 40px; vertical-stretch: 0;
+                HorizontalLayout { alignment: start; spacing: 4px;
+                    for package-tab[i] in State.sticker-tabs: Rectangle { width: 36px; height: 36px; border-radius: 8px; background: i == State.sticker-package ? Tokens.surface-selected : transparent;
+                        Image { source: package-tab.picture; width: parent.width; height: parent.height; image-fit: contain; }
+                        FocusScope { accessible-description: self.has-focus ? "Focused" : "";
+                            Rectangle { background: transparent; border-radius: 8px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+                            accessible-role: tab; accessible-label: package-tab.name; accessible-item-selected: i == State.sticker-package;
+                            accessible-action-default => { State.select-sticker-package(i); }
+                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.select-sticker-package(i); return accept; } reject }
+                        }
+                        TouchArea { clicked => { State.select-sticker-package(i); } }
+                    }
+                }
+            }
+            if State.sticker-tabs.length == 0: Text { text: "No stickers"; color: Tokens.secondary; horizontal-alignment: center; vertical-alignment: center; }
+            Pane { full-height: ceil(State.sticker-items.length / 4) * 76px;
+                for sticker[i] in State.sticker-items: Rectangle {
+                    x: mod(i, 4) * (parent.width / 4); y: floor(i / 4) * 76px; width: 72px; height: 72px; border-radius: 8px;
+                    background: touch.has-hover ? Tokens.surface-hover : transparent;
+                    Image { source: sticker.picture; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: "Sticker preview " + (i + 1); accessible-description: sticker.picture.width > 0 ? "Loaded" : "Loading"; }
+                    FocusScope { accessible-description: self.has-focus ? "Focused" : "";
+                        Rectangle { background: transparent; border-radius: 8px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+                        accessible-role: button; accessible-label: "Send sticker " + (i + 1);
+                        accessible-action-default => { State.send-sticker(sticker.index); root.close(); }
+                        key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.send-sticker(sticker.index); root.close(); return accept; } reject }
+                    }
+                    touch := TouchArea { clicked => { State.send-sticker(sticker.index); root.close(); } }
+                }
+            }
+        }
+    }
+}

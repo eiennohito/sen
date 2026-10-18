@@ -28,6 +28,8 @@ def launch_preview(args):
         '--', '--demo', '--demo-size', args.demo_size]
     if hasattr(args, 'text_size'):
         command += ['--demo-text-size', str(args.text_size), '--demo-color-scheme', args.color_scheme]
+    if hasattr(args, 'color_scheme'):
+        command += ['--demo-dark' if args.color_scheme == 'dark' else '--demo-light']
     process = subprocess.Popen(command, stdout=subprocess.PIPE, text=True)
 
     def stop():

@@ -733,6 +733,100 @@ impl Client {
         ))
     }
 
+    /// Source-backed shapes; live unverified.
+    pub fn react(&mut self, id: &str, kind: Option<u32>, seq: u32) -> Result<()> {
+        if let Some(kind) = kind {
+            ensure!((2..=7).contains(&kind), "invalid reaction");
+            self.talk("react", json!([{"reqSeq":seq,"messageId":id,"reactionType":{"predefinedReactionType":kind}}]))?;
+        } else {
+            self.talk("cancelReaction", json!([{"reqSeq":seq,"messageId":id}]))?;
+        }
+        Ok(())
+    }
+    pub fn send_sticker(&mut self, to: &str, sticker: &Content, seq: u32) -> Result<Message> {
+        let Content::Sticker { pkg, id, ver, .. } = sticker else {
+            return Err(SendFailure::Rejected.into());
+        };
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_millis() as i64;
+        let result = self.talk("sendMessage", json!([seq, {"from":self.my_mid,"to":to,"toType":if is_user(to){0}else if to.starts_with(['C','c']){2}else{1},"id":format!("{now:015}"),"createdTime":now,"sessionId":0,"contentType":7,"contentMetadata":{"STKPKGID":pkg,"STKID":id,"STKVER":ver.as_deref().unwrap_or("1")},"hasContent":true}]))?;
+        Ok(self.message(&result))
+    }
+    pub fn create_chat(
+        &mut self,
+        name: &str,
+        targets: &[String],
+        seq: u32,
+    ) -> Result<crate::store::ChatInput> {
+        let targets = targets
+            .iter()
+            .filter(|id| *id != &self.my_mid)
+            .collect::<Vec<_>>();
+        let result = self.talk(
+            "createChat",
+            json!([{"reqSeq":seq,"type":0,"name":name.trim(),"targetUserMids":targets}]),
+        )?;
+        let chat = &result["chat"];
+        Ok(crate::store::ChatInput {
+            id: crate::store::ChatId(required(chat, "chatMid")?.into()),
+            title: chat["chatName"].as_str().unwrap_or(name).into(),
+            is_group: true,
+            member_count: Some(targets.len() as u32 + 1),
+            ..Default::default()
+        })
+    }
+    pub fn sticker_packages(&mut self) -> Result<Vec<crate::store::StickerPackage>> {
+        let value = self.api.call(
+            "/api/shop/thrift/ShopService/ShopService/getOwnedProductSummaries",
+            &json!(["STICKER", 0, 100, [1, 2, 3, 4]]),
+            access(&self.state)?,
+            "",
+            0,
+        )?;
+        let mut packages = Vec::new();
+        for p in value["productList"]
+            .as_array()
+            .context("missing sticker packages")?
+        {
+            let id = required(p, "id")?.to_owned();
+            let version = p["latestVersion"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| p["latestVersion"].to_string());
+            let mut stickers = Vec::new();
+            if let Some(ranges) =
+                p["productTypeSummary"]["stickerSummary"]["stickerIdRanges"].as_array()
+            {
+                for range in ranges {
+                    let number = |key: &str| {
+                        range[key]
+                            .as_u64()
+                            .or_else(|| range[key].as_str()?.parse().ok())
+                            .unwrap_or(0)
+                    };
+                    let start = number("start");
+                    for n in start..start.saturating_add(number("size").min(1000)) {
+                        let sticker_id = n.to_string();
+                        stickers.push(Content::Sticker {
+                            pkg: id.clone(),
+                            id: sticker_id.clone(),
+                            ver: Some(version.clone()),
+                            asset: Asset::sticker(&json!({"STKID":sticker_id})),
+                            text: None,
+                        });
+                    }
+                }
+                packages.push(crate::store::StickerPackage {
+                    id,
+                    name: p["name"].as_str().unwrap_or("Stickers").into(),
+                    version,
+                    stickers,
+                });
+            }
+        }
+        Ok(packages)
+    }
     pub fn unsend(&mut self, id: &str, seq: u32) -> Result<()> {
         self.talk("unsendMessage", json!([seq, id]))?;
         Ok(())

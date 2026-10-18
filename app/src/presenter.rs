@@ -63,6 +63,88 @@ impl Presenter {
         ui.set_friends(ModelRc::new(self.friends.clone()));
         ui.set_members(ModelRc::new(self.members.clone()));
     }
+    pub fn present_compose(&self, ui: &AppWindow, state: &AppState) {
+        let global = ui.global::<State>();
+        let selected = global
+            .get_new_chat_selected()
+            .iter()
+            .map(|f| f.id.to_string())
+            .collect::<Vec<_>>();
+        let friends = state
+            .friends
+            .iter()
+            .filter(|f| !f.group && f.id != state.profile.mid)
+            .map(|f| ComposeFriend {
+                id: f.id.clone().into(),
+                name: f.name.clone().into(),
+                initial: name_initial(&f.name),
+                avatar: f
+                    .avatar
+                    .as_ref()
+                    .and_then(|a| self.images.get(&a.key()))
+                    .cloned()
+                    .unwrap_or_default(),
+                selected: selected.contains(&f.id),
+            })
+            .collect::<Vec<_>>();
+        let chosen = friends
+            .iter()
+            .filter(|f| f.selected)
+            .cloned()
+            .collect::<Vec<_>>();
+        global.set_new_chat_count(chosen.len() as i32);
+        global.set_new_chat_placeholder(
+            chosen
+                .iter()
+                .map(|f| f.name.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+                .into(),
+        );
+        global.set_new_chat_selected(ModelRc::new(VecModel::from(chosen)));
+        global.set_new_chat_friends(ModelRc::new(VecModel::from(
+            friends
+                .into_iter()
+                .filter(|f| {
+                    f.name
+                        .to_lowercase()
+                        .contains(&global.get_new_chat_query().to_lowercase())
+                })
+                .collect::<Vec<_>>(),
+        )));
+        let picture = |content: &Content| {
+            content
+                .image()
+                .and_then(|a| self.images.get(&a.key()))
+                .cloned()
+                .unwrap_or_default()
+        };
+        global.set_sticker_tabs(ModelRc::new(VecModel::from(
+            state
+                .sticker_packages
+                .iter()
+                .map(|p| StickerTab {
+                    name: p.name.clone().into(),
+                    picture: p.stickers.first().map(picture).unwrap_or_default(),
+                })
+                .collect::<Vec<_>>(),
+        )));
+        let items = state
+            .sticker_packages
+            .get(global.get_sticker_package() as usize)
+            .map(|p| {
+                p.stickers
+                    .iter()
+                    .enumerate()
+                    .map(|(index, s)| StickerItem {
+                        index: index as i32,
+                        picture: picture(s),
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        global.set_sticker_items(ModelRc::new(VecModel::from(items)));
+    }
     fn row(&mut self, m: &StoredMessage, state: &AppState) -> MessageRow {
         let sender = state
             .contacts
@@ -129,6 +211,20 @@ impl Presenter {
             Delivery::Uncertain => "Unconfirmed",
         }
         .into();
+        row.can_react = m.server_id.is_some() && !m.body.is_withdrawn();
+        row.reaction_count = m.reactions.len() as i32;
+        row.own_reaction = m
+            .reactions
+            .iter()
+            .find(|r| r.actor == state.profile.mid)
+            .and_then(|r| {
+                if let ReactionKind::Predefined(n) = r.kind {
+                    Some(n as i32)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(0);
         row.can_unsend = m.outgoing && m.server_id.is_some() && !m.body.is_withdrawn();
         row.recoverable = matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain);
         row.delivery_detail = match &m.delivery {
@@ -183,6 +279,8 @@ impl Presenter {
         row
     }
     pub fn present(&mut self, ui: &AppWindow, state: &AppState, query: &str, category: i32) {
+        self.present_compose(ui, state);
+
         let friends = state
             .friends
             .iter()
@@ -313,7 +411,7 @@ impl Presenter {
             state
                 .selected
                 .as_ref()
-                .is_some_and(|id| state.chats.get(id).is_none_or(|c| c.chat.left)),
+                .is_some_and(|id| state.chats.get(id).is_some_and(|c| c.chat.left)),
         );
         if let Some(page) = state.detail_page() {
             use line_wasm_poc::controller::DetailPage;
@@ -665,6 +763,25 @@ impl Presenter {
                 .into(),
             );
         }
+        if let Some(id) = &state.selected
+            && !state.chats.contains_key(id)
+        {
+            let friend = state.friends.iter().find(|f| f.id == id.0);
+            ui.set_chat_title(friend.map(|f| f.name.as_str()).unwrap_or(&id.0).into());
+            ui.global::<State>().set_chat_id(id.0.clone().into());
+            let title = friend.map(|f| f.name.as_str()).unwrap_or(&id.0);
+            ui.global::<State>().set_chat_initial(name_initial(title));
+            ui.global::<State>().set_chat_avatar(
+                friend
+                    .and_then(|f| f.avatar.as_ref())
+                    .and_then(|a| self.images.get(&a.key()))
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            ui.set_chat_group(false);
+            ui.set_member_count(0);
+            ui.set_chat_subtitle("".into());
+        }
         if ui.get_draft().as_str() != state.composer {
             ui.set_draft(state.composer.clone().into());
         }
@@ -705,6 +822,62 @@ impl Presenter {
     pub fn patch_asset(&mut self, ui: &AppWindow, state: &AppState, key: &str) {
         let image = self.images.get(key);
         let failure = self.failures.get(key);
+        if let Some(image) = image {
+            let global = ui.global::<State>();
+            for model in [
+                global.get_new_chat_friends(),
+                global.get_new_chat_selected(),
+            ] {
+                if let Some(rows) = model.as_any().downcast_ref::<VecModel<ComposeFriend>>() {
+                    for i in 0..rows.row_count() {
+                        let mut row = rows.row_data(i).unwrap();
+                        if state.friends.iter().any(|friend| {
+                            friend.id == row.id.as_str()
+                                && friend
+                                    .avatar
+                                    .as_ref()
+                                    .is_some_and(|asset| asset.key() == key)
+                        }) && row.avatar != *image
+                        {
+                            row.avatar = image.clone();
+                            rows.set_row_data(i, row);
+                        }
+                    }
+                }
+            }
+            let tabs = global.get_sticker_tabs();
+            if let Some(rows) = tabs.as_any().downcast_ref::<VecModel<StickerTab>>() {
+                for (i, package) in state.sticker_packages.iter().enumerate() {
+                    if package
+                        .stickers
+                        .first()
+                        .and_then(Content::image)
+                        .is_some_and(|asset| asset.key() == key)
+                        && let Some(mut row) = rows.row_data(i)
+                        && row.picture != *image
+                    {
+                        row.picture = image.clone();
+                        rows.set_row_data(i, row);
+                    }
+                }
+            }
+            let items = global.get_sticker_items();
+            if let Some(rows) = items.as_any().downcast_ref::<VecModel<StickerItem>>()
+                && let Some(package) = state
+                    .sticker_packages
+                    .get(global.get_sticker_package() as usize)
+            {
+                for (i, sticker) in package.stickers.iter().enumerate() {
+                    if sticker.image().is_some_and(|asset| asset.key() == key)
+                        && let Some(mut row) = rows.row_data(i)
+                        && row.picture != *image
+                    {
+                        row.picture = image.clone();
+                        rows.set_row_data(i, row);
+                    }
+                }
+            }
+        }
         for (_, _, row) in self.rendered.values_mut() {
             patch_message_asset(row, key, image, failure);
         }
@@ -1055,11 +1228,8 @@ fn reaction_views(reactions: &[Reaction]) -> Vec<account::ReactionView> {
     }
     groups
         .into_iter()
-        .take(6)
-        .map(|(label, image_key, count)| account::ReactionView {
-            label: format!("{label} {count}"),
-            image_key,
-        })
+        .take(3)
+        .map(|(label, image_key, _count)| account::ReactionView { label, image_key })
         .collect()
 }
 

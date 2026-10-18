@@ -7,6 +7,7 @@ export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, dr
 export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, group: bool, avatar: image, avatar-key: string }
 export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
+    own-reaction: int, can-react: bool, reaction-count: int,
     can-unsend: bool,
     file-failed: bool, file-failure: string, file-error: string, file-retryable: bool,
     skip-badge: bool, has-inline-emoji: bool, rich-fallback: bool,
@@ -22,3 +23,7 @@ export struct MessageRow {
 // Fixed gutter and a wide pointer target. Content changes during a thumb drag
 
 export struct MemberRow { id: string, name: string, initial: string, status: string, avatar: image, avatar-key: string, is-self: bool, friend: bool, invited: bool }
+
+export struct StickerTab { name: string, picture: image }
+export struct StickerItem { index: int, picture: image }
+export struct ComposeFriend { id: string, name: string, initial: string, avatar: image, selected: bool }

@@ -719,6 +719,23 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             self.wait();
             self.0.send(c, t, s)
         }
+        fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
+            self.0.react(id, kind, seq)
+        }
+        fn sticker_packages(&mut self) -> Result<Vec<line_wasm_poc::store::StickerPackage>> {
+            self.0.sticker_packages()
+        }
+        fn send_sticker(
+            &mut self,
+            chat: &ChatId,
+            sticker: &line_wasm_poc::store::Content,
+            seq: u32,
+        ) -> Result<MessageInput> {
+            self.0.send_sticker(chat, sticker, seq)
+        }
+        fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
+            self.0.create_chat(name, targets, seq)
+        }
         fn unsend(&mut self, i: &ServerId, s: u32) -> Result<()> {
             self.wait();
             self.0.unsend(i, s)
@@ -1018,6 +1035,23 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
             }
             self.fake.send(c, t, s)
         }
+        fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
+            self.fake.react(id, kind, seq)
+        }
+        fn sticker_packages(&mut self) -> Result<Vec<line_wasm_poc::store::StickerPackage>> {
+            self.fake.sticker_packages()
+        }
+        fn send_sticker(
+            &mut self,
+            chat: &ChatId,
+            sticker: &line_wasm_poc::store::Content,
+            seq: u32,
+        ) -> Result<MessageInput> {
+            self.fake.send_sticker(chat, sticker, seq)
+        }
+        fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
+            self.fake.create_chat(name, targets, seq)
+        }
         fn unsend(&mut self, i: &ServerId, s: u32) -> Result<()> {
             self.fake.unsend(i, s)
         }
@@ -1270,4 +1304,146 @@ fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
     assert!(fake.calls().contains(&FakeRpc::Contact("alice".into())));
     assert!(fake.calls().contains(&FakeRpc::Details(chat)));
     assert_eq!(app.notifications, 0);
+}
+
+#[test]
+fn compose_reaction_set_cancel_and_failure_revert() {
+    use line_wasm_poc::backend::{Error, FakeRpc};
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    let key = app.body_key("Hello! 日本語も使えます。");
+    app.send(Intent::React { key, kind: 3 });
+    app.until(|s| s.messages[&key].reactions_rev > 0 && s.messages[&key].reactions.len() == 1);
+    assert_eq!(app.state.messages[&key].reactions[0].actor, "self");
+    app.send(Intent::React { key, kind: 3 });
+    app.until(|s| s.messages[&key].reactions.is_empty() && s.messages[&key].reactions_rev > 1001);
+    fake.fail_rpc(
+        FakeRpc::React(app.state.messages[&key].server_id.clone().unwrap(), Some(2)),
+        Error::Rejected(RejectReason::NotAccepted),
+    );
+    app.send(Intent::React { key, kind: 2 });
+    app.until(|s| s.reaction_failure == Some(key));
+    assert!(app.state.messages[&key].reactions.is_empty());
+}
+
+#[test]
+fn compose_sticker_send_echo_dedup_and_recovery() {
+    use line_wasm_poc::store::Content;
+    let fake = FakeBackend::canned();
+    fake.echo_first(true);
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.send(Intent::StickerPackages);
+    app.until(|s| s.sticker_packages.len() == 2);
+    let sticker = app.state.sticker_packages[0].stickers[0].clone();
+    app.send(Intent::SendSticker {
+        chat: ChatId("alice".into()),
+        sticker: Box::new(sticker.clone()),
+    });
+    app.until(|s| {
+        s.messages
+            .values()
+            .any(|m| m.body == sticker && m.local_id.is_some() && m.delivery == Delivery::Sent)
+    });
+    assert_eq!(
+        app.state
+            .messages
+            .values()
+            .filter(|m| matches!(m.body, Content::Sticker { .. }))
+            .count(),
+        1
+    );
+    fake.fail_send();
+    let other = app.state.sticker_packages[1].stickers[0].clone();
+    app.send(Intent::SendSticker {
+        chat: ChatId("alice".into()),
+        sticker: Box::new(other.clone()),
+    });
+    app.until(|s| {
+        s.messages
+            .values()
+            .any(|m| m.body == other && matches!(m.delivery, Delivery::Rejected { .. }))
+    });
+    let key = app
+        .state
+        .messages
+        .values()
+        .find(|m| m.body == other)
+        .unwrap()
+        .key;
+    app.send(Intent::Retry(key));
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+    assert_eq!(
+        app.state
+            .messages
+            .values()
+            .filter(|m| m.body == other)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn compose_new_chat_local_friend_then_group_success_and_failure() {
+    use line_wasm_poc::{
+        backend::{Error, FakeRpc},
+        store::Friend,
+    };
+    let fake = FakeBackend::canned();
+    fake.set_friends(vec![Friend {
+        id: "new-friend".into(),
+        name: "New friend".into(),
+        ..Default::default()
+    }]);
+    fake.echo_first(true);
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.send(Intent::Friends);
+    app.until(|s| s.friends.iter().any(|f| f.id == "new-friend"));
+    app.select("new-friend");
+    app.send(Intent::Prefs(Prefs {
+        text_size: 17,
+        ..Default::default()
+    }));
+    app.until(|s| s.prefs.text_size == 17);
+    assert!(!app.state.chats.contains_key(&ChatId("new-friend".into())));
+    assert!(
+        !fake
+            .calls()
+            .contains(&FakeRpc::Details(ChatId("new-friend".into())))
+    );
+    app.send(Intent::Send {
+        chat: ChatId("new-friend".into()),
+        text: "First hello".into(),
+    });
+    let key = app.body_key("First hello");
+    app.until(|s| {
+        s.messages[&key].delivery == Delivery::Sent
+            && s.chats
+                .get(&ChatId("new-friend".into()))
+                .is_some_and(|c| c.chat.title == "New friend")
+    });
+    app.send(Intent::CreateChat {
+        name: "  Picnic  ".into(),
+        targets: vec!["alice".into(), "new-friend".into(), "self".into()],
+    });
+    app.until(|s| matches!(s.created_chat, Some(Ok(_))));
+    let id = app.state.created_chat.take().unwrap().unwrap();
+    assert_eq!(app.state.chats[&id].chat.title, "Picnic");
+    assert_eq!(app.state.chats[&id].chat.member_count, Some(3));
+    app.select(&id.0);
+    fake.fail_rpc(
+        FakeRpc::CreateChat,
+        Error::Rejected(RejectReason::NotAccepted),
+    );
+    app.send(Intent::CreateChat {
+        name: "Failure".into(),
+        targets: vec!["alice".into(), "new-friend".into()],
+    });
+    app.until(|s| matches!(s.created_chat, Some(Err(_))));
+    assert!(!app.state.chats.values().any(|c| c.chat.title == "Failure"));
 }

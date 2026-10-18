@@ -346,6 +346,11 @@ impl Store {
         messages: &[MessageInput],
         reaches_start: bool,
     ) -> Result<Changes> {
+        // Opening a friend can fetch an empty Recent page before any chat exists.
+        // Only a message (or explicit chat metadata) should create that chat.
+        if matches!(kind, PageKind::Recent) && messages.is_empty() && self.chat(chat)?.is_none() {
+            return Ok(Changes::default());
+        }
         self.mutate(|tx, c| {
             ensure_chat(tx, chat)?;
             let mut cursors = Vec::new();

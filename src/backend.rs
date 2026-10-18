@@ -104,6 +104,10 @@ pub trait Backend: Send {
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>>;
     fn messages(&mut self, chat: &ChatId, kind: &PageKind) -> Result<Page>;
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput>;
+    fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()>;
+    fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>>;
+    fn send_sticker(&mut self, chat: &ChatId, sticker: &Content, seq: u32) -> Result<MessageInput>;
+    fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput>;
     fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()>;
     fn receipts(&mut self, chat: &ChatId) -> Result<Vec<Option<ServerId>>>;
     fn mark_read(&mut self, chat: &ChatId, id: &ServerId, seq: u32) -> Result<()>;
@@ -120,6 +124,9 @@ pub trait Backend: Send {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FakeRpc {
     Profile,
+    React(ServerId, Option<u32>),
+    StickerPackages,
+    CreateChat,
     Action(ProfileAction),
     Contact(String),
     Chats,
@@ -164,6 +171,60 @@ impl Default for FakeBackend {
     }
 }
 impl FakeBackend {
+    fn fake_send(&mut self, chat: &ChatId, body: Content, seq: u32) -> Result<MessageInput> {
+        self.online()?;
+        let (row, echo, revision, deliver) = {
+            let mut s = self.0.lock().unwrap();
+            if std::mem::take(&mut s.uncertain_send) {
+                return Err(Error::Offline(NetCause::Unreachable));
+            }
+            if std::mem::take(&mut s.fail_send) {
+                return Err(Error::Rejected(RejectReason::SyntheticSend));
+            }
+            s.next_id += 1;
+            let mut row = Self::message(&chat.0, s.next_id, "", true);
+            row.body = body;
+            row.request_seq = Some(seq);
+            s.pages.entry(chat.clone()).or_default().push(row.clone());
+            s.next_revision += 1;
+            (row, s.echo_first, s.next_revision, s.deliver.clone())
+        };
+        if echo && let Some(d) = deliver {
+            d(StreamEvent::Operation(LiveOp {
+                revision,
+                replay: false,
+                op: Op::Message(
+                    ({
+                        let mut echo = row.clone();
+                        echo.request_seq = None;
+                        echo
+                    })
+                    .into(),
+                ),
+            }));
+        }
+        Ok(row)
+    }
+    pub fn demo_sticker_packages() -> Vec<StickerPackage> {
+        (0..2)
+            .map(|p| StickerPackage {
+                id: format!("demo-{p}"),
+                name: ["Little shapes", "Happy shapes"][p].into(),
+                version: "1".into(),
+                stickers: (0..12)
+                    .map(|n| Content::Sticker {
+                        pkg: format!("demo-{p}"),
+                        id: format!("9900{p}{n:02}"),
+                        ver: Some("1".into()),
+                        asset: crate::client::desktop::assets::Asset::sticker(
+                            &json!({"STKID":format!("9900{p}{n:02}")}),
+                        ),
+                        text: Some("Sticker".into()),
+                    })
+                    .collect(),
+            })
+            .collect()
+    }
     pub fn canned() -> Self {
         let chats = [("alice", "葵"), ("weekend", "Weekend plans")]
             .into_iter()
@@ -750,36 +811,92 @@ impl Backend for FakeBackend {
         })
     }
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput> {
-        self.online()?;
-        let (row, echo, revision, deliver) = {
-            let mut s = self.0.lock().unwrap();
-            if std::mem::take(&mut s.uncertain_send) {
-                return Err(Error::Offline(NetCause::Unreachable));
+        self.fake_send(chat, Content::text(text), seq)
+    }
+    fn send_sticker(&mut self, chat: &ChatId, sticker: &Content, seq: u32) -> Result<MessageInput> {
+        self.fake_send(chat, sticker.clone(), seq)
+    }
+    fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>> {
+        self.rpc(FakeRpc::StickerPackages)?;
+        let packages = Self::demo_sticker_packages();
+        for (p, package) in packages.iter().enumerate() {
+            for (i, sticker) in package.stickers.iter().enumerate() {
+                let mut rgba = vec![0; 96 * 96 * 4];
+                for y in 0..96i32 {
+                    for x in 0..96i32 {
+                        let dx = x - 48;
+                        let dy = y - 48;
+                        if dx * dx + dy * dy < (32 + (i % 3) as i32 * 3).pow(2) {
+                            let color = if ((x - 36).abs() < 3 || (x - 60).abs() < 3)
+                                && (y - 38).abs() < 5
+                                || (y - 57).abs() < 2 && (x - 48).abs() < 13
+                            {
+                                [45, 55, 65, 255]
+                            } else if p == 0 {
+                                [245, (170 + i * 5) as u8, 92, 255]
+                            } else {
+                                [115, (180 + i * 3) as u8, 220, 255]
+                            };
+                            let offset = ((y * 96 + x) * 4) as usize;
+                            rgba[offset..offset + 4].copy_from_slice(&color);
+                        }
+                    }
+                }
+                self.set_pixels(
+                    sticker.image().unwrap(),
+                    crate::client::desktop::assets::Pixels {
+                        width: 96,
+                        height: 96,
+                        rgba,
+                    },
+                );
             }
-            if std::mem::take(&mut s.fail_send) {
-                return Err(Error::Rejected(RejectReason::SyntheticSend));
+        }
+        Ok(packages)
+    }
+    fn react(&mut self, id: &ServerId, kind: Option<u32>, _seq: u32) -> Result<()> {
+        self.rpc(FakeRpc::React(id.clone(), kind))?;
+        let mut s = self.0.lock().unwrap();
+        for row in s
+            .pages
+            .values_mut()
+            .flatten()
+            .filter(|m| &m.server_id == id)
+        {
+            row.reactions.retain(|r| r.actor != "self");
+            if let Some(kind) = kind {
+                row.reactions.push(Reaction {
+                    actor: "self".into(),
+                    kind: ReactionKind::Predefined(kind),
+                });
             }
-            s.next_id += 1;
-            let mut row = Self::message(&chat.0, s.next_id, text, true);
-            row.request_seq = Some(seq);
-            s.pages.entry(chat.clone()).or_default().push(row.clone());
-            s.next_revision += 1;
-            (row, s.echo_first, s.next_revision, s.deliver.clone())
-        };
-        if echo && let Some(d) = deliver {
-            d(StreamEvent::Operation(LiveOp {
-                revision,
+        }
+        s.next_revision += 1;
+        if let Some(deliver) = &s.deliver {
+            deliver(StreamEvent::Operation(LiveOp {
+                revision: s.next_revision,
                 replay: false,
-                op: Op::Message(
-                    ({
-                        let mut echo = row.clone();
-                        echo.request_seq = None;
-                        echo
-                    })
-                    .into(),
-                ),
+                op: Op::Reaction {
+                    id: id.clone(),
+                    actor: "self".into(),
+                    curr: kind.map(ReactionKind::Predefined),
+                },
             }));
         }
+        Ok(())
+    }
+    fn create_chat(&mut self, name: &str, targets: &[String], _seq: u32) -> Result<ChatInput> {
+        self.rpc(FakeRpc::CreateChat)?;
+        let mut s = self.0.lock().unwrap();
+        s.next_id += 1;
+        let row = ChatInput {
+            id: ChatId(format!("group-{}", s.next_id)),
+            title: name.into(),
+            is_group: true,
+            member_count: Some(targets.len() as u32 + 1),
+            ..Default::default()
+        };
+        s.chats.push(row.clone());
         Ok(row)
     }
     fn unsend(&mut self, id: &ServerId, _seq: u32) -> Result<()> {
@@ -875,6 +992,18 @@ impl LineBackend {
 }
 fn rpc(error: anyhow::Error) -> Error {
     crate::client::error::classify(&error)
+}
+fn send_rpc(e: anyhow::Error) -> Error {
+    if e.downcast_ref::<Error>().is_some()
+        || e.downcast_ref::<crate::client::RpcError>()
+            .is_some_and(|e| matches!(e.http, 401 | 403) || (500..600).contains(&e.http))
+    {
+        return rpc(e);
+    }
+    match crate::client::desktop::send_failure(&e) {
+        crate::client::desktop::SendFailure::Rejected => Error::Rejected(RejectReason::NotAccepted),
+        _ => rpc(e),
+    }
 }
 fn message_input(chat: &ChatId, m: crate::client::desktop::Message, rev: i64) -> MessageInput {
     MessageInput {
@@ -1095,23 +1224,23 @@ impl Backend for LineBackend {
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput> {
         self.client
             .send_text_with_request(&chat.0, text, seq)
-            .map_err(|e| {
-                if e.downcast_ref::<Error>().is_some()
-                    || e.downcast_ref::<crate::client::RpcError>()
-                        .is_some_and(|e| {
-                            matches!(e.http, 401 | 403) || (500..600).contains(&e.http)
-                        })
-                {
-                    return rpc(e);
-                }
-                match crate::client::desktop::send_failure(&e) {
-                    crate::client::desktop::SendFailure::Rejected => {
-                        Error::Rejected(RejectReason::NotAccepted)
-                    }
-                    _ => rpc(e),
-                }
-            })
+            .map_err(send_rpc)
             .map(|m| message_input(chat, m, 0))
+    }
+    fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
+        self.client.react(&id.0, kind, seq).map_err(rpc)
+    }
+    fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>> {
+        self.client.sticker_packages().map_err(rpc)
+    }
+    fn send_sticker(&mut self, chat: &ChatId, sticker: &Content, seq: u32) -> Result<MessageInput> {
+        self.client
+            .send_sticker(&chat.0, sticker, seq)
+            .map(|m| message_input(chat, m, 0))
+            .map_err(send_rpc)
+    }
+    fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
+        self.client.create_chat(name, targets, seq).map_err(rpc)
     }
     fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()> {
         self.client.unsend(&id.0, seq).map_err(rpc)

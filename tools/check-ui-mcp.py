@@ -28,6 +28,9 @@ parser.add_argument("--media", action="store_true", help="Check each media failu
 parser.add_argument("--auth-recovery", action="store_true", help="Check offline feedback, sign-in focus, synthetic sign-in failure and draft preservation")
 parser.add_argument("--layers", action="store_true", help="Check dialogs, profile panels, viewer input, export, and opener focus")
 parser.add_argument("--focus", action="store_true", help="Check every forward/reverse Tab stop on chats, friends and conversation, with and without recovery")
+parser.add_argument("--compose", action="store_true", help="Check reactions, stickers and new chats")
+parser.add_argument("--color-scheme", choices=("light", "dark"), default="light")
+parser.add_argument("--surface-shots", type=Path, help="Write compose surface screenshots")
 parser.add_argument("--wide", action="store_true", help="Check the 1280×900 side-panel layout")
 add_preview_arguments(parser)
 args = parser.parse_args()
@@ -141,6 +144,9 @@ def fixture_times(clock):
     return labels
 
 def show_chats():
+    if properties["size"]["width"] / properties.get("scaleFactor", 1) < 740:
+        back = next((item for item in tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Back"), None)
+        if back: call("click_element", elementHandle=back["handle"])
     call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Press")
     call("dispatch_key_event", windowHandle=window, text="2")
     call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Release")
@@ -218,7 +224,7 @@ if args.focus:
             focus_key("\x12", "Release")
 
     def browser_stops(search_label, list_label, recovery):
-        return ["Navigation", search_label] + (["All"] if list_label == "Conversations" else []) + (recovery if narrow else []) + [list_label]
+        return ["Navigation", search_label] + (["All", "New chat"] if list_label == "Conversations" else []) + (recovery if narrow else []) + [list_label]
 
     # Chips are one Tab stop; arrows move focus without activating a filter.
     click_focus("Chats")
@@ -268,6 +274,7 @@ if args.focus:
             expected = browser_stops(search_label, list_label, recovery)
             if not narrow:
                 expected += ["葵", "More"] + recovery + ["Message history", "Message draft"]
+                if element("Stickers", "Button").get("accessibleEnabled"): expected.append("Stickers")
                 if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
             check_chain(f"{surface} {suffix}", expected, (search_label, "TextInput"))
             call("set_element_value", elementHandle=element(search_label, "TextInput")["handle"], value="葵")
@@ -277,16 +284,17 @@ if args.focus:
         for chat in ("葵", "Weekend plans"):
             click_focus(chat)
             call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value="Focus check")
-            expected = ["Back"] if narrow else ["Navigation", "Find a conversation", "All", "Conversations"]
+            expected = ["Back"] if narrow else ["Navigation", "Find a conversation", "All", "New chat", "Conversations"]
             expected.append(chat)
             if chat == "Weekend plans": expected.append(element("Members", "Button")["accessibleLabel"])
             expected += ["More"] + recovery + ["Message history", "Message draft"]
+            if element("Stickers", "Button").get("accessibleEnabled"): expected.append("Stickers")
             if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
             check_chain(f"conversation {chat} {suffix}", expected, ("Message draft", "TextInput"))
             if chat == "Weekend plans":
                 click_focus("Members")
                 layer = ["Close details", "Search members", "Group members"]
-                prefix = expected if panel else [] if narrow else ["Navigation", "Find a conversation", "All", "Conversations"]
+                prefix = expected if panel else [] if narrow else ["Navigation", "Find a conversation", "All", "New chat", "Conversations"]
                 layer_recovery = []
                 check_chain(f"members {layer_kind} {suffix}", prefix + layer_recovery + layer, ("Close details", "Button"))
                 call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="葵")
@@ -305,6 +313,7 @@ if args.focus:
         prefix = [] if narrow else ["Navigation", "Search friends and groups", "Friends and groups"]
         if panel:
             prefix += ["Weekend plans", element("Members", "Button")["accessibleLabel"], "More"] + recovery + ["Message history", "Message draft"]
+            if element("Stickers", "Button").get("accessibleEnabled"): prefix.append("Stickers")
             if element("Send", "Button").get("accessibleEnabled"): prefix.append("Send")
         check_chain(f"profile {layer_kind} {suffix}", prefix + ["Profile more", "Close details", "Open profile photo", "Chat", "Rename"], ("Close details", "Button"))
         focus_key("\x1b")
@@ -336,7 +345,12 @@ def smoke_chat(label):
     show_chats()
     call("click_element", elementHandle=element(label, "Button")["handle"])
     deadline = time.monotonic() + 2
-    while not any(item.get("accessibleItemSelected") and item.get("accessibleLabel", "").startswith(label + ", ") for item in tree()):
+    def selected_chat_visible():
+        items = tree()
+        if properties["size"]["width"] / properties.get("scaleFactor", 1) < 740:
+            return any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == label for item in items) and any(item.get("accessibleLabel") == "Message draft" for item in items)
+        return any(item.get("accessibleItemSelected") and item.get("accessibleLabel", "").startswith(label + ", ") for item in items)
+    while not selected_chat_visible():
         assert time.monotonic() < deadline, f"chat selection did not settle: {label}"
         time.sleep(.02)
 
@@ -374,6 +388,70 @@ assert call("get_element_properties", elementHandle=composer).get("accessibleVal
 assert any(item.get("accessibleValue") == before_shortcut for item in tree()), "submitted draft did not appear in history"
 element("Sent", "Image")
 call("set_element_value", elementHandle=composer, value=before_shortcut)
+if args.compose:
+    def compose_click(label, role="Button"):
+        call("click_element", elementHandle=element(label, role)["handle"])
+
+    def compose_key(text):
+        call("dispatch_key_event", windowHandle=window, text=text)
+
+    def surface_shot(name):
+        if args.surface_shots:
+            args.surface_shots.mkdir(parents=True, exist_ok=True)
+            result = rpc("tools/call", {"name":"take_screenshot", "arguments":{"windowHandle":window}})
+            image = next(item for item in result["content"] if item["type"] == "image")
+            (args.surface_shots / f"{name}.png").write_bytes(base64.b64decode(image["data"]))
+
+    # Select the just-sent message; its reaction target is visible at the tail.
+    def open_reactions():
+        reaction = next(item for item in reversed(tree()) if item.get("accessibleLabel") == "React" and item.get("accessibleRole") == "Button")
+        call("click_element", elementHandle=reaction["handle"])
+    open_reactions()
+    element("LOVE", "Button")
+    compose_click("LOVE")
+    open_reactions()
+    wait_for(lambda: element("LOVE", "Button").get("accessibleItemSelected"), "own reaction was not highlighted")
+    surface_shot("reactions")
+    compose_click("LOVE")
+    open_reactions()
+    wait_for(lambda: not element("LOVE", "Button").get("accessibleItemSelected"), "repeat pick did not cancel")
+    compose_key("\x1b")
+    compose_click("Stickers")
+    element("Send sticker 1", "Button")
+    wait_for(lambda: len([item for item in tree() if item.get("accessibleRole") == "Tab"]) >= 2, "owned packages missing")
+    wait_for(lambda: element("Sticker preview 1", "Image").get("accessibleDescription") == "Loaded", "picker images did not load")
+    surface_shot("stickers")
+    compose_click("Send sticker 1")
+    wait_for(lambda: any("Sticker" in item.get("accessibleLabel", "") and item.get("accessibleRole") in ("Text", "Image") for item in tree()), "sticker did not reach history")
+    assert not any(item.get("accessibleLabel") == "Send sticker 1" for item in tree()), "picker stayed open after send"
+    compose_click("Stickers")
+    wait_for(lambda: element("Sticker preview 1", "Image").get("accessibleDescription") == "Loaded", "cached picker did not reopen")
+    compose_key("\x1b")
+    assert not any(item.get("accessibleLabel") == "Send sticker 1" for item in tree()), "Escape did not close sticker picker"
+    show_chats()
+    compose_click("New chat")
+    element("Find friends for new chat", "TextInput")
+    surface_shot("new-chat")
+    compose_click("新しい友だち 🌸", "Checkbox")
+    compose_click("Chat")
+    wait_for(lambda: any(item.get("accessibleLabel") == "新しい友だち 🌸" and item.get("accessibleRole") == "Button" for item in tree()), "friend conversation did not open")
+    draft_control = element("Message draft", "TextInput")
+    call("click_element", elementHandle=draft_control["handle"])
+    for char in "Hello from a new chat": compose_key(char)
+    wait_for(lambda: element("Message draft", "TextInput").get("accessibleValue") == "Hello from a new chat", "new friend composer did not accept typed text")
+    compose_click("Send")
+    wait_for(lambda: any(item.get("accessibleValue") == "Hello from a new chat" for item in tree()), "first send to a friend without a chat failed")
+    show_chats()
+    wait_for(lambda: any(item.get("accessibleLabel", "").startswith("新しい友だち 🌸, ") for item in tree()), "first-send chat row missing")
+    compose_click("New chat")
+    compose_click("葵", "Checkbox")
+    compose_click("新しい友だち 🌸", "Checkbox")
+    call("set_element_value", elementHandle=element("Group name", "TextInput")["handle"], value="Compose test group")
+    surface_shot("new-group")
+    compose_click("Create group")
+    wait_for(lambda: any(item.get("accessibleLabel") == "Compose test group" for item in tree()), "created group did not open")
+    print("PASS: react/cancel, owned sticker picker/send, new 1:1 first send and group creation")
+
 if args.scenarios:
     def key(text, event_type="PressAndRelease"):
         call("dispatch_key_event", windowHandle=window, text=text, eventType=event_type)
@@ -463,7 +541,7 @@ if args.layout_photos:
     sticker_time = next(item['accessibleLabel'] for item in tree() if item.get('accessibleRole') == 'Text' and item.get('accessibleLabel') in fixture_times('12:09'))
     before_sticker_time = element(sticker_time, "Text")["absolutePosition"]
     time.sleep(1.1)
-    element("Message image", "Image")
+    element("Sticker", "Image")
     assert not any(item.get("accessibleLabel") == "Sticker · [sticker]" or item.get("accessibleValue") == "Sticker · [sticker]" for item in tree()), "loaded sticker retained its fallback label"
     assert element(sticker_time, "Text")["absolutePosition"] == before_sticker_time, "sticker completion moved its timestamp"
     print("PASS: sticker fallback disappears after loading without moving the timestamp")
@@ -617,17 +695,15 @@ if args.friends:
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "") == "", "new friend inherited another draft"
     element("No messages yet", "Text")
     assert element("Chats", "Button").get("accessibleItemSelected") is True, "Open chat left the rail on Friends"
-    row = element("新しい友だち 🌸", "Button")
-    assert row.get("accessibleItemSelected") is True, "Open chat left the chat row unselected"
-    assert ", New, No messages yet" in row["accessibleLabel"], "new chat row lacks its empty preview/time label"
+    element("新しい友だち 🌸", "Button")  # local conversation header
+    assert not any(item.get("accessibleLabel", "").startswith("新しい友だち 🌸, ") for item in tree()), "opening a friend created a chat row before its first send"
     for label in ("葵", "Weekend plans", "Notes to self"):
         element(label, "Button")
-    assert row["absolutePosition"]["y"] > element("葵", "Button")["absolutePosition"]["y"], "Open chat scrolled away from the first rows"
     demo_scenario("Long chat list")
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 新しい友だち 🌸", "Button")["handle"])
     call("click_element", elementHandle=element("Chat", "Button")["handle"])
-    row = element("新しい友だち 🌸", "Button")
+    row = wait_for(lambda: next((item for item in tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("新しい友だち 🌸, ")), None), "far chat row was not revealed")
     viewport = element("Conversations", "List")
     assert row["absolutePosition"]["y"] >= viewport["absolutePosition"]["y"], "far row was not revealed"
     assert row["absolutePosition"]["y"] + row["size"]["height"] <= viewport["absolutePosition"]["y"] + viewport["size"]["height"] + 1, "far row remained clipped"
@@ -696,7 +772,8 @@ if args.layers:
     element("Photo in viewer", "Image")
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     demo_scenario("Live reaction")
-    element("👍 1", "Text")
+    element("👍", "Text")
+    element("1", "Text")
 
     def unsend_menu(body):
         message = next(item for item in tree() if body in item.get("accessibleLabel", "") and item.get("accessibleRole") in ("Text", "TextInput"))

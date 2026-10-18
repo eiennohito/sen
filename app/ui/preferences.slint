@@ -2,6 +2,7 @@ import { Tokens } from "tokens.slint";
 export component CheckBox inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
+    in property <bool> indicator-only;
     in-out property <bool> checked;
     out property <bool> has-focus: focus.has-focus;
     callback toggled();
@@ -9,11 +10,11 @@ export component CheckBox inherits Rectangle {
     height: max(32px, label.preferred-height);
     accessible-role: checkbox; accessible-label: root.text; accessible-checked: root.checked;
     accessible-action-default => { root.checked = !root.checked; root.toggled(); }
-    HorizontalLayout { spacing: 12px;
+    HorizontalLayout { spacing: root.indicator-only ? 0px : 12px;
         Rectangle { width: 20px; height: 20px; border-radius: 4px; background: root.checked ? Tokens.accent : Tokens.surface-2;
             Image { x: 2px; y: 2px; width: 16px; height: 16px; source: @image-url("../assets/icons/check.svg"); colorize: Tokens.on-accent; visible: root.checked; }
         }
-        label := Text { text: root.text; font-size: Tokens.base; color: Tokens.text; vertical-alignment: center; }
+        label := Text { visible: !root.indicator-only; text: root.indicator-only ? "" : root.text; font-size: Tokens.base; color: Tokens.text; vertical-alignment: center; }
     }
     focus := FocusScope { enabled: root.enabled; key-pressed(event) => { if event.text == " " { root.checked = !root.checked; root.toggled(); return accept; } reject } }
     Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; background: transparent; border-radius: 8px; border-color: Tokens.accent-strong; border-width: root.has-focus ? 2px : 0px; }

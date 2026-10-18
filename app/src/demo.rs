@@ -92,6 +92,11 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                     ..Default::default()
                 });
             }
+            fake.add_chat(ChatInput {
+                id: ChatId("new-friend".into()),
+                title: "新しい友だち 🌸".into(),
+                ..Default::default()
+            });
             d.sender.send(Intent::MoreChats);
         }
         1 => {
