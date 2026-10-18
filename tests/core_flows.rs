@@ -631,3 +631,428 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
         2
     );
 }
+
+#[test]
+fn cached_intents_complete_while_backend_rpc_is_blocked() {
+    use line_wasm_poc::{backend::*, engine::WindowSub, store::*};
+    use std::sync::{Arc, atomic::AtomicBool};
+    struct Blocked(
+        FakeBackend,
+        Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
+        std::sync::mpsc::Sender<()>,
+    );
+    impl Blocked {
+        fn wait(&self) {
+            let _ = self.2.send(());
+            let mut released = self.1.0.lock().unwrap();
+            while !*released {
+                released = self.1.1.wait(released).unwrap();
+            }
+        }
+    }
+    impl Backend for Blocked {
+        fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
+            self.0.sign_in(c, d)
+        }
+        fn friends(&mut self) -> Result<Vec<line_wasm_poc::client::desktop::Friend>> {
+            self.wait();
+            self.0.friends()
+        }
+        fn members(&mut self, c: &ChatId) -> Result<Vec<line_wasm_poc::client::desktop::Member>> {
+            self.wait();
+            self.0.members(c)
+        }
+        fn start_assets(&mut self, s: Arc<AtomicBool>, d: Deliver) {
+            self.0.start_assets(s, d)
+        }
+        fn authorize(
+            &mut self,
+            a: &line_wasm_poc::client::desktop::assets::Asset,
+        ) -> std::result::Result<Option<String>, line_wasm_poc::client::desktop::assets::Failure>
+        {
+            self.0.authorize(a)
+        }
+        fn retry_asset(&mut self, k: &str) {
+            self.0.retry_asset(k)
+        }
+        fn media(
+            &mut self,
+            a: &line_wasm_poc::client::desktop::assets::Asset,
+            p: line_wasm_poc::client::desktop::assets::Purpose,
+        ) -> Result<Option<line_wasm_poc::client::desktop::assets::Payload>> {
+            self.0.media(a, p)
+        }
+        fn profile(&mut self) -> Result<Profile> {
+            self.wait();
+            self.0.profile()
+        }
+        fn chats(&mut self, n: bool) -> Result<ChatPage> {
+            self.wait();
+            self.0.chats(n)
+        }
+        fn details(&mut self, c: &ChatId) -> Result<Vec<ChatInput>> {
+            self.wait();
+            self.0.details(c)
+        }
+        fn messages(&mut self, c: &ChatId, k: &PageKind) -> Result<Page> {
+            self.wait();
+            self.0.messages(c, k)
+        }
+        fn send(&mut self, c: &ChatId, t: &str, s: u32) -> Result<MessageInput> {
+            self.wait();
+            self.0.send(c, t, s)
+        }
+        fn unsend(&mut self, i: &ServerId, s: u32) -> Result<()> {
+            self.wait();
+            self.0.unsend(i, s)
+        }
+        fn receipts(&mut self, c: &ChatId) -> Result<Vec<Option<ServerId>>> {
+            self.wait();
+            self.0.receipts(c)
+        }
+        fn mark_read(&mut self, c: &ChatId, i: &ServerId) -> Result<()> {
+            self.wait();
+            self.0.mark_read(c, i)
+        }
+        fn stream(
+            &mut self,
+            r: i64,
+            s: Arc<AtomicBool>,
+            d: Deliver,
+        ) -> Result<Box<dyn FnOnce() + Send>> {
+            self.0.stream(r, s, d)
+        }
+        fn decode(&mut self, r: serde_json::Value) -> Result<LiveOp> {
+            self.0.decode(r)
+        }
+        fn token(&mut self, t: serde_json::Value) {
+            self.0.token(t)
+        }
+    }
+
+    let root = std::env::temp_dir().join(format!("line-blocked-rpc-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    use sha2::{Digest, Sha256};
+    let account = root.join(format!("{:x}", Sha256::digest("self")));
+    let mut store = Store::open(&account).unwrap();
+    store.set_account("self", serde_json::json!({})).unwrap();
+    std::fs::write(root.join("last-mid"), "self").unwrap();
+    let chats = (0..150)
+        .map(|i| ChatInput {
+            id: ChatId(format!("cached-{i}")),
+            title: format!("Stored chat {i}"),
+            ..Default::default()
+        })
+        .collect::<Vec<_>>();
+    store.upsert_chats(&chats, true).unwrap();
+    let rows = (1..=300)
+        .map(|i| FakeBackend::message("cached-0", i, "stored history", false))
+        .collect::<Vec<_>>();
+    store
+        .apply_page(&chats[0].id, PageKind::Recent, &rows, true)
+        .unwrap();
+    store
+        .set_pref("last_chat", serde_json::json!("cached-0"))
+        .unwrap();
+    drop(store);
+    let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
+    // Always release the net thread, including on a failed assertion.
+    struct Release(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
+    impl Drop for Release {
+        fn drop(&mut self) {
+            *self.0.0.lock().unwrap() = true;
+            self.0.1.notify_all();
+        }
+    }
+    let release = Release(released.clone());
+    let (entered, rpc) = std::sync::mpsc::channel();
+    let fake = FakeBackend::default();
+    fake.set_chats(chats.clone());
+    let (initialize, initialized) = std::sync::mpsc::channel();
+    let worker = Worker::start_with(
+        StoreLocation::Account {
+            root: root.clone(),
+            mid: None,
+        },
+        move || {
+            initialized.recv()?;
+            Ok(Blocked(fake, released, entered))
+        },
+    );
+    let receive = |predicate: &dyn Fn(&Delta) -> bool| {
+        let deadline = Instant::now() + Duration::from_millis(500);
+        loop {
+            let delta = worker
+                .deltas
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("cached work must finish before RPC is released");
+            assert!(!matches!(delta, Delta::Fatal | Delta::Error(_)));
+            if predicate(&delta) {
+                return delta;
+            }
+        }
+    };
+    receive(&|d| matches!(d, Delta::Window { sub: 1, .. }));
+    // The cached account and window arrive even while backend initialization waits.
+    initialize.send(()).unwrap();
+    rpc.recv_timeout(Duration::from_secs(2))
+        .expect("profile RPC entered and blocked");
+    let mut state = AppState::default();
+    state.members.push(line_wasm_poc::client::desktop::Member {
+        contact: line_wasm_poc::client::desktop::Friend {
+            id: "old".into(),
+            name: "Old chat".into(),
+            status: String::new(),
+            group: false,
+            avatar: None,
+            member_count: None,
+        },
+        is_self: false,
+    });
+    state.select(chats[0].id.clone());
+    assert!(state.window_loading);
+    assert!(state.members.is_empty());
+    state.apply(Delta::Window {
+        sub: state.window_sub,
+        upsert: Vec::new(),
+        remove: Vec::new(),
+        gaps: Vec::new(),
+        reaches_start: true,
+        reaches_end: true,
+        replies: Vec::new(),
+        unread_anchor: None,
+    });
+    assert!(!state.window_loading);
+    for (sub, chat) in [(2, "cached-1"), (3, "cached-0")] {
+        worker.sender.send(Intent::Window(WindowSub {
+            sub,
+            chat: ChatId(chat.into()),
+            anchor: Anchor::Latest,
+            before: 20,
+            after: 0,
+        }));
+        receive(&|d| matches!(d, Delta::Window { sub: s, .. } if *s == sub));
+    }
+    worker.sender.send(Intent::Friends);
+    receive(&|d| matches!(d, Delta::Friends(_)));
+    worker.sender.send(Intent::Members(chats[0].id.clone()));
+    receive(&|d| matches!(d, Delta::Members { .. }));
+    worker.sender.send(Intent::Asset(FakeBackend::asset(false)));
+    receive(&|d| matches!(d, Delta::Asset { .. }));
+    worker.sender.send(Intent::Page {
+        chat: chats[0].id.clone(),
+        kind: PageKind::Older {
+            before: Cursor {
+                sort_ts: rows[280].created_ms,
+                sort_id: format!("{:020}", 281),
+            },
+        },
+    });
+    worker.sender.send(Intent::Window(WindowSub {
+        sub: 4,
+        chat: chats[0].id.clone(),
+        anchor: Anchor::Latest,
+        before: 100,
+        after: 0,
+    }));
+    let delta = receive(&|d| matches!(d, Delta::Window { sub: 4, .. }));
+    assert!(matches!(delta, Delta::Window { upsert, .. } if upsert.len() == 101));
+    worker.sender.send(Intent::MoreChats);
+    assert!(
+        matches!(receive(&|d| matches!(d, Delta::Chats { .. })), Delta::Chats { order, .. } if order.len() == 150)
+    );
+    worker.sender.send(Intent::SearchChats {
+        sub: 9,
+        query: "Stored chat 149".into(),
+    });
+    assert!(
+        matches!(receive(&|d| matches!(d, Delta::Chats { sub:9, .. })), Delta::Chats { upsert, .. } if upsert.len() == 1 && upsert[0].chat.id == chats[149].id)
+    );
+    worker.sender.send(Intent::ChatList { sub: 10, limit: 10 });
+    receive(&|d| matches!(d, Delta::Chats { sub: 10, .. }));
+    worker.sender.send(Intent::Draft {
+        chat: chats[149].id.clone(),
+        draft: Draft {
+            text: "local draft".into(),
+            cursor: 11,
+            anchor: 11,
+            updated: 0,
+        },
+    });
+    assert!(
+        matches!(receive(&|d| matches!(d, Delta::Chats { .. })), Delta::Chats { upsert, .. } if upsert.len() == 1 && upsert[0].chat.id == chats[149].id)
+    );
+    worker.sender.send(Intent::Pref {
+        key: "fence".into(),
+        value: serde_json::json!(true),
+    });
+    loop {
+        let delta = receive(&|_| true);
+        assert!(!matches!(delta, Delta::Window { .. }));
+        if matches!(delta, Delta::Pref { .. }) {
+            break;
+        }
+    }
+    drop(worker);
+    drop(release);
+    let _ = std::fs::remove_dir_all(root);
+}
+
+#[test]
+fn repeated_retry_and_discard_preserve_in_flight_send() {
+    use line_wasm_poc::{backend::*, store::*};
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc,
+    };
+
+    let mut store = Store::open_in_memory().unwrap();
+    let (key, _) = store
+        .insert_pending(
+            &ChatId("alice".into()),
+            LocalId("guard".into()),
+            1,
+            serde_json::json!({"body": "guard"}),
+            1,
+        )
+        .unwrap();
+    assert!(store.retry(key, 2).is_err());
+    assert!(store.discard(key).is_err());
+    assert_eq!(store.message(key).unwrap().request_seq, Some(1));
+
+    struct BlockedSend {
+        fake: FakeBackend,
+        entered: mpsc::Sender<()>,
+        release: mpsc::Receiver<()>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl Backend for BlockedSend {
+        fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
+            self.fake.sign_in(c, d)
+        }
+        fn friends(&mut self) -> Result<Vec<line_wasm_poc::client::desktop::Friend>> {
+            self.fake.friends()
+        }
+        fn members(&mut self, c: &ChatId) -> Result<Vec<line_wasm_poc::client::desktop::Member>> {
+            self.fake.members(c)
+        }
+        fn start_assets(&mut self, s: Arc<AtomicBool>, d: Deliver) {
+            self.fake.start_assets(s, d)
+        }
+        fn authorize(
+            &mut self,
+            a: &line_wasm_poc::client::desktop::assets::Asset,
+        ) -> std::result::Result<Option<String>, line_wasm_poc::client::desktop::assets::Failure>
+        {
+            self.fake.authorize(a)
+        }
+        fn retry_asset(&mut self, k: &str) {
+            self.fake.retry_asset(k)
+        }
+        fn media(
+            &mut self,
+            a: &line_wasm_poc::client::desktop::assets::Asset,
+            p: line_wasm_poc::client::desktop::assets::Purpose,
+        ) -> Result<Option<line_wasm_poc::client::desktop::assets::Payload>> {
+            self.fake.media(a, p)
+        }
+        fn profile(&mut self) -> Result<Profile> {
+            self.fake.profile()
+        }
+        fn chats(&mut self, n: bool) -> Result<ChatPage> {
+            self.fake.chats(n)
+        }
+        fn details(&mut self, c: &ChatId) -> Result<Vec<ChatInput>> {
+            self.fake.details(c)
+        }
+        fn messages(&mut self, c: &ChatId, k: &PageKind) -> Result<Page> {
+            self.fake.messages(c, k)
+        }
+        fn send(&mut self, c: &ChatId, t: &str, s: u32) -> Result<MessageInput> {
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            if self.calls.load(std::sync::atomic::Ordering::Relaxed) > 1 {
+                self.entered.send(()).unwrap();
+                self.release.recv_timeout(Duration::from_secs(5)).unwrap();
+            }
+            self.fake.send(c, t, s)
+        }
+        fn unsend(&mut self, i: &ServerId, s: u32) -> Result<()> {
+            self.fake.unsend(i, s)
+        }
+        fn receipts(&mut self, c: &ChatId) -> Result<Vec<Option<ServerId>>> {
+            self.fake.receipts(c)
+        }
+        fn mark_read(&mut self, c: &ChatId, i: &ServerId) -> Result<()> {
+            self.fake.mark_read(c, i)
+        }
+        fn stream(
+            &mut self,
+            r: i64,
+            s: Arc<AtomicBool>,
+            d: Deliver,
+        ) -> Result<Box<dyn FnOnce() + Send>> {
+            self.fake.stream(r, s, d)
+        }
+        fn decode(&mut self, r: serde_json::Value) -> Result<LiveOp> {
+            self.fake.decode(r)
+        }
+        fn token(&mut self, t: serde_json::Value) {
+            self.fake.token(t)
+        }
+    }
+    let fake = FakeBackend::canned();
+    fake.fail_send();
+    let (entered_tx, entered) = mpsc::channel();
+    let (release, release_rx) = mpsc::channel();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let mut app = App {
+        worker: Worker::start(
+            BlockedSend {
+                fake: fake.clone(),
+                entered: entered_tx,
+                release: release_rx,
+                calls: calls.clone(),
+            },
+            StoreLocation::Memory,
+        ),
+        state: AppState::default(),
+        notifications: 0,
+    };
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "one retry".into(),
+    });
+    let key = app.body_key("one retry");
+    app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
+    app.send(Intent::Retry(key));
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.until(|s| s.messages[&key].delivery == Delivery::Pending);
+    let seq = app.state.messages[&key].request_seq;
+    app.send(Intent::Retry(key));
+    app.send(Intent::Discard(key));
+    app.send(Intent::Pref {
+        key: "in_flight_checked".into(),
+        value: true.into(),
+    });
+    app.until(|s| s.prefs.contains_key("in_flight_checked"));
+    assert_eq!(app.state.messages[&key].request_seq, seq);
+    release.send(()).unwrap();
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+    let friends_calls = fake.friends_calls();
+    app.send(Intent::Friends);
+    app.until(|_| fake.friends_calls() > friends_calls);
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+    assert_eq!(
+        app.state
+            .messages
+            .values()
+            .filter(|m| message_text(m) == "one retry")
+            .count(),
+        1
+    );
+}

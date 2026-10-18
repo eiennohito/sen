@@ -25,6 +25,11 @@ pub enum Delivery {
     Sent,
     Read,
 }
+impl Delivery {
+    pub fn is_failed(&self) -> bool {
+        matches!(self, Self::Rejected { .. } | Self::Uncertain)
+    }
+}
 /// Opaque decoded server content. Nonpositive created_ms falls back to delivered_ms.
 #[derive(Clone, Debug)]
 pub struct MessageInput {

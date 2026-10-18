@@ -249,43 +249,82 @@ impl Store {
             reaches_end,
         })
     }
+    pub fn stored_page(&self, chat: &ChatId, kind: &PageKind) -> Result<bool> {
+        let PageKind::Older { before } = kind else {
+            return Ok(false);
+        };
+        Ok(segments(&self.conn, chat)?
+            .iter()
+            .any(|s| (s.lo < *before || s.start) && *before <= s.hi))
+    }
     pub fn chat_list(&self, limit: usize, offset: usize) -> Result<Vec<ChatListItem>> {
-        let mut stmt=self.conn.prepare(
-            "SELECT chat_id FROM chat WHERE left=0
-             ORDER BY max(coalesce(last_activity,0),coalesce((SELECT sort_ts FROM message
-                 WHERE message.chat_id=chat.chat_id ORDER BY sort_ts DESC,sort_id DESC LIMIT 1),0)) DESC,
-                 list_rank,chat_id LIMIT ? OFFSET ?")?;
-        let ids = stmt
-            .query_map(params![sql_limit(limit), sql_limit(offset),], |r| {
-                r.get::<_, String>(0)
-            })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        let mut items = Vec::new();
-        for id in ids {
-            let chat = chat_record(&self.conn, &ChatId(id))?.expect("selected chat exists");
-            let preview = self.newest(&chat.id)?;
-            let activity_ms = preview
-                .as_ref()
-                .map(|r| r.sort.sort_ts)
-                .into_iter()
-                .chain(chat.last_message_ms)
-                .max()
-                .unwrap_or(0);
-            items.push(ChatListItem {
-                chat: chat.clone(),
-                preview,
-                activity_ms,
-                failed_count: self
-                    .pending(&chat.id)?
-                    .iter()
-                    .filter(|m| {
-                        matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain)
+        self.chat_rows(limit, offset, None, "")
+    }
+    pub fn search_chats(&self, query: &str) -> Result<Vec<ChatListItem>> {
+        self.chat_rows(usize::MAX, 0, None, query)
+    }
+    pub fn chat_item(&self, id: &ChatId) -> Result<Option<ChatListItem>> {
+        Ok(self.chat_rows(1, 0, Some(id), "")?.pop())
+    }
+    fn chat_rows(
+        &self,
+        limit: usize,
+        offset: usize,
+        id: Option<&ChatId>,
+        query: &str,
+    ) -> Result<Vec<ChatListItem>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT c.chat_id,c.kind,c.title,c.avatar,c.member_count,c.muted,c.left,c.last_key,
+             c.last_activity,c.server_unread,c.unread_stale,c.last_read_server_id,c.list_rank,
+             m.key,m.chat_id,m.server_id,m.local_id,m.request_seq,m.sort_ts,m.sort_id,
+             m.sender_id,m.outgoing,m.content_type,m.body_json,m.reactions_json,m.reactions_rev,
+             m.withdrawn,m.delivery,m.created_at_local,m.content_rev,
+             d.text,d.cursor,d.anchor,d.updated,
+             (SELECT count(*) FROM message f WHERE f.chat_id=c.chat_id AND f.server_id IS NULL
+              AND (f.delivery='\"Uncertain\"' OR json_type(f.delivery,'$.Rejected') IS NOT NULL)),
+             max(coalesce(c.last_activity,0),coalesce(m.sort_ts,0)) AS activity
+             FROM chat c
+             LEFT JOIN message m ON m.key=(SELECT key FROM message WHERE chat_id=c.chat_id
+                 ORDER BY sort_ts DESC,sort_id DESC LIMIT 1)
+             LEFT JOIN draft d ON d.chat_id=c.chat_id
+             WHERE c.left=0 AND (?3 IS NULL OR c.chat_id=?3)
+             AND (?4='' OR c.title LIKE ?5 OR json_extract(m.body_json,'$.body') LIKE ?5)
+             ORDER BY activity DESC,c.list_rank,c.chat_id LIMIT ?1 OFFSET ?2",
+        )?;
+        Ok(stmt
+            .query_map(
+                params![
+                    sql_limit(limit),
+                    sql_limit(offset),
+                    id.map(|i| &i.0),
+                    query,
+                    format!("%{query}%")
+                ],
+                |r| {
+                    Ok(ChatListItem {
+                        chat: decode_chat(r)?,
+                        preview: if r.get::<_, Option<i64>>(13)?.is_some() {
+                            Some(super::messages::decode_at(r, 13)?)
+                        } else {
+                            None
+                        },
+                        draft: r
+                            .get::<_, Option<String>>(30)?
+                            .map(|text| -> rusqlite::Result<Draft> {
+                                Ok(Draft {
+                                    text,
+                                    cursor: r.get(31)?,
+                                    anchor: r.get(32)?,
+                                    updated: r.get(33)?,
+                                })
+                            })
+                            .transpose()?,
+                        failed_count: r.get(34)?,
+                        activity_ms: r.get(35)?,
                     })
-                    .count() as u32,
-                draft: self.load_draft(&chat.id)?,
-            });
-        }
-        Ok(items)
+                },
+            )?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     pub fn upsert_chats(&mut self, list: &[ChatInput], complete_sweep: bool) -> Result<Changes> {
@@ -424,7 +463,7 @@ impl Store {
                 [&chat.0],
                 |r| r.get(0),
             )?;
-            let newest:Option<String>=tx.query_row("SELECT server_id FROM message WHERE chat_id=? AND server_id IS NOT NULL ORDER BY length(server_id) DESC,server_id DESC LIMIT 1",[&chat.0],|r|r.get(0)).optional()?;
+            let newest:Option<String>=tx.query_row("SELECT server_id FROM message WHERE chat_id=? AND server_id IS NOT NULL ORDER BY sort_id DESC LIMIT 1",[&chat.0],|r|r.get(0)).optional()?;
             let at_end=if let Some(hint)=hint {numeric_max(Some(ServerId(hint)),newest.map(ServerId))?.map(|id|server_sort(&id)).transpose()?.is_some_and(|s|marker_sort>=s)}else{false};
             tx.execute(
                 "UPDATE chat SET last_read_server_id=?,server_unread=CASE WHEN ? THEN 0

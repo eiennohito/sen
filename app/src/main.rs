@@ -1224,10 +1224,6 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
             && !ui.global::<State>().get_older_start_known()
             && let Some((chat, before)) = d.reading.borrow().clone()
         {
-            d.sender.send(Intent::Page {
-                chat,
-                kind: PageKind::Older { before },
-            });
             if let Some(key) = d
                 .state
                 .rows()
@@ -1249,6 +1245,10 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
                 let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
                 d.sender.send(intent);
             }
+            d.sender.send(Intent::Page {
+                chat,
+                kind: PageKind::Older { before },
+            });
         }
     });
     let link_actions = actions.clone();
@@ -1400,12 +1400,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = if let Some(fake) = &fake {
         Worker::start(fake.clone(), StoreLocation::Memory)
     } else {
-        Worker::start_with(move || {
-            let backend =
-                LineBackend::open_local(&locations.session, &locations.wasm, &locations.cache)?;
-            let mid = backend.local_mid();
-            let root = locations.session.parent().unwrap().join("accounts");
-            Ok((backend, StoreLocation::Account { root, mid }))
+        let root = locations.session.parent().unwrap().join("accounts");
+        Worker::start_with(StoreLocation::Account { root, mid: None }, move || {
+            LineBackend::open_local(&locations.session, &locations.wasm, &locations.cache)
         })
     };
     let ui = create_app_window()?;
