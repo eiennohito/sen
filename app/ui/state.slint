@@ -31,7 +31,7 @@ export global State {
     public function browser-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
         if event.text == Key.Escape && self.profile-open && self.profile-sheet && !self.window-modal-open { if self.members-open && self.member-profile { self.back-to-members(); } else { self.close-profile(); } return accept; }
-        if !self.window-modal-open && !(self.profile-open && self.profile-sheet) && self.connection-failed && event.text == Key.F6 { self.focus-sign-in-opener(); return accept; }
+        if !self.window-modal-open && !(self.profile-open && self.profile-sheet && !self.members-open) && self.connection-actions-enabled && event.text == Key.F6 { self.focus-sign-in-opener(); return accept; }
         if self.window-modal-open || (self.narrow && self.profile-open) { return reject; }
         if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
             if event.text == "f" || event.text == "F" { self.show-conversation = false; if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
@@ -79,13 +79,19 @@ export global State {
     out property <length> narrow-width: 740px;
     out property <length> conversation-min-width: self.narrow-width - self.rail-width - self.browser-width;
     out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
-    property <int> covered-content: self.window-modal-open || (self.profile-open && self.narrow) ? 2 : self.profile-open && self.profile-sheet ? 1 : 0;
+    property <int> covered-content: self.window-modal-open || (self.profile-open && self.narrow) ? 2 : self.profile-open && self.profile-sheet ? 1 : self.narrow && self.show-conversation ? 3 : 0;
+    in-out property <bool> browser-focus-hidden;
+    property <int> previous-covered-content;
     changed covered-content => {
+        let browser-hidden = self.covered-content == 3 && self.previous-covered-content == 0 && self.browser-focus-hidden;
+        self.browser-focus-hidden = false;
+        self.previous-covered-content = self.covered-content;
         if self.recovery-kind != "" || self.demo-scenarios-open { return; }
         if self.auth-open { self.focus-auth-start(); }
         else if self.viewer-open { self.focus-viewer-close(); }
         else if self.settings-open { self.focus-settings-close(); }
         else if self.profile-open && self.profile-sheet { self.focus-profile-close(); }
+        else if browser-hidden { self.focus-composer(); }
     }
     in-out property <string> profile-initial;
     in-out property <string> profile-name;
@@ -163,6 +169,7 @@ export global State {
     out property <bool> sign-in-available: self.auth-expired || self.session-unavailable;
     in-out property <bool> reconnected-notice;
     out property <bool> connection-feedback-visible: (self.connection-failed || self.reconnected-notice) && !self.window-modal-open && !(self.profile-open && self.profile-sheet && !self.members-open);
+    out property <bool> connection-actions-enabled: self.connection-failed && self.connection-feedback-visible && !self.retrying-connection && !self.auth-busy;
     out property <length> connection-notice-height: max(40px, self.text-size * 1.4px + 16px);
     in-out property <length> connection-area-x;
     in-out property <length> connection-area-y;
@@ -242,6 +249,11 @@ export global State {
     callback show-profile();
     callback close-profile();
     callback focus-composer();
+    callback focus-cycle-end();
+    callback focus-after-browser();
+    callback focus-after-conversation();
+    callback focus-before-layer();
+    callback focus-after-layer();
     callback focus-reading-before-editor();
     callback show-viewer(string);
     callback close-viewer();

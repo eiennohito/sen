@@ -10,7 +10,6 @@ import json
 import time
 import tempfile
 import datetime
-import sys
 from pathlib import Path
 import urllib.request
 
@@ -116,6 +115,12 @@ def fixture_times(clock):
         labels.add(timestamp.strftime("%Y/%m/%d %H:%M"))
     return labels
 
+def show_chats():
+    call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Press")
+    call("dispatch_key_event", windowHandle=window, text="2")
+    call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Release")
+
+
 # Refuse to operate on a real account. Sends remain local to the demo transport.
 call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
 demo_marker = element("Synthetic interaction scenarios", "Text")
@@ -137,84 +142,159 @@ if args.focus:
         call("dispatch_key_event", windowHandle=window, text=text, eventType=event_type)
 
     def focus_label():
-        focused = [item for item in tree() if item.get("accessibleDescription", "").startswith("Focused")]
+        deadline = time.monotonic() + 0.5
+        while True:
+            focused = [item for item in tree() if item.get("accessibleDescription", "").startswith("Focused")]
+            if len(focused) == 1 or time.monotonic() >= deadline: break
+            time.sleep(.01)
         assert len(focused) == 1, f"unlabelled or ambiguous Tab stop: {focused}"
         label = focused[0].get("accessibleLabel", "")
         assert label, "focused control has no label"
         assert focused[0]["size"]["width"] > 0 and focused[0]["size"]["height"] > 0, f"hidden focus: {label}"
         return label
 
-    def check_chain(surface, seeds):
-        visited = set()
-        for label, role in seeds:
+    def focus_tab(reverse=False):
+        if reverse: focus_key("\x10", "Press")
+        focus_key("\t")
+        if reverse: focus_key("\x10", "Release")
+
+    def check_chain(surface, expected, seed):
+        assert len(expected) == len(set(expected)), f"{surface}: duplicate expected stop"
+        if seed[1] == "TextInput":
+            call("click_element", elementHandle=element(*seed)["handle"])
+        for _ in expected:
+            if focus_label() == seed[0]: break
+            focus_tab()
+        assert focus_label() == seed[0], f"{surface}: seed did not focus {seed[0]} (at {focus_label()})"
+        # Every stop is a seed; each direction must visit exactly one full cycle.
+        for _ in expected:
+            label = focus_label()
+            index = expected.index(label)
             for reverse in (False, True):
-                call("click_element", elementHandle=element(label, role)["handle"])
-                assert focus_label() == label, f"{surface}: seed did not focus {label}"
-                seen = []
-                for _ in range(20):
-                    if reverse: focus_key("\x10", "Press")
-                    focus_key("\t")
-                    if reverse: focus_key("\x10", "Release")
+                seen = [label]
+                for offset in range(1, len(expected) + 1):
+                    focus_tab(reverse)
                     current = focus_label()
-                    visited.add(current)
-                    if current in seen: break
-                    seen.append(current)
-                else:
-                    raise AssertionError(f"{surface}: Tab chain did not cycle: {seen}")
-                assert len(seen) >= 3, f"{surface}: trapped Tab chain: {seen}"
-                print(f"PASS: {surface} {'reverse' if reverse else 'forward'} from {label}: {' → '.join(seen)}")
+                    wanted = expected[(index + (-offset if reverse else offset)) % len(expected)]
+                    assert current == wanted, f"{surface}: {'reverse' if reverse else 'forward'} from {label}: {seen} → {current}, expected {wanted}"
+                    if offset < len(expected): seen.append(current)
+                assert len(set(seen)) == len(expected) and set(seen) == set(expected), f"{surface}: incomplete cycle: {seen}"
+                assert focus_label() == label, f"{surface}: did not return to seed {label}"
+            focus_tab()
+        print(f"PASS: {surface}: {' → '.join(expected)} → {expected[0]}; reverse mirrors forward, every seed")
 
-        return visited
+    logical_width = properties["size"]["width"] / properties.get("scaleFactor", 1)
+    narrow = logical_width < 740
+    panel = logical_width >= 1060
+    layer_kind = "panel" if panel else "sheet"
+    def click_focus(label, role="Button"):
+        call("click_element", elementHandle=element(label, role)["handle"])
 
-    narrow = properties["size"]["width"] / properties.get("scaleFactor", 1) < 740
+    def browser():
+        if narrow:
+            focus_key("\x12", "Press")  # Alt+Left also works from layer openers.
+            focus_key("\uf702")
+            focus_key("\x12", "Release")
+
+    def browser_stops(search_label, list_label, recovery):
+        return ["Navigation", search_label] + (recovery if narrow else []) + [list_label]
+
     for offline in (False, True):
+        click_focus("Chats")
+        click_focus("葵")
+        browser()
         if offline: demo_scenario("Login recovery")
         suffix = "with strip" if offline else "without strip"
+        recovery = ["Retry connection", "Sign in again"] if offline else []
         for surface, search_label, list_label in [("chats", "Find a conversation", "Conversations"), ("friends", "Search friends and groups", "Friends and groups")]:
-            if surface == "friends": call("click_element", elementHandle=element("Friends", "Button")["handle"])
-            expected = {"Navigation", search_label, list_label}
-            seeds = [(search_label, "TextInput")]
+            click_focus("Friends" if surface == "friends" else "Chats")
+            expected = browser_stops(search_label, list_label, recovery)
             if not narrow:
-                seeds.append(("Message draft", "TextInput"))
-                expected |= {"Message history", "Message draft"}
-            if offline: expected |= {"Retry connection", "Sign in again"}
-            visited = check_chain(f"{surface} {suffix}", seeds)
-            assert expected <= visited, f"{surface}: unchecked stops: {expected - visited}"
-        call("click_element", elementHandle=element("Chats", "Button")["handle"])
+                expected += recovery + ["Message history", "Message draft"]
+                if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
+            check_chain(f"{surface} {suffix}", expected, (search_label, "TextInput"))
+            call("set_element_value", elementHandle=element(search_label, "TextInput")["handle"], value="葵")
+            check_chain(f"{surface} search clear {suffix}", expected[:2] + ["Clear search"] + expected[2:], (search_label, "TextInput"))
+            click_focus("Clear search")
+        click_focus("Chats")
         for chat in ("葵", "Weekend plans"):
-            call("click_element", elementHandle=element(chat, "Button")["handle"])
+            click_focus(chat)
             call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value="Focus check")
-            expected = {"Message history", "Message draft"}
-            if narrow: expected.add("Back")
-            else: expected |= {"Navigation", "Find a conversation", "Conversations"}
-            if chat == "Weekend plans": expected.add(element("Members", "Button")["accessibleLabel"])
-            if element("Send", "Button").get("accessibleEnabled"): expected.add("Send")
-            if offline: expected |= {"Retry connection", "Sign in again"}
-            visited = check_chain(f"conversation {chat} {suffix}", [("Message draft", "TextInput")])
-            assert expected <= visited, f"conversation: unchecked stops: {expected - visited}"
-            if narrow: call("click_element", elementHandle=element("Back", "Button")["handle"])
-    sys.exit(0)
-deadline = time.monotonic() + 5
-while True:
-    try:
-        composer = element("Message draft", "TextInput")["handle"]
-        break
-    except StopIteration:
-        assert time.monotonic() < deadline, "composer did not appear within 5 seconds"
-        time.sleep(0.05)
+            expected = ["Back"] if narrow else ["Navigation", "Find a conversation", "Conversations"]
+            if chat == "Weekend plans": expected.append(element("Members", "Button")["accessibleLabel"])
+            expected += recovery + ["Message history", "Message draft"]
+            if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
+            check_chain(f"conversation {chat} {suffix}", expected, ("Message draft", "TextInput"))
+            if chat == "Weekend plans":
+                click_focus("Members")
+                layer = ["Close members", "Search members", "Group members"]
+                prefix = expected if panel else [] if narrow else ["Navigation", "Find a conversation", "Conversations"]
+                layer_recovery = [] if panel else recovery
+                check_chain(f"members {layer_kind} {suffix}", prefix + layer_recovery + layer, ("Close members", "Button"))
+                call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="葵")
+                check_chain(f"members search clear {suffix}", prefix + layer_recovery + layer[:2] + ["Clear search"] + layer[2:], ("Close members", "Button"))
+                click_focus("Open member: 葵")
+                check_chain(f"member profile {layer_kind} {suffix}", prefix + layer_recovery + ["Back to members", "Close profile", "Open chat"], ("Close profile", "Button"))
+                focus_key("\x1b")
+                call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="蓮")
+                click_focus("Open member: 蓮")
+                check_chain(f"member profile without chat {layer_kind} {suffix}", prefix + layer_recovery + ["Back to members", "Close profile"], ("Close profile", "Button"))
+                focus_key("\x1b")
+                focus_key("\x1b")
+            browser()
+        click_focus("Friends")
+        click_focus("Open profile: 葵")
+        prefix = [] if narrow else ["Navigation", "Search friends and groups", "Friends and groups"]
+        if panel:
+            prefix += [element("Members", "Button")["accessibleLabel"]] + recovery + ["Message history", "Message draft"]
+            if element("Send", "Button").get("accessibleEnabled"): prefix.append("Send")
+        check_chain(f"profile {layer_kind} {suffix}", prefix + ["Close profile", "Open chat"], ("Close profile", "Button"))
+        focus_key("\x1b")
+        click_focus("Settings")
+        check_chain(f"settings {suffix}", ["Close settings", "Settings section", "Message text size", "Enter sends"], ("Close settings", "Button"))
+        focus_key("\x1b")
+        click_focus("Chats")
+    demo_scenario("Reconnect blip")
+    time.sleep(2.2)
+    # Leave a connected Chats browser with empty drafts and queries for later checks.
+    for chat in ("Weekend plans", "葵"):
+        show_chats()
+        click_focus(chat)
+        call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value="")
+        if chat == "Weekend plans":
+            click_focus("Members")
+            call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="")
+            focus_key("\x1b")
+    show_chats()
+    call("set_element_value", elementHandle=element("Find a conversation", "TextInput")["handle"], value="")
+    deadline = time.monotonic() + 7
+    while any(item.get("accessibleRole") == "Banner" for item in tree()):
+        assert time.monotonic() < deadline, "focus check did not restore the connected shell"
+        time.sleep(.05)
+    assert focus_label() == "Find a conversation"
+
+
+def smoke_chat(label):
+    show_chats()
+    call("click_element", elementHandle=element(label, "Button")["handle"])
+
+show_chats()
 search = element("Find a conversation", "TextInput")["handle"]
 draft = "日本語の下書き\nDraft with emoji 🐈"
-call("click_element", elementHandle=element("葵", "Button")["handle"])
+smoke_chat("葵")
+composer = element("Message draft", "TextInput")["handle"]
 call("set_element_value", elementHandle=composer, value=draft)
-call("click_element", elementHandle=element("Weekend plans", "Button")["handle"])
+smoke_chat("Weekend plans")
 call("set_element_value", elementHandle=composer, value="Another draft")
-call("click_element", elementHandle=element("葵", "Button")["handle"])
+smoke_chat("葵")
 value = call("get_element_properties", elementHandle=composer)
 assert value.get("accessibleValue") == draft, "draft did not survive chat switching"
+show_chats()
 call("set_element_value", elementHandle=search, value="Weekend")
 chat_rows = [item for item in tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith(("葵, ", "Weekend plans, ", "Notes to self, "))]
 assert len(chat_rows) == 1 and chat_rows[0]["accessibleLabel"].startswith("Weekend plans, "), "search did not filter chats"
 call("set_element_value", elementHandle=search, value="")
+smoke_chat("葵")
 assert element("Send", "Button").get("accessibleEnabled", False), "demo transport did not enable Send"
 call("click_element", elementHandle=composer)
 call("dispatch_key_event", windowHandle=window, text="\n")

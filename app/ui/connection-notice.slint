@@ -42,7 +42,9 @@ export component ConnectionNotice inherits Rectangle {
     visible: State.connection-feedback-visible;
     background: Tokens.surface; border-width: 1px; border-color: Tokens.secondary;
     property <string> status: !State.connection-failed ? "Reconnected" : State.retrying-connection ? "Retrying…" : State.connection-status;
-    property <string> compact-status: root.width < 400px && State.connection-failed && !State.retrying-connection && State.sign-in-available ? (State.auth-expired ? "Expired" : "Sign in") : root.status;
+    property <length> status-width: max(0px, root.width - 8px - (retry.visible ? retry.preferred-width + 2px : 0px) - (sign-in.visible ? sign-in.preferred-width + 2px : 0px));
+    out property <string> compact-status: full-status.preferred-width > root.status-width && State.connection-failed && !State.retrying-connection && State.sign-in-available ? (State.auth-expired ? "Expired" : "Signed out") : root.status;
+    full-status := Text { visible: false; text: root.status; font-size: Tokens.base; }
     accessible-role: banner; accessible-label: State.connection-failed ? "Connection needs attention" : "Connection restored";
     public function focus-first() { retry.focus-action(); }
     public function focus-action() { if State.sign-in-available { sign-in.focus-action(); } else { retry.focus-action(); } }
@@ -56,7 +58,7 @@ export component ConnectionNotice inherits Rectangle {
         key-pressed(event) => { if event.text == Key.F6 { root.leave(false); return accept; } if State.demo && !State.modal-open && event.text == Key.F12 { root.scenarios-requested(); return accept; } State.browser-key(event) }
         HorizontalLayout {
             padding: 4px; spacing: 2px; alignment: start;
-            Text { text: root.compact-status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; min-width: 0px; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
+            Text { max-width: root.status-width; text: root.compact-status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; min-width: 0px; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
             retry := Action {
                 visible: State.connection-failed; width: self.visible ? self.preferred-width : 0px;
                 label: "Retry"; description: "Retry connection";

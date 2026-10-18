@@ -19,6 +19,7 @@ component RailButton inherits Rectangle {
 
 export component Rail inherits Rectangle {
     background: Tokens.background;
+    out property <bool> has-focus: rail-focus.has-focus;
     public function focus-navigation() { rail-focus.focus(); }
     property <int> cursor: State.section;
     public function activate(index: int) {
@@ -30,7 +31,7 @@ export component Rail inherits Rectangle {
         key-pressed(event) => {
             if State.browser-key(event) == accept { return accept; }
             if State.ime-active { return reject; }
-            if event.text == Key.Tab && !event.modifiers.shift { if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } return accept; }
+            if event.text == Key.Tab { if event.modifiers.shift { State.focus-cycle-end(); } else if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } return accept; }
             if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.cursor = max(0, root.cursor - 1); return accept; }
             if event.text == Key.DownArrow || event.text == Key.RightArrow { root.cursor = min(2, root.cursor + 1); return accept; }
             if event.text == Key.Return || event.text == " " { root.activate(root.cursor); return accept; }

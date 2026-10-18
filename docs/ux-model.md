@@ -341,12 +341,20 @@ not configurable in v1.
   within) → conversation header actions → visible connection recovery actions →
   history (one Tab stop) → Latest → Return to message (when visible) →
   composer → Send.
-- F6 enters the visible recovery strip; F6 or Tab after its last action moves
-  to history, or the browser list in narrow browser layout. Shift+Tab before
+- F6 enters the visible recovery strip. Without a layer, F6 or Tab after its
+  last action moves to history, or the browser list in narrow browser layout. Shift+Tab before
   its first action returns to the conversation header/browser search. In narrow
   browser layout the strip belongs between browser search and the list.
-- In Friends, F6 or Shift+Tab from history enters the recovery actions; forward
-  Tab retains the Friends navigation order.
+- Friends uses the same recovery-action order as Chats. A nonempty search
+  adds Clear immediately after the field in either browser and in members.
+- A side panel follows Send (or the composer when Send is disabled), then
+  wraps to the rail. A conversation sheet replaces the conversation stops;
+  the browser list leads to the sheet, and its last control wraps to the rail.
+  A narrow sheet cycles within its visible controls. Members keeps visible
+  recovery actions before the sheet controls. Profile controls follow reading
+  order: Back to members (when present), Close, Open chat (when available).
+  Members follows Close, search, Retry (when present), list (when available).
+  Shift+Tab is the exact reverse of each cycle.
 - Messages are click-focusable for selection but not Tab stops. Slint 1.18
   cannot style links or inline images inside a selectable TextInput. Messages
   with those features use a measured flow: Select text in the context menu
@@ -358,7 +366,8 @@ not configurable in v1.
   are visually distinct and independent.
 - Incoming data never moves focus. Completion of a send never moves focus.
 - Opening a conversation focuses the composer. Opening a panel focuses its
-  first control; closing it restores the opener.
+  first control; closing it restores the opener. If narrowing hides the focused
+  browser while a conversation is shown, focus moves to the composer.
 
 ### 8.3 Pointer
 

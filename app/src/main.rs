@@ -27,6 +27,36 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     });
     members::bridge(&ui);
     let weak = ui.as_weak();
+    ui.global::<State>().on_focus_cycle_end(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_focus_cycle_end();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_focus_after_browser(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_focus_after_browser();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_focus_after_conversation(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_focus_after_conversation();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_focus_before_layer(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_focus_before_layer();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_focus_after_layer(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_focus_after_layer();
+        }
+    });
+    let weak = ui.as_weak();
     ui.global::<State>().on_close_settings(move || {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_close_settings();

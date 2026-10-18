@@ -14,6 +14,7 @@ export component DraftEditor inherits Rectangle {
         State.editor-anchor = input.anchor-position-byte-offset;
         State.editor-caret = input.cursor-position-byte-offset;
     }
+    out property <bool> has-focus: input.has-focus;
     public function focus-editor() { input.focus(); input.set-selection-offsets(State.editor-anchor, State.editor-caret); }
     // Native TextInput collapses selection on FocusOut. Preserve the user's
     // selection while a layer owns focus and restore on programmatic return.

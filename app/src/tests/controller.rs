@@ -775,3 +775,132 @@ fn profile_panel_allows_send_shortcut_and_sheet_blocks_it() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn narrowing_conversation_moves_browser_focus_to_draft() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        ui.set_has_chat(true);
+        ui.set_show_conversation(true);
+        ui.show().unwrap();
+        let key = |text: &str| {
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.into() });
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: text.into() });
+            slint::platform::update_timers_and_animations();
+        };
+        let sends = Rc::new(std::cell::Cell::new(0));
+        let count = sends.clone();
+        ui.on_send(move || count.set(count.get() + 1));
+        let members = Rc::new(std::cell::Cell::new(0));
+        let count = members.clone();
+        ui.on_open_members(move || count.set(count.get() + 1));
+        ui.set_chat_group(true);
+        ui.set_can_send(true);
+        for stop in 0..3 {
+            snapshot::render(&window, (1000, 720)).unwrap();
+            match stop {
+                0 => ui.invoke_focus_history(),
+                1 => {
+                    ui.invoke_focus_composer();
+                    key("\t");
+                }
+                _ => ui.invoke_focus_members_header(),
+            }
+            snapshot::render(&window, (700, 600)).unwrap();
+            assert!(!ui.get_composer_focused(), "visible stop {stop} lost focus");
+            if stop == 0 {
+                key("\t");
+                assert!(ui.get_composer_focused(), "history did not retain focus");
+            } else {
+                key("\n");
+            }
+        }
+        assert_eq!(sends.get(), 1, "Send did not retain focus");
+        assert_eq!(members.get(), 1, "Members did not retain focus");
+        for section in 0..2 {
+            ui.set_section(section);
+            ui.set_query("葵".into());
+            ui.set_friend_query("葵".into());
+            for stop in 0..4 {
+                snapshot::render(&window, (1000, 720)).unwrap();
+                match stop {
+                    0 => ui.invoke_focus_settings_opener(),
+                    1 | 2 => {
+                        if section == 0 {
+                            ui.invoke_focus_search();
+                        } else {
+                            ui.invoke_focus_friend_search();
+                        }
+                        if stop == 2 {
+                            key("\t");
+                        }
+                    }
+                    _ => {
+                        if section == 0 {
+                            ui.invoke_focus_chat_list();
+                        } else {
+                            ui.invoke_focus_friend_list();
+                        }
+                    }
+                }
+                slint::platform::update_timers_and_animations();
+                assert!(!ui.get_composer_focused());
+                snapshot::render(&window, (700, 600)).unwrap();
+                assert!(
+                    ui.get_composer_focused(),
+                    "hidden stop {section}/{stop} kept focus"
+                );
+            }
+        }
+        key("x");
+        assert_eq!(ui.get_draft(), "x");
+        ui.set_chat_group(true);
+        ui.set_members_open(true);
+        ui.set_profile_open(true);
+        ui.invoke_focus_profile_close();
+        slint::platform::update_timers_and_animations();
+        ui.invoke_close_profile();
+        slint::platform::update_timers_and_animations();
+        assert!(
+            !ui.get_composer_focused(),
+            "closing members must restore its opener"
+        );
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn connection_status_compacts_only_when_full_text_does_not_fit() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        ui.set_has_chat(true);
+        ui.set_show_conversation(true);
+        ui.set_connection_failed(true);
+        ui.set_auth_expired(true);
+        ui.set_connection_status("Session expired".into());
+        ui.show().unwrap();
+        snapshot::render(&window, (740, 600)).unwrap();
+        assert_eq!(ui.invoke_connection_status_text(), "Session expired");
+        ui.set_text_size(24);
+        snapshot::render(&window, (740, 600)).unwrap();
+        assert_eq!(ui.invoke_connection_status_text(), "Expired");
+        assert!(ui.invoke_connection_actions_fit());
+        snapshot::render(&window, (1000, 720)).unwrap();
+        assert_eq!(ui.invoke_connection_status_text(), "Session expired");
+        ui.set_auth_expired(false);
+        ui.set_session_unavailable(true);
+        ui.set_connection_status("Signed out".into());
+        snapshot::render(&window, (360, 600)).unwrap();
+        assert_eq!(ui.invoke_connection_status_text(), "Signed out");
+        assert!(ui.invoke_connection_actions_fit());
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}

@@ -19,6 +19,7 @@ import { ConnectionNotice, FeedbackRect } from "connection-notice.slint";
 import { DemoScenarios } from "demo-scenarios.slint";
 
 export component AppWindow inherits Window {
+    public function connection-status-text() -> string { return auth-notice.compact-status; }
     public function connection-actions-fit() -> bool { return auth-notice.actions-fit(); }
     public function connection-obstacles() -> [FeedbackRect] {
         return [
@@ -200,10 +201,40 @@ export component AppWindow inherits Window {
     property <length> token-base: root.text-size * 1px;
     changed token-base => { Tokens.base = root.token-base; }
     property <length> state-window-width: root.width;
-    changed state-window-width => { State.window-width = root.width; }
+    changed state-window-width => {
+        State.browser-focus-hidden = State.window-width >= State.narrow-width && root.width < State.narrow-width && root.show-conversation && (rail.has-focus || (root.section == 1 ? friends-surface.has-focus : chats-surface.has-focus));
+        State.window-width = root.width;
+    }
     init => { State.window-width = root.width; Tokens.base = root.text-size * 1px; }
     out property <length> chat-list-height: chats-surface.viewport-height;
     public function reveal-chat(index: int) { chats-surface.reveal(index); }
+    public function focus-cycle-end() {
+        if root.profile-open { layers.focus-profile-last(); }
+        else if !root.narrow || root.show-conversation { conversation.focus-last(); }
+        else if root.section == 1 { friends-surface.focus-list(); }
+        else { chats-surface.focus-list(); }
+    }
+    public function focus-after-browser() {
+        if root.profile-open && State.profile-sheet { if root.members-open && State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
+        else if root.narrow && !root.show-conversation { rail.focus-navigation(); }
+        else { conversation.focus-first(); }
+    }
+    public function focus-after-conversation() {
+        if root.profile-open { layers.focus-profile(); }
+        else if root.narrow { conversation.focus-first(); }
+        else { rail.focus-navigation(); }
+    }
+    public function focus-before-layer() {
+        if State.profile-sheet && root.members-open && State.connection-actions-enabled { auth-notice.focus-action(); }
+        else if State.narrow { layers.focus-profile-last(); }
+        else if !State.profile-sheet { conversation.focus-last(); }
+        else if root.section == 1 { friends-surface.focus-list(); }
+        else { chats-surface.focus-list(); }
+    }
+    public function focus-after-layer() {
+        if State.narrow { if root.members-open && State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
+        else { rail.focus-navigation(); }
+    }
     public function focus-search() { chats-surface.focus-search(); }
     public function focus-chat-list() { chats-surface.focus-list(); }
     public function focus-friend-list() { friends-surface.focus-list(); }
@@ -226,12 +257,17 @@ export component AppWindow inherits Window {
         visible: State.connection-feedback-visible && !root.migration-needed;
         scenarios-requested => { scenarios.open(); }
         leave(back) => {
-            if !root.narrow || root.show-conversation {
+            if root.profile-open && State.profile-sheet && root.members-open {
+                if !back { layers.focus-profile(); }
+                else if root.narrow { layers.focus-profile-last(); }
+                else if root.section == 1 { friends-surface.focus-list(); }
+                else { chats-surface.focus-list(); }
+            } else if !root.narrow || root.show-conversation {
                 if back { conversation.focus-header(); } else { conversation.focus-history(); }
             } else if root.section == 1 {
-                if back { friends-surface.focus-search(); } else { friends-surface.focus-list(); }
+                if back { friends-surface.focus-search-last(); } else { friends-surface.focus-list(); }
             } else {
-                if back { chats-surface.focus-search(); } else { chats-surface.focus-list(); }
+                if back { chats-surface.focus-search-last(); } else { chats-surface.focus-list(); }
             }
         }
     }

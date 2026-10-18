@@ -15,9 +15,20 @@ draft-measure := Text {
         width: max(100px, root.width - 56px);
         wrap: word-wrap; font-size: Tokens.base;
     }
-            Rectangle {
+            FocusScope {
+                focus-on-tab-navigation: false;
+                key-pressed(event) => {
+                    if State.ime-active { return reject; }
+                    if event.text == Key.Tab {
+                        if event.modifiers.shift { composer.focus-editor(); }
+                        else if composer.has-focus && State.can-send { send-button.focus(); }
+                        else { State.focus-after-conversation(); }
+                        return accept;
+                    }
+                    reject
+                }
                 height: root.height;
-                background: Tokens.surface;
+                Rectangle { background: Tokens.surface; }
                 VerticalLayout {
                     padding: 12px; spacing: 8px;
                     composer := DraftEditor { }
@@ -28,6 +39,7 @@ draft-measure := Text {
                     }
                 }
             }
+    public function focus-last() { if State.can-send { send-button.focus(); } else { composer.focus-editor(); } }
     public function focus-editor() { composer.focus-editor(); }
     public function restore-editor(anchor: int, caret: int) { composer.restore(anchor, caret); }
 }

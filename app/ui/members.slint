@@ -5,9 +5,11 @@ import { SearchField } from "search-field.slint";
 import { Pane } from "scrollpane.slint";
 
 export component Members inherits FocusScope {
+    focus-on-tab-navigation: false;
     in-out property <int> selected <=> State.member-result;
     property <length> row-height: max(64px, Tokens.base * 2.8 + 16px);
     public function focus-first() { close.focus(); }
+    public function focus-last() { if list.visible { list.focus(); } else if State.members-failed { retry.focus(); } else { search.focus-last(); } }
     public function focus-list() { list.focus(); }
     function reveal() { if root.selected * root.row-height < -pane.offset { pane.jump(-root.selected * root.row-height); } else if (root.selected + 1) * root.row-height > -pane.offset + pane.visible-height { pane.jump(pane.visible-height - (root.selected + 1) * root.row-height); } }
     capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
@@ -16,8 +18,10 @@ export component Members inherits FocusScope {
         if State.browser-key(event) == accept { return accept; }
         if event.text == Key.Escape { State.close-profile(); return accept; }
         if event.text == Key.Tab {
-            if event.modifiers.shift && close.has-focus { if State.narrow { if State.members-failed { retry.focus(); } else if State.members-loading { search.focus(); } else { list.focus(); } } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } return accept; }
-            if !event.modifiers.shift && list.has-focus { if State.profile-sheet && State.narrow { close.focus(); } else { State.focus-settings-opener(); } return accept; }
+            if event.modifiers.shift && close.has-focus { State.focus-before-layer(); return accept; }
+            if !event.modifiers.shift && (list.has-focus || (retry.has-focus && !list.visible)) { State.focus-after-layer(); return accept; }
+            if event.modifiers.shift && list.has-focus { if State.members-failed { retry.focus(); } else { search.focus-last(); } return accept; }
+            if event.modifiers.shift && retry.has-focus { search.focus-last(); return accept; }
         }
         reject
     }
@@ -31,7 +35,7 @@ export component Members inherits FocusScope {
             clear => { State.member-query = ""; root.selected = 0; State.filter-members(); pane.jump(0px); }
             key-pressed(event) => {
                 if event.text == Key.Escape { State.close-profile(); return accept; }
-                if event.text == Key.Tab && !event.modifiers.shift { if State.members-failed { retry.focus(); } else if State.members-loading { close.focus(); } else { list.focus(); } return accept; }
+                if event.text == Key.Tab { if event.modifiers.shift { close.focus(); } else if State.members-failed { retry.focus(); } else if State.members-loading { State.focus-after-layer(); } else { list.focus(); } return accept; }
                 if event.text == Key.DownArrow { list.focus(); return accept; }
                 reject
             }
@@ -40,7 +44,7 @@ export component Members inherits FocusScope {
         VerticalLayout {
             visible: State.members-failed; height: self.visible ? self.preferred-height : 0px;
             Text { text: "Couldn’t get members. Retry."; wrap: word-wrap; color: Tokens.danger; }
-            retry := Button { text: "Retry"; clicked => { State.open-members(); } }
+            retry := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Retry"; clicked => { State.open-members(); } }
         }
         if !State.members-loading && !State.members-failed && State.members.length == 0: Text { text: State.member-query == "" ? "No members" : "No members match your search"; wrap: word-wrap; color: Tokens.secondary; }
         list := FocusScope {

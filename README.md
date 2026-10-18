@@ -287,7 +287,7 @@ cargo build --release --offline -p line-desktop --features ui-debug
 cp target/release/line-desktop /tmp/line-ui-debug-9447
 python3 tools/run-ui-debug.py --binary /tmp/line-ui-debug-9447 --port 9447 --log /tmp/line-ui-9447.log -- --demo
 # In another terminal:
-python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery --reading --layers --rich --screenshot /tmp/line-ui.png
+python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery --reading --layers --rich --focus --screenshot /tmp/line-ui.png
 ```
 
 The wrapper requires `dbus-run-session` and `kwin_wayland`, accepts offline demo

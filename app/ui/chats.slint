@@ -9,6 +9,7 @@ import { PreviewLine } from "preview-line.slint";
 import { SearchField } from "search-field.slint";
 
 export component Chats inherits Rectangle {
+    out property <bool> has-focus: search.contains-focus || list-focus.has-focus;
     public function scroll(delta: length) { chat-list.scroll(delta); }
     public function jump(y: length) { chat-list.jump(y); }
     out property <FeedbackRect> first-row-bounds: { x: chat-list.absolute-position.x, y: chat-list.absolute-position.y + chat-list.visible-top + State.list-y, width: root.visible && (!State.narrow || !State.show-conversation) && State.section == 0 && State.chats.length > 0 ? chat-list.visible-width : 0px, height: State.chat-row-height };
@@ -28,6 +29,7 @@ export component Chats inherits Rectangle {
         let y = top + State.list-y < 0px ? -top : bottom + State.list-y > chat-list.visible-height ? chat-list.visible-height - bottom : State.list-y;
         State.list-y = max(-extent, min(0px, y));
     }
+    public function focus-search-last() { search.focus-last(); }
     public function focus-list() { list-focus.focus(); }
     public function move-cursor(delta: int) {
         State.result-focus = max(0, min(State.chats.length - 1, State.result-focus + delta));
@@ -59,7 +61,7 @@ export component Chats inherits Rectangle {
                         key-pressed(event) => {
                             if State.browser-key(event) == accept { return accept; }
                             if State.ime-active { return reject; }
-                            if event.text == Key.Tab { if event.modifiers.shift { State.focus-settings-opener(); } else if State.narrow && !State.show-conversation && State.connection-failed && State.connection-feedback-visible { State.focus-connection-first(); } else { list-focus.focus(); } return accept; }
+                            if event.text == Key.Tab { if event.modifiers.shift { State.focus-settings-opener(); } else if State.narrow && !State.show-conversation && State.connection-actions-enabled { State.focus-connection-first(); } else { list-focus.focus(); } return accept; }
                             if event.text == Key.Escape && State.query != "" {
                                 State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; return accept;
                             }
@@ -87,7 +89,7 @@ export component Chats inherits Rectangle {
                     key-pressed(event) => {
                         if State.browser-key(event) == accept { return accept; }
                         if State.ime-active { return reject; }
-                        if event.text == Key.Tab { if event.modifiers.shift { search.focus(); } else if State.chat-group && !State.profile-open && !State.narrow { State.focus-chat-header(); } else if State.connection-failed && State.connection-feedback-visible && !State.narrow { State.focus-connection-first(); } else if State.narrow && !State.show-conversation { State.focus-settings-opener(); } else { State.focus-history(); } return accept; }
+                        if event.text == Key.Tab { if event.modifiers.shift { if State.narrow && State.connection-actions-enabled { State.focus-sign-in-opener(); } else { search.focus-last(); } } else { State.focus-after-browser(); } return accept; }
                         if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
                         if event.text == Key.Home { State.result-focus = 0; chat-list.jump(0px); return accept; }
                         if event.text == Key.End { State.result-focus = State.chats.length - 1; chat-list.jump(-chat-list.extent); return accept; }

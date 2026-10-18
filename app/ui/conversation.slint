@@ -61,9 +61,13 @@ export component Conversation inherits Rectangle {
                         target := TouchArea { mouse-cursor: pointer; clicked => { members-button.focus(); State.open-members(); } }
                     }
                     key-pressed(event) => {
-                        if event.text == Key.Tab && !State.ime-active && (members-button.has-focus || (State.narrow && !State.chat-group && !event.modifiers.shift)) {
+                        if event.text == Key.Tab && !State.ime-active {
+                            if State.narrow && !members-button.has-focus {
+                                if event.modifiers.shift { root.focus-last(); } else if State.chat-group { members-button.focus(); } else { root.focus-after-header(); }
+                                return accept;
+                            }
                             if event.modifiers.shift { if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } }
-                            else if State.connection-failed && State.connection-feedback-visible { State.focus-connection-first(); } else { history-focus.focus(); }
+                            else { root.focus-after-header(); }
                             return accept;
                         }
                         reject
@@ -90,7 +94,7 @@ export component Conversation inherits Rectangle {
                     if State.ime-active { return reject; }
                     if State.browser-key(event) == accept { return accept; }
                     if State.recovery-kind != "" { return reject; }
-                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-failed { State.focus-sign-in-opener(); } else if State.chat-group { members-button.focus(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
+                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-sign-in-opener(); } else if State.chat-group { members-button.focus(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
                     if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.PageUp { history.scroll(history.visible-height * 0.9); history.scrolled(); return accept; }
@@ -171,6 +175,9 @@ composer-surface := Composer { }
             }
         }
     
+    public function focus-after-header() { if State.connection-actions-enabled { State.focus-connection-first(); } else { history-focus.focus(); } }
+    public function focus-first() { if State.narrow { back-button.focus-button(); } else if State.chat-group { members-button.focus(); } else { root.focus-after-header(); } }
+    public function focus-last() { if State.has-chat { composer-surface.focus-last(); } else { history-focus.focus(); } }
     public function focus-members() { members-button.focus(); }
     public function focus-header() { if State.chat-group { members-button.focus(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } }
     public function restore-editor(anchor: int, caret: int) { composer-surface.restore-editor(anchor, caret); }
