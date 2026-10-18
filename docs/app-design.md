@@ -257,6 +257,32 @@ the window. The sourced SSE path has cancellation, bounded delivery, reconnect
 backoff, replay suppression and session fencing. Live protocol compatibility and
 refresh behavior still need authorized account verification.
 
+## Error reporting
+
+User decision, 2026-10-19: error messages must be useful. Every message the
+user sees says what failed and what happens next or what they can do, at the
+place of the thing that failed (ux-model §9.1). There is no catch-all banner.
+
+- **Classify where the error happens.** The engine reports typed errors,
+  not strings, and the presenter maps each kind to its own text:
+  - **A failed user action** (send, unsend, reaction, rename, add friend,
+    create group, leave) fails on that item: "Couldn't add friend. Try again."
+  - **Connection and authentication** go to the connection strip.
+  - **A real local write failure** (SQLite I/O, disk full, permission)
+    names the cause and the consequence, for example "Can't save messages:
+    disk is full. New messages are shown but won't be kept." It goes in the
+    strip and clears on the next successful write.
+  - **Background refreshes** retry quietly and show nothing.
+- **Bugs are not user errors.** Invariant violations (`StoreError::Invalid`,
+  unknown keys, impossible states) are logged with the intent and its ids,
+  and are never shown as a storage problem. In ui-debug builds they appear
+  as a debug-only toast so they are noticed in checks.
+- **Nothing runs that can't work.** When signed out, the engine doesn't run
+  account operations at all, so they can't fail.
+- **One log.** Errors go to stderr (the journal under systemd) with a
+  timestamp, the operation, the error kind and its chain. Logs never contain
+  tokens, message text or MIDs beyond their first 6 characters.
+
 ## Memory and responsiveness budget
 
 These are initial engineering targets, not measured claims: an idle desktop
