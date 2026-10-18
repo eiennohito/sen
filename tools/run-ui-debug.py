@@ -94,9 +94,12 @@ with tempfile.TemporaryDirectory(prefix='line-ui-automation-') as directory:
         raise KeyboardInterrupt
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, terminate_owned_scope)
-    # KWin 6 segfaults in Compositor::stop on teardown; keep that out of coredumps.
+    # The private KWin (and occasionally the app) segfaults; keep those crashes
+    # out of the OS reporting. With a piped core_pattern (systemd-coredump ->
+    # DrKonqi) a limit of 0 still reports the crash; the kernel skips the pipe
+    # only when RLIMIT_CORE is exactly 1. Inherited by everything in the scope.
     process = subprocess.Popen(command, env=environment, stdout=log, stderr=log, start_new_session=True,
-        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (1, 1)))
     try:
         for _ in range(200):
             if pid_file.exists():
