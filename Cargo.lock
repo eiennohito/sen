@@ -2694,6 +2694,7 @@ dependencies = [
  "ureq",
  "wasmi",
  "x25519-dalek",
+ "zbus",
 ]
 
 [[package]]

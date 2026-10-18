@@ -196,8 +196,7 @@ pub(super) fn decrypt(
 }
 
 pub(super) fn run(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
-    let state: Value =
-        serde_json::from_slice(&fs::read(&opts.state).context("read saved session")?)?;
+    let state = crate::credentials::load(&opts.state)?;
     ensure!(
         state["wasm_sha256"] == HASH,
         "saved session WASM version mismatch"

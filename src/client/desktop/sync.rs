@@ -107,7 +107,7 @@ pub fn receive(
     mut deliver: impl FnMut(Event) -> bool,
 ) -> Result<()> {
     set_request_cancel(stop.clone());
-    let mut state: Value = serde_json::from_slice(&fs::read(state_path)?)?;
+    let mut state = crate::credentials::load(state_path)?;
     let mut api = Api::new(&fs::read(wasm_path)?)?;
     // A separate agent keeps the long-lived stream out of the RPC pool.
     let transport = http::Transport::new()?;

@@ -1,4 +1,5 @@
 pub mod client;
+pub mod credentials;
 pub mod locations;
 pub mod native_crypto;
 pub mod runtime;

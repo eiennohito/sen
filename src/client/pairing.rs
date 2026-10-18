@@ -77,6 +77,7 @@ pub fn sign_in(
     let probe = state.with_extension(format!("sign-in-{stamp}.check"));
     private_write(&probe, b"sign-in storage check")?;
     fs::remove_file(probe)?;
+    crate::credentials::check_writable()?;
     ui.check()?;
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
     let opts = Options {

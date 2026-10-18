@@ -2,25 +2,72 @@
 
 Updated 2026-10-18. Workspace: `/home/eien/work/misc/line-app`.
 
-## Ask the user first
+## Decisions taken 2026-10-18
 
-Open decisions left by the 2026-10-18 session. At the start of the next
-session, ask the user these before picking up the affected items, then
-remove this section once answered:
+1. **T11 is implemented with the desktop Secret Service** (see the T11 row in
+   [docs/ux-sessions.md](docs/ux-sessions.md) and `src/credentials.rs`). The
+   session file is sealed and its key is kept in the keyring.
+   `LINE_DESKTOP_CREDENTIALS=plaintext-file` is the development store for
+   agent/debug instances (one plaintext file per `--state` path, as
+   requested). The repo's `artifacts/auth/session.json` is still plaintext and
+   untouched; it migrates in place on the first authorised `Client::open` or
+   `line-auth status` with a reachable keyring.
+2. **T5, P1–P3, P5–P7 traces came from a live Chrome capture driven by the
+   user (done 2026-10-18).** Results: [docs/protocol-traces.md](docs/protocol-traces.md);
+   tool: `node tools/capture-line-protocol.mjs` (shapes only; control by
+   appending `mark`/`shot`/`stop` lines to `<run>/control`). Raw shape traces
+   and U0 reference screenshots are local in `artifacts/captures/`. Still
+   untraced: others' reactions (op 140), invite/remove/accept/reject, block.
 
-1. **T11, session credentials at rest.** The refresh token and wrapped
-   keys are plaintext JSON at mode 0600. Encrypt them with the same store
-   the drafts use, or move them to the desktop secret service? Either way
-   `artifacts/auth/session.json` and the encrypted state must be preserved
-   and migrated, not replaced.
-2. **T5, P1–P3, P5 mutations: where do protocol traces come from?**
-   Live reaction updates, official-account media routes, sticker sending,
-   attachment upload and group membership changes all need a trace that
-   the repository doesn't have. Fetch and read the extension package, or
-   do a live Chrome capture (the user would have to drive Chrome)?
+3. **Local data is a durable store, and at-rest encryption of local data is
+   not a goal** (only the session stays sealed). New groups recorded from the
+   user's report and a source audit, to be implemented together later:
+   D0 (the message model itself: seven unowned copies of each chat's
+   messages, updated by whole-list replacement — redesign around one store
+   before fixing individual symptoms), D1–D8 (durable history and account state, offline-first startup, sync
+   resume, removal of local encryption), M13 (sent message vanishes after a
+   chat switch) and M14 (new messages in preview and badge but not in the
+   chat), both fixed by D2 plus a merge and staleness refresh on open, C6/C7 (placeholder and "secondary" text drawn
+   at full text colour), U1–U6 (profile/members/group surfaces to redesign),
+   P6 (profile action traces, added to the capture list).
 
-Items ready without a decision are in [docs/ux-sessions.md](docs/ux-sessions.md)
-(e.g. P4, S23, S24).
+Order: D first. Items ready without a decision are in
+[docs/ux-sessions.md](docs/ux-sessions.md) (e.g. D, M13, C6, C7, U2–U6, P4, S23, S24).
+
+## Session workflow
+
+A Claude Code session is the coordinator. It hands implementation to Codex
+sessions and then has independent reviewers check the result.
+
+- **Worktrees.** Each implementation task gets its own worktree under
+  `/home/eien/work/misc/line-app-wt/<name>`. The coordinator creates and removes
+  them. The Claude project settings list that directory as an additional working
+  directory, so reviewers can read it without permission prompts.
+- **Git belongs to the coordinator.** Codex and reviewers do not run git commands
+  that change state. The coordinator commits in the worktree, merges into `main`,
+  and cleans up. To discard an attempt, use `git worktree remove --force` and
+  `git branch -D`, not `git reset --hard` or `git clean`, because those ask for
+  confirmation.
+- **Codex launch.** Codex permissions live in profile files, not on the command
+  line. The project profile is `~/.codex/line-app.config.toml`, which applies
+  `workspace-net` (workspace writes plus network). Launch Codex with only a
+  profile and a working directory:
+
+  ```sh
+  codex exec -p line-app -C /home/eien/work/misc/line-app-wt/<name> "<task>"
+  ```
+
+  Do not pass `-s`/`--sandbox`, `-c`, `--add-dir`, or approval flags. If a task
+  needs different access, write another `~/.codex/<name>.config.toml` and
+  select it with `-p`. Profiles are needed because worktrees lack the
+  git-ignored `.codex/config.toml`, and only the main checkout is trusted.
+- **No prompts mid-run.** Use absolute paths (`git -C <wt>`,
+  `cargo … --manifest-path <wt>/Cargo.toml`, `codex exec -C <wt>`) instead of
+  `cd <wt> && …` chains. The local settings allow `cargo build/test/clippy/fmt`;
+  `cargo run` and `target/release/*` are deliberately not pre-allowed. Their
+  live-account restrictions are described below.
+- **Review.** After Codex finishes, independent reviewer subagents check the
+  worktree diff before the coordinator commits and merges.
 
 ## Current state and authorization — read this first
 
@@ -190,7 +237,9 @@ unverified against the account.
 
 The explicitly selected repo session `artifacts/auth/session.json` contains
 **real access/refresh credentials and wrapped
-keys**. It is mode 0600, and its newly created parent directory is mode 0700.
+keys**, still in the legacy plaintext form (T11 migration has not run on it). It is mode 0600, and its newly created parent directory is mode 0700.
+Once sealed, it is only readable with its key in the desktop keyring: do not
+delete `line-desktop` keyring items.
 Preserve it. Do not dump it, put it into prompts/logs, commit it, or copy its
 contents into documentation. HAR files under `dumps/` are sensitive too.
 
@@ -280,6 +329,10 @@ Do not introduce a JS runtime into the app. Temporary Node diagnostics used duri
 development were only a comparison against original Chrome bindings.
 
 ## Sandbox configuration and verified profile (2026-10-15)
+
+Codex sessions launched in worktrees use the `~/.codex/line-app.config.toml`
+profile instead (see "Session workflow"). The project file below still applies
+to Codex sessions started in the main checkout.
 
 The project now uses permission profiles exclusively in `.codex/config.toml`:
 

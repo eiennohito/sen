@@ -157,8 +157,7 @@ pub struct Client {
 
 impl Client {
     pub fn open(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
-        let state: Value =
-            serde_json::from_slice(&fs::read(state_path).context("read saved session")?)?;
+        let state = crate::credentials::load_migrating(state_path)?;
         ensure!(
             state["wasm_sha256"] == HASH,
             "saved session WASM version mismatch"

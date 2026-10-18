@@ -1,0 +1,145 @@
+# Protocol traces (LINE Chrome 3.7.2, 2026-10-18)
+
+Captured live from the user-driven Chrome extension with
+`tools/capture-line-protocol.mjs` (two passes). Shapes only: `<str:N>` is a
+string of N characters, `<digits:N>` a numeric string, `<num>` a large number,
+`<mid>`/44-character strings are opaque encrypted MIDs as returned by the API.
+The raw shape traces and reference screenshots are local in
+`artifacts/captures/2026-10-18T07-*` (ignored by Git; screenshots contain
+account content). All RPCs are `POST https://line-chrome-gw.line-apps.com/api/talk/thrift/<Service>/<method>`
+with a JSON array body, unless a full URL is given; responses are
+`{"code":0,"message":"OK","data":…}`. Method names hidden by the first pass
+were recovered from the extension's own path table (`SD("…")` in `main.js`).
+
+Not captured (named in `main.js`, shapes unknown): `inviteIntoChat`,
+`deleteOtherFromChat`, `cancelChatInvitation`, `acceptChatInvitation`,
+`rejectChatInvitation`, `blockContact`, `unblockContact`, `findAndAddContactsByMid`.
+A reaction from another user (operation 140) was not observed: the stream that
+carried it predated the capture attachment.
+
+## Operation types seen on `/api/operation/receive`
+
+From the extension's `OpType` enum; ✓ = observed in this capture.
+
+| Type | Name | Payload |
+| --- | --- | --- |
+| 4 ✓ | ADD_CONTACT | `param1` contact MID, `param2` "0" |
+| 25 ✓ | SEND_MESSAGE | own message echo (`message`), also system message after `updateChat` (`contentType` 18, `LOC_KEY` "C_PN") |
+| 26 | RECEIVE_MESSAGE | |
+| 41 ✓ | SEND_CHAT_REMOVED | `param1` chat MID, `param2` time, `param3` "0" (after leaving) |
+| 43 ✓ | SEND_CONTENT | media/file message once its content is stored (same message, `reqSeq` 0) |
+| 49 ✓ | UPDATE_CONTACT | `param1` contact MID, `param2` "2" (setting flag: display-name override) |
+| 64 ✓ / 65 | DESTROY_MESSAGE / NOTIFIED_ | `param1` chat MID, `param2` message id, `param3` "0" (unsend) |
+| 121 ✓ / 122 | UPDATE_CHAT / NOTIFIED_ | `param1` chat MID, `param2` attribute flag ("1" observed for the notification setting) |
+| 123–126 | INVITE_INTO_CHAT, CANCEL_CHAT_INVITATION (+NOTIFIED_) | |
+| 127 ✓ / 128 | DELETE_SELF_FROM_CHAT / NOTIFIED_ | `param1` chat MID |
+| 129–133 | ACCEPT/REJECT_CHAT_INVITATION, DELETE_OTHER_FROM_CHAT (+NOTIFIED_) | |
+| 139 ✓ | SEND_REACTION | `param1` message id, `param2` JSON string `{"chatMid", "curr":{"predefinedReactionType":N}}` |
+| 140 | NOTIFIED_SEND_REACTION | expected same shape as 139 for others' reactions (inferred) |
+
+## Reactions (T5)
+
+`TalkService/react` `[{"reqSeq":<num>,"messageId":"<digits:18>","reactionType":{"predefinedReactionType":2}}]` → `{}`.
+Live: operation 139 (own, any device), 140 (others, inferred). Message pages
+carry `reactions: [{fromUserMid, atMillis, reactionType:{predefinedReactionType | paidReactionType:{productId, emojiId, resourceType, version}}}]`.
+
+## Official-account images (P1)
+
+OA image messages (`contentType` 1, `toType` 0, no `chunks`, no `SID`/`OID`)
+carry `contentMetadata` keys `PREVIEW_URL`, `DOWNLOAD_URL` (both on
+`manager.line-scdn.net`), `PUBLIC`, `BOT_CHECK`, `BOT_TRACK`,
+`NOTIFICATION_DISABLED`, `seq`. Chrome fetches `PREVIEW_URL`
+(`https://manager.line-scdn.net/<id>/clearpreview`) directly, without the obs
+route. The current client builds `obs.line-apps.com/r/talk/m/<id>/preview` for
+these and gets 404.
+
+## Stickers (P2)
+
+Send: `TalkService/sendMessage` `[<reqSeq>, {"from","to","toType":0,"id":"<str:15 local>","createdTime","sessionId":0,"contentType":7,"contentMetadata":{"STKPKGID":"617","STKID":"<digits>","STKTXT":"<str>","STKVER":"9"},"hasContent":true}]`
+(no E2EE chunks) → the stored message with server `id`. Echo: operation 25.
+
+Picker data: `ShopService/ShopService/getOwnedProductSummaries`
+(`POST …/api/shop/thrift/ShopService/ShopService/getOwnedProductSummaries`,
+`["<str:10|11 product type>", 0, <num>, [4 items]]`) → `productList[]` with
+`id`, `name`, `latestVersion`, `productTypeSummary.stickerSummary.stickerIdRanges[{start,size}]`
+(or `sticonSummary`). Package metadata:
+`https://stickershop.line-scdn.net/stickershop/v1/product/<pkg>/android/productInfo.meta`;
+images: `…/stickershop/v1/sticker/<id>/android/sticker.png`, emoji
+`…/sticonshop/v1/sticon/<product>/android/<nnn>.png` (`_animation.png` variant).
+
+## Image and file sending (P3)
+
+Image, E2EE (flow observed in order):
+1. `TalkService/acquireEncryptedAccessToken` `[2]` → string (1287 chars): token for obs.
+2. `TalkService/negotiateE2EEPublicKey` `["<mid>"]` → `{allowedTypes:[…], publicKey:{version,keyId,keyData,createdTime}, specVersion:2}`.
+3. `TalkService/determineMediaMessageFlow` `[{"chatMid"}]` → `{flowMap:{"1":2,"2":2,"3":2,"14":2}, cacheTtlMillis}` (content type → flow; 2 = E2EE upload).
+4. Two `POST https://obs.line-apps.com/r/talk/emi/<oid>` → 201, binary body (encrypted original, then preview),
+   `content-type: application/x-www-form-urlencoded`, header `x-obs-params`: base64 JSON `{"ver":"2.0","name":"<digits:13>|<str:23>","type":"<str:4>"}`, plus `x-line-access`.
+5. `TalkService/sendMessage` `[<reqSeq>, {…,"contentType":1,"contentMetadata":{"MEDIA_CONTENT_INFO":"{category,fileSize,extension,animated,width,height}","MEDIA_THUMB_INFO":"{width,height}","SID":"emi","OID":"<str:62>","FILE_SIZE":"<digits>","e2eeVersion":"2"},"hasContent":true,"chunks":[5 Letter Sealing chunks]}]`.
+   Echo: operation 25, then 43.
+
+File: `POST https://obs.line-apps.com/r/talk/emf/<oid>` (201), then `sendMessage`
+with `contentType` 14, `contentMetadata {"FILE_SIZE","SID":"emf","OID","e2eeVersion":"2"}`
+and chunks; the file name is not in plaintext metadata (inside the encrypted
+payload, inferred). Echo carries `FILE_EXPIRE_TIMESTAMP`. Files whose extension
+is not in the server configuration `function.file.extension.whitelist`
+(`getConfigurations`) are wrapped by Chrome in an uncompressed `<name>.zip` after
+a "Send compressed" dialog whose "always compress" checkbox defaults to on
+(`main.js`, `compressFile`).
+
+## Profiles and contacts (P6, U)
+
+- Cover: `GET …/api/timeline/getCover?targetMid=<mid>&myMid=<mid>&myRegion=JP`
+  → `{profileId, coverObsInfo:{obsNamespace:"c", serviceName, objectId}, isDefaultCover}`;
+  image `GET https://obs.line-apps.com/r/myhome/c/<objectId>`.
+- `GET …/api/timeline/homeId?eMid=<mid>` → string.
+- `RelationService/getTargetProfileNotice` `[{"targetUserMid"}]` → `{notice:{noticeAntiFraudGeneral:{}}}` (non-friend fraud warning; also `noticeAntiFraudDifferentRegion`).
+- `ChannelService/issueChannelToken` (profile open) → `{token, obsToken, expiration, refreshToken, channelAccessToken}`.
+- `BuddyService/getBuddyDetail` `["<mid>"]`: official accounts → `{memberCount, addable, acceptableContentTypes, iconType, botType, …}`; users → 400 with `code 9` (Chrome calls it for every profile and ignores the error).
+- Add friend: `RelationService/addFriendByMid` `[{"reqSeq","userMid","tracking":{"reference":"","trackingMetaV2":{"chat":{"chatMid"}}}}]` → `{}`; operation 4.
+- Rename (override display name): `TalkService/updateContactSetting` `[<reqSeq>, "<mid>", 2, "<new name>"]` → contact gains `displayNameOverridden`, `settings:"2"`; operation 49.
+- Contacts: `getContactsV2` `[{"targetUserMids":[…]}, 2|3]`; contact fields `type`, `status`, `relation` (0 friend, 2 non-friend observed), `displayName`, `displayNameOverridden`, `statusMessage`, `picturePath`, `pictureStatus`, `favoriteTime`, `profileId`, `settings`.
+- Blocked lists: `getBlockedContactIds [2]`, `getBlockedRecommendationIds [2]`.
+
+Non-friends cannot be messaged from a profile in Chrome: the card offers
+Report, Block and Add friend only, with the fraud notice.
+
+## Groups (P5)
+
+- Mute (notification toggle) and other chat attributes: `TalkService/updateChat`
+  `[{"reqSeq","chat":{full chat object incl. notificationDisabled, chatName, picturePath, extra.groupExtra}, …}]` → `{}`;
+  operation 121 plus a system message (operation 25, `contentType` 18).
+- Leave: `TalkService/deleteSelfFromChat` `[{"reqSeq","chatMid"}]` → `{}`; operations 127, 41.
+- `getChats` `[{"chatMids":[…],"withMembers":true,"withInvitees":true},1]` → `extra.groupExtra {creator, memberMids:{mid:joinTime}, inviteeMids, preventedJoinByTicket, invitationTicket, addFriendDisabled, ticketDisabled, autoName}`.
+
+## Unsend
+
+`TalkService/unsendMessage` `[<reqSeq>, "<server message id>"]` → `{}` (observed
+for two own file messages). Live: operation 64 DESTROY_MESSAGE (`param1` chat,
+`param2` message id) on the sender's devices; other members receive 65
+NOTIFIED_DESTROY_MESSAGE (inferred from the enum). Chrome replaces the message
+with a centred system pill "Message unsent." rather than a bubble.
+
+## Startup sequence (reference for D4/D5)
+
+`getProfile`, `getEncryptedIdentityV3 []` (→ `wrappedNonce`, KDF parameters for
+local storage), `getServerTime`, `getLastOpRevision`, `getConfigurations`,
+`getSettings [2]`, `getE2EEPublicKeysEx [false,1]`, shop summaries, then
+`GET /api/operation/receive?localRev=…&version=3.7.2&lastPartialFullSyncs=<json>&language=…`
+in parallel with `getAllContactIds`, `getAllChatMids`, `getMessageBoxes`,
+`getContactsV2` batches of 100, `getLastE2EEPublicKeys ["<mid>"]`,
+`getE2EEGroupSharedKey [1,"<chat>",<keyId>]`, `getMessageBoxesByIds`,
+`getChats`. Opening a chat: `getRecentMessagesV2 ["<chat>",50]`,
+`getMessageReadRange`; link previews via
+`GET https://legy-jp.line-apps.com/sc/api/v2/pageinfo/get?url=…&caller=LINE_CHROME`.
+
+## Reference screenshots (U0)
+
+Local only. Friend profile (cover band, 96 px-class circular avatar overlapping
+it, name with rename pencil, status line, favourite star, bottom bar with a
+single chat action), non-friend profile (Report button, fraud notice, bottom bar
+Block and Add friend, no chat), group info popup (photo with camera badge, name
+with pencil, member search, Invite friends, collapsible "Members N" with remove
+×, "Members join automatically" setting), invite picker (Recent chats and
+Friends N with checkboxes, selection pane, Invite). Profiles open in LINE's
+separate popup window; the main window keeps the chat.

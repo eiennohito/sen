@@ -17,7 +17,7 @@ pub struct LocalStateStore {
 }
 impl LocalStateStore {
     pub fn open(root: &Path, session: &Path) -> Result<Self> {
-        let state: Value = serde_json::from_slice(&fs::read(session)?)?;
+        let state = crate::credentials::load(session)?;
         let secret = decode(required(&state, "login_key")?)?;
         let directory = root
             .join("local-state")

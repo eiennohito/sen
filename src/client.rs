@@ -87,7 +87,7 @@ impl Options {
         })
     }
 }
-fn private_write(path: &Path, data: &[u8]) -> Result<()> {
+pub(crate) fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
@@ -356,7 +356,7 @@ fn show_qr(text: &str, display: &str) -> Result<()> {
     Ok(())
 }
 fn save_state(path: &Path, state: &Value) -> Result<()> {
-    private_write(path, &serde_json::to_vec_pretty(state)?)
+    crate::credentials::save(path, state)
 }
 fn login_key(rt: &mut Runtime, state: &Value) -> Result<u32> {
     let h = rt.bytes(&decode(required(state, "login_key")?)?);
@@ -440,8 +440,7 @@ fn validate_keys(rt: &mut Runtime, state: &Value) -> Result<usize> {
     Ok(keys.len())
 }
 fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
-    let mut state: Value =
-        serde_json::from_slice(&fs::read(&opts.state).context("read saved session")?)?;
+    let mut state = crate::credentials::load_migrating(&opts.state)?;
     ensure!(
         state["wasm_sha256"] == HASH,
         "saved session WASM version mismatch"
@@ -652,7 +651,7 @@ fn run() -> Result<()> {
     let opts = Options::parse()?;
     if ["help", "--help", "-h"].contains(&opts.command.as_str()) {
         println!(
-            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\nSaved desktop path choices are reused unless --state or --wasm is supplied.\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are stored in a mode-0600 debug file.\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
+            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\nSaved desktop path choices are reused unless --state or --wasm is supplied.\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are sealed in a mode-0600 file whose key is kept in the desktop keyring (Secret Service); status seals a legacy plaintext file.\nLINE_DESKTOP_CREDENTIALS=plaintext-file keeps an unsealed file instead (debug and agent instances without a keyring).\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
         );
         return Ok(());
     }

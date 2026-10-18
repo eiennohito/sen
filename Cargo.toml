@@ -28,6 +28,7 @@ image = { version = "0.25", default-features = false, features = ["png", "jpeg",
 socket2 = "0.6"
 libc = "0.2"
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "rustls-webpki-roots"] }
+zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
 [dev-dependencies]
 curve25519-dalek = "=4.1.3"

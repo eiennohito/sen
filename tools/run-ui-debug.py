@@ -62,6 +62,9 @@ for key in ('WAYLAND_DISPLAY', 'DISPLAY', 'XDG_ACTIVATION_TOKEN', 'DESKTOP_START
 # KDE_DEBUG disables KCrash: a crashing private KWin must not restart itself
 # or open DrKonqi on the host desktop.
 environment.update(QT_QPA_PLATFORM='offscreen', QT_QUICK_BACKEND='software', KWIN_COMPOSE='Q', KDE_DEBUG='1')
+# The private bus has no keyring: credentials, if any, use the development
+# plaintext store and can never prompt on, or write to, the host keyring.
+environment['LINE_DESKTOP_CREDENTIALS'] = 'plaintext-file'
 def owns_port(pid, port):
     try:
         inodes = {os.readlink(fd)[8:-1] for fd in Path(f'/proc/{pid}/fd').iterdir() if os.readlink(fd).startswith('socket:[')}
