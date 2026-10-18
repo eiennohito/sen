@@ -2650,15 +2650,23 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "image",
+ "line-desktop-ui",
  "line-wasm-poc",
  "serde",
  "serde_json",
  "slint",
- "slint-build",
  "unicode-linebreak",
  "unicode-segmentation",
  "url",
  "zbus",
+]
+
+[[package]]
+name = "line-desktop-ui"
+version = "0.1.0"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

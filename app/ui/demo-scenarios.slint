@@ -2,19 +2,47 @@ import { Button, ScrollView } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
+struct Scenario { text: string, label: string, kind: int }
+
 export component DemoScenarios inherits Rectangle {
     // PopupWindow preserves the exact focused item, including selections in the shell.
     callback scenario-selected();
     property <bool> media-menu;
     property <int> media-focus-last;
     property <bool> media-last-focused;
+    function reset-focus() { root.last-focus-request = 0; root.last-scenario-focused = false; root.last-notification-focused = false; root.media-focus-last = 0; root.media-last-focused = false; }
     public function open() {
-        if State.demo && !State.modal-open { root.media-menu = false; dialog.show(); State.demo-scenarios-open = true; }
+        if State.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; dialog.show(); State.demo-scenarios-open = true; }
     }
-    public function dismiss() { dialog.close(); State.demo-scenarios-open = false; root.media-menu = false; }
+    public function dismiss() { root.reset-focus(); dialog.close(); State.demo-scenarios-open = false; root.media-menu = false; }
     // A fixture may replace the previously focused message or button.
-    public function run(kind: int) { root.dismiss(); root.scenario-selected(); State.demo-event(kind); }
+    callback run(int);
+    run(kind) => { root.dismiss(); root.scenario-selected(); State.demo-event(kind); }
     public function notify(kind: int) { root.dismiss(); State.demo-notification(kind); }
+    property <[[Scenario]]> scenarios: [
+        [{ text: "History", label: "Long history", kind: 0 }, { text: "Arrivals", label: "Receive 3", kind: 1 }],
+        [{ text: "Media", label: "Media failures", kind: -1 }, { text: "Rejected", label: "Rejected send", kind: 10 }],
+        [{ text: "Fail next send", label: "Fail next send", kind: 30 }],
+        [{ text: "Reject next send", label: "Reject next send", kind: 31 }],
+        [{ text: "Send state", label: "Uncertain send", kind: 3 }],
+        [{ text: "Paged history", label: "Paged history", kind: 11 }],
+        [{ text: "Photo preview", label: "Photo preview", kind: 5 }],
+        [{ text: "Sticker preview", label: "Sticker preview", kind: 6 }],
+        [{ text: "Group preview", label: "Group preview", kind: 7 }],
+        [{ text: "Reading fixtures", label: "Reading fixtures", kind: 8 }, { text: "History load", label: "History load", kind: 9 }],
+        [{ text: "Unread scenario", label: "Unread scenario", kind: 14 }],
+        [{ text: "Rich content", label: "Rich content", kind: 12 }],
+        [{ text: "Long chat list", label: "Long chat list", kind: 15 }],
+        [{ text: "Login recovery", label: "Login recovery", kind: 4 }],
+        [{ text: "Reconnect blip", label: "Reconnect blip", kind: 16 }],
+        [{ text: "Offline", label: "Offline", kind: 17 }],
+        [{ text: "Expired sign-in", label: "Expired sign-in", kind: 19 }],
+        [{ text: "List load failure", label: "List load failure", kind: 18 }],
+    ];
+    property <[string]> notifications: ["Demo inactive", "Demo muted", "Demo replay", "Demo mention", "Demo exposed"];
+    property <int> last-focus-request;
+    property <bool> last-scenario-focused;
+    property <bool> last-notification-focused;
     dialog := PopupWindow {
         width: root.width; height: root.height;
         close-policy: no-auto-close;
@@ -34,8 +62,8 @@ export component DemoScenarios inherits Rectangle {
                 key-pressed(event) => {
                     if event.text == Key.Escape { root.dismiss(); return accept; }
                     if event.text == Key.Tab {
-                        if event.modifiers.shift && close.has-focus { if root.media-menu { root.media-focus-last += 1; } else if State.demo-notifications { exposed.focus(); } else { list-failure.focus(); } return accept; }
-                        if !event.modifiers.shift && ((root.media-menu && root.media-last-focused) || (!root.media-menu && ((!State.demo-notifications && list-failure.has-focus) || exposed.has-focus))) { close.focus(); return accept; }
+                        if event.modifiers.shift && close.has-focus { if root.media-menu { root.media-focus-last += 1; } else { root.last-focus-request += 1; } return accept; }
+                        if !event.modifiers.shift && ((root.media-menu && root.media-last-focused) || (!root.media-menu && ((!State.demo-notifications && root.last-scenario-focused) || root.last-notification-focused))) { close.focus(); return accept; }
                     }
                     reject
                 }
@@ -51,56 +79,45 @@ export component DemoScenarios inherits Rectangle {
                             VerticalLayout {
                                 visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
                                 spacing: 8px; alignment: start;
-                                HorizontalLayout {
-                                    Button { text: "History"; accessible-label: "Long history"; clicked => { root.run(0); } }
-                                    Button { text: "Arrivals"; accessible-label: "Receive 3"; clicked => { root.run(1); } }
+                                for row in root.scenarios: VerticalLayout {
+                                    spacing: 8px;
+                                    HorizontalLayout {
+                                        for scenario in row: Button {
+                                            text: scenario.text; accessible-label: scenario.label;
+                                            accessible-description: self.has-focus ? "Focused" : "";
+                                            horizontal-stretch: row.length == 1 ? 1 : 0;
+                                            property <int> focus-request: root.last-focus-request;
+                                            changed focus-request => { if self.focus-request > 0 && State.demo-scenarios-open && scenario.kind == 18 && !State.demo-notifications { self.focus(); } }
+                                            changed has-focus => { if scenario.kind == 18 { root.last-scenario-focused = self.has-focus; } }
+                                            clicked => { if scenario.kind == -1 { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } else { root.run(scenario.kind); } }
+                                        }
+                                    }
+                                    if row[0].kind == 11 && State.paging-demo: Text { text: "History window " + State.messages.length + " · retained " + State.history-retained + " · pages " + State.history-pages; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
                                 }
-                                HorizontalLayout {
-                                    Button { text: "Media"; accessible-label: "Media failures"; clicked => { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } }
-                                    Button { text: "Rejected"; accessible-label: "Rejected send"; clicked => { root.run(10); } }
-                                }
-                                Button { text: "Fail next send"; accessible-label: "Fail next send"; clicked => { root.run(30); } }
-                                Button { text: "Reject next send"; accessible-label: "Reject next send"; clicked => { root.run(31); } }
-                                Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { root.run(3); } }
-                                Button { text: "Paged history"; clicked => { root.run(11); } }
-                                if State.paging-demo: Text { text: "History window " + State.messages.length + " · retained " + State.history-retained + " · pages " + State.history-pages; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
-                                Button { text: "Photo preview"; clicked => { root.run(5); } }
-                                Button { text: "Sticker preview"; clicked => { root.run(6); } }
-                                Button { text: "Group preview"; clicked => { root.run(7); } }
-                                HorizontalLayout {
-                                    Button { text: "Reading fixtures"; clicked => { root.run(8); } }
-                                    Button { text: "History load"; clicked => { root.run(9); } }
-                                }
-                                Button { text: "Unread scenario"; clicked => { root.run(14); } }
-                                Button { text: "Rich content"; clicked => { root.run(12); } }
-                                Button { text: "Long chat list"; clicked => { root.run(15); } }
-                                Button { text: "Login recovery"; clicked => { root.run(4); } }
-                                Button { text: "Reconnect blip"; clicked => { root.run(16); } }
-                                Button { text: "Offline"; clicked => { root.run(17); } }
-                                Button { text: "Expired sign-in"; clicked => { root.run(19); } }
-                                list-failure := Button { text: "List load failure"; clicked => { root.run(18); } }
                                 VerticalLayout {
                                     visible: State.demo-notifications; height: self.visible ? self.preferred-height : 0px;
                                     spacing: 8px;
                                     Text { text: "Notification preview scenarios"; color: Tokens.secondary; wrap: word-wrap; }
-                                    Button { text: "Demo inactive"; clicked => { root.notify(0); } }
-                                    Button { text: "Demo muted"; clicked => { root.notify(1); } }
-                                    Button { text: "Demo replay"; clicked => { root.notify(2); } }
-                                    Button { text: "Demo mention"; clicked => { root.notify(3); } }
-                                    exposed := Button { text: "Demo exposed"; clicked => { root.notify(4); } }
+                                    for label[i] in root.notifications: Button {
+                                        text: label; accessible-description: self.has-focus ? "Focused" : "";
+                                        property <int> focus-request: root.last-focus-request;
+                                        changed focus-request => { if self.focus-request > 0 && State.demo-scenarios-open && i == 4 && State.demo-notifications { self.focus(); } }
+                                        changed has-focus => { if i == 4 { root.last-notification-focused = self.has-focus; } }
+                                        clicked => { root.notify(i); }
+                                    }
                                 }
                             }
                             if root.media-menu: Rectangle {
                                 height: media-options.preferred-height;
                                 property <int> focus-last: root.media-focus-last;
-                                changed focus-last => { if self.focus-last > 0 { media-last.focus(); } }
+                                changed focus-last => { if self.focus-last > 0 && State.demo-scenarios-open && root.media-menu { media-last.focus(); } }
                                 media-options := VerticalLayout {
                                     spacing: 8px; alignment: start;
                                     Button { text: "Back to scenarios"; clicked => { root.media-menu = false; close.focus(); } }
                                     Button { text: "Load media"; clicked => { root.run(2); } }
                                     for label[index] in ["Media timeout", "Media network", "Media 404", "Media 403", "Media 500", "Media unsupported sender", "Media rejected path", "Media too large", "Media decode failure"]: Button { text: label; clicked => { root.run(20 + index); } }
                                     media-last := Button {
-                                        text: "Media cancelled";
+                                        text: "Media cancelled"; accessible-description: self.has-focus ? "Focused" : "";
                                         changed has-focus => { root.media-last-focused = self.has-focus; }
                                         clicked => { root.run(29); }
                                     }

@@ -19,13 +19,14 @@ import time
 
 ROOT = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
-parser.add_argument('--binary', type=Path, default=ROOT / 'target/release/line-desktop')
+parser.add_argument('--profile', default='release', help='Cargo profile containing the ui-debug binary')
+parser.add_argument('--binary', type=Path)
 parser.add_argument('--port', type=int, required=True)
 parser.add_argument('--pid-file', type=Path)
 parser.add_argument('--log', type=Path)
 parser.add_argument('arguments', nargs=argparse.REMAINDER)
 args = parser.parse_args()
-binary = args.binary.resolve()
+binary = (args.binary or ROOT / 'target' / ('debug' if args.profile == 'dev' else args.profile) / 'line-desktop').resolve()
 if not 1024 <= args.port <= 65535:
     parser.error('use an unprivileged unique MCP port')
 try:
@@ -41,7 +42,7 @@ try:
 except (OSError, subprocess.SubprocessError, ValueError):
     parser.error('build the ui-debug binary first')
 if not info.get('mcp_debug'):
-    parser.error('requires cargo build --release --offline -p line-desktop --features ui-debug')
+    parser.error(f'requires cargo build --profile {args.profile} --offline -p line-desktop --features ui-debug')
 for tool in ('dbus-run-session', 'kwin_wayland'):
     if not shutil.which(tool):
         parser.error(f'{tool} is required; refusing to fall back to a host window')
@@ -115,6 +116,8 @@ with tempfile.TemporaryDirectory(prefix='line-ui-automation-') as directory:
         else:
             raise SystemExit('virtual compositor did not start the demo')
         raise SystemExit(process.wait())
+    except KeyboardInterrupt:
+        pass
     finally:
         try:
             os.killpg(process.pid, signal.SIGTERM)

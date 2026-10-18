@@ -5,7 +5,7 @@ edition = "2024"
 description = "Rust host and client adapter for the unmodified LINE Chrome crypto WASM"
 
 [workspace]
-members = ["app"]
+members = ["app", "ui"]
 default-members = ["."]
 resolver = "3"
 
@@ -33,3 +33,13 @@ ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "ru
 curve25519-dalek = "=4.1.3"
 rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
+
+[profile.fast]
+inherits = "release"
+incremental = true
+
+[profile.fast.package.line-desktop]
+opt-level = 0
+
+[profile.fast.package.line-desktop-ui]
+opt-level = 0

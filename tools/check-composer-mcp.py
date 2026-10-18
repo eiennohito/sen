@@ -9,9 +9,13 @@ import json
 import time
 import urllib.request
 
+from mcp_preview import add_preview_arguments, launch_preview
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--port', type=int, default=9457)
+add_preview_arguments(parser)
 args = parser.parse_args()
+launch_preview(args)
 serial = 0
 
 

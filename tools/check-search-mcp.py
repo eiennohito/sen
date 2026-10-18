@@ -14,12 +14,16 @@ import urllib.request
 
 from PIL import Image, ImageChops
 
+from mcp_preview import add_preview_arguments, launch_preview
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--port", type=int, required=True)
 parser.add_argument("--artifacts", type=Path, required=True)
 parser.add_argument("--text-size", type=int, choices=[15, 24], default=15)
 parser.add_argument("--color-scheme", choices=["light", "dark"], default="light")
+add_preview_arguments(parser)
 args = parser.parse_args()
+launch_preview(args)
 args.artifacts.mkdir(parents=True, exist_ok=True)
 sequence = 0
 

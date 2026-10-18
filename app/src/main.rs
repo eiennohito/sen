@@ -16,7 +16,7 @@ mod storage;
 mod tray;
 mod unread;
 mod viewer;
-slint::include_modules!();
+pub use line_desktop_ui::*;
 fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
     paging::install(&ui);

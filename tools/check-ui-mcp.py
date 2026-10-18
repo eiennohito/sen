@@ -13,6 +13,8 @@ import datetime
 from pathlib import Path
 import urllib.request
 
+from mcp_preview import add_preview_arguments, launch_preview
+
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--port", type=int, default=9447)
 parser.add_argument("--screenshot", type=Path)
@@ -27,7 +29,9 @@ parser.add_argument("--reading", action="store_true", help="Check reading focus,
 parser.add_argument("--rich", action="store_true", help="Check rich emoji fallback copy, reply jump/return, durations and file Save")
 parser.add_argument("--media", action="store_true", help="Check each media failure reason and its item Retry")
 parser.add_argument("--layers", action="store_true", help="Check dialogs, profile panels, viewer input, export, and opener focus")
+add_preview_arguments(parser)
 args = parser.parse_args()
+launch_preview(args)
 counter = 0
 
 def rpc(method, params):
@@ -114,6 +118,17 @@ def fixture_times(clock):
 call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
 demo_marker = element("Synthetic interaction scenarios", "Text")
 assert any(part.get("id", "").endswith("::demo-marker") for part in demo_marker.get("typeNamesAndIds", [])), "refusing a window without the compiled demo-only marker"
+call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
+call("dispatch_key_event", windowHandle=window, text="\t", eventType="PressAndRelease")
+call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
+try:
+    last_scenario = scenario_element("Demo exposed")
+except StopIteration:
+    last_scenario = scenario_element("List load failure")
+last_scenario_label = last_scenario["accessibleLabel"]
+assert last_scenario.get("accessibleDescription") == "Focused", "reverse Tab did not focus the final scenario"
+call("dispatch_key_event", windowHandle=window, text="\t", eventType="PressAndRelease")
+assert element("Close demo scenarios", "Button").get("accessibleDescription") == "Focused", "Tab did not wrap from the last scenario to Close"
 call("click_element", elementHandle=element("Close demo scenarios", "Button")["handle"])
 deadline = time.monotonic() + 5
 while True:
@@ -496,7 +511,7 @@ if args.layers:
         time.sleep(.02)
     assert saved, "Save did not report a completed export"
     exported = Path(saved[0].removeprefix("Saved to "))
-    assert exported.is_relative_to((Path(tempfile.gettempdir()) / "line-desktop-demo-exports")), "preview export escaped its isolated folder"
+    assert exported.is_relative_to(Path(tempfile.gettempdir()) / "line-desktop-demo-exports"), "preview export escaped its isolated folder"
     assert exported.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     exported.unlink()
     call("dispatch_key_event", windowHandle=window, text="\x1b")
@@ -510,6 +525,7 @@ if args.layers:
     assert not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()), "sheet did not cover the conversation feedback"
     browser_search = element("Search friends and groups", "TextInput")
     assert browser_search["absolutePosition"]["x"] + browser_search["size"]["width"] <= close["absolutePosition"]["x"], "profile hid the browser"
+    call("dispatch_key_event", windowHandle=window, text="\x1b")
     print("PASS: Settings modal focus, profile reading/focus/browser/connection-strip placement, viewer keys/wheel/pan/loaded-photo navigation, isolated PNG export, opener restoration, draft retention")
 
 if args.reading:
@@ -851,3 +867,41 @@ if args.unread:
     element("Unread messages","Text")
     assert ", 2 unread" in element("Weekend plans","Button")["accessibleLabel"],"reading one chat cleared another chat"
     print("PASS: unread row badges, separate-chat counts, persistent divider and stable scrolled arrival anchor; no native focus request")
+
+
+def scenario_key(text, **arguments):
+    call("dispatch_key_event", windowHandle=window, text=text, **arguments)
+
+
+def scenario_reverse_tab():
+    scenario_key("\x10", eventType="Press")
+    scenario_key("\t", eventType="PressAndRelease")
+    scenario_key("\x10", eventType="Release")
+
+
+for closing_key in ("\x1b", " "):
+    scenario_key("\uf70f")
+    scenario_key("\t", eventType="PressAndRelease")
+    assert scenario_element("Long history").get("accessibleDescription") == "Focused", "Tab from Close did not focus History"
+    scenario_reverse_tab()
+    assert scenario_element("Close demo scenarios").get("accessibleDescription") == "Focused"
+    scenario_reverse_tab()
+    assert scenario_element(last_scenario_label).get("accessibleDescription") == "Focused", "reverse Tab focused the wrong scenario"
+    scenario_key(closing_key, eventType="PressAndRelease")
+    assert not call("find_elements_by_id", windowHandle=window, elementsId="DemoScenarios::scenario-panel").get("elementHandles", []), "keyboard activation did not dismiss scenarios"
+    scenario_key("\uf70f")
+    assert scenario_element("Close demo scenarios").get("accessibleDescription") == "Focused"
+    scenario_key("\t", eventType="PressAndRelease")
+    assert scenario_element("Long history").get("accessibleDescription") == "Focused", "stale last-scenario focus trapped Tab after reopening"
+    scenario_key("\x1b")
+
+scenario_key("\uf70f")
+call("click_element", elementHandle=scenario_action("Media failures")["handle"])
+scenario_reverse_tab()
+assert scenario_element("Media cancelled").get("accessibleDescription") == "Focused", "reverse Tab did not focus the final media scenario"
+scenario_key(" ", eventType="PressAndRelease")
+scenario_key("\uf70f")
+scenario_key("\t", eventType="PressAndRelease")
+assert scenario_element("Long history").get("accessibleDescription") == "Focused", "stale media focus trapped Tab after reopening"
+scenario_key("\x1b")
+print("PASS: exact F12 reverse-Tab target and Escape/Space activation → reopen → Tab focus, including media")

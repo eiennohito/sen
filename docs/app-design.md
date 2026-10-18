@@ -341,6 +341,15 @@ unless an explicit background-mode preference is enabled; S12 owns that opt-in.
 
 ## Developer UI checks
 
+Use `cargo build --profile fast --offline -p line-desktop` for local iteration.
+The app and generated UI crate use opt-level 0 with incremental compilation;
+renderer, protocol and crypto dependencies stay optimised. Use `release` for
+release gates and performance measurements, including the ignored `message_perf`
+probes and crypto benchmarks. Keep generated Slint modules in `line-desktop-ui`
+so app Rust edits reuse the compiled UI; retain Slint sources under `app/ui/`
+to preserve resource paths. See [build iteration](build-iteration.md) for profile
+commands, generated-code costs and guidance for evaluating further reductions.
+
 `--features ui-debug` enables Slint's MCP server and element debug info.
 Agent-started previews use `tools/run-ui-debug.py`, which
 sets the loopback MCP port inside an owned private D-Bus/virtual KWin scope.
@@ -370,6 +379,13 @@ from now. Past-day fixtures otherwise keep their calendar dates and clock times.
 Sends use the same clock as fixtures. The injectable clock is test-only; there
 is no demo clock CLI option. Headless snapshots fix now to 2026-10-18 14:00 local
 time, including list times and date dividers.
+For iteration, build with `cargo build --profile fast --offline -p line-desktop
+--features ui-debug`, then launch with `tools/run-ui-debug.py --profile fast
+--port PORT -- --demo`. Each `check-*-mcp.py` also accepts `--launch --profile
+fast --port PORT` to start and stop its own wrapper, with optional `--demo-size
+1400x900`. Search checks pass their text size and colour scheme to that wrapper.
+Without `--launch`, checks still connect to the supplied port. The launcher and
+checks default to `release`; use that profile for final MCP validation.
 `tools/check-search-mcp.py --port PORT --artifacts DIR --text-size 15
 --color-scheme light` counts clear graphics, checks clipping and continuous
 fill/strokes, and exercises hover, clear, focus and long-query caret behavior
