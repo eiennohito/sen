@@ -26,6 +26,8 @@ def launch_preview(args):
         '--profile', args.profile, '--port', str(args.port),
         '--pid-file', str(Path(directory.name) / 'scope.json'), '--log', log.name,
         '--', '--demo', '--demo-size', args.demo_size]
+    if getattr(args, 'signed_out', False):
+        command += ['--demo-signed-out']
     if hasattr(args, 'text_size'):
         command += ['--demo-text-size', str(args.text_size), '--demo-color-scheme', args.color_scheme]
     if hasattr(args, 'color_scheme'):

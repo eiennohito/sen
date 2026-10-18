@@ -228,8 +228,8 @@ export global State {
     out property <bool> connection-failed: self.connection == ConnectionState.offline || self.auth-expired || self.session-unavailable;
     out property <bool> auth-expired: self.connection == ConnectionState.auth-expired;
     out property <bool> session-unavailable: self.connection == ConnectionState.session-invalid;
-    out property <bool> sign-in-available: self.auth-expired || self.session-unavailable;
-    out property <bool> connection-feedback-visible: self.connection-failed && !self.window-modal-open && !(self.detail-open && self.profile-sheet );
+    out property <bool> sign-in-available: !self.has-account || self.auth-expired || self.session-unavailable;
+    out property <bool> connection-feedback-visible: self.has-account && self.connection-failed && !self.window-modal-open && !(self.detail-open && self.profile-sheet );
     out property <bool> connection-actions-enabled: self.sign-in-available && self.connection-feedback-visible && !self.retrying-connection && !self.auth-busy;
     out property <length> connection-notice-height: 36px;
     in-out property <length> connection-area-x;
@@ -257,6 +257,7 @@ export global State {
     in-out property <string> storage-error;
     in-out property <string> desktop-warning;
     in-out property <string> connection-status;
+    in-out property <bool> has-account;
     in-out property <string> account-name;
     in-out property <bool> show-conversation: false;
     in-out property <bool> following: true;

@@ -7,15 +7,15 @@ export component CheckBox inherits Rectangle {
     out property <bool> has-focus: focus.has-focus;
     callback toggled();
     forward-focus: focus;
-    height: max(32px, label.preferred-height);
+    min-height: max(32px, label.preferred-height);
+    preferred-height: self.min-height;
+    vertical-stretch: 0;
     accessible-role: checkbox; accessible-label: root.text; accessible-checked: root.checked;
     accessible-action-default => { root.checked = !root.checked; root.toggled(); }
-    HorizontalLayout { spacing: root.indicator-only ? 0px : 12px;
-        Rectangle { width: 20px; height: 20px; border-radius: 4px; background: root.checked ? Tokens.accent : Tokens.surface-2;
-            Image { x: 2px; y: 2px; width: 16px; height: 16px; source: @image-url("../assets/icons/check.svg"); colorize: Tokens.on-accent; visible: root.checked; }
-        }
-        label := Text { visible: !root.indicator-only; text: root.indicator-only ? "" : root.text; font-size: Tokens.base; color: Tokens.text; vertical-alignment: center; }
+    Rectangle { x: 0px; y: (root.height - self.height) / 2; width: 20px; height: 20px; border-radius: 4px; background: root.checked ? Tokens.accent : Tokens.surface-2;
+        Image { x: 2px; y: 2px; width: 16px; height: 16px; source: @image-url("../assets/icons/check.svg"); colorize: Tokens.on-accent; visible: root.checked; }
     }
+    label := Text { x: 28px; width: max(0px, root.width - 28px); height: root.height; visible: !root.indicator-only; text: root.indicator-only ? "" : root.text; font-size: Tokens.base; color: Tokens.text; vertical-alignment: center; }
     focus := FocusScope { enabled: root.enabled; key-pressed(event) => { if event.text == " " { root.checked = !root.checked; root.toggled(); return accept; } reject } }
     Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; background: transparent; border-radius: 8px; border-color: Tokens.accent-strong; border-width: root.has-focus ? 2px : 0px; }
     TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.checked = !root.checked; root.toggled(); } }

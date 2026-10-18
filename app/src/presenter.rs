@@ -704,6 +704,8 @@ impl Presenter {
         );
         ui.global::<State>()
             .set_account_initial(name_initial(state.profile.display_name.as_str()));
+        ui.global::<State>()
+            .set_has_account(!state.profile.mid.is_empty());
         ui.set_account_name(state.profile.display_name.as_str().into());
         ui.global::<State>().set_connection(match state.connection {
             Connection::Local => ConnectionState::Local,

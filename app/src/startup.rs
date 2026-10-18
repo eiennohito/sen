@@ -69,7 +69,13 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         None
     };
     let activations = instance.as_ref().map(|i| i.take_events());
-    let fake = demo.then(FakeBackend::canned);
+    let fake = demo.then(|| {
+        if scene == "signed-out" {
+            FakeBackend::signed_out()
+        } else {
+            FakeBackend::canned()
+        }
+    });
     if let Some(fake) = &fake {
         demo::configure(fake, &scene, case.as_deref());
     }
@@ -164,7 +170,13 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     // Initial synthetic rendering uses the same FIFO as interactive rendering.
     if snapshot.is_some() {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while desktop.update(|d| d.state.messages.is_empty()) {
+        while desktop.update(|d| {
+            if scene == "signed-out" {
+                d.state.connection != Connection::AuthExpired
+            } else {
+                d.state.messages.is_empty()
+            }
+        }) {
             let delta = worker
                 .deltas
                 .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))?;

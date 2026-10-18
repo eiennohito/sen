@@ -185,6 +185,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
 }
 
 pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
+    if scene == "signed-out" {
+        return;
+    }
     demo_data::seed(fake);
     if scene == "previews" {
         demo_data::previews(fake);
@@ -369,7 +372,9 @@ pub(crate) fn stage(
     scene: &str,
     snapshot_profile: bool,
 ) {
-    ui.set_show_conversation(scene != "chats" && !scene.starts_with("friends"));
+    ui.set_show_conversation(
+        scene != "chats" && scene != "signed-out" && !scene.starts_with("friends"),
+    );
     if scene == "settings" {
         desktop.update(|d| {
             d.state.panel = Panel::Settings;

@@ -96,7 +96,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--state" => locations.session = args.next().ok_or("missing state")?.into(),
             "--wasm" => locations.wasm = args.next().ok_or("missing wasm")?.into(),
             "--cache-dir" => locations.cache = args.next().ok_or("missing cache directory")?.into(),
-            "--demo-rich" | "--demo-photos" | "--demo-groups" | "--demo-friends" => {
+            "--demo-signed-out" | "--demo-rich" | "--demo-photos" | "--demo-groups"
+            | "--demo-friends" => {
                 demo = true;
                 scene = arg.trim_start_matches("--demo-").into();
             }

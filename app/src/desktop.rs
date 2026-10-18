@@ -336,12 +336,22 @@ impl Desktop {
                 }
             }
             Delta::PairFailed { cancelled } => {
+                ui.set_auth_cancelling(false);
+                ui.set_auth_qr(slint::Image::default());
+                ui.set_auth_pin("".into());
                 if *cancelled {
                     self.state.panel = Panel::Chats;
                     self.state.detail.clear();
                 }
                 ui.set_auth_error(
-                    "Sign-in did not finish. Your cached conversations are still available.".into(),
+                    if *cancelled {
+                        ""
+                    } else if self.state.profile.mid.is_empty() {
+                        "Sign-in did not finish. Please try again."
+                    } else {
+                        "Sign-in did not finish. Your cached conversations are still available."
+                    }
+                    .into(),
                 );
             }
             Delta::Connection(Connection::Online) if ui.get_auth_busy() => {

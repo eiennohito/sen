@@ -144,6 +144,7 @@ struct FakeState {
     contacts: std::collections::BTreeMap<String, Friend>,
     members: Option<Vec<crate::store::Member>>,
     offline: bool,
+    signed_out: bool,
     fail_send: bool,
     fail_friends: bool,
     friends_calls: u64,
@@ -171,6 +172,13 @@ impl Default for FakeBackend {
     }
 }
 impl FakeBackend {
+    /// An account with no saved session or cached account data.
+    pub fn signed_out() -> Self {
+        Self(Arc::new(Mutex::new(FakeState {
+            signed_out: true,
+            ..Default::default()
+        })))
+    }
     fn fake_send(&mut self, chat: &ChatId, body: Content, seq: u32) -> Result<MessageInput> {
         self.online()?;
         let (row, echo, revision, deliver) = {
@@ -475,8 +483,31 @@ impl FakeBackend {
     }
 }
 impl Backend for FakeBackend {
-    fn sign_in(&mut self, _cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
-        deliver(PairEvent::Stage(crate::client::pairing::Stage::Synthetic));
+    fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
+        use crate::client::{desktop::assets::Pixels, pairing::Stage};
+        deliver(PairEvent::Stage(Stage::Synthetic));
+        if self.0.lock().unwrap().signed_out {
+            let qr =
+                qrcodegen::QrCode::encode_text("offline-demo-sign-in", qrcodegen::QrCodeEcc::Low)
+                    .expect("synthetic QR");
+            let width = (qr.size() + 8) as u32;
+            let mut rgba = Vec::with_capacity((width * width * 4) as usize);
+            for y in 0..width as i32 {
+                for x in 0..width as i32 {
+                    let shade = if qr.get_module(x - 4, y - 4) { 0 } else { 255 };
+                    rgba.extend_from_slice(&[shade, shade, shade, 255]);
+                }
+            }
+            deliver(PairEvent::Qr(Arc::new(Pixels {
+                width,
+                height: width,
+                rgba,
+            })));
+            deliver(PairEvent::Stage(Stage::AwaitScan));
+            while !cancel.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+        }
         Err(Error::Rejected(RejectReason::SyntheticSignIn))
     }
 
@@ -737,6 +768,9 @@ impl Backend for FakeBackend {
     }
     fn profile(&mut self) -> Result<Profile> {
         self.rpc(FakeRpc::Profile)?;
+        if self.0.lock().unwrap().signed_out {
+            return Err(Error::Auth);
+        }
         Ok(Profile {
             mid: "self".into(),
             display_name: "Offline preview".into(),

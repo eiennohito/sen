@@ -186,7 +186,7 @@ export component AppWindow inherits Window {
  chats-surface := Chats {}
 }
 
-        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!State.profile-sheet && root.detail-open ? State.panel-width : 0px)); height: parent.height; visible: (!root.narrow || root.show-conversation) && !(root.detail-open && State.profile-sheet); }
+        conversation := Conversation { x: root.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!State.profile-sheet && root.detail-open ? State.panel-width : 0px)); height: parent.height; visible: (State.has-account || State.has-chat) && (!root.narrow || root.show-conversation) && !(root.detail-open && State.profile-sheet); }
     }
     property <length> token-base: root.text-size * 1px;
     changed token-base => { Tokens.base = root.token-base; }

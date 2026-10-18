@@ -25,6 +25,7 @@ parser.add_argument("--layout-photos", action="store_true", help="Check bounded 
 parser.add_argument("--reading", action="store_true", help="Check reading focus, keyboard scroll, stable loading, links and content placeholders")
 parser.add_argument("--rich", action="store_true", help="Check rich emoji fallback copy, reply jump/return, durations and file Save")
 parser.add_argument("--media", action="store_true", help="Check each media failure reason and its item Retry")
+parser.add_argument("--signed-out", action="store_true", help="Check a no-session account, QR delivery and cancellation")
 parser.add_argument("--auth-recovery", action="store_true", help="Check offline feedback, sign-in focus, synthetic sign-in failure and draft preservation")
 parser.add_argument("--layers", action="store_true", help="Check dialogs, profile panels, viewer input, export, and opener focus")
 parser.add_argument("--focus", action="store_true", help="Check every forward/reverse Tab stop on chats, friends and conversation, with and without recovery")
@@ -151,6 +152,49 @@ def show_chats():
     call("dispatch_key_event", windowHandle=window, text="2")
     call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Release")
 
+
+if args.signed_out:
+    def shot(name):
+        if args.surface_shots:
+            args.surface_shots.mkdir(parents=True, exist_ok=True)
+            result = rpc("tools/call", {"name": "take_screenshot", "arguments": {"windowHandle": window}})
+            image = next(item for item in result["content"] if item["type"] == "image")
+            (args.surface_shots / f"{name}.png").write_bytes(base64.b64decode(image["data"]))
+
+    def click(label):
+        call("click_element", elementHandle=element(label, "Button")["handle"])
+
+    # Verify the compiled demo marker before interacting with authentication.
+    call("dispatch_key_event", windowHandle=window, text="\uf70f")
+    marker = element("Synthetic interaction scenarios", "Text")
+    assert any(part.get("id", "").endswith("::demo-marker") for part in marker.get("typeNamesAndIds", []))
+    click("Close demo scenarios")
+    for section in ("Chats", "Friends"):
+        click(section)
+        element("Not signed in", "Text")
+        assert not any(item.get("accessibleLabel") in ("Your profile", "Your avatar", "No friends yet", "No conversations yet", "Choose a conversation", "Message draft") for item in tree())
+        shot(section.lower())
+        click("Sign in")
+        shot(section.lower() + "-before-start")
+        assert not any(item.get("accessibleRole") == "Image" and "QR code" in item.get("accessibleLabel", "") for item in tree())
+        click("Start")
+        qr = element("Scan this QR code with LINE on your phone", "Image")
+        assert qr["size"]["width"] == 220 and qr["size"]["height"] == 220
+        time.sleep(.2)
+        shot(section.lower() + "-qr")
+        click("Back")
+        click("Cancel sign-in")
+        wait_for(lambda: any(item.get("accessibleLabel") == "Not signed in" for item in tree()), "Back did not cancel pairing")
+    click("Settings")
+    shot("settings")
+    for section in ("Notifications", "Background"):
+        call("click_element", elementHandle=element(section, "Tab")["handle"])
+        shot("settings-" + section.lower())
+    call("click_element", elementHandle=element("About", "Tab")["handle"])
+    assert not any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") in ("", "Offline preview") for item in tree())
+    shot("settings-about")
+    print("PASS: signed-out Chats/Friends/rail/Settings, QR after Start, Back cancellation")
+    raise SystemExit(0)
 
 # Refuse to operate on a real account. Sends remain local to the demo transport.
 call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12

@@ -85,7 +85,7 @@ export component Layers inherits Rectangle {
                         Image { x: 16px; y: 16px; width: 220px; height: 220px; source: State.auth-qr; image-fit: contain; accessible-role: image; accessible-label: "Scan this QR code with LINE on your phone"; }
                     }
                 }
-                Text { text: State.auth-pin != "" ? "Enter " + State.auth-pin + " on your phone" : State.auth-busy ? "Waiting for your phone…" : State.auth-stage == "Signed in" ? "Signed in" : ""; horizontal-alignment: center; color: Tokens.text; wrap: word-wrap; }
+                Text { text: State.auth-pin != "" ? "Enter " + State.auth-pin + " on your phone" : State.auth-busy ? (State.auth-stage != "" ? State.auth-stage : "Preparing sign-in…") : State.auth-stage == "Signed in" ? "Signed in" : ""; horizontal-alignment: center; color: Tokens.text; wrap: word-wrap; }
                 if State.auth-error != "": Text { text: State.auth-error; wrap: word-wrap; color: Tokens.danger; horizontal-alignment: center; }
                 HorizontalLayout { alignment: center; spacing: 8px;
                     auth-back := Button { text: State.auth-cancelling ? "Cancelling…" : "Back"; text-button: true; enabled: !State.auth-cancelling; clicked => { root.dismiss-auth(); } }
@@ -193,7 +193,7 @@ export component Layers inherits Rectangle {
                             if root.settings-section == 4: VerticalLayout {
                                 spacing: 12px;
                                 Text { text: "LINE"; font-size: Tokens.heading; }
-                                Button { text: State.account-name; text-button: true; clicked => { State.open-profile("self"); } }
+                                if State.has-account: Button { text: State.account-name; text-button: true; clicked => { State.open-profile("self"); } }
                                 Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
                                 if State.desktop-warning != "": Text { text: State.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
                             }
