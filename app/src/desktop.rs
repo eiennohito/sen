@@ -344,9 +344,12 @@ impl Desktop {
                     PairEvent::Stage(stage) => {
                         ui.set_auth_stage(text::pairing_stage(*stage).into())
                     }
-                    PairEvent::Qr(p) => ui.set_auth_qr(slint::Image::from_rgba8(
-                        slint::SharedPixelBuffer::clone_from_slice(&p.rgba, p.width, p.height),
-                    )),
+                    PairEvent::Qr(p) => {
+                        ui.global::<State>().set_auth_prerequisite_missing(false);
+                        ui.set_auth_qr(slint::Image::from_rgba8(
+                            slint::SharedPixelBuffer::clone_from_slice(&p.rgba, p.width, p.height),
+                        ));
+                    }
                     PairEvent::Pin(pin) => ui.set_auth_pin(pin.into()),
                     PairEvent::Scanned => ui.set_auth_stage("Phone scanned the code".into()),
                 }
@@ -356,6 +359,10 @@ impl Desktop {
                     reason,
                     line_wasm_poc::client::error::SignInFailure::Cancelled
                 );
+                ui.global::<State>().set_auth_prerequisite_missing(matches!(
+                    reason,
+                    line_wasm_poc::client::error::SignInFailure::CryptoModule(_)
+                ));
                 ui.set_auth_cancelling(false);
                 ui.set_auth_qr(slint::Image::default());
                 ui.set_auth_pin("".into());

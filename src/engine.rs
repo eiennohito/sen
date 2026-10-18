@@ -68,6 +68,7 @@ pub enum Intent {
     Window(WindowSub),
     MoreChats,
     SignIn,
+    CancelSignIn,
     Friends,
     Contact(String),
     GroupInfo(ChatId),
@@ -128,6 +129,7 @@ impl Intent {
             Self::Window(_) => "window",
             Self::MoreChats => "more-chats",
             Self::SignIn => "sign-in",
+            Self::CancelSignIn => "cancel-sign-in",
             Self::Friends => "friends",
             Self::Contact(_) => "contact",
             Self::GroupInfo(_) => "group-info",
@@ -368,7 +370,7 @@ struct Lanes {
 }
 #[derive(Default)]
 struct Inbox {
-    pair_cancel: Arc<AtomicBool>,
+    pair_cancel: Mutex<Arc<AtomicBool>>,
     lanes: Mutex<Lanes>,
     wake: Condvar,
 }
@@ -376,7 +378,12 @@ struct Inbox {
 pub struct Sender(Arc<Inbox>);
 impl Sender {
     pub fn cancel_sign_in(&self) {
-        self.0.pair_cancel.store(true, Ordering::Relaxed);
+        self.0
+            .pair_cancel
+            .lock()
+            .unwrap()
+            .store(true, Ordering::Relaxed);
+        self.send(Intent::CancelSignIn);
     }
     pub fn send(&self, intent: Intent) {
         let mut q = self.0.lanes.lock().unwrap();
@@ -409,7 +416,7 @@ impl Inbox {
     }
 }
 type Completion = Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>;
-type NetJob = Box<dyn FnOnce(&mut dyn Backend) -> Completion + Send>;
+type NetJob = Box<dyn FnOnce(std::result::Result<&mut dyn Backend, Error>) -> Completion + Send>;
 
 pub enum StoreLocation {
     Memory,
@@ -450,12 +457,17 @@ impl Worker {
         }
     }
     pub fn start(backend: impl Backend + 'static, location: StoreLocation) -> Self {
-        Self::start_with_timing(location, move || Ok(backend), Timing::default())
+        let mut backend = Some(backend);
+        Self::start_with_timing(
+            location,
+            move || Ok(backend.take().expect("backend already opened")),
+            Timing::default(),
+        )
     }
     /// Open the store before initializing credentials, WASM, or asset caches.
     pub fn start_with<B: Backend + 'static>(
         location: StoreLocation,
-        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
+        open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
     ) -> Self {
         Self::start_with_timing(location, open, Timing::default())
     }
@@ -464,11 +476,16 @@ impl Worker {
         location: StoreLocation,
         timing: Timing,
     ) -> Self {
-        Self::start_with_timing(location, move || Ok(backend), timing)
+        let mut backend = Some(backend);
+        Self::start_with_timing(
+            location,
+            move || Ok(backend.take().expect("backend already opened")),
+            timing,
+        )
     }
     pub fn start_with_timing<B: Backend + 'static>(
         location: StoreLocation,
-        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
+        open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
         timing: Timing,
     ) -> Self {
         Self::start_projected(location, open, timing, |delta| delta)
@@ -476,7 +493,7 @@ impl Worker {
     /// Project output on its publishing worker, before enqueueing or waking the UI.
     pub fn start_projected<B: Backend + 'static>(
         location: StoreLocation,
-        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
+        mut open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
         timing: Timing,
         project: impl Fn(Delta) -> Delta + Send + Sync + 'static,
     ) -> Self {
@@ -528,25 +545,23 @@ impl Worker {
                                             let outcome = std::panic::catch_unwind(
                                                 std::panic::AssertUnwindSafe(
                                                     || -> anyhow::Result<()> {
-                                                        let Ok(first) = rx.recv() else {
-                                                            return Ok(());
-                                                        };
                                                         crate::client::desktop::set_cancellation_token(net_cancel);
-                                                        let mut backend = open()?;
-                                                        let mut job = first;
-                                                        loop {
-                                                            let completed = job(&mut backend);
+                                                        let mut backend = None;
+                                                        while let Ok(job) = rx.recv() {
+                                                            let opened = if backend.is_none() {
+                                                                match open() {
+                                                                    Ok(value) => { backend = Some(value); Ok(()) }
+                                                                    Err(error) => {
+                                                                        crate::reporting::log("backend-start", "open", error.as_ref());
+                                                                        Err(crate::client::error::classify(&error))
+                                                                    }
+                                                                }
+                                                            } else { Ok(()) };
+                                                            let completed = job(opened.map(|()| backend.as_mut().unwrap() as &mut dyn Backend));
                                                             let mut q = inbox.lanes.lock().unwrap();
-                                                            if q.stopped {
-                                                                break;
-                                                            }
+                                                            if q.stopped { break; }
                                                             q.completed.push_back(completed);
                                                             inbox.wake.notify_all();
-                                                            drop(q);
-                                                            match rx.recv() {
-                                                                Ok(next) => job = next,
-                                                                Err(_) => break,
-                                                            }
                                                         }
                                                         Ok(())
                                                     },
@@ -678,44 +693,12 @@ struct Engine {
     stream: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
     assets_stop: Arc<AtomicBool>,
 }
-trait JobOutcome {
-    fn log_failure(&self, operation: &str);
-    fn connection_error(&self) -> Option<Error> {
-        None
-    }
-}
-impl<T, E: std::error::Error + 'static> JobOutcome for std::result::Result<T, E> {
-    fn connection_error(&self) -> Option<Error> {
-        self.as_ref()
-            .err()
-            .and_then(|e| (e as &dyn std::error::Error).downcast_ref::<Error>())
-            .cloned()
-    }
-    fn log_failure(&self, operation: &str) {
-        if let Err(error) = self {
-            crate::reporting::log(operation, "rpc", error);
-        }
-    }
-}
-impl JobOutcome for () {
-    fn log_failure(&self, _: &str) {}
-}
-impl JobOutcome for bool {
-    fn log_failure(&self, _: &str) {}
-}
-impl JobOutcome for Option<(ChatId, std::result::Result<Page, Error>)> {
-    fn log_failure(&self, operation: &str) {
-        if let Some((_, result)) = self {
-            result.log_failure(operation);
-        }
-    }
-}
 type Result<T> = std::result::Result<T, StoreError>;
 impl Engine {
-    fn rpc<T: JobOutcome + Send + 'static>(
+    fn rpc<T: Send + 'static>(
         &mut self,
-        run: impl FnOnce(&mut dyn Backend) -> T + Send + 'static,
-        apply: impl FnOnce(&mut Engine, T) -> Result<()> + Send + 'static,
+        run: impl FnOnce(&mut dyn Backend) -> std::result::Result<T, Error> + Send + 'static,
+        apply: impl FnOnce(&mut Engine, std::result::Result<T, Error>) -> Result<()> + Send + 'static,
     ) {
         self.rpc_completion(run, move |engine, result, current| {
             if current {
@@ -726,29 +709,39 @@ impl Engine {
         });
     }
     // The FIFO network queue completes mutations before sign-in can swap stores.
-    fn rpc_completion<T: JobOutcome + Send + 'static>(
+    fn rpc_completion<T: Send + 'static>(
         &mut self,
-        run: impl FnOnce(&mut dyn Backend) -> T + Send + 'static,
-        apply: impl FnOnce(&mut Engine, T, bool) -> Result<()> + Send + 'static,
+        run: impl FnOnce(&mut dyn Backend) -> std::result::Result<T, Error> + Send + 'static,
+        apply: impl FnOnce(&mut Engine, std::result::Result<T, Error>, bool) -> Result<()>
+        + Send
+        + 'static,
     ) {
         let operation = self.operation.clone();
         self.net_pending += 1;
         let cancel = self.assets_stop.clone();
         let generation = self.generation;
-        let _ = self.net.send(Box::new(move |backend| {
+        let job: NetJob = Box::new(move |backend| {
             crate::client::desktop::set_cancellation_token(cancel);
-            let result = run(backend);
-            result.log_failure(&operation);
+            let result = backend.and_then(run);
+            if let Err(error) = &result {
+                crate::reporting::log(&operation, "rpc", error);
+            }
             Box::new(move |engine| {
                 engine.operation = operation;
-                if let Some(error) = result.connection_error() {
-                    engine.error(error);
-                }
                 engine.net_pending -= 1;
                 let current = generation == engine.generation;
+                if current && let Err(error) = &result {
+                    engine.error(error.clone());
+                }
                 apply(engine, result, current)
             })
-        }));
+        });
+        if let Err(error) = self.net.send(job) {
+            let done = (error.0)(Err(Error::Protocol));
+            // Keep failures on the same completion lane, including pending accounting.
+            self.inbox.lanes.lock().unwrap().completed.push_back(done);
+            self.inbox.wake.notify_all();
+        }
     }
     fn start_assets(&mut self) {
         let inbox = self.inbox.clone();
@@ -764,9 +757,10 @@ impl Engine {
                         }
                         inbox.live(event)
                     }),
-                )
+                );
+                Ok(())
             },
-            |_, ()| Ok(()),
+            |_, _| Ok(()),
         );
     }
 
@@ -862,12 +856,20 @@ impl Engine {
                 after: 80,
             })?;
         }
-        self.rpc(
-            |backend| backend.has_session(),
-            |engine, has_session| {
+        self.rpc_completion(
+            |backend| Ok(backend.has_session()),
+            |engine, has_session, current| {
                 engine.session_known = true;
-                engine.has_session = has_session;
-                if has_session {
+                if !current {
+                    return Ok(());
+                }
+                engine.has_session = matches!(has_session, Ok(true));
+                if let Err(Error::SignIn(reason)) = &has_session {
+                    engine.emit(Delta::PairFailed {
+                        reason: reason.clone(),
+                    });
+                }
+                if engine.has_session {
                     engine.start_assets();
                     engine.online()?;
                 } else {
@@ -890,9 +892,17 @@ impl Engine {
                     if !self.session_known && q.users.iter().any(|i| matches!(i, Intent::Stop)) {
                         break Work::User(Intent::Stop);
                     }
-                    if (self.session_known || matches!(q.users.front(), Some(Intent::Stop)))
-                        && let Some(i) = q.users.pop_front()
-                    {
+                    let user = if self.session_known {
+                        q.users.pop_front()
+                    } else {
+                        // Local sign-in and cancellation must work even while open()
+                        // is blocked on credentials. Leave account work queued.
+                        q.users
+                            .iter()
+                            .position(|i| matches!(i, Intent::SignIn | Intent::CancelSignIn))
+                            .and_then(|index| q.users.remove(index))
+                    };
+                    if let Some(i) = user {
                         break Work::User(i);
                     }
                     if let Some(e) = q.live.pop_front() {
@@ -1221,6 +1231,7 @@ impl Engine {
             && !matches!(
                 i,
                 Intent::SignIn
+                    | Intent::CancelSignIn
                     | Intent::Prefs(_)
                     | Intent::SearchChats { .. }
                     | Intent::ChatList { .. }
@@ -1236,16 +1247,31 @@ impl Engine {
                 }
                 self.generation += 1;
                 self.stop_stream();
-                self.inbox.pair_cancel.store(false, Ordering::Relaxed);
+                let cancel = Arc::new(AtomicBool::new(false));
+                *self.inbox.pair_cancel.lock().unwrap() = cancel.clone();
                 self.connection(Connection::SigningIn);
-                let tx = self.tx.clone();
-                let cancel = self.inbox.pair_cancel.clone();
+                let inbox = self.inbox.clone();
+                let generation = self.generation;
                 self.rpc(
                     move |backend| {
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err(Error::SignIn(
+                                crate::client::error::SignInFailure::Cancelled,
+                            ));
+                        }
                         backend.sign_in(
                             cancel,
                             Arc::new(move |e| {
-                                tx.send(Delta::Pair(e));
+                                let mut lanes = inbox.lanes.lock().unwrap();
+                                lanes.completed.push_back(Box::new(move |engine| {
+                                    if engine.generation == generation
+                                        && engine.connection == Connection::SigningIn
+                                    {
+                                        engine.emit(Delta::Pair(e));
+                                    }
+                                    Ok(())
+                                }));
+                                inbox.wake.notify_all();
                             }),
                         )
                     },
@@ -1282,7 +1308,13 @@ impl Engine {
                             Err(error) => {
                                 use crate::client::error::SignInFailure;
                                 crate::reporting::log("sign-in", "pairing", &error);
-                                let reason = if engine.inbox.pair_cancel.load(Ordering::Relaxed) {
+                                let reason = if engine
+                                    .inbox
+                                    .pair_cancel
+                                    .lock()
+                                    .unwrap()
+                                    .load(Ordering::Relaxed)
+                                {
                                     SignInFailure::Cancelled
                                 } else if let Error::SignIn(reason) = error {
                                     reason
@@ -1296,6 +1328,20 @@ impl Engine {
                         Ok(())
                     },
                 );
+            }
+            Intent::CancelSignIn => {
+                if self.connection == Connection::SigningIn {
+                    self.inbox
+                        .pair_cancel
+                        .lock()
+                        .unwrap()
+                        .store(true, Ordering::Relaxed);
+                    self.generation += 1;
+                    self.connection(Connection::AuthExpired);
+                    self.emit(Delta::PairFailed {
+                        reason: crate::client::error::SignInFailure::Cancelled,
+                    });
+                }
             }
             Intent::Contact(mid) => {
                 if let Some(row) = self.store.contacts()?.into_iter().find(|v| v.id == mid) {
@@ -2148,10 +2194,13 @@ impl Engine {
             StreamEvent::Asset(c) => self.emit(asset_delta(c)),
             StreamEvent::Authorize { asset, reply } => {
                 self.rpc(
-                    move |backend| {
-                        let _ = reply.send(backend.authorize(&asset));
+                    move |backend| Ok(backend.authorize(&asset)),
+                    move |_, result| {
+                        let _ = reply.send(
+                            result.unwrap_or(Err(crate::client::desktop::assets::Failure::Network)),
+                        );
+                        Ok(())
                     },
-                    |_, ()| Ok(()),
                 );
             }
             StreamEvent::Operation(op) => {
@@ -2284,26 +2333,27 @@ impl Engine {
         self.rpc(
             move |backend| {
                 chat.map(|chat| {
-                    let result = backend.messages(&chat, &PageKind::Recent);
-                    (chat, result)
+                    backend
+                        .messages(&chat, &PageKind::Recent)
+                        .map(|page| (chat, page))
                 })
+                .transpose()
             },
             move |engine, result| {
-                if let Some((chat, result)) = result {
-                    match result {
-                        Ok(page) => {
-                            engine.store.apply_page(
-                                &chat,
-                                page.kind,
-                                &page.rows,
-                                page.reaches_start,
-                            )?;
-                        }
-                        Err(e) => {
-                            engine.rpc_failed(Refresh::Recent(chat), e);
-                            let _ = complete.send(false);
-                            return Ok(());
-                        }
+                match result {
+                    Ok(Some((chat, page))) => {
+                        engine.store.apply_page(
+                            &chat,
+                            page.kind,
+                            &page.rows,
+                            page.reaches_start,
+                        )?;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        engine.error(error);
+                        let _ = complete.send(false);
+                        return Ok(());
                     }
                 }
                 engine.inbox.refresh(Refresh::ChatList);

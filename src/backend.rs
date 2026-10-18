@@ -148,6 +148,7 @@ struct FakeState {
     members: Option<Vec<crate::store::Member>>,
     offline: bool,
     signed_out: bool,
+    open_failure: Option<crate::client::error::SignInFailure>,
     sign_in_failure: Option<crate::client::error::SignInFailure>,
     fail_send: bool,
     fail_friends: bool,
@@ -182,6 +183,16 @@ impl FakeBackend {
             signed_out: true,
             ..Default::default()
         })))
+    }
+    /// Retryable local initialization failure, before a backend exists.
+    pub fn fail_open(&self, reason: Option<crate::client::error::SignInFailure>) {
+        self.0.lock().unwrap().open_failure = reason;
+    }
+    pub fn open(&self) -> anyhow::Result<Self> {
+        if let Some(reason) = self.0.lock().unwrap().open_failure.clone() {
+            return Err(Error::SignIn(reason).into());
+        }
+        Ok(self.clone())
     }
     fn fake_send(&mut self, chat: &ChatId, body: Content, seq: u32) -> Result<MessageInput> {
         self.online()?;

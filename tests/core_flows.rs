@@ -815,7 +815,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         },
         move || {
             initialized.recv()?;
-            Ok(Blocked(fake, released, entered))
+            Ok(Blocked(fake.clone(), released.clone(), entered.clone()))
         },
     );
     let receive = |predicate: &dyn Fn(&Delta) -> bool| {
@@ -1577,4 +1577,159 @@ fn unknown_key_reports_a_bug_and_keeps_the_worker_running() {
         ..Default::default()
     }));
     app.until(|s| s.prefs.text_size == 31);
+}
+
+#[test]
+fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
+    use line_wasm_poc::client::error::SignInFailure;
+    let fake = FakeBackend::signed_out();
+    let reason = SignInFailure::CryptoModule("/missing/crypto.wasm".into());
+    fake.fail_open(Some(reason.clone()));
+    let opener = fake.clone();
+    let worker = Worker::start_with(StoreLocation::Memory, move || opener.open());
+    let failure = || loop {
+        let delta = worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!matches!(delta, Delta::Fatal));
+        if let Delta::PairFailed { reason } = delta {
+            break reason;
+        }
+    };
+    assert_eq!(failure(), reason);
+    worker.sender.send(Intent::SignIn);
+    assert_eq!(failure(), reason);
+    fake.fail_open(None);
+    worker.sender.send(Intent::SignIn);
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::Fatal | Delta::PairFailed { .. } => panic!("repaired open did not recover"),
+            _ => {}
+        }
+    }
+    worker.sender.cancel_sign_in();
+    assert_eq!(failure(), SignInFailure::Cancelled);
+}
+
+#[test]
+fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
+    use line_wasm_poc::client::error::SignInFailure;
+    use std::sync::mpsc;
+    let fake = FakeBackend::signed_out();
+    let (started, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let mut first = true;
+    let worker = Worker::start_with(StoreLocation::Memory, move || {
+        if std::mem::take(&mut first) {
+            return Err(
+                line_wasm_poc::backend::Error::SignIn(SignInFailure::CryptoModule(
+                    "/missing/crypto.wasm".into(),
+                ))
+                .into(),
+            );
+        }
+        started.send(()).unwrap();
+        resume.recv().unwrap();
+        fake.open()
+    });
+    loop {
+        if matches!(
+            worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Delta::Connection(Connection::AuthExpired)
+        ) {
+            break;
+        }
+    }
+    worker.sender.send(Intent::SignIn);
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    worker.sender.cancel_sign_in();
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap() {
+            Delta::PairFailed { reason } => {
+                assert_eq!(reason, SignInFailure::Cancelled);
+                break;
+            }
+            Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
+            _ => {}
+        }
+    }
+    release.send(()).unwrap();
+    // A second attempt must get its own token and deliver QR after the old
+    // completion. No late cancellation may close this new attempt.
+    worker.sender.send(Intent::SignIn);
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::PairFailed { .. } | Delta::Fatal => panic!("late result escaped its generation"),
+            _ => {}
+        }
+    }
+    worker.sender.cancel_sign_in();
+}
+
+#[test]
+fn cancel_during_initial_open_does_not_wait_for_credentials() {
+    use line_wasm_poc::client::error::SignInFailure;
+    use std::sync::mpsc;
+    let (started, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let worker = Worker::start_with(StoreLocation::Memory, move || {
+        started.send(()).unwrap();
+        resume.recv().unwrap();
+        Ok(FakeBackend::signed_out())
+    });
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    worker.sender.send(Intent::Prefs(Prefs::default()));
+    worker.sender.send(Intent::SignIn);
+    worker.sender.cancel_sign_in();
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap() {
+            Delta::PairFailed { reason } => {
+                assert_eq!(reason, SignInFailure::Cancelled);
+                break;
+            }
+            Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
+            _ => {}
+        }
+    }
+    release.send(()).unwrap();
+    // The startup and cancelled sign-in completions are both stale. A fresh
+    // attempt must still reach QR without either closing its screen.
+    worker.sender.send(Intent::SignIn);
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::PairFailed { .. } | Delta::Fatal => {
+                panic!("stale startup escaped its generation")
+            }
+            _ => {}
+        }
+    }
+    worker.sender.cancel_sign_in();
+}
+
+#[test]
+fn disconnected_network_queue_completes_sign_in_with_failure() {
+    use line_wasm_poc::client::error::SignInFailure;
+    let worker = Worker::start_with::<FakeBackend>(StoreLocation::Memory, || {
+        panic!("synthetic network worker crash")
+    });
+    loop {
+        if matches!(
+            worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Delta::Fatal
+        ) {
+            break;
+        }
+    }
+    for _ in 0..2 {
+        worker.sender.send(Intent::SignIn);
+        loop {
+            if let Delta::PairFailed { reason } =
+                worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap()
+            {
+                assert_eq!(reason, SignInFailure::Server);
+                break;
+            }
+        }
+    }
 }

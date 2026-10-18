@@ -26,6 +26,7 @@ parser.add_argument("--reading", action="store_true", help="Check reading focus,
 parser.add_argument("--rich", action="store_true", help="Check rich emoji fallback copy, reply jump/return, durations and file Save")
 parser.add_argument("--media", action="store_true", help="Check each media failure reason and its item Retry")
 parser.add_argument("--signed-out", action="store_true", help="Check a no-session account, QR delivery and cancellation")
+parser.add_argument("--missing-module", action="store_true", help="With --signed-out, check a backend that cannot open its crypto module")
 parser.add_argument("--auth-recovery", action="store_true", help="Check offline feedback, sign-in focus, synthetic sign-in failure and draft preservation")
 parser.add_argument("--layers", action="store_true", help="Check dialogs, profile panels, viewer input, export, and opener focus")
 parser.add_argument("--focus", action="store_true", help="Check every forward/reverse Tab stop on chats, friends and conversation, with and without recovery")
@@ -172,6 +173,20 @@ if args.signed_out:
     marker = element("Synthetic interaction scenarios", "Text")
     assert any(part.get("id", "").endswith("::demo-marker") for part in marker.get("typeNamesAndIds", []))
     click("Close demo scenarios")
+    if args.missing_module:
+        click("Sign in")
+        message = "Crypto module missing or unsupported. Install the supported module at /demo/crypto.wasm and try again."
+        element(message, "Text")
+        element("Sign-in is unavailable until the crypto module is installed.", "Text")
+        for _ in range(2):
+            click("Check again")
+            element(message, "Text")
+            element("Check again", "Button")
+            assert not any(item.get("accessibleRole") == "Image" and "QR code" in item.get("accessibleLabel", "") for item in tree())
+        click("Back")
+        element("Not signed in", "Text")
+        print("PASS: missing crypto module reported at startup and after repeated sign-in attempts")
+        raise SystemExit(0)
     for section in ("Chats", "Friends"):
         click(section)
         element("Not signed in", "Text")
@@ -205,7 +220,12 @@ if args.signed_out:
     call("click_element", elementHandle=element("About", "Tab")["handle"])
     assert not any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") in ("", "Offline preview") for item in tree())
     shot("settings-about")
-    print("PASS: signed-out Chats/Friends/rail/Settings, QR after Start, Back cancellation")
+    print("PASS: signed-out Chats/Friends/rail/Settings, QR after Start, Back cancellation", flush=True)
+    if args.launch:
+        import subprocess
+        import sys
+        subprocess.run([sys.executable, __file__, "--launch", "--profile", args.profile,
+                        "--port", str(args.port + 1), "--signed-out", "--missing-module"], check=True)
     raise SystemExit(0)
 
 # Refuse to operate on a real account. Sends remain local to the demo transport.

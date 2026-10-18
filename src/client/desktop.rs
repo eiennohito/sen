@@ -106,7 +106,9 @@ impl Client {
     pub fn open_local(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
         let has_session = state_path.exists();
         let state = if has_session {
-            crate::credentials::load_migrating(state_path)?
+            crate::credentials::load_migrating(state_path).context(super::error::Error::SignIn(
+                super::error::SignInFailure::Keyring,
+            ))?
         } else {
             json!({"wasm_sha256":HASH})
         };
@@ -114,10 +116,14 @@ impl Client {
             state["wasm_sha256"] == HASH,
             "saved session WASM version mismatch"
         );
-        let wasm = fs::read(wasm_path).context("read crypto WASM")?;
+        let wasm = fs::read(wasm_path).context(super::error::Error::SignIn(
+            super::error::SignInFailure::CryptoModule(wasm_path.into()),
+        ))?;
         ensure!(
             format!("{:x}", Sha256::digest(&wasm)) == HASH,
-            "unsupported WASM release"
+            super::error::Error::SignIn(super::error::SignInFailure::CryptoModule(
+                wasm_path.into()
+            ))
         );
         let mut api = Api::new(&wasm)?;
         if has_session {

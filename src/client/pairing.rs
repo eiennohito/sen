@@ -106,37 +106,67 @@ pub fn sign_in(
 ) -> Result<()> {
     let ui = NativeLogin { emit, cancel };
     ui.check()?;
-    let wasm = fs::read(wasm_path).context(super::error::Error::SignIn(
-        super::error::SignInFailure::CryptoModule(wasm_path.into()),
-    ))?;
-    ensure!(
-        format!("{:x}", Sha256::digest(&wasm)) == HASH,
-        super::error::Error::SignIn(super::error::SignInFailure::CryptoModule(wasm_path.into()))
-    );
-    // Fail local prerequisites before requesting a phone approval.
+    let probe_state = state.to_owned();
+    let probe_wasm = wasm_path.to_owned();
+    let (send, receive) = std::sync::mpsc::sync_channel(1);
+    // Filesystem probes and Secret Service may block without reading our token.
+    // Poll their result on the pairing owner so cancellation also releases the
+    // network queue. The probe owns no pairing session and never publishes UI.
+    std::thread::spawn(move || {
+        let result = (|| -> Result<_> {
+            let state = probe_state;
+            let wasm_path = probe_wasm;
+            let wasm = fs::read(&wasm_path).context(super::error::Error::SignIn(
+                super::error::SignInFailure::CryptoModule(wasm_path.clone()),
+            ))?;
+            ensure!(
+                format!("{:x}", Sha256::digest(&wasm)) == HASH,
+                super::error::Error::SignIn(super::error::SignInFailure::CryptoModule(
+                    wasm_path.clone()
+                ))
+            );
+            // Fail local prerequisites before requesting a phone approval.
+            let parent = state
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .unwrap_or(Path::new("."));
+            let probe_directory = || -> Result<u128> {
+                let new_directory = !parent.exists();
+                fs::create_dir_all(parent)?;
+                if new_directory {
+                    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+                }
+                let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+                let probe = state.with_extension(format!("sign-in-{stamp}.check"));
+                private_write(&probe, b"sign-in storage check")?;
+                fs::remove_file(probe)?;
+                Ok(stamp)
+            };
+            let stamp = probe_directory().context(super::error::Error::SignIn(
+                super::error::SignInFailure::StateDirectory(parent.into()),
+            ))?;
+            crate::credentials::check_writable().context(super::error::Error::SignIn(
+                super::error::SignInFailure::Keyring,
+            ))?;
+            Ok((wasm, stamp))
+        })();
+        let _ = send.send(result);
+    });
+    let (wasm, stamp) = loop {
+        ui.check()?;
+        match receive.recv_timeout(Duration::from_millis(25)) {
+            Ok(result) => break result?,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                bail!("sign-in prerequisite worker exited")
+            }
+        }
+    };
+    ui.check()?;
     let parent = state
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let probe_directory = || -> Result<u128> {
-        let new_directory = !parent.exists();
-        fs::create_dir_all(parent)?;
-        if new_directory {
-            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-        }
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let probe = state.with_extension(format!("sign-in-{stamp}.check"));
-        private_write(&probe, b"sign-in storage check")?;
-        fs::remove_file(probe)?;
-        Ok(stamp)
-    };
-    let stamp = probe_directory().context(super::error::Error::SignIn(
-        super::error::SignInFailure::StateDirectory(parent.into()),
-    ))?;
-    crate::credentials::check_writable().context(super::error::Error::SignIn(
-        super::error::SignInFailure::Keyring,
-    ))?;
-    ui.check()?;
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
     let opts = Options {
         command: "login".into(),

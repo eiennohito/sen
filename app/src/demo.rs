@@ -199,6 +199,13 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
 
 pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
     if scene == "signed-out" {
+        if case == Some("missing-module") {
+            fake.fail_open(Some(
+                line_wasm_poc::client::error::SignInFailure::CryptoModule(
+                    "/demo/crypto.wasm".into(),
+                ),
+            ));
+        }
         return;
     }
     demo_data::seed(fake);
@@ -451,7 +458,7 @@ pub(crate) fn worker(fake: FakeBackend, text_size: i32, assets: assets::Assets) 
     let initial = AtomicBool::new(true);
     let worker = Worker::start_projected(
         StoreLocation::Memory,
-        move || Ok(fake),
+        move || fake.open(),
         Default::default(),
         move |delta| {
             let delta = match delta {
