@@ -252,6 +252,10 @@ export global State {
     callback reset-viewer();
     in-out property <length> history-viewport-height;
     changed history-viewport-height => { self.read-state-changed(); }
+    in-out property <length> history-visible-top;
+    in-out property <length> history-cover-inset;
+    in-out property <length> history-pill-height;
+    changed history-pill-height => { self.read-state-changed(); }
     in-out property <string> older-status;
     in-out property <bool> older-failed;
     in-out property <bool> paging-demo;

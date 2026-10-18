@@ -1,4 +1,89 @@
 use super::*;
+
+#[test]
+fn reply_return_preserves_screen_position_across_visible_top_changes() {
+    std::thread::spawn(|| {
+        let _window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        for (before, after) in [(0., 99.), (99., 0.), (99., 99.), (0., 0.), (99., 42.)] {
+            let mut view = View {
+                current: "chat".into(),
+                demo: true,
+                messages: ["10", "11"]
+                    .map(|id| MessageRow {
+                        id: id.into(),
+                        body: "text".into(),
+                        ..Default::default()
+                    })
+                    .into(),
+                ..Default::default()
+            };
+            ui.set_following(false);
+            view.render(&ui);
+            let state = ui.global::<State>();
+            state.set_history_viewport_height(400.);
+            state.set_history_visible_top(before);
+            state.set_history_cover_inset(before);
+            view.history_geometry(&ui, "10", 250., 40.);
+            view.history_geometry(&ui, "11", 500., 40.);
+            ui.set_history_y(-225.);
+            let origin = 250. + ui.get_history_y() + before;
+            assert!(view.jump_to_message(&ui, "11"));
+            state.set_history_visible_top(after);
+            state.set_history_cover_inset(after);
+            view.return_to_anchor(&ui);
+            assert_eq!(250. + ui.get_history_y() + after, origin);
+            // A later layout callback must keep the restored position too.
+            view.history_geometry(&ui, "10", 270., 40.);
+            assert_eq!(270. + ui.get_history_y() + after, origin);
+            assert!(!state.get_return_visible());
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn read_exposure_excludes_the_pill_band_only_while_present() {
+    std::thread::spawn(|| {
+        let _window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let mut view = View {
+            current: "chat".into(),
+            demo: true,
+            messages: ["10", "11", "12"]
+                .map(|id| MessageRow {
+                    id: id.into(),
+                    ..Default::default()
+                })
+                .into(),
+            ..Default::default()
+        };
+        ui.set_has_chat(true);
+        ui.set_loading_history(false);
+        let state = ui.global::<State>();
+        state.set_window_active(true);
+        state.set_history_viewport_height(400.);
+        ui.set_following(false);
+        ui.set_history_y(0.);
+        let mut measured = history_window::HistoryWindow::default();
+        measured.measured("10", 359., 20., false);
+        measured.measured("11", 360., 20., false);
+        measured.measured("12", 399., 20., false);
+        view.paging.borrow_mut().insert("chat".into(), measured);
+        view.unread.server("chat", Some(3), Some("9"));
+        view.unread.page("chat", &view.messages);
+        state.set_history_pill_height(40.);
+        view.history_exposure(&ui);
+        assert_eq!(view.unread.exposed, ["10"]);
+        state.set_history_pill_height(0.);
+        view.history_exposure(&ui);
+        assert_eq!(view.unread.exposed, ["10", "11", "12"]);
+    })
+    .join()
+    .unwrap();
+}
+
 #[test]
 fn retained_pixel_models_are_inside_the_history_byte_budget() {
     let picture =

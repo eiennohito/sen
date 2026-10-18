@@ -644,12 +644,13 @@ if args.rich:
         assert any(expected in label for label in labels), f"missing rich metadata: {expected}"
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
     time.sleep(0.05)
-    demo_scenario("Offline")
     reply = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Jump to replied message")
     def emoji_body():
         return next(item for item in rich_tree() if item.get("accessibleRole") == "Text" and "日😀[笑]本🌸" in item.get("accessibleLabel", ""))
     origin_y = emoji_body()["absolutePosition"]["y"]
     call("click_element", elementHandle=reply["handle"])
+    time.sleep(0.05)
+    demo_scenario("Offline")
     time.sleep(0.05)
     rich_element("Return to message", "Button")
     latest = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest"))
@@ -674,7 +675,40 @@ if args.rich:
     assert call("get_element_properties", elementHandle=composer).get("accessibleDescription") == "Focused message draft", "history/Latest/Return/composer Tab order changed"
     call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
     time.sleep(0.05)
-    assert abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor"
+    restored_y = emoji_body()["absolutePosition"]["y"]
+    assert abs(restored_y - origin_y) <= 1, f"Offline appearing moved reply return: {origin_y} -> {restored_y}"
+    print(f"PASS: reply return with Offline appearing: y={origin_y} -> {restored_y}")
+    # Capture with the strip present, then let the local reconnect fixture clear it.
+    origin_y = emoji_body()["absolutePosition"]["y"]
+    reply = rich_element("Jump to replied message", "Button")
+    quote_y = reply["absolutePosition"]["y"]
+    call("click_element", elementHandle=reply["handle"])
+    demo_scenario("Reconnect blip")
+    deadline = time.monotonic() + 7
+    while any(item.get("accessibleRole") == "Banner" and item.get("accessibleLabel") in ("Connection needs attention", "Connection restored") for item in rich_tree()):
+        assert time.monotonic() < deadline, "synthetic reconnect did not clear the strip"
+        time.sleep(0.1)
+    call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
+    time.sleep(0.05)
+    restored_y = emoji_body()["absolutePosition"]["y"]
+    assert abs(restored_y - origin_y) <= 1, f"Offline disappearing moved reply return: {origin_y} -> {restored_y}"
+    reply = rich_element("Jump to replied message", "Button")
+    assert abs(reply["absolutePosition"]["y"] - quote_y) <= 1, "Return moved the reply quote"
+    history = rich_element("Message history", "List")
+    viewports = call("find_elements_by_id", windowHandle=window, elementsId="Pane::viewport")["elementHandles"]
+    viewport = next(item for handle in viewports
+                    if -1 <= (item := call("get_element_properties", elementHandle=handle))["absolutePosition"].get("x", 0) - history["absolutePosition"].get("x", 0) <= 16
+                    and abs(item["size"]["width"] - (history["size"]["width"] - 16)) <= 1)
+    assert abs(viewport["absolutePosition"]["y"] - history["absolutePosition"]["y"]) <= 1, "Return left a blank residual band above the anchor"
+    print(f"PASS: reply return with Offline disappearing: y={origin_y} -> {restored_y}")
+    # Retain the unchanged-inset regression as well.
+    origin_y = restored_y
+    call("click_element", elementHandle=rich_element("Jump to replied message", "Button")["handle"])
+    time.sleep(0.05)
+    rich_element("Return to message", "Button")  # The restored quote must accept another jump.
+    call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
+    time.sleep(0.05)
+    assert abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor with unchanged inset"
     call("click_element", elementHandle=emoji_body()["handle"])
     rich_element("[笑]", "Image")
     assert not any(item.get("accessibleLabel") == "Show emoji" for item in rich_tree()), "click entered emoji fallback mode"

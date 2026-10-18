@@ -376,7 +376,9 @@ impl View {
             .map(|window| {
                 window.exposed(
                     ui.get_history_y(),
-                    ui.global::<State>().get_history_viewport_height(),
+                    (ui.global::<State>().get_history_viewport_height()
+                        - ui.global::<State>().get_history_pill_height())
+                    .max(0.),
                 )
             })
             .unwrap_or_default();
@@ -674,6 +676,7 @@ impl View {
             return false;
         }
         ui.set_following(false);
+        ui.invoke_history_jump(0.);
         self.render(ui);
         if let Some(offset) = self
             .paging
@@ -691,7 +694,11 @@ impl View {
             .borrow_mut()
             .entry(self.current.clone())
             .or_default()
-            .capture(ui.get_history_y());
+            .capture(ui.get_history_y())
+            .map(|mut anchor| {
+                anchor.screen_y += ui.global::<State>().get_history_visible_top();
+                anchor
+            });
         let visible = self.scroll_to_message(
             ui,
             id,
@@ -722,7 +729,11 @@ impl View {
             .return_anchor
             .take();
         if let Some(Anchor { id, screen_y }) = anchor {
-            self.scroll_to_message(ui, &id, screen_y);
+            self.scroll_to_message(
+                ui,
+                &id,
+                screen_y - ui.global::<State>().get_history_cover_inset(),
+            );
         }
         ui.global::<State>().set_highlight_message("".into());
         self.paging_status(ui);

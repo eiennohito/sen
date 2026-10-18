@@ -97,6 +97,7 @@ export component Conversation inherits Rectangle {
                 scrolled => { State.following = State.history-can-follow && self.visible-top == self.inset && !State.history-dragging && State.history-extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } State.history-scrolled(); }
                 VerticalLayout {
                     padding: 16px; spacing: 5px;
+                    padding-bottom: 16px + root.pill-height;
                     if !State.has-chat: Text { text: "Choose a conversation"; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
                     Rectangle {
                         height: State.has-chat ? max(32px, Tokens.small * 1.8) : 0px;
@@ -109,7 +110,7 @@ export component Conversation inherits Rectangle {
                     for message in State.messages: Message { message: message; }
                 }
             }
-              HorizontalLayout {
+              history-pills := HorizontalLayout {
                 x: max(8px, (parent.width - self.width) / 2); y: max(0px, parent.height - self.height - 8px);
                 width: min(parent.width - 16px, latest-button.preferred-width + return-button.preferred-width + (root.latest-visible && State.return-visible ? 8px : 0px));
                 height: max(latest-button.preferred-height, return-button.preferred-height); spacing: root.latest-visible && State.return-visible ? 8px : 0px;
@@ -166,7 +167,14 @@ composer-surface := Composer { }
     changed width => { State.history-width = history.width; }
     property <length> viewport-height: history.visible-height;
     changed viewport-height => { State.history-viewport-height = root.viewport-height; }
-    init => { State.history-width = history.width; State.history-viewport-height = history.visible-height; State.conversation-height = root.height; State.history-extent = history.extent; }
+    property <length> visible-top: history.visible-top;
+    changed visible-top => { State.history-visible-top = root.visible-top; }
+    property <length> cover-inset: history.inset;
+    changed cover-inset => { State.history-cover-inset = root.cover-inset; }
+    // Pills plus the 8 px gap below them remain outside read exposure.
+    property <length> pill-height: root.latest-visible || State.return-visible ? history-surface.height - history-pills.y : 0px;
+    changed pill-height => { State.history-pill-height = root.pill-height; }
+    init => { State.history-width = history.width; State.history-viewport-height = history.visible-height; State.history-visible-top = root.visible-top; State.history-cover-inset = root.cover-inset; State.history-pill-height = root.pill-height; State.conversation-height = root.height; State.history-extent = history.extent; }
     changed height => { State.conversation-height = root.height; }
 
 }

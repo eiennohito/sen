@@ -37,6 +37,175 @@ fn fixture(ui: &AppWindow) -> View {
     view
 }
 
+fn render_history(
+    view: &mut View,
+    ui: &AppWindow,
+    window: &slint::platform::software_renderer::MinimalSoftwareWindow,
+    size: (u32, u32),
+    geometry: &RefCell<Vec<(slint::SharedString, f32, f32)>>,
+) {
+    render(window, size);
+    for (id, y, height) in geometry.take() {
+        view.history_geometry(ui, &id, y, height);
+    }
+}
+
+#[test]
+fn reply_return_clears_the_residual_created_by_a_positive_jump_offset() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let mut view = fixture(&ui);
+        let geometry = Rc::new(RefCell::new(Vec::new()));
+        let reported = geometry.clone();
+        ui.global::<State>().on_row_geometry(move |id, y, h| {
+            reported.borrow_mut().push((id, y, h));
+        });
+        ui.set_show_conversation(true);
+        ui.show().unwrap();
+        for size in [(980, 720), (360, 520)] {
+            view.messages = demo::rich_fixture();
+            view.paging.borrow_mut().clear();
+            ui.set_following(false);
+            view.render(&ui);
+            ui.invoke_history_jump(0.);
+            render_history(&mut view, &ui, &window, size, &geometry);
+            let state = ui.global::<State>();
+            for (before, after) in [(false, false), (false, true), (true, true), (true, false)] {
+                ui.set_connection_failed(before);
+                render_history(&mut view, &ui, &window, size, &geometry);
+                let origin = ui.get_history_y() + state.get_history_visible_top();
+                assert!(view.jump_to_message(&ui, "rich-target"));
+                render_history(&mut view, &ui, &window, size, &geometry);
+                assert!(
+                    ui.get_history_y() > 0.,
+                    "jump must model the positive offset"
+                );
+                ui.set_connection_failed(after);
+                render_history(&mut view, &ui, &window, size, &geometry);
+                if before && !after {
+                    assert!(state.get_history_visible_top() > state.get_history_cover_inset());
+                }
+                view.return_to_anchor(&ui);
+                render_history(&mut view, &ui, &window, size, &geometry);
+                assert_eq!(
+                    state.get_history_visible_top(),
+                    state.get_history_cover_inset()
+                );
+                assert!(
+                    (ui.get_history_y() + state.get_history_visible_top() - origin).abs() < 0.5
+                );
+                assert!(!state.get_return_visible());
+            }
+            assert!(view.jump_to_message(&ui, "rich-target"));
+            assert!(state.get_return_visible());
+            view.return_to_anchor(&ui);
+        }
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn following_with_return_exposes_the_last_row_and_reads_new_arrivals() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let mut view = fixture(&ui);
+        let (sender, commands) = std::sync::mpsc::sync_channel(8);
+        view.commands = Some(sender.into());
+        view.demo = false;
+        view.messages = (10..40)
+            .map(|id| MessageRow {
+                id: id.to_string().into(),
+                body: if id == 39 {
+                    "Message withdrawn"
+                } else {
+                    "short row"
+                }
+                .into(),
+                kind: if id == 39 {
+                    MessageKind::Withdrawn
+                } else {
+                    MessageKind::Text
+                },
+                sort_key: order_key(id).into(),
+                ..Default::default()
+            })
+            .collect();
+        let geometry = Rc::new(RefCell::new(Vec::new()));
+        let reported = geometry.clone();
+        let heights = Rc::new(RefCell::new(HashMap::new()));
+        let reported_heights = heights.clone();
+        let state = ui.global::<State>();
+        state.on_row_geometry(move |id, y, h| {
+            reported_heights.borrow_mut().insert(id.to_string(), h);
+            reported.borrow_mut().push((id, y, h));
+        });
+        ui.set_show_conversation(true);
+        ui.set_loading_history(false);
+        ui.show().unwrap();
+        view.render(&ui);
+        render_history(&mut view, &ui, &window, (980, 720), &geometry);
+        assert!(view.jump_to_message(&ui, "10"));
+        view.paging_status(&ui);
+        render_history(&mut view, &ui, &window, (980, 720), &geometry);
+        ui.invoke_history_scroll(-100_000.);
+        render_history(&mut view, &ui, &window, (980, 720), &geometry);
+        assert!(ui.get_following());
+        assert!(state.get_return_visible());
+        assert!(state.get_history_pill_height() > 0.);
+        view.unread.server(&view.current, Some(1), Some("38"));
+        view.unread.page(&view.current, &view.messages);
+        state.set_window_active(true);
+        view.history_exposure(&ui);
+        let band = state.get_history_pill_height();
+        let last_height = heights.borrow()["39"];
+        assert!(
+            last_height < band,
+            "last row must be shorter than the pill band"
+        );
+        assert!(
+            view.unread.exposed.iter().any(|id| id == "39"),
+            "last row ({last_height}px) is hidden by Return ({band}px)"
+        );
+        assert!(commands.try_iter().any(|command| matches!(command,
+            account::Command::MarkRead { up_to_message, .. } if up_to_message == "39")));
+        let mut incoming = message("40", "new short row");
+        incoming.timestamp = 40;
+        incoming.delivered_time = 40;
+        incoming.rich.withdrawn = true;
+        view.update(
+            &ui,
+            account::Update::Incoming {
+                chat: view.current.clone(),
+                messages: vec![incoming],
+                replay: false,
+            },
+        );
+        render_history(&mut view, &ui, &window, (980, 720), &geometry);
+        view.history_exposure(&ui);
+        assert!(ui.get_following());
+        assert!(state.get_return_visible());
+        let arrival_height = heights.borrow()["40"];
+        assert!(
+            arrival_height < band,
+            "arrival must be shorter than the pill band"
+        );
+        assert!(
+            view.unread.exposed.iter().any(|id| id == "40"),
+            "arrival ({arrival_height}px) is hidden by Return ({band}px)"
+        );
+        assert!(commands.try_iter().any(|command| matches!(command,
+            account::Command::MarkRead { up_to_message, .. } if up_to_message == "40")));
+        assert_eq!(view.unread.chats[&view.current].count, Some(0));
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
 #[test]
 fn connection_feedback_and_list_failure() {
     std::thread::spawn(|| {
@@ -564,9 +733,10 @@ fn exposure_uses_only_the_visible_history_viewport() {
                     ui.invoke_history_jump(0.);
                     render(&window, (width, height));
                     let state = ui.global::<State>();
-                    let visible = state.get_history_viewport_height();
+                    let viewport = state.get_history_viewport_height();
+                    let visible = viewport - state.get_history_pill_height();
                     let raw = state.get_connection_area_height();
-                    assert!((visible - (raw - state.get_connection_notice_height())).abs() < 0.5);
+                    assert!((viewport - (raw - state.get_connection_notice_height())).abs() < 0.5);
                     let mut measured = history_window::HistoryWindow::default();
                     measured.measured("10", visible - 30., 20., false);
                     measured.measured("11", visible + 2., 10., false);
@@ -640,6 +810,52 @@ fn exposure_uses_only_the_visible_history_viewport() {
                             < 0.5
                     );
                 }
+            }
+        }
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn pill_band_reserves_bottom_space_without_resizing_the_viewport() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let mut view = fixture(&ui);
+        view.messages = demo::paged_rows(0..40);
+        view.render(&ui);
+        ui.set_show_conversation(true);
+        ui.show().unwrap();
+        for size in [(980, 720), (360, 520), (1400, 900)] {
+            for text in [15, 24] {
+                ui.set_text_size(text);
+                let state = ui.global::<State>();
+                ui.set_following(true);
+                state.set_return_visible(false);
+                render(&window, size);
+                let viewport = state.get_history_viewport_height();
+                let extent = state.get_history_extent();
+                assert_eq!(state.get_history_pill_height(), 0.);
+                for (following, return_visible) in [(false, false), (false, true), (true, true)] {
+                    ui.set_following(following);
+                    state.set_return_visible(return_visible);
+                    render(&window, size);
+                    assert!(state.get_history_pill_height() >= 40.);
+                    assert!((state.get_history_viewport_height() - viewport).abs() < 0.5);
+                    assert!(
+                        (state.get_history_extent() - extent - state.get_history_pill_height())
+                            .abs()
+                            < 0.5
+                    );
+                }
+                state.set_return_visible(false);
+                ui.set_following(false);
+                ui.invoke_history_scroll(-100_000.);
+                render(&window, size);
+                assert!(ui.get_following());
+                assert_eq!(state.get_history_pill_height(), 0.);
             }
         }
         ui.hide().unwrap();
