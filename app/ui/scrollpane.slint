@@ -1,6 +1,9 @@
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 export component Pane inherits Rectangle {
+    in property <bool> virtual: false;
+    in property <length> virtual-height;
+    in property <length> full-height: -1px;
     in property <bool> connection-feedback: false;
     out property <length> inset <=> root.cover-height;
     property <length> cover-height: root.connection-feedback && State.connection-feedback-visible ? State.connection-notice-height : 0px;
@@ -31,19 +34,29 @@ export component Pane inherits Rectangle {
         }
     }
     in-out property <length> offset: 0px;
-    out property <length> extent: max(0px, content.height - root.height) + root.cover-height;
+    out property <length> extent: max(0px, (root.virtual ? root.virtual-height : content.height) - root.height) + root.cover-height;
     out property <bool> dragging: thumb-touch.pressed;
     callback scrolled();
     callback focus-requested();
     in-out property <length> content-y <=> root.offset;
     out property <length> visible-width: max(0px, root.width - 12px);
     property <bool> scrolling;
-    changed offset => { root.scrolling = true; hide.restart(); }
+    changed offset => { root.scrolling = true; hide.restart(); if root.virtual { root.scrolled(); } }
     hide := Timer { interval: 1s; triggered => { root.scrolling = false; } }
     in property <length> content-width;
     in property <bool> horizontal-scrollbar-policy;
     clip: true;
-    public function jump(y: length) { root.residual = 0px; root.offset = max(-root.extent, min(0px, y)); }
+    property <length> seek-y;
+    seek-settle := Timer {
+        interval: 0ms;
+        triggered => { root.offset = max(-root.extent, min(0px, root.seek-y)); }
+    }
+    public function jump(y: length) {
+        root.residual = 0px;
+        root.seek-y = max(-root.extent, min(0px, y));
+        root.offset = root.seek-y;
+        if root.virtual { seek-settle.restart(); }
+    }
     public function scroll(delta: length) {
         if root.residual > 0px {
             if delta < 0px {
@@ -65,9 +78,9 @@ export component Pane inherits Rectangle {
         y: root.visible-top; width: root.visible-width; height: root.visible-height;
         clip: root.visible-top > 0px;
         content := Rectangle {
-            x: 0px; y: root.offset;
+            x: 0px; y: root.virtual ? 0px : root.offset;
             width: max(0px, root.width - 12px);
-            height: self.preferred-height;
+            height: root.virtual ? root.visible-height : root.full-height >= 0px ? root.full-height : self.preferred-height;
             @children
         }
     }
@@ -106,3 +119,4 @@ export component Pane inherits Rectangle {
         }
     }
 }
+

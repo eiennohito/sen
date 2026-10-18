@@ -1,7 +1,7 @@
 import { EmptyState } from "empty-state.slint";
 import { Avatar } from "avatar.slint";
 import { Button } from "button.slint";
-import { LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { LineEdit, TextEdit, ScrollView, ListView, ComboBox } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
@@ -24,13 +24,19 @@ export component Chats inherits Rectangle {
     };
     out property <length> viewport-height: chat-list.visible-height;
     changed viewport-height => { State.chat-list-height = root.viewport-height; }
+    property <length> reveal-y;
+    // Slint's virtual list estimates a distant seek at a row boundary first.
+    // Apply the requested pixel offset again after that layout has settled.
+    reveal-settle := Timer { interval: 0ms; triggered => { chat-list.jump(root.reveal-y); } }
     public function reveal(index: int) {
         chat-list.jump(State.list-y);
         let top = index * State.chat-row-height;
         let bottom = top + State.chat-row-height;
         let extent = max(0px, State.chats.length * State.chat-row-height - chat-list.height) + chat-list.inset;
         let y = top + State.list-y < 0px ? -top : bottom + State.list-y > chat-list.visible-height ? chat-list.visible-height - bottom : State.list-y;
-        State.list-y = max(-extent, min(0px, y));
+        root.reveal-y = max(-extent, min(0px, y));
+        chat-list.jump(root.reveal-y);
+        reveal-settle.restart();
     }
     public function focus-search-last() { chips-focus.focus(); }
     public function focus-list() { list-focus.focus(); }
@@ -116,7 +122,15 @@ export component Chats inherits Rectangle {
                     connection-feedback: State.narrow && !State.show-conversation && State.section == 0 && !(State.profile-open && State.profile-sheet);
                     offset <=> State.list-y;
                     content-width: self.visible-width;
-                    VerticalLayout { spacing: 0px;
+                virtual: true;
+                virtual-height: chat-view.content-height;
+                chat-view := ListView {
+                    width: parent.width; height: parent.height;
+                    content-y <=> State.list-y;
+                    content-width: self.width;
+                    vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: always-off;
+                    accessible-role: none;
 for chat[i] in State.chats: Rectangle {
                         width: chat-list.visible-width; height: State.chat-row-height;
                         border-radius: 8px; clip: true;
@@ -161,7 +175,7 @@ for chat[i] in State.chats: Rectangle {
                             }
                             clicked => { State.result-focus = i; root.open-result(); } }
                     }
-}
+                }
 
                 }
                 }

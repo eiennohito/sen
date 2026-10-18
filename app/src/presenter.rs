@@ -5,6 +5,7 @@ pub struct Presenter {
     chats: Rc<VecModel<ChatRow>>,
     messages: Rc<VecModel<MessageRow>>,
     chat_keys: Vec<ChatId>,
+    history_chat: Option<ChatId>,
     message_keys: Vec<RowKey>,
     pub images: HashMap<String, slint::Image>,
     pub failures: HashMap<String, line_wasm_poc::client::desktop::assets::Failure>,
@@ -12,7 +13,20 @@ pub struct Presenter {
     friend_keys: Vec<String>,
     members: Rc<VecModel<MemberRow>>,
     member_keys: Vec<String>,
+    rendered_chats: std::collections::BTreeMap<ChatId, (ChatInputs, ChatRow)>,
     rendered: std::collections::BTreeMap<Key, (StoredMessage, MessageRow)>,
+}
+// Asset pixels are patched in place; these are the non-asset row inputs.
+#[derive(PartialEq)]
+struct ChatInputs {
+    chat: ChatInput,
+    preview: Option<StoredMessage>,
+    activity: i64,
+    failed: u32,
+    draft: Option<Draft>,
+    offline: bool,
+    index: usize,
+    text_size: i32,
 }
 #[derive(Clone, PartialEq)]
 enum RowKey {
@@ -161,6 +175,20 @@ impl Presenter {
                     run.picture = picture.clone();
                     run.has_picture = true;
                     runs.set_row_data(i, run);
+                }
+            }
+        }
+        if let Some(reactions) = row
+            .reactions
+            .as_any()
+            .downcast_ref::<VecModel<ReactionRow>>()
+        {
+            for i in 0..reactions.row_count() {
+                let mut reaction = reactions.row_data(i).unwrap();
+                if let Some(image) = self.images.get(reaction.image_key.as_str()) {
+                    reaction.picture = image.clone();
+                    reaction.has_picture = true;
+                    reactions.set_row_data(i, reaction);
                 }
             }
         }
@@ -320,6 +348,22 @@ impl Presenter {
             {
                 continue;
             }
+            let inputs = ChatInputs {
+                chat: c.clone(),
+                preview: item.preview.clone(),
+                activity: item.activity_ms,
+                failed: item.failed_count,
+                draft: item.draft.clone(),
+                offline: state.connection != Connection::Online,
+                index,
+                text_size: ui.get_text_size(),
+            };
+            if let Some((old, row)) = self.rendered_chats.get(id)
+                && *old == inputs
+            {
+                chats.push((id.clone(), row.clone()));
+                continue;
+            }
             let mut row = ChatRow {
                 id: id.0.clone().into(),
                 index: index as i32,
@@ -356,10 +400,21 @@ impl Presenter {
                     row.avatar = image.clone();
                 }
             }
+            self.rendered_chats
+                .insert(id.clone(), (inputs, row.clone()));
             chats.push((id.clone(), row));
         }
         patch(&self.chats, &mut self.chat_keys, chats);
+        self.rendered_chats
+            .retain(|id, _| state.chats.contains_key(id));
         let rows = state.rows();
+        // Choose on first population, then retain the mode for this conversation.
+        // Switching delegate types during a live arrival would lose selection
+        // and the current reading anchor at the size boundary.
+        if self.messages.row_count() == 0 || self.history_chat != state.selected {
+            ui.global::<State>().set_history_virtual(rows.len() > 60);
+            self.history_chat = state.selected.clone();
+        }
         let mut messages = rows
             .iter()
             .map(|m| {
@@ -544,7 +599,215 @@ impl Presenter {
                 || state.chats.values().any(|c| c.chat.unread_stale),
         );
     }
-    pub fn invalidate_assets(&mut self) {
-        self.rendered.clear();
+    /// Patch only consumers of this key. Nested models retain their identity.
+    pub fn patch_asset(&mut self, ui: &AppWindow, state: &AppState, key: &str) {
+        let image = self.images.get(key);
+        let failure = self.failures.get(key);
+        for (_, row) in self.rendered.values_mut() {
+            patch_message_asset(row, key, image, failure);
+        }
+        for (i, id) in self.message_keys.iter().enumerate() {
+            let RowKey::Message(key_id) = id else {
+                continue;
+            };
+            if !self
+                .rendered
+                .get(key_id)
+                .is_some_and(|(_, row)| uses_asset(row, key))
+            {
+                continue;
+            }
+            let mut row = self.messages.row_data(i).unwrap();
+            if patch_message_asset(&mut row, key, image, failure) {
+                self.messages.set_row_data(i, row);
+            }
+        }
+        for (_, row) in self.rendered_chats.values_mut() {
+            patch_chat_asset(row, key, image, failure.is_some(), ui.get_text_size());
+        }
+        for (i, id) in self.chat_keys.iter().enumerate() {
+            if let Some((_, cached)) = self.rendered_chats.get(id)
+                && cached.avatar_key == key
+                && self.chats.row_data(i).as_ref() != Some(cached)
+            {
+                self.chats.set_row_data(i, cached.clone());
+            }
+        }
+        for i in 0..self.friends.row_count() {
+            let mut row = self.friends.row_data(i).unwrap();
+            if row.avatar_key == key
+                && let Some(image) = image
+                && row.avatar != *image
+            {
+                row.avatar = image.clone();
+                self.friends.set_row_data(i, row);
+            }
+        }
+        for i in 0..self.members.row_count() {
+            let mut row = self.members.row_data(i).unwrap();
+            if row.avatar_key == key
+                && let Some(image) = image
+                && row.avatar != *image
+            {
+                row.avatar = image.clone();
+                self.members.set_row_data(i, row);
+            }
+        }
+        if let Some(image) = image {
+            if state
+                .selected
+                .as_ref()
+                .and_then(|id| state.chats.get(id))
+                .and_then(|item| item.chat.avatar.as_ref())
+                .and_then(|value| {
+                    serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(value)
+                        .ok()
+                })
+                .is_some_and(|asset| asset.key() == key)
+            {
+                ui.global::<State>().set_chat_avatar(image.clone());
+            }
+            let profile = match &state.panel {
+                Panel::Profile(id) | Panel::MemberProfile(id) => {
+                    state.friends.iter().find(|f| &f.id == id).or_else(|| {
+                        state
+                            .members
+                            .iter()
+                            .find(|m| &m.contact.id == id)
+                            .map(|m| &m.contact)
+                    })
+                }
+                _ => None,
+            };
+            if profile
+                .and_then(|f| f.avatar.as_ref())
+                .is_some_and(|a| a.key() == key)
+            {
+                ui.set_profile_avatar(image.clone());
+            }
+        }
+    }
+    pub fn patch_draft(&mut self, chat: &ChatId, draft: &Option<Draft>) {
+        let Some((inputs, row)) = self.rendered_chats.get_mut(chat) else {
+            return;
+        };
+        inputs.draft = draft.clone();
+        row.draft = draft.as_ref().is_some_and(|d| !d.text.is_empty());
+        row.draft_preview = draft
+            .as_ref()
+            .map(|d| single_line(&d.text))
+            .unwrap_or_default()
+            .into();
+        if let Some(i) = self.chat_keys.iter().position(|id| id == chat)
+            && self.chats.row_data(i).as_ref() != Some(row)
+        {
+            self.chats.set_row_data(i, row.clone());
+        }
+    }
+}
+
+fn uses_asset(row: &MessageRow, key: &str) -> bool {
+    row.image_key == key
+        || row.sender_key == key
+        || row.rich_runs.iter().any(|run| run.image_key == key)
+        || row.reactions.iter().any(|run| run.image_key == key)
+}
+fn patch_message_asset(
+    row: &mut MessageRow,
+    key: &str,
+    image: Option<&slint::Image>,
+    failure: Option<&line_wasm_poc::client::desktop::assets::Failure>,
+) -> bool {
+    if !uses_asset(row, key) {
+        return false;
+    }
+    let old = row.clone();
+    if row.image_key == key {
+        if let Some(image) = image {
+            row.picture = image.clone();
+            row.has_picture = true;
+        }
+        row.image_failed = failure.is_some();
+        row.image_failure = failure.map(|f| format!("{f:?}")).unwrap_or_default().into();
+        row.image_error = failure.map(|f| f.image_text()).unwrap_or_default().into();
+        row.image_retryable = failure.is_some_and(|f| f.retriable());
+    }
+    if row.sender_key == key
+        && let Some(image) = image
+    {
+        row.sender_avatar = image.clone();
+        row.has_sender_avatar = true;
+    }
+    patch_runs(&row.rich_runs, key, image, failure.is_some(), None);
+    if let Some(model) = row
+        .reactions
+        .as_any()
+        .downcast_ref::<VecModel<ReactionRow>>()
+    {
+        for i in 0..model.row_count() {
+            let mut run = model.row_data(i).unwrap();
+            if run.image_key == key
+                && let Some(image) = image
+                && run.picture != *image
+            {
+                run.picture = image.clone();
+                run.has_picture = true;
+                model.set_row_data(i, run);
+            }
+        }
+    }
+    *row != old
+}
+fn patch_chat_asset(
+    row: &mut ChatRow,
+    key: &str,
+    image: Option<&slint::Image>,
+    failed: bool,
+    size: i32,
+) -> bool {
+    patch_runs(&row.preview_runs, key, image, failed, Some(size));
+    if row.avatar_key == key
+        && let Some(image) = image
+        && row.avatar != *image
+    {
+        row.avatar = image.clone();
+        return true;
+    }
+    false
+}
+fn patch_runs(
+    runs: &ModelRc<RichRun>,
+    key: &str,
+    image: Option<&slint::Image>,
+    failed: bool,
+    size: Option<i32>,
+) {
+    if let Some(model) = runs.as_any().downcast_ref::<VecModel<RichRun>>() {
+        // Do the thumbnail conversion once, even when an emoji repeats.
+        let mut picture = None;
+        for i in 0..model.row_count() {
+            let mut run = model.row_data(i).unwrap();
+            if run.image_key == key {
+                if failed {
+                    if run.has_picture {
+                        run.has_picture = false;
+                        model.set_row_data(i, run);
+                    }
+                    continue;
+                }
+                let Some(image) = image else {
+                    continue;
+                };
+                let image = picture.get_or_insert_with(|| {
+                    size.map(|size| preview::small(image, size))
+                        .unwrap_or_else(|| image.clone())
+                });
+                if !run.has_picture || run.picture != *image {
+                    run.picture = image.clone();
+                    run.has_picture = true;
+                    model.set_row_data(i, run);
+                }
+            }
+        }
     }
 }

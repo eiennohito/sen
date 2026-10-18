@@ -16,6 +16,8 @@ mod demo;
 mod demo_data;
 mod desktop_integration;
 mod event_loop;
+#[cfg(feature = "ui-debug")]
+mod latency;
 mod links;
 mod notifications;
 mod present;
@@ -547,6 +549,8 @@ impl Desktop {
         }
     }
     fn render(&mut self, ui: &AppWindow) {
+        #[cfg(feature = "ui-debug")]
+        latency::RENDERS.set(latency::RENDERS.get() + 1);
         // Text typed or set without an edit event stays; only engine changes replace it.
         if self.state.composer == self.shown_composer {
             self.state.composer = ui.get_draft().to_string();
@@ -598,25 +602,27 @@ impl Desktop {
             .values()
             .chain(self.state.chats.values().filter_map(|c| c.preview.as_ref()))
         {
-            if let Ok(raw) =
-                serde_json::from_value::<line_wasm_poc::client::desktop::Message>(m.body.clone())
-            {
-                for asset in
-                    raw.image
-                        .into_iter()
-                        .chain(raw.sender_avatar)
-                        .chain(
-                            line_wasm_poc::client::desktop::reactions(&m.reactions)
-                                .into_iter()
-                                .filter_map(|r| r.asset),
-                        )
-                        .chain(raw.rich.emoji.iter().filter_map(
-                            line_wasm_poc::client::desktop::assets::Asset::inline_emoji,
-                        ))
-                {
-                    if self.requested_assets.insert(asset.key()) {
-                        self.sender.send(Intent::Asset(asset));
-                    }
+            use line_wasm_poc::client::desktop::{assets::Asset, rich::InlineEmoji};
+            // Asset discovery needs only these fields, not another complete
+            // deserialization of each message body on every presentation.
+            let media = ["image", "sender_avatar"].into_iter().filter_map(|field| {
+                m.body
+                    .get(field)
+                    .filter(|value| !value.is_null())
+                    .and_then(|value| serde_json::from_value::<Asset>(value.clone()).ok())
+            });
+            let emoji = m.body["rich"]["emoji"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|value| serde_json::from_value::<InlineEmoji>(value.clone()).ok())
+                .filter_map(|span| Asset::inline_emoji(&span));
+            let reactions = line_wasm_poc::client::desktop::reactions(&m.reactions)
+                .into_iter()
+                .filter_map(|r| r.asset);
+            for asset in media.chain(emoji).chain(reactions) {
+                if self.requested_assets.insert(asset.key()) {
+                    self.sender.send(Intent::Asset(asset));
                 }
             }
         }
@@ -721,7 +727,99 @@ impl Desktop {
             });
         }
     }
-    fn apply(&mut self, ui: &AppWindow, d: Delta) {
+    fn apply_batch(&mut self, ui: &AppWindow, deltas: impl IntoIterator<Item = Delta>) {
+        let mut dirty = false;
+        let mut window = false;
+        let mut editor = None;
+        for delta in deltas {
+            let (changed, arrived, selection) = self.apply(ui, delta);
+            dirty |= changed;
+            window |= arrived;
+            editor = selection.or(editor);
+        }
+        if self.state.selected.is_none() && !self.state.chat_order.is_empty() {
+            self.select(ui, 0);
+        } else if dirty {
+            self.render(ui);
+        }
+        if let Some((anchor, caret)) = editor {
+            if ui.get_draft().as_str() != self.state.composer {
+                ui.set_draft(self.state.composer.clone().into());
+            }
+            self.shown_composer = self.state.composer.clone();
+            ui.invoke_restore_editor(anchor, caret);
+        }
+        if window && self.latest_requested && self.state.reaches_end {
+            self.latest_requested = false;
+            ui.set_following(true);
+            ui.invoke_latest();
+        } else if window && !self.opening_history && ui.get_following() {
+            ui.invoke_latest();
+        }
+    }
+    fn apply(&mut self, ui: &AppWindow, d: Delta) -> (bool, bool, Option<(i32, i32)>) {
+        // The engine may publish an unchanged window and a whole chat list on a
+        // draft save. Keep that acknowledgement out of the conversation render.
+        if let Delta::Window {
+            sub,
+            upsert,
+            remove,
+            gaps,
+            reaches_start,
+            reaches_end,
+            replies,
+            unread_anchor,
+        } = &d
+            && *sub == self.state.window_sub
+            && remove.is_empty()
+            && upsert.len() == self.state.messages.len()
+            && upsert
+                .iter()
+                .all(|m| self.state.messages.get(&m.key) == Some(m))
+            && gaps == &self.state.gaps
+            && *reaches_start == self.state.reaches_start
+            && *reaches_end == self.state.reaches_end
+            && (self.state.unread_divider.is_some() || *unread_anchor == self.state.unread_divider)
+            && replies.len() == self.state.reply_targets.len()
+            && replies.iter().all(|m| {
+                m.server_id
+                    .as_ref()
+                    .and_then(|id| self.state.reply_targets.get(id))
+                    == Some(m)
+            })
+        {
+            return (false, false, None);
+        }
+        if let Delta::Chats {
+            sub,
+            upsert,
+            remove,
+            order,
+        } = &d
+            && *sub == self.state.chat_sub
+            && remove.is_empty()
+            && *order == self.state.chat_order
+            && upsert.iter().all(|item| {
+                self.state.chats.get(&item.chat.id).is_some_and(|old| {
+                    old.chat == item.chat
+                        && old.preview == item.preview
+                        && old.activity_ms == item.activity_ms
+                        && old.failed_count == item.failed_count
+                })
+            })
+        {
+            for item in upsert {
+                if self.state.chats[&item.chat.id].draft != item.draft {
+                    self.presenter.patch_draft(&item.chat.id, &item.draft);
+                }
+            }
+            self.state.apply(d);
+            return (false, false, None);
+        }
+        let dirty = !matches!(
+            &d,
+            Delta::Asset { .. } | Delta::MediaFailed { .. } | Delta::Draft { .. }
+        );
         match &d {
             Delta::UnsendFailed(key) => {
                 if self.state.messages.contains_key(key) {
@@ -761,7 +859,7 @@ impl Desktop {
             Delta::MoreChats(more) => ui.set_more_chats(*more),
             Delta::MediaFailed { key, failure } => {
                 self.presenter.failures.insert(key.clone(), *failure);
-                self.presenter.invalidate_assets();
+                self.presenter.patch_asset(ui, &self.state, key);
                 if self.viewer_asset.as_ref() == Some(key) {
                     ui.set_viewer_loading(false);
                     ui.set_viewer_error(failure.to_string().into());
@@ -792,7 +890,7 @@ impl Desktop {
                         pixels.height,
                     )),
                 );
-                self.presenter.invalidate_assets();
+                self.presenter.patch_asset(ui, &self.state, key);
                 if self.viewer_asset.as_ref() == Some(key) {
                     ui.set_viewer_image(self.presenter.images[key].clone());
                     ui.set_viewer_loading(false);
@@ -842,22 +940,21 @@ impl Desktop {
             ),
             _ => None,
         };
-        self.state.apply(d);
-        if self.state.selected.is_none() && !self.state.chat_order.is_empty() {
-            self.select(ui, 0);
-        } else {
-            self.render(ui);
-            if let Some((anchor, caret)) = editor {
-                ui.invoke_restore_editor(anchor, caret);
+        if let Delta::Draft { chat, draft } = &d {
+            if let Some(item) = self.state.chats.get_mut(chat) {
+                item.draft = draft.clone();
             }
-            if window && self.latest_requested && self.state.reaches_end {
-                self.latest_requested = false;
-                ui.set_following(true);
-                ui.invoke_latest();
-            } else if window && !self.opening_history && ui.get_following() {
-                ui.invoke_latest();
+            self.presenter.patch_draft(chat, draft);
+            // A delayed selection draft must not replace text entered since
+            // the selection was rendered.
+            if self.state.selected.as_ref() == Some(chat)
+                && ui.get_draft().as_str() != self.shown_composer
+            {
+                return (false, false, None);
             }
         }
+        self.state.apply(d);
+        (dirty, window, editor)
     }
 }
 fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
@@ -950,7 +1047,6 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
     });
     callback!(on_draft_edited, |ui, d| {
         d.capture_draft(&ui);
-        d.render(&ui);
     });
     callback!(on_send, |ui, d| {
         d.state.composer = ui.get_draft().to_string();
@@ -1510,7 +1606,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let delta = worker
                 .deltas
                 .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))?;
-            desktop.update(|d| d.apply(&ui, delta));
+            desktop.update(|d| {
+                d.apply_batch(&ui, std::iter::once(delta).chain(worker.deltas.try_iter()))
+            });
         }
     }
     let weak = ui.as_weak();
@@ -1533,9 +1631,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
-            for delta in w.deltas.try_iter() {
-                d.update(|d| d.apply(&ui, delta));
-            }
+            d.update(|d| d.apply_batch(&ui, w.deltas.try_iter()));
             d.update(|d| {
                 d.background.apply(&ui);
                 d.observe_reading(&ui);
@@ -1593,11 +1689,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if snapshot_path.is_some() {
         for _ in 0..20 {
             desktop.update(|_| {});
-            while let Ok(delta) = worker.deltas.try_recv() {
-                desktop.update(|d| d.apply(&ui, delta));
-            }
+            desktop.update(|d| d.apply_batch(&ui, worker.deltas.try_iter()));
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
+    }
+    #[cfg(feature = "ui-debug")]
+    if demo && std::env::var_os("LINE_UI_LATENCY").is_some() {
+        let window = snapshot
+            .as_ref()
+            .expect("latency measurement requires --snapshot");
+        desktop.update(|d| latency::run(d, &ui, window));
+        return Ok(());
     }
     if snapshot_profile || scene == "member-profile" {
         ui.invoke_open_profile("alice".into());
