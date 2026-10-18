@@ -8,6 +8,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+import resource
 import secrets
 import shutil
 import signal
@@ -57,7 +58,9 @@ if pid_file.exists():
 environment = os.environ.copy()
 for key in ('WAYLAND_DISPLAY', 'DISPLAY', 'XDG_ACTIVATION_TOKEN', 'DESKTOP_STARTUP_ID', 'DBUS_SESSION_BUS_ADDRESS'):
     environment.pop(key, None)
-environment.update(QT_QPA_PLATFORM='offscreen', QT_QUICK_BACKEND='software', KWIN_COMPOSE='Q')
+# KDE_DEBUG disables KCrash: a crashing private KWin must not restart itself
+# or open DrKonqi on the host desktop.
+environment.update(QT_QPA_PLATFORM='offscreen', QT_QUICK_BACKEND='software', KWIN_COMPOSE='Q', KDE_DEBUG='1')
 def owns_port(pid, port):
     try:
         inodes = {os.readlink(fd)[8:-1] for fd in Path(f'/proc/{pid}/fd').iterdir() if os.readlink(fd).startswith('socket:[')}
@@ -87,7 +90,9 @@ with tempfile.TemporaryDirectory(prefix='line-ui-automation-') as directory:
         raise KeyboardInterrupt
     for signum in (signal.SIGTERM, signal.SIGHUP):
         signal.signal(signum, terminate_owned_scope)
-    process = subprocess.Popen(command, env=environment, stdout=log, stderr=log, start_new_session=True)
+    # KWin 6 segfaults in Compositor::stop on teardown; keep that out of coredumps.
+    process = subprocess.Popen(command, env=environment, stdout=log, stderr=log, start_new_session=True,
+        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
     try:
         for _ in range(200):
             if pid_file.exists():
