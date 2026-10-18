@@ -134,6 +134,7 @@ pieces the capture redacted come from the extension's upload code.
    - plus the auth headers.
 3. The response header **`x-obs-oid`** carries the real object id. That becomes `OID`.
 4. Image or video preview: `POST …/r/talk/<sid>/<oid>__ud-preview`, with the encrypted preview as the body and `X-Obs-Params` `name` set to the preview file's name. Video also uploads chunk hashes to `<oid>__ud-hash`, which is not needed for images or files.
+   Photos at original quality (what this client sends: no re-encoding) carry `MEDIA_CONTENT_INFO` = JSON `{"category":"original","fileSize":<bytes>,"extension":"<jpg|png|gif|webp…>","animated":<bool>,"width":W,"height":H}` and `MEDIA_THUMB_INFO` = JSON `{"width","height"}` of the preview. The image also gets `ENC_KM` if it has none. Chrome's default quality re-compresses the image and omits `MEDIA_CONTENT_INFO`. Images over 1e8 pixels are sent as files.
 5. Then `sendMessage` with `contentMetadata` `SID`, `OID`, `FILE_NAME` and `FILE_SIZE` (files and images), the media info (`MEDIA_CONTENT_INFO`, `MEDIA_THUMB_INFO` for images) and `e2eeVersion` "2", sealed like a text message. Progress is local only.
 
 ## Unsend
