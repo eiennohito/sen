@@ -133,6 +133,108 @@ conversation shows the conversation pane and focuses the composer. The
 rail collapses to a bottom or top bar with the same destinations. Unread
 state must be reachable from the conversation pane (badge on Back or rail).
 
+### 3.4 Profile, member and group surfaces (U0, draft for review)
+
+Reference: LINE Chrome's profile and group popups (local screenshots, summary in
+[protocol-traces.md](protocol-traces.md#reference-screenshots-u0)). LINE opens
+them in a separate window; here they live in the detail panel (§3.1), so the
+conversation stays visible at ≥1060 px.
+
+**One stack.** Profile, group info and members are pages of one panel stack,
+for example group info → Members → member profile. The header has a back
+arrow when the stack is deeper than one page, a title, and × to close. Escape
+and Back pop one page, and × closes the whole stack. The same stack is the
+sheet at 740–1059 px and the full-window sheet below 740 px. The binding rules
+of S2 apply to the stack as a whole.
+
+**Entry points.**
+
+| From | Opens |
+| --- | --- |
+| 1:1 header title or avatar | that contact's profile |
+| Group header title | group info |
+| Group message sender avatar or name | member profile |
+| Members row | member profile, pushed onto the stack |
+| Friends row, Profile action | friend profile; the group row opens that group's chat with group info |
+| Settings account row | own profile |
+
+**Profile page** (top to bottom; parts with no data collapse, never leaving
+gaps):
+
+- A 96 px cover band: the cover image when P6 provides it, otherwise a tint of
+  the accent colour.
+- A 96 px circular avatar centred on the band's lower edge. Activating it opens
+  the viewer. Without a picture, an initial on a tinted circle, never a bar.
+- Name at heading size, through the rich-text path so emoji render, with at
+  most two lines and an ellipsis. When the user renamed the contact, the
+  original name follows in secondary text.
+- Status message in secondary text, at most four lines, with no scroll area of
+  its own.
+- An action row: 40 px circular icon buttons, each with a small label below,
+  centred, depending on the relation:
+
+| Relation | Actions | Notes |
+| --- | --- | --- |
+| Friend | Chat, Rename | Rename opens a one-field dialog (`updateContactSetting`). Favourite is shown read-only (star after the name) until its write is traced. |
+| Non-friend member | Add friend | `addFriendByMid`. No Chat, as in LINE. A fraud notice from `getTargetProfileNotice` sits above the actions as an inline notice. Block and Report are absent until traced. |
+| Unknown member (no contact data) | none | Name "Unknown member", initial avatar, no status. |
+| Own | none | Read-only: name, status and avatar. Editing is out of scope. |
+| Official account | Chat when a chat exists | No Add friend until traced for OAs. |
+
+- A More (⋯) header button with Copy name.
+
+**Group info page:**
+
+- Avatar (96 px, no cover band) and name.
+- "N members" in secondary text.
+- Rows, each a full-width list row:
+  - Members (N) ›, which pushes the members page;
+  - Notifications, a switch (`updateChat` `notificationDisabled`);
+  - Leave group, in the danger colour, behind a confirmation dialog
+    (`deleteSelfFromChat`). After leaving, the chat stays read-only in the list
+    until the server removes it.
+- Invite, Photos, Links and Files are absent until traced. A room (unnamed
+  multi-user chat) has no Notifications row and no Leave row and is titled
+  with its member names.
+
+**Members page:**
+
+- Search field.
+- Rows: 40 px avatar, name, one-line secondary status, and a "Friend" badge.
+  "You" comes first.
+- Activating a row pushes that member's profile. For a friend, a Chat icon
+  appears on the row on hover or focus.
+- Invitees follow under "Invited (N)", with no actions.
+
+**States.** Pages render from the store at once. There are no spinners and no
+"loading" text; fields that are still missing collapse. Failed fetches show
+nothing, and the engine retries them (no refresh controls). A running action
+disables its button and shows a progress label ("Adding…"). A failed action
+shows one line of danger text under the action row and re-enables the button.
+A successful action updates the page in place: Add friend turns the page into
+the friend page.
+
+**Focus.** Header controls (Back, More, ×), then the avatar, then the actions
+from left to right, then rows in order. Opening a page focuses its first
+control after Back. Popping a page restores focus to the row or control that
+pushed it. §8.2's panel and sheet cycles apply to the stack.
+
+**Sizes.** Panel 320 px. Content padding 16 px, gaps 8 and 12 px. The action
+buttons share the width equally, with a maximum of 72 px each.
+
+```
+ wide (panel)                      narrow (sheet)
+┌──────────────────────┐          ┌──────────────────────┐
+│ ←  Profile     ⋯  ×  │          │ ←  Profile     ⋯  ×  │
+│▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│          │▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓▓│
+│▓▓▓▓▓▓▓▓( ◯ )▓▓▓▓▓▓▓▓▓│          │▓▓▓▓▓▓▓▓( ◯ )▓▓▓▓▓▓▓▓▓│
+│        Aoi ☆         │          │        Aoi ☆         │
+│     (Aoi Tanaka)     │          │   status message…    │
+│   status message…    │          │   (◯)Chat (◯)Rename  │
+│  (◯)Chat (◯)Rename   │          │                      │
+└──────────────────────┘          └──────────────────────┘
+```
+
 ## 4. State model
 
 ### 4.1 Per conversation (session memory, bounded to recent N)
@@ -476,6 +578,8 @@ not belong in the shell.
 - The Add friend destination and group management are absent until their
   protocol operations exist; they are not shown as placeholder pages.
 - Reactions are displayed but not editable in v1.
+- Profiles and group info open in the detail panel or sheet (§3.4), not in a
+  separate popup window.
 
 ## 13. Dependencies on protocol work
 
