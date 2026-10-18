@@ -47,9 +47,21 @@ export component Conversation inherits Rectangle {
             header := Rectangle {
                 height: max(64px, Tokens.heading * 1.4 + 28px) + (State.chat-subtitle != "" ? Tokens.small * 1.4 + 5px : 0px) + (State.unread-locating || State.unread-boundary-unknown ? Tokens.small * 1.4 + 5px : 0px); background: Tokens.surface;
                 FocusScope {
+                    members-button := FocusScope {
+                        x: title.absolute-position.x - header.absolute-position.x - 4px; y: 8px;
+                        width: title.width + 8px; height: header.height - 16px;
+                        visible: State.chat-group; enabled: self.visible;
+                        accessible-role: button; accessible-label: State.member-count >= 0 ? "Members, " + State.member-count : "Members";
+                        accessible-description: self.has-focus ? "Focused" : "";
+                        accessible-action-default => { State.open-members(); }
+                        Rectangle { border-radius: 6px; background: target.pressed ? Tokens.selection : target.has-hover ? Tokens.alternate-background : transparent; border-width: members-button.has-focus ? 2px : 0px; border-color: Tokens.accent; }
+                        key-pressed(event) => { if !State.ime-active && (event.text == Key.Return || event.text == " ") { State.open-members(); return accept; } reject }
+                        target := TouchArea { mouse-cursor: pointer; clicked => { members-button.focus(); State.open-members(); } }
+                    }
                     key-pressed(event) => {
-                        if event.text == Key.Tab && !event.modifiers.shift && State.narrow && !State.ime-active {
-                            if State.connection-failed && State.connection-feedback-visible { State.focus-connection-first(); } else { history-focus.focus(); }
+                        if event.text == Key.Tab && !State.ime-active && (members-button.has-focus || (State.narrow && !State.chat-group && !event.modifiers.shift)) {
+                            if event.modifiers.shift { if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } }
+                            else if State.connection-failed && State.connection-feedback-visible { State.focus-connection-first(); } else { history-focus.focus(); }
                             return accept;
                         }
                         reject
@@ -59,11 +71,11 @@ export component Conversation inherits Rectangle {
                     HorizontalLayout {
                         back-button := IconButton { visible: State.narrow; enabled: State.narrow; width: State.narrow ? 40px : 0px; label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } } }
                         if State.narrow && State.unread-conversations > 0: Rectangle { width: 24px; height: 22px; border-radius: 11px; background: Tokens.accent; Text { text: State.unread-stale ? "•" : "" + State.unread-conversations; color: Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
-                        Text { text: State.chat-title; color: Tokens.foreground; font-size: Tokens.heading; font-weight: 700; overflow: elide; vertical-alignment: center; }
+                        title := Text { text: State.chat-title; color: Tokens.foreground; font-size: Tokens.heading; font-weight: 700; overflow: elide; vertical-alignment: center; }
                         Text { width: Tokens.small * 6.5; horizontal-stretch: 0; text: State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
                     }
                     if State.unread-locating || State.unread-boundary-unknown: Text { text: State.unread-locating ? "Finding unread messages…" : "Couldn’t find your first unread message"; color: Tokens.secondary; font-size: Tokens.small; }
-                    if State.chat-subtitle != "": Text { text: State.chat-subtitle; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; }
+                    if State.chat-subtitle != "": Text { text: State.chat-subtitle; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; TouchArea { enabled: State.chat-group; mouse-cursor: pointer; clicked => { members-button.focus(); State.open-members(); } } }
                 }
                 }
             }
@@ -76,7 +88,7 @@ export component Conversation inherits Rectangle {
                     if State.ime-active { return reject; }
                     if State.browser-key(event) == accept { return accept; }
                     if State.recovery-kind != "" { return reject; }
-                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-failed { State.focus-sign-in-opener(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
+                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-failed { State.focus-sign-in-opener(); } else if State.chat-group { members-button.focus(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
                     if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.PageUp { history.scroll(history.visible-height * 0.9); history.scrolled(); return accept; }
@@ -157,7 +169,8 @@ composer-surface := Composer { }
             }
         }
     
-    public function focus-header() { if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } }
+    public function focus-members() { members-button.focus(); }
+    public function focus-header() { if State.chat-group { members-button.focus(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } }
     public function restore-editor(anchor: int, caret: int) { composer-surface.restore-editor(anchor, caret); }
     public function focus-editor() { composer-surface.focus-editor(); }
     public function focus-history() { history-focus.focus(); }

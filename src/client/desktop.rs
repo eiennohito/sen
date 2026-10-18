@@ -3,6 +3,8 @@ use super::{chat, *};
 use std::{collections::HashMap, sync::Arc};
 
 pub mod assets;
+#[cfg(test)]
+mod members_tests;
 mod messages;
 pub mod read;
 pub mod rich;
@@ -35,6 +37,26 @@ pub struct Friend {
     pub group: bool,
     pub avatar: Option<Asset>,
     pub member_count: Option<usize>,
+}
+
+#[derive(Clone)]
+pub struct Member {
+    pub contact: Friend,
+    pub is_self: bool,
+}
+
+fn member_identity(id: &str, contact: &Value, my_mid: &str) -> Member {
+    Member {
+        is_self: id == my_mid,
+        contact: Friend {
+            id: id.into(),
+            name: contact_name(contact).unwrap_or("Unknown member").into(),
+            status: contact["statusMessage"].as_str().unwrap_or_default().into(),
+            group: false,
+            avatar: contact["picturePath"].as_str().and_then(Asset::avatar),
+            member_count: None,
+        },
+    }
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
@@ -119,6 +141,8 @@ pub struct Client {
     pub account_name: String,
     pub more_chats: bool,
     contacts: HashMap<String, Value>,
+    members: HashMap<String, Vec<String>>,
+    member_contacts: HashMap<String, Value>,
     chat_cursor: Option<String>,
     obs_access: Option<String>,
     sequence: u64,
@@ -157,13 +181,15 @@ impl Client {
             api,
             wasm,
             state,
-            my_mid,
+            my_mid: my_mid.clone(),
             account_name: profile["displayName"]
                 .as_str()
                 .unwrap_or("Signed in")
                 .into(),
             more_chats: false,
-            contacts: HashMap::new(),
+            contacts: HashMap::from([(my_mid.clone(), profile.clone())]),
+            members: HashMap::new(),
+            member_contacts: HashMap::new(),
             chat_cursor: None,
             obs_access: None,
             sequence,
@@ -317,6 +343,7 @@ impl Client {
             if let Some(chats) = response["chats"].as_array() {
                 for chat in chats {
                     if let Some(id) = chat["chatMid"].as_str() {
+                        self.remember_members(chat);
                         group_info.insert(id.to_owned(), chat.clone());
                     }
                 }
@@ -430,6 +457,7 @@ impl Client {
             )?;
             let chats = response["chats"].as_array().context("missing groups")?;
             for chat in chats {
+                self.remember_members(chat);
                 friends.push(Friend {
                     id: required(chat, "chatMid")?.into(),
                     name: chat["chatName"]
@@ -445,6 +473,80 @@ impl Client {
             }
         }
         Ok(friends)
+    }
+
+    fn remember_members(&mut self, chat: &Value) {
+        if let Some(id) = chat["chatMid"].as_str()
+            && let Some(members) = rich::member_mids(chat, &self.my_mid)
+        {
+            if self.members.len() >= 128
+                && !self.members.contains_key(id)
+                && let Some(old) = self.members.keys().next().cloned()
+            {
+                self.members.remove(&old);
+            }
+            self.members.insert(id.into(), members);
+        }
+    }
+
+    pub fn members(&mut self, chat: &str) -> Result<(Vec<Member>, bool)> {
+        ensure!(!is_user(chat), "not a group or room");
+        if !self.members.contains_key(chat) {
+            let response = self.talk(
+                "getChats",
+                json!([{
+                "chatMids":[chat],"withMembers":true,"withInvitees":false
+            },0]),
+            )?;
+            for info in response["chats"].as_array().context("missing groups")? {
+                self.remember_members(info);
+            }
+        }
+        let ids = self.members.get(chat).context("missing members")?.clone();
+        let unknown: Vec<_> = ids
+            .iter()
+            .filter(|id| {
+                !self.contacts.contains_key(*id) && !self.member_contacts.contains_key(*id)
+            })
+            .cloned()
+            .collect();
+        let mut failed = false;
+        for chunk in unknown.chunks(100) {
+            match self.talk(
+                "getContactsV2",
+                json!([{
+                "targetUserMids":chunk,"neededContactCalendarEvents":[]
+            },0]),
+            ) {
+                Ok(response) if response["contacts"].is_object() => {
+                    for id in chunk {
+                        let contact = response["contacts"][id]["contact"].clone();
+                        if self.member_contacts.len() >= 4096
+                            && let Some(old) = self.member_contacts.keys().next().cloned()
+                        {
+                            self.member_contacts.remove(&old);
+                        }
+                        self.member_contacts.insert(id.clone(), contact);
+                    }
+                }
+                _ => failed = true,
+            }
+        }
+        Ok((
+            ids.iter()
+                .map(|id| {
+                    member_identity(
+                        id,
+                        self.contacts
+                            .get(id)
+                            .or_else(|| self.member_contacts.get(id))
+                            .unwrap_or(&Value::Null),
+                        &self.my_mid,
+                    )
+                })
+                .collect(),
+            failed,
+        ))
     }
 
     pub fn resync(&mut self) -> Result<ResyncPages> {
@@ -523,7 +625,13 @@ impl Client {
         let mut users: Vec<_> = messages
             .iter()
             .filter(|m| {
-                !m.outgoing && is_user(&m.sender_id) && !self.contacts.contains_key(&m.sender_id)
+                !m.outgoing
+                    && is_user(&m.sender_id)
+                    && !self.contacts.contains_key(&m.sender_id)
+                    && !self
+                        .member_contacts
+                        .get(&m.sender_id)
+                        .is_some_and(|c| contact_name(c).is_some())
             })
             .map(|m| m.sender_id.clone())
             .collect();
@@ -544,7 +652,12 @@ impl Client {
             }
         }
         for message in messages.iter_mut().filter(|m| !m.outgoing) {
-            if let Some(contact) = self.contacts.get(&message.sender_id) {
+            if let Some(contact) = self
+                .contacts
+                .get(&message.sender_id)
+                .or_else(|| self.member_contacts.get(&message.sender_id))
+                .filter(|contact| contact_name(contact).is_some())
+            {
                 message.sender_name = contact_name(contact).unwrap_or("Unknown member").to_owned();
                 message.sender_avatar = contact["picturePath"].as_str().and_then(Asset::avatar);
             } else if message.sender_name.is_empty() {
@@ -1024,6 +1137,24 @@ fn reactions(value: &Value) -> Vec<Reaction> {
 #[cfg(test)]
 mod protocol_tests {
     use super::*;
+    #[test]
+    fn member_identity_uses_existing_contact_names_and_unknown_fallback() {
+        let known = member_identity(
+            "other",
+            &json!({"displayNameOverridden":"Alias","displayName":"Name","statusMessage":"Hello","picturePath":"/avatar"}),
+            "self",
+        );
+        assert_eq!(known.contact.name, "Alias");
+        assert_eq!(known.contact.status, "Hello");
+        assert!(!known.is_self);
+        for contact in [Value::Null, json!({"displayName":"  "})] {
+            let member = member_identity("self", &contact, "self");
+            assert_eq!(member.contact.name, "Unknown member");
+            assert!(member.is_self);
+            assert!(member.contact.avatar.is_none());
+        }
+    }
+
     #[test]
     fn send_rejected_response_shapes_and_unanswered_transport() {
         for (http, code) in [(400, 0), (403, 10052), (200, 10102)] {

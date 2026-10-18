@@ -97,6 +97,8 @@ impl View {
         let Some(friend) = self.friends.iter().find(|friend| friend.id == id) else {
             return;
         };
+        ui.set_members_open(false);
+        ui.set_member_profile(false);
         self.profile_id = id.into();
         ui.set_profile_id(id.into());
         ui.set_profile_name(friend.name.clone());
@@ -107,11 +109,36 @@ impl View {
         ui.invoke_show_profile();
     }
     pub(crate) fn start_friend_chat(&mut self, ui: &AppWindow) {
+        if ui.get_members_open()
+            && (!self.member_chat_available(&self.profile_id)
+                || self
+                    .members
+                    .iter()
+                    .any(|m| m.id == self.profile_id && m.is_self))
+        {
+            return;
+        }
         let Some(friend) = self
             .friends
             .iter()
             .find(|friend| friend.id == self.profile_id)
             .cloned()
+            .or_else(|| {
+                self.members
+                    .iter()
+                    .find(|m| {
+                        m.id == self.profile_id && self.ids.iter().any(|id| id == m.id.as_str())
+                    })
+                    .map(|m| FriendRow {
+                        id: m.id.clone(),
+                        name: m.name.clone(),
+                        initial: m.initial.clone(),
+                        status: m.status.clone(),
+                        avatar: m.avatar.clone(),
+                        avatar_key: m.avatar_key.clone(),
+                        ..Default::default()
+                    })
+            })
         else {
             return;
         };

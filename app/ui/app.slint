@@ -5,9 +5,9 @@ import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { TextMetrics, RichMetric } from "text-metrics.slint";
 export { RichMetric } from "text-metrics.slint";
-import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
+import { ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { Pane } from "scrollpane.slint";
-export { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow, RichRun } from "types.slint";
+export { ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow, RichRun } from "types.slint";
 import { Rail } from "rail.slint";
 import { Friends } from "friends.slint";
 import { Chats } from "chats.slint";
@@ -49,6 +49,18 @@ export component AppWindow inherits Window {
     in-out property <length> friends-y <=> State.friends-y;
     in-out property <bool> loading-friends <=> State.loading-friends;
     in-out property <string> friends-error <=> State.friends-error;
+    in-out property <bool> members-open <=> State.members-open;
+    in-out property <bool> member-profile <=> State.member-profile;
+    in-out property <[MemberRow]> members <=> State.members;
+    in-out property <string> member-query <=> State.member-query;
+    in-out property <bool> members-loading <=> State.members-loading;
+    in-out property <bool> members-failed <=> State.members-failed;
+    in-out property <bool> chat-group <=> State.chat-group;
+    in-out property <int> member-count <=> State.member-count;
+    callback open-members(); callback filter-members(); callback open-member(string);
+    public function back-to-members() { layers.back-to-members(); }
+    public function focus-chat-header() { conversation.focus-header(); }
+    public function focus-members-header() { conversation.focus-members(); }
     in-out property <bool> profile-open <=> State.profile-open;
     in-out property <string> profile-name <=> State.profile-name;
     in-out property <string> profile-id <=> State.profile-id;
@@ -61,7 +73,7 @@ export component AppWindow inherits Window {
     callback browse(int); callback refresh-friends(); callback filter-friends();
     callback open-profile(string); callback start-friend-chat();
     public function show-profile() { root.profile-open = true; State.focus-profile-close(); }
-    public function close-profile() { root.profile-open = false; State.focus-friend-list(); }
+    public function close-profile() { if root.members-open { root.profile-open = false; conversation.focus-members(); } else { root.profile-open = false; State.focus-friend-list(); } }
     in-out property <bool> ime-active <=> State.ime-active;
     public function focus-composer() { if root.profile-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
     public function focus-reading-before-editor() { conversation.focus-reading-before-editor(); }

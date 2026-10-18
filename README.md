@@ -49,6 +49,15 @@ creation, membership changes, and profile editing remain unavailable.
 Preview this flow without accessing the account with `--demo-friends`.
 `tools/check-ui-mcp.py --friends` exercises it in a running `--demo` debug UI.
 
+Group and room headers open a read-only Members view with name search and
+member profiles with Back to members. Non-friends use the existing contact
+lookup; unavailable names read “Unknown member”. Open chat is available only
+for friends or existing conversations. The view uses a panel from 1060 px, a
+conversation sheet from 740 px, and a full-window sheet below that. F12 → Group
+members opens the 25-member offline fixture. Run
+`tools/check-members-mcp.py --port PORT` in an owned `--demo` ui-debug preview.
+See the [local protocol evidence and limits](docs/chromium-ui-map.md).
+
 History follows arrivals only at latest. User scrolling or selection pauses
 following; merely focusing a message does not. Latest resumes following. Reading
 and editor scroll positions are

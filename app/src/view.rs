@@ -20,6 +20,10 @@ pub(crate) struct View {
     pub(crate) friends: Vec<FriendRow>,
     pub(crate) friends_loaded: bool,
     pub(crate) profile_id: String,
+    pub(crate) members: Vec<MemberRow>,
+    pub(crate) member_request: u64,
+    pub(crate) members_loaded: bool,
+    pub(crate) members_pending: bool,
     pub(crate) friend_search_y: Option<f32>,
     pub(crate) rows: Vec<ChatRow>,
     pub(crate) ids: Vec<String>,
@@ -148,7 +152,10 @@ impl View {
         let Some(id) = self.ids.get(index).cloned() else {
             return;
         };
-        if ui.get_profile_open() && self.profile_id != id {
+        if ui.get_profile_open()
+            && (ui.get_members_open() && self.current != id
+                || !ui.get_members_open() && self.profile_id != id)
+        {
             ui.set_profile_open(false);
         }
         if id == self.current {
@@ -176,6 +183,12 @@ impl View {
         ui.set_has_chat(true);
         ui.set_selected_chat(index as i32);
         ui.set_chat_title(self.rows[index].title.clone());
+        ui.set_chat_group(self.rows[index].group);
+        ui.set_member_count(if self.rows[index].member_count > 0 {
+            self.rows[index].member_count
+        } else {
+            -1
+        });
         ui.set_draft(
             self.saved
                 .drafts
@@ -769,6 +782,49 @@ impl View {
             account::Update::SendUncertain { id, local_id } => {
                 self.update(ui, account::Update::SendFailed { id, local_id });
             }
+            account::Update::Members {
+                chat,
+                request,
+                members,
+                contacts_failed,
+            } => {
+                if chat == self.current && request == self.member_request && ui.get_members_open() {
+                    self.members_pending = false;
+                    ui.set_members_loading(false);
+                    ui.set_members_failed(members.is_none() || contacts_failed);
+                    if let Some(members) = members {
+                        self.members_loaded = true;
+                        self.members = members
+                            .into_iter()
+                            .map(|member| {
+                                let contact = member.contact;
+                                let previous = self.members.iter().find(|m| {
+                                    m.id == contact.id && m.avatar_key == contact.avatar_key
+                                });
+                                MemberRow {
+                                    initial: member_initial(&contact.name),
+                                    name: contact.name.into(),
+                                    id: contact.id.into(),
+                                    status: contact.status.into(),
+                                    avatar_key: contact.avatar_key.into(),
+                                    avatar: previous.map(|m| m.avatar.clone()).unwrap_or_default(),
+                                    is_self: member.is_self,
+                                }
+                            })
+                            .collect();
+                        ui.set_member_count(self.members.len() as i32);
+                        if let Some(row) = self
+                            .rows
+                            .iter_mut()
+                            .find(|r| r.index == ui.get_selected_chat())
+                        {
+                            row.member_count = self.members.len() as i32;
+                            ui.set_chat_subtitle(chat_subtitle(row).into());
+                        }
+                        self.filter_members(ui);
+                    }
+                }
+            }
             account::Update::Friends(friends) => {
                 let old = &self.friends;
                 self.friends = friends
@@ -794,12 +850,22 @@ impl View {
                 self.friends_loaded = true;
                 ui.set_loading_friends(false);
                 ui.set_friends_error("".into());
-                ui.set_profile_available(
-                    self.friends
-                        .iter()
-                        .any(|friend| friend.id == self.profile_id),
-                );
+                if ui.get_members_open() && ui.get_member_profile() {
+                    ui.set_profile_available(
+                        self.members
+                            .iter()
+                            .any(|m| m.id == self.profile_id && !m.is_self)
+                            && self.member_chat_available(&self.profile_id),
+                    );
+                } else if !ui.get_members_open() {
+                    ui.set_profile_available(
+                        self.friends
+                            .iter()
+                            .any(|friend| friend.id == self.profile_id),
+                    );
+                }
                 if ui.get_profile_open()
+                    && !ui.get_members_open()
                     && let Some(friend) = self
                         .friends
                         .iter()
@@ -960,6 +1026,8 @@ impl View {
                 self.friends.clear();
                 self.friends_loaded = false;
                 self.profile_id.clear();
+                self.members.clear();
+                self.member_request = self.member_request.wrapping_add(1);
                 self.friend_search_y = None;
                 self.viewer_request = 0;
                 ui.set_connected(false);
@@ -1075,6 +1143,19 @@ impl View {
                             ..Default::default()
                         });
                         self.ids.push(chat.id);
+                    }
+                }
+                if let Some(row) = self.rows.iter().find(|r| r.index == ui.get_selected_chat()) {
+                    ui.set_chat_group(row.group);
+                    ui.set_member_count(if ui.get_members_open() && self.members_loaded {
+                        self.members.len() as i32
+                    } else if row.member_count > 0 {
+                        row.member_count
+                    } else {
+                        -1
+                    });
+                    if ui.get_members_open() && !self.demo {
+                        self.load_members(ui);
                     }
                 }
                 self.filter(ui);
@@ -1236,6 +1317,17 @@ impl View {
                     pixels.width,
                     pixels.height,
                 ));
+                for member in &mut self.members {
+                    if member.avatar_key == key {
+                        member.avatar = image.clone();
+                        if member.id == self.profile_id && ui.get_member_profile() {
+                            ui.set_profile_avatar(image.clone());
+                        }
+                    }
+                }
+                if ui.get_members_open() {
+                    self.filter_members(ui);
+                }
                 for friend in &mut self.friends {
                     if friend.avatar_key == key {
                         friend.avatar = image.clone();

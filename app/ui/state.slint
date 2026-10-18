@@ -1,4 +1,4 @@
-import { ChatRow, FriendRow, MessageRow, RichRun } from "types.slint";
+import { ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
     in-out property <bool> window-active: false;
@@ -20,10 +20,11 @@ export global State {
     callback filter-category();
     callback switch-chat(int);
     callback focus-chat-list();
+    callback focus-chat-header();
     callback focus-friend-list();
     public function browser-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
-        if event.text == Key.Escape && self.profile-open && self.profile-sheet && !self.window-modal-open { self.close-profile(); return accept; }
+        if event.text == Key.Escape && self.profile-open && self.profile-sheet && !self.window-modal-open { if self.members-open && self.member-profile { self.back-to-members(); } else { self.close-profile(); } return accept; }
         if !self.window-modal-open && !(self.profile-open && self.profile-sheet) && self.connection-failed && event.text == Key.F6 { self.focus-sign-in-opener(); return accept; }
         if self.window-modal-open || (self.narrow && self.profile-open) { return reject; }
         if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
@@ -51,6 +52,20 @@ export global State {
     in-out property <length> friends-y;
     in-out property <bool> loading-friends;
     in-out property <string> friends-error;
+    in-out property <int> member-result;
+    callback back-to-members();
+    in-out property <bool> members-open;
+    in-out property <bool> member-profile;
+    in-out property <[MemberRow]> members;
+    in-out property <string> member-query;
+    in-out property <bool> members-loading;
+    in-out property <bool> members-failed;
+    in-out property <bool> chat-group;
+    in-out property <int> member-count: -1;
+    callback open-members();
+    callback filter-members();
+    callback open-member(string);
+    changed profile-open => { if !self.profile-open { self.members-open = false; self.member-profile = false; } }
     in-out property <bool> profile-open;
     out property <length> rail-width: 56px;
     out property <length> browser-width: 286px;
@@ -59,6 +74,7 @@ export global State {
     out property <length> conversation-min-width: self.narrow-width - self.rail-width - self.browser-width;
     out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
     changed profile-sheet => { if self.profile-open && self.profile-sheet { self.focus-profile-close(); } }
+    in-out property <string> profile-initial;
     in-out property <string> profile-name;
     in-out property <string> profile-id;
     in-out property <string> profile-status;
@@ -133,7 +149,7 @@ export global State {
     in-out property <bool> session-unavailable;
     out property <bool> sign-in-available: self.auth-expired || self.session-unavailable;
     in-out property <bool> reconnected-notice;
-    out property <bool> connection-feedback-visible: (self.connection-failed || self.reconnected-notice) && !self.window-modal-open && !(self.profile-open && self.profile-sheet);
+    out property <bool> connection-feedback-visible: (self.connection-failed || self.reconnected-notice) && !self.window-modal-open && !(self.profile-open && self.profile-sheet && !self.members-open);
     out property <length> connection-notice-height: max(40px, self.text-size * 1.4px + 16px);
     in-out property <length> connection-area-x;
     in-out property <length> connection-area-y;
@@ -174,6 +190,7 @@ export global State {
     in-out property <bool> searching;
     in-out property <int> result-focus: -1;
     in-out property <bool> narrow: self.window-width < self.narrow-width;
+    changed narrow => { if self.members-open && self.profile-sheet { self.focus-profile-close(); } }
     in-out property <length> window-width;
     in-out property <length> conversation-height;
     in-out property <length> history-width;

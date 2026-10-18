@@ -501,6 +501,21 @@ pub struct Runtime {
     poisoned: bool,
 }
 impl Runtime {
+    #[cfg(test)]
+    pub(crate) fn stub() -> Result<Self> {
+        let engine = Engine::default();
+        let module = Module::new(&engine, b"\0asm\x01\0\0\0".as_slice())?;
+        let mut store = Store::new(&engine, Host::default());
+        let instance = Linker::new(&engine)
+            .instantiate(&mut store, &module)?
+            .start(&mut store)?;
+        Ok(Self {
+            store,
+            instance,
+            poisoned: false,
+        })
+    }
+
     pub fn new(bytes: &[u8]) -> Result<Self> {
         let engine = Engine::default();
         let module = Module::new(&engine, bytes)?;

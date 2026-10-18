@@ -145,6 +145,28 @@ pub fn parse(raw: &Value) -> RichContent {
 
 /// A group map contains current members including self; legacy room lists
 /// exclude self. Missing membership data remains unknown, not zero.
+pub fn member_mids(chat: &Value, my_mid: &str) -> Option<Vec<String>> {
+    let group = chat
+        .pointer("/extra/groupExtra/memberMids")
+        .and_then(Value::as_object);
+    let mut ids: HashSet<&str> = if let Some(members) = group {
+        members.keys().map(String::as_str).collect()
+    } else {
+        chat["memberMids"]
+            .as_array()?
+            .iter()
+            .filter_map(Value::as_str)
+            .collect()
+    };
+    ids.remove("");
+    if group.is_none() && !my_mid.is_empty() {
+        ids.insert(my_mid);
+    }
+    let mut ids: Vec<_> = ids.into_iter().map(str::to_owned).collect();
+    ids.sort();
+    Some(ids)
+}
+
 pub fn group_member_count(chat: &Value, my_mid: &str) -> Option<usize> {
     if let Some(members) = chat
         .pointer("/extra/groupExtra/memberMids")
@@ -152,18 +174,40 @@ pub fn group_member_count(chat: &Value, my_mid: &str) -> Option<usize> {
     {
         return Some(members.len());
     }
-    let members = chat["memberMids"].as_array()?;
-    let mut ids: HashSet<&str> = members.iter().filter_map(Value::as_str).collect();
-    if !my_mid.is_empty() {
-        ids.insert(my_mid);
-    }
-    Some(ids.len())
+    member_mids(chat, my_mid).map(|ids| ids.len())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn group_map_count_does_not_invent_self() {
+        let chat = json!({"extra":{"groupExtra":{"memberMids":{"other":"1"}}}});
+        assert_eq!(group_member_count(&chat, "self"), Some(1));
+        assert_eq!(member_mids(&chat, "self").unwrap(), ["other"]);
+        assert_eq!(
+            group_member_count(&json!({"extra":{"groupExtra":{"memberMids":{}}}}), "self"),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn extracts_members_without_invitees_or_duplicates() {
+        assert_eq!(member_mids(&json!({}), "self"), None);
+        for raw in [
+            json!({"extra":{"groupExtra":{"memberMids":{"self":"1","other":"2"},"inviteeMids":{"invited":"3"}}}}),
+            json!({"memberMids":["other","self","other","",null]}),
+            json!({"memberMids":["other"]}),
+        ] {
+            assert_eq!(member_mids(&raw, "self").unwrap(), ["other", "self"]);
+        }
+        assert_eq!(
+            member_mids(&json!({"memberMids":[]}), "").unwrap(),
+            Vec::<String>::new()
+        );
+    }
 
     #[test]
     fn emoji_offsets_are_utf16_and_preserve_japanese_astral_fallback() {

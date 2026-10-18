@@ -4,6 +4,7 @@ import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { FeedbackRect } from "connection-notice.slint";
 import { Pane } from "scrollpane.slint";
+import { Members } from "members.slint";
 import { IconButton } from "icon-button.slint";
 
 component SettingsSections inherits FocusScope {
@@ -95,31 +96,35 @@ export component Layers inherits Rectangle {
 
     profile := Rectangle {
         x: State.profile-sheet ? (State.narrow ? 0px : State.rail-width + State.browser-width) : parent.width - State.panel-width;
-        y: 0px; width: State.profile-sheet ? parent.width - self.x : State.panel-width; height: parent.height - self.y;
+        y: State.members-open && State.profile-sheet && State.connection-feedback-visible ? State.connection-area-y + State.connection-notice-height : 0px; width: State.profile-sheet ? parent.width - self.x : State.panel-width; height: parent.height - self.y;
         visible: State.profile-open && !State.auth-open && !State.viewer-open; background: Tokens.background;
         TouchArea { scroll-event(event) => { accept } }
         border-width: 1px; border-color: Tokens.border;
+        members := Members { visible: State.members-open && !State.member-profile; }
         FocusScope {
+            visible: !State.members-open || State.member-profile;
             capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
-            key-pressed(event) => { if State.browser-key(event) == accept { return accept; } if event.text == Key.Escape { State.close-profile(); return accept; }
+            key-pressed(event) => { if State.browser-key(event) == accept { return accept; } if event.text == Key.Escape { if State.members-open { root.back-to-members(); } else { State.close-profile(); } return accept; }
                 if State.profile-sheet && !State.narrow && event.text == Key.Tab {
-                    if event.modifiers.shift && profile-close.has-focus { if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } return accept; }
+                    if event.modifiers.shift && (State.members-open ? profile-back.has-focus : profile-close.has-focus) { if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } return accept; }
                     if !event.modifiers.shift && profile-chat.has-focus { State.focus-settings-opener(); return accept; }
                 }
                 if State.narrow && event.text == Key.Tab {
-                    if !State.profile-available { profile-close.focus(); return accept; }
-                    if event.modifiers.shift && profile-close.has-focus { profile-chat.focus(); return accept; }
-                    if !event.modifiers.shift && profile-chat.has-focus { profile-close.focus(); return accept; }
+                    if State.members-open && !State.profile-available { if event.modifiers.shift && profile-back.has-focus { profile-close.focus(); return accept; } if !event.modifiers.shift && profile-close.has-focus { profile-back.focus(); return accept; } } else if !State.profile-available { profile-close.focus(); return accept; }
+                    if event.modifiers.shift && (State.members-open ? profile-back.has-focus : profile-close.has-focus) { profile-chat.focus(); return accept; }
+                    if !event.modifiers.shift && profile-chat.has-focus { if State.members-open { profile-back.focus(); } else { profile-close.focus(); } return accept; }
                 } reject }
             VerticalLayout {
                 padding: 20px; spacing: 12px;
+                profile-back := Button { visible: State.members-open; enabled: self.visible; text: "Back to members"; clicked => { root.back-to-members(); } }
                 profile-close := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Close profile"; clicked => { State.close-profile(); } }
-                Image { source: State.profile-avatar; height: 80px; image-fit: contain; }
-                Text { text: State.profile-group ? "Group profile" : "Friend profile"; color: Tokens.secondary; }
+                Image { source: State.profile-avatar; visible: !State.members-open || State.profile-avatar.width > 0; height: 80px; image-fit: contain; }
+                Text { text: State.profile-group ? "Group profile" : State.members-open ? "Member profile" : "Friend profile"; color: Tokens.secondary; }
+                if State.members-open && State.profile-avatar.width == 0: Rectangle { height: 80px; background: Tokens.selection; border-radius: 12px; Text { text: State.profile-initial; color: Tokens.selection-foreground; font-size: Tokens.heading; horizontal-alignment: center; vertical-alignment: center; } }
                 Text { text: State.profile-name; font-size: Tokens.heading; wrap: word-wrap; }
                 ScrollView { Text { text: State.profile-status; wrap: word-wrap; } }
-                if !State.profile-available: Text { text: "This person or group is no longer in your list."; wrap: word-wrap; color: Tokens.danger; }
-                profile-chat := Button { text: "Open chat"; enabled: State.profile-available; clicked => { State.start-friend-chat(); } }
+                if !State.profile-available && !State.members-open: Text { text: "This person or group is no longer in your list."; wrap: word-wrap; color: Tokens.danger; }
+                profile-chat := Button { visible: !State.members-open || State.profile-available; text: "Open chat"; enabled: State.profile-available; clicked => { State.start-friend-chat(); } }
             }
         }
     }
@@ -331,7 +336,8 @@ export component Layers inherits Rectangle {
     }
     public function fit-photo() { State.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
     public function original-photo() { State.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
-    public function focus-profile() { profile-close.focus(); }
+    public function back-to-members() { State.member-profile = false; members.focus-list(); }
+    public function focus-profile() { if State.members-open && !State.member-profile { members.focus-first(); } else if State.members-open { profile-back.focus(); } else { profile-close.focus(); } }
     public function focus-settings() { root.settings-section = 0; settings-close.focus-button(); }
     public function focus-auth() { if State.auth-busy { auth-back.focus(); } else { auth-start.focus(); } }
     public function focus-viewer() { viewer-close.focus(); }

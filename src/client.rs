@@ -162,6 +162,8 @@ fn set_request_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
 }
 
 struct Api {
+    #[cfg(test)]
+    synthetic_signature: bool,
     rt: Runtime,
     http: http::Transport,
     key_cache: std::collections::HashMap<String, Value>,
@@ -171,6 +173,8 @@ struct Api {
 impl Api {
     fn new(wasm: &[u8]) -> Result<Self> {
         Ok(Self {
+            #[cfg(test)]
+            synthetic_signature: false,
             rt: Runtime::new(wasm)?,
             http: http::Transport::new()?,
             key_cache: Default::default(),
@@ -209,6 +213,13 @@ impl Api {
         poll_seconds: u64,
     ) -> Result<Value> {
         let body = serde_json::to_string(args)?;
+        #[cfg(test)]
+        let signature = if self.synthetic_signature {
+            "synthetic".into()
+        } else {
+            sign(&mut self.rt, path, &body, access)?
+        };
+        #[cfg(not(test))]
         let signature = sign(&mut self.rt, path, &body, access)?;
         let mut headers = vec![
             ("Content-Type", "application/json"),

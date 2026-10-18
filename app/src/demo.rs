@@ -63,6 +63,38 @@ fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
     }
 }
 
+pub(super) fn members() -> Vec<MemberRow> {
+    (0..25)
+        .map(|i| {
+            let name = match i {
+                0 => "Offline preview".into(),
+                1 => "葵".into(),
+                2 => "蓮".into(),
+                24 => "Unknown member".into(),
+                _ => format!("Weekend walker {i:02}"),
+            };
+            MemberRow {
+                id: if i == 0 {
+                    "self".into()
+                } else if i == 1 {
+                    "0".into()
+                } else {
+                    format!("member-{i}").into()
+                },
+                initial: member_initial(&name),
+                name: name.into(),
+                is_self: i == 0,
+                avatar: if i == 24 {
+                    Default::default()
+                } else {
+                    avatar(i % 3)
+                },
+                ..Default::default()
+            }
+        })
+        .collect()
+}
+
 fn group_fixture() -> Vec<MessageRow> {
     [
         ("Morning!", "2026/10/17 09:18", "aoi", "葵", false),
@@ -251,6 +283,13 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
         .collect();
         view.render(ui);
         ui.invoke_show_history(0., false);
+        return;
+    }
+    if kind == 32 {
+        let mut view = state.borrow_mut();
+        view.select(ui, 1);
+        ui.set_show_conversation(true);
+        view.open_members(ui);
         return;
     }
     if kind == 7 {

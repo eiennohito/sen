@@ -51,7 +51,7 @@ export component Friends inherits Rectangle {
             key-pressed(event) => {
                 if State.browser-key(event) == accept { return accept; }
                 if State.ime-active { return reject; }
-                if event.text == Key.Tab { if event.modifiers.shift { friend-search.focus(); } else if State.narrow && !State.show-conversation { State.focus-settings-opener(); } else { State.focus-history(); } return accept; }
+                if event.text == Key.Tab { if event.modifiers.shift { friend-search.focus(); } else if State.narrow && !State.show-conversation { State.focus-settings-opener(); } else if State.chat-group && !State.profile-open { State.focus-chat-header(); } else { State.focus-history(); } return accept; }
                 if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
                 if event.text == Key.Home { State.friend-result = 0; friend-list.jump(0px); return accept; }
                 if event.text == Key.End { State.friend-result = State.friends.length - 1; friend-list.jump(-friend-list.extent); return accept; }

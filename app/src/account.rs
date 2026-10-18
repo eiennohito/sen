@@ -71,6 +71,11 @@ pub enum Command {
     },
     Reconnect,
     Friends,
+    Members {
+        chat: String,
+        request: u64,
+        avatars: Vec<String>,
+    },
     ChatDetails,
     MarkRead {
         chat: String,
@@ -133,6 +138,10 @@ pub struct FriendView {
     pub group: bool,
     pub avatar_key: String,
     pub member_count: Option<usize>,
+}
+pub struct MemberView {
+    pub contact: FriendView,
+    pub is_self: bool,
 }
 pub struct ReactionView {
     pub label: String,
@@ -232,6 +241,12 @@ pub enum Update {
     SendUncertain {
         id: String,
         local_id: String,
+    },
+    Members {
+        chat: String,
+        request: u64,
+        members: Option<Vec<MemberView>>,
+        contacts_failed: bool,
     },
     Friends(Vec<FriendView>),
     FriendsFailed,
@@ -693,6 +708,25 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     Command::ChatDetails => match client.chat_details() {
                         Ok(chats) => publish(Update::Chats { chats: chats.into_iter().map(|c| chat_view(c, &mut jobs)).collect(), more: client.more_chats }),
                         Err(_) => publish(Update::ChatsFailed(ListRequest::Details)),
+                    },
+                    Command::Members { chat, request, avatars } => {
+                        jobs.chat = Some(chat.clone());
+                        let known: HashSet<_> = avatars.into_iter().collect();
+                        let result = client.members(&chat);
+                        let contacts_failed = result.as_ref().is_ok_and(|(_, failed)| *failed);
+                        let members = result.ok().map(|(members, _)| members.into_iter().map(|member| {
+                            let friend = member.contact;
+                            let avatar_key = friend.avatar.map(|asset| {
+                                let key = asset.key();
+                                if !known.contains(&key) { jobs.entries.push((asset, jobs.chat.clone())); }
+                                key
+                            }).unwrap_or_default();
+                            MemberView { is_self: member.is_self, contact: FriendView {
+                                id: friend.id, name: friend.name, status: friend.status, group: false,
+                                member_count: None, avatar_key,
+                            } }
+                        }).collect());
+                        publish(Update::Members { chat, request, members, contacts_failed });
                     },
                     Command::Friends => match client.friends() {
                         Ok(friends) => publish(Update::Friends(friends.into_iter().map(|friend| FriendView {

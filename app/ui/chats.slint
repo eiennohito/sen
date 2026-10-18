@@ -85,7 +85,7 @@ export component Chats inherits Rectangle {
                     key-pressed(event) => {
                         if State.browser-key(event) == accept { return accept; }
                         if State.ime-active { return reject; }
-                        if event.text == Key.Tab { if event.modifiers.shift { search.focus(); } else if State.connection-failed && State.connection-feedback-visible && !State.narrow { State.focus-connection-first(); } else if State.narrow && !State.show-conversation { State.focus-settings-opener(); } else { State.focus-history(); } return accept; }
+                        if event.text == Key.Tab { if event.modifiers.shift { search.focus(); } else if State.chat-group && !State.profile-open && !State.narrow { State.focus-chat-header(); } else if State.connection-failed && State.connection-feedback-visible && !State.narrow { State.focus-connection-first(); } else if State.narrow && !State.show-conversation { State.focus-settings-opener(); } else { State.focus-history(); } return accept; }
                         if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
                         if event.text == Key.Home { State.result-focus = 0; chat-list.jump(0px); return accept; }
                         if event.text == Key.End { State.result-focus = State.chats.length - 1; chat-list.jump(-chat-list.extent); return accept; }

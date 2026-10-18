@@ -237,6 +237,38 @@ inviteIntoChat, cancelChatInvitation, acceptChatInvitation,
 rejectChatInvitation, deleteSelfFromChat. Model membership/role state and
 confirmation/error handling before exposing mutating controls.
 
+Read-only members (P5a): the repository has no local `dumps/`, HAR, or captured
+getChats response. The existing client and synthetic parser fixtures support
+`extra.groupExtra.memberMids` as a map (MIDs are keys) and room `memberMids` as
+an array. There is no local trace establishing roles, join times, or map-value
+semantics. The map's existing count is retained; the legacy room array adds
+self exactly once. Invitees are excluded and absent membership stays unknown.
+
+The existing requests are `getChats` with
+`[{chatMids, withMembers: true, withInvitees: false}, 0]` and the sender/contact
+path's `getContactsV2` with
+`[{targetUserMids, neededContactCalendarEvents: []}, 0]`. Contact responses use
+`contacts[mid].contact`, with `displayNameOverridden`, `displayName`,
+`statusMessage`, and `picturePath`. Member resolution uses those existing
+shapes on the account worker in batches of at most 100 MIDs. Membership sets
+are retained for up to 128 groups/rooms. A separate 4096-entry member contact
+cache holds answered identities and server-answered absence; call failures
+cache nothing and remain eligible for panel Retry. It never evicts friend or
+1:1 contacts. Unknown identities show an initial and “Unknown member”; history
+keeps its sender fallback and can retry failed/absent identity lookups. Self's
+identity comes from the already-fetched account profile.
+
+There is no local trace identifying membership operation numbers, and no
+join/leave/removal/invitation decoder. The current decoder handles messages
+25/26/43, watermark 40, receipt 55 and withdrawal 64/65. Unrecognised operations
+already schedule chat-list/details refresh, and full sync fetches chat details.
+Those getChats responses replace retained member sets; an open list refreshes
+in place, including equal-count replacements. Freshness follows this existing
+chat refresh coverage and paging scope. No incremental membership decoding or
+live group/room compatibility is claimed. Member profiles allow Open chat only
+for a known friend or an existing conversation; mutation/invitation flows remain
+outside the read-only implementation.
+
 ## Performance work completed during this audit
 
 Offline synthetic V2 fixture, release build, 20 decryptions: constructing a

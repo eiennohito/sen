@@ -10,6 +10,7 @@ mod debug_launch;
 mod demo;
 mod desktop_integration;
 mod links;
+mod members;
 mod notifications;
 mod snapshot;
 mod storage;
@@ -24,6 +25,7 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     ui.on_quit(|| {
         let _ = slint::quit_event_loop();
     });
+    members::bridge(&ui);
     let weak = ui.as_weak();
     ui.global::<State>().on_close_settings(move || {
         if let Some(ui) = weak.upgrade() {
@@ -401,6 +403,7 @@ mod paging;
 mod present;
 mod rich_content;
 mod view;
+use members::member_initial;
 use present::*;
 use view::View;
 
@@ -534,6 +537,13 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
             "--snapshot-scene" => {
                 out.snapshot_scene = args.next().ok_or("missing snapshot scene")?;
                 if ![
+                    "group-header",
+                    "room-header",
+                    "direct-header",
+                    "members",
+                    "member-profile",
+                    "members-offline",
+                    "member-profile-offline",
                     "chats",
                     "conversation",
                     "failed-send",
@@ -738,6 +748,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             view.rows.push(ChatRow {
                 index: index as i32,
                 group: index == 1,
+                member_count: if index == 1 { 25 } else { 0 },
                 outgoing_preview: chat.messages.last().is_some_and(|m| m.outgoing),
                 time: chat
                     .messages
@@ -904,6 +915,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             view.borrow_mut().filter_friends(&ui);
         }
     });
+    members::install(&ui, &state);
     let weak = ui.as_weak();
     let view = state.clone();
     ui.on_open_profile(move |id| {
@@ -1093,6 +1105,30 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             );
         }
         match options.snapshot_scene.as_str() {
+            "group-header" | "room-header" | "direct-header" => {
+                let mut view = state.borrow_mut();
+                view.select(
+                    &ui,
+                    if options.snapshot_scene == "direct-header" {
+                        0
+                    } else {
+                        1
+                    },
+                );
+                ui.set_show_conversation(true);
+                if options.snapshot_scene == "room-header" {
+                    ui.set_chat_title("Weekend room".into());
+                }
+            }
+            "members" | "member-profile" | "members-offline" | "member-profile-offline" => {
+                let mut view = state.borrow_mut();
+                view.select(&ui, 1);
+                ui.set_show_conversation(true);
+                view.open_members(&ui);
+                if options.snapshot_scene.starts_with("member-profile") {
+                    view.open_member(&ui, "member-2");
+                }
+            }
             "chats" => ui.set_show_conversation(false),
             "conversation" => {
                 snapshot::render(&window, options.snapshot_size)?;
