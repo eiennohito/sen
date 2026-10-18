@@ -15,6 +15,7 @@ mod debug_launch;
 mod demo;
 mod demo_data;
 mod desktop_integration;
+mod event_loop;
 mod links;
 mod notifications;
 mod present;
@@ -856,6 +857,9 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
             });
         };
     }
+    global_callback!(on_read_state_changed, |ui, d| {
+        d.observe_reading(&ui);
+    });
     focus_bridge!(on_focus_cycle_end, invoke_focus_cycle_end);
     focus_bridge!(on_focus_after_browser, invoke_focus_after_browser);
     focus_bridge!(on_focus_after_conversation, invoke_focus_after_conversation);
@@ -1187,7 +1191,7 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
             ui.set_following(true);
         }
     });
-    global_callback!(on_row_geometry, |_ui, d, id, top, height| {
+    global_callback!(on_row_geometry, |ui, d, id, top, height| {
         if id == "unread" {
             d.divider_top.set(Some(top));
         } else if let Some(key) = id.strip_prefix("gap-") {
@@ -1199,8 +1203,10 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
                 .borrow_mut()
                 .insert(Key(id.parse().unwrap()), (top, height));
         }
+        d.observe_reading(&ui);
     });
     global_callback!(on_history_scrolled, |ui, d| {
+        d.observe_reading(&ui);
         if ui.get_history_y() >= -30.
             && !ui.global::<State>().get_older_start_known()
             && let Some((chat, before)) = d.reading.borrow().clone()
@@ -1338,18 +1344,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         std::env::var("LINE_DESKTOP_AUTOMATION_SOCKET")
             .ok()
             .as_deref(),
-        std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
     )? == debug_launch::Intent::VirtualAutomation;
     let snapshot = if snapshot_path.is_some() {
         Some(snapshot::install()?)
     } else {
-        let mut selector = slint::BackendSelector::new()
-            .backend_name("winit".into())
-            .renderer_name("software".into());
         if automation {
-            selector = selector.with_winit_window_attributes_hook(|a| a.with_active(false));
+            // Slint 1.18.1 supports headless in create_backend(), but not BackendSelector.
+            // The owned launcher selects it before any platform initialization.
+            if std::env::var("SLINT_BACKEND").as_deref() != Ok("headless-software") {
+                return Err("headless automation requires the private launcher".into());
+            }
+            #[cfg(feature = "ui-debug")]
+            {
+                slint::platform::set_platform(i_slint_backend_selector::create_backend()?)?;
+                i_slint_backend_selector::init_testing_backends();
+            }
+        } else {
+            slint::BackendSelector::new()
+                .backend_name("winit".into())
+                .renderer_name("software".into())
+                .select()?;
         }
-        selector.select()?;
         None
     };
     slint::set_xdg_app_id("org.lineclient.Desktop")?;
@@ -1391,7 +1406,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     ui.set_text_size(text_size);
     ui.global::<State>().set_automation_background(automation);
-    if snapshot.is_none() {
+    if snapshot.is_none() && !automation {
         use slint::winit_030::{
             EventResult, WinitWindowAccessor,
             winit::event::{Ime, WindowEvent},
@@ -1475,40 +1490,36 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             desktop.update(|d| d.apply(&ui, delta));
         }
     }
-    let timer = slint::Timer::default();
     let weak = ui.as_weak();
     let d = desktop.clone();
     let worker = Rc::new(worker);
     let w = worker.clone();
-    timer.start(
-        slint::TimerMode::Repeated,
-        std::time::Duration::from_millis(16),
-        move || {
-            if let Some(ui) = weak.upgrade() {
-                d.update(|d| {
-                    d.background.apply(&ui);
-                    d.observe_reading(&ui);
-                    d.drain_notifications(&ui);
-                });
-                if let Some(events) = &activations {
-                    for e in events.try_iter() {
-                        let _ = ui.show();
-                        if let desktop_integration::Activation::OpenChat(chat) = e {
-                            d.update(|d| {
-                                let intent = d.state.select(ChatId(chat));
-                                d.sender.send(intent);
-                                d.render(&ui);
-                                ui.set_show_conversation(true);
-                            });
-                        }
+    worker.on_deltas(event_loop::wake);
+    event_loop::install(move || {
+        if let Some(ui) = weak.upgrade() {
+            if let Some(events) = &activations {
+                for e in events.try_iter() {
+                    let _ = ui.show();
+                    if let desktop_integration::Activation::OpenChat(chat) = e {
+                        d.update(|d| {
+                            let intent = d.state.select(ChatId(chat));
+                            d.sender.send(intent);
+                            d.render(&ui);
+                            ui.set_show_conversation(true);
+                        });
                     }
                 }
-                for delta in w.deltas.try_iter() {
-                    d.update(|d| d.apply(&ui, delta));
-                }
             }
-        },
-    );
+            for delta in w.deltas.try_iter() {
+                d.update(|d| d.apply(&ui, delta));
+            }
+            d.update(|d| {
+                d.background.apply(&ui);
+                d.observe_reading(&ui);
+                d.drain_notifications(&ui);
+            });
+        }
+    });
     ui.window()
         .set_size(slint::LogicalSize::new(size.0 as f32, size.1 as f32));
     ui.set_show_conversation(scene != "chats" && !scene.starts_with("friends"));
@@ -1578,7 +1589,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.hide()?;
     }
     desktop.update(|d| d.capture_draft(&ui));
-    timer.stop();
+    event_loop::clear();
     drop(worker);
     Ok(())
 }

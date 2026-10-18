@@ -20,9 +20,11 @@ struct Application(mpsc::SyncSender<Activation>);
 impl Application {
     fn activate(&self, _platform_data: HashMap<String, OwnedValue>) {
         let _ = self.0.try_send(Activation::Show);
+        crate::event_loop::wake();
     }
     fn open(&self, _uris: Vec<String>, _platform_data: HashMap<String, OwnedValue>) {
         let _ = self.0.try_send(Activation::Show);
+        crate::event_loop::wake();
     }
     fn activate_action(
         &self,
@@ -46,6 +48,7 @@ impl Application {
             Activation::Show
         };
         let _ = self.0.try_send(event);
+        crate::event_loop::wake();
     }
 }
 pub struct Instance {

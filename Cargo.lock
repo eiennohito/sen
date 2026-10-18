@@ -2681,6 +2681,7 @@ name = "line-desktop"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "i-slint-backend-selector",
  "image",
  "line-desktop-ui",
  "line-wasm-poc",

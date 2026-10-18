@@ -294,6 +294,9 @@ export global State {
     in-out property <bool> history-budget-warning;
     in-out property <bool> history-can-follow: true;
     in-out property <bool> history-interacting;
+    changed history-interacting => { self.read-state-changed(); }
+    changed history-dragging => { self.read-state-changed(); }
+    changed history-visible-top => { self.read-state-changed(); }
     callback row-geometry(string, length, length);
     callback history-scrolled();
     callback latest-request();

@@ -206,13 +206,38 @@ pub enum StoreLocation {
     Directory(PathBuf),
     Account { root: PathBuf, mid: Option<String> },
 }
+type DeltaWake = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
+#[derive(Clone)]
+struct DeltaSender {
+    tx: mpsc::Sender<Delta>,
+    wake: DeltaWake,
+}
+impl DeltaSender {
+    fn send(&self, delta: Delta) -> bool {
+        if self.tx.send(delta).is_err() {
+            return false;
+        }
+        if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+            wake();
+        }
+        true
+    }
+}
 pub struct Worker {
+    wake: DeltaWake,
     cancel: Arc<AtomicBool>,
     pub sender: Sender,
     pub deltas: mpsc::Receiver<Delta>,
     join: Option<thread::JoinHandle<()>>,
 }
 impl Worker {
+    /// Install a nonblocking event-loop wakeup, including already queued deltas.
+    pub fn on_deltas(&self, wake: impl Fn() + Send + Sync + 'static) {
+        *self.wake.lock().unwrap() = Some(Box::new(wake));
+        if let Some(wake) = self.wake.lock().unwrap().as_ref() {
+            wake();
+        }
+    }
     pub fn start(backend: impl Backend + 'static, location: StoreLocation) -> Self {
         Self::start_with(move || Ok((backend, location)))
     }
@@ -222,6 +247,11 @@ impl Worker {
         let inbox = Arc::new(Inbox::default());
         let sender = Sender(inbox.clone());
         let (tx, deltas) = mpsc::channel();
+        let wake = DeltaWake::default();
+        let tx = DeltaSender {
+            tx,
+            wake: wake.clone(),
+        };
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let join = thread::spawn(move || {
@@ -277,6 +307,7 @@ impl Worker {
             }
         });
         Self {
+            wake,
             cancel,
             sender,
             deltas,
@@ -302,7 +333,7 @@ struct Engine {
     store: Store,
     account_root: Option<PathBuf>,
     inbox: Arc<Inbox>,
-    tx: mpsc::Sender<Delta>,
+    tx: DeltaSender,
     connection: Connection,
     list: Option<(u64, usize)>,
     window: Option<WindowSub>,

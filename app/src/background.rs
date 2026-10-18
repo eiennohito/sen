@@ -14,6 +14,7 @@ impl Background {
             let (tx, rx) = std::sync::mpsc::channel();
             self.tray = Some(tray::Tray::start(move |e| {
                 let _ = tx.send(e);
+                crate::event_loop::wake();
             }));
             self.events = Some(rx);
         }

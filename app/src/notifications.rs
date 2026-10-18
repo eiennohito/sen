@@ -12,6 +12,7 @@ impl Notifications {
         let (tx, events) = std::sync::mpsc::channel();
         service.on_event(move |event| {
             let _ = tx.send(event);
+            crate::event_loop::wake();
         });
         Self { service, events }
     }
