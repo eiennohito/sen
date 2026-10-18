@@ -39,13 +39,13 @@ fn stalled_resolver() -> (
 #[test]
 fn dns_cancellation_is_prompt_and_helpers_are_bounded() {
     let (resolver, started, release, finished, calls) = stalled_resolver();
-    let mut transport = Transport::with_parts(None, resolver);
+    let mut transport = Transport::configured(None, resolver, Config::testing());
     transport.base = "http://stall.test".into();
     let cancel = Arc::new(AtomicBool::new(false));
     let signal = cancel.clone();
     let request = thread::spawn(move || {
         super::super::set_request_cancel(cancel);
-        let result = transport.request("/api/test", "{}", &[], 30);
+        let result = transport.request("/api/test", "{}", &[], Duration::from_millis(6000));
         (transport, result)
     });
     started.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -55,7 +55,7 @@ fn dns_cancellation_is_prompt_and_helpers_are_bounded() {
     let elapsed = now.elapsed();
     // The OS lookup remains stalled. A subsequent request must wait on that
     // helper and hit its overall deadline, rather than launch another helper.
-    let again = transport.request("/api/test", "{}", &[], 1);
+    let again = transport.request("/api/test", "{}", &[], Duration::from_millis(200));
     release.send(()).unwrap();
     finished.recv_timeout(Duration::from_secs(2)).unwrap();
     assert_eq!(result.unwrap_err().to_string(), "HTTPS request cancelled");
@@ -68,9 +68,9 @@ fn dns_cancellation_is_prompt_and_helpers_are_bounded() {
 }
 
 #[test]
-fn dns_lookup_obeys_ten_second_connect_budget() {
+fn dns_lookup_obeys_injected_connect_budget() {
     let (resolver, _started, release, finished, _calls) = stalled_resolver();
-    let _scope = RequestScope::new(Duration::from_secs(30));
+    let _scope = RequestScope::new(Duration::from_secs(30), super::Config::testing());
     let config = Agent::config_builder().proxy(None).build();
     let now = Instant::now();
     let result = resolver.resolve(
@@ -89,8 +89,8 @@ fn dns_lookup_obeys_ten_second_connect_budget() {
         Err(ureq::Error::Timeout(ureq::Timeout::Connect))
     ));
     assert!(
-        elapsed >= CONNECT_BUDGET - Duration::from_millis(100)
-            && elapsed < CONNECT_BUDGET + Duration::from_secs(2),
+        elapsed >= Config::testing().connect - Duration::from_millis(100)
+            && elapsed < Config::testing().connect + Duration::from_secs(2),
         "{elapsed:?}"
     );
 }
@@ -129,7 +129,9 @@ fn dns_cache_skips_lookup_for_pooled_requests() {
         resolver,
     );
     for _ in 0..2 {
-        transport.request("/api/test", "{}", &[], 2).unwrap();
+        transport
+            .request("/api/test", "{}", &[], Duration::from_millis(400))
+            .unwrap();
     }
     server.join().unwrap();
     assert_eq!(calls.load(Ordering::Relaxed), 1);
@@ -161,9 +163,8 @@ fn dns_and_tls_share_one_connect_budget() {
         PollConnector::default(),
         resolver,
     );
-    let _scope = RequestScope::new(Duration::from_secs(2));
-    // Accelerate the shared budget for this DNS+TLS integration check; the
-    // separate stalled-DNS test exercises the real production ten seconds.
+    let _scope = RequestScope::new(Duration::from_secs(2), super::Config::testing());
+    // DNS and TLS consume the same injected connect budget.
     ACTIVE.with(|slot| {
         slot.borrow_mut().as_mut().unwrap().connect_deadline =
             Instant::now() + Duration::from_millis(250)
@@ -244,7 +245,9 @@ fn replaces_idle_connection_closed_by_server() {
         },
         PollResolver::default(),
     );
-    transport.request("/api/test", "{}", &[], 2).unwrap();
+    transport
+        .request("/api/test", "{}", &[], Duration::from_millis(400))
+        .unwrap();
     close.send(()).unwrap();
     observed.recv_timeout(Duration::from_secs(2)).unwrap();
     // Wait until FIN is visible, without consuming bytes or relying on a sleep.
@@ -258,7 +261,9 @@ fn replaces_idle_connection_closed_by_server() {
         }
     }
     assert_eq!(
-        transport.request("/api/test", "{}", &[], 2).unwrap(),
+        transport
+            .request("/api/test", "{}", &[], Duration::from_millis(400))
+            .unwrap(),
         (200, b"{}".to_vec())
     );
     server.join().unwrap();
@@ -371,9 +376,11 @@ fn retries_reused_write_failure_once_on_fresh_connection() {
             },
             PollResolver::default(),
         );
-        transport.request("/api/test", "{}", &[], 2).unwrap();
+        transport
+            .request("/api/test", "{}", &[], Duration::from_millis(400))
+            .unwrap();
         failures.store(failure_count, Ordering::Relaxed);
-        let result = transport.request("/api/test", "{}", &[], 2);
+        let result = transport.request("/api/test", "{}", &[], Duration::from_millis(400));
         done.send(()).unwrap();
         server.join().unwrap();
         if failure_count == 1 {
@@ -408,7 +415,7 @@ fn fresh_write_failure_is_not_retried() {
         },
         PollResolver::default(),
     );
-    let result = transport.request("/api/test", "{}", &[], 2);
+    let result = transport.request("/api/test", "{}", &[], Duration::from_millis(400));
     done.send(()).unwrap();
     server.join().unwrap();
     assert_eq!(
@@ -460,11 +467,13 @@ fn full_send_failure_is_not_retried(inject_write_error: bool) {
             PollResolver::default(),
         );
     }
-    transport.request("/api/test", "{}", &[], 2).unwrap();
+    transport
+        .request("/api/test", "{}", &[], Duration::from_millis(400))
+        .unwrap();
     if inject_write_error {
         failures.store(1, Ordering::Relaxed);
     }
-    let result = transport.request("/api/test", "{}", &[], 2);
+    let result = transport.request("/api/test", "{}", &[], Duration::from_millis(400));
     done.send(()).unwrap();
     server.join().unwrap();
     assert_eq!(
@@ -523,11 +532,11 @@ fn proxy_connect_keeps_target_tls_and_errors_private() {
             "/api/test",
             "private-body",
             &[("x-line-access", "origin-token")],
-            2,
+            Duration::from_millis(400),
         );
         server.join().unwrap();
         assert_eq!(
-            format!("{:#}", result.unwrap_err()),
+            result.unwrap_err().to_string(),
             "HTTPS transport failed; response not logged"
         );
     }

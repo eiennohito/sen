@@ -1,4 +1,6 @@
-use super::{ACTIVE, CONNECT_BUDGET, POLL, check_request};
+#[cfg(test)]
+use super::Config as TimingConfig;
+use super::{ACTIVE, check_request};
 use std::{
     collections::HashMap,
     fmt, io,
@@ -127,7 +129,7 @@ impl Resolver for PollResolver {
             let wait = ACTIVE.with(|slot| {
                 let slot = slot.borrow();
                 let request = slot.as_ref().unwrap();
-                POLL.min(
+                request.config.poll.min(
                     request
                         .deadline
                         .min(request.connect_deadline)
@@ -138,7 +140,8 @@ impl Resolver for PollResolver {
             match pending.result.recv_timeout(wait) {
                 Ok(result) => {
                     let pending = state.pending.take().unwrap();
-                    if pending.started.elapsed() >= CONNECT_BUDGET
+                    if pending.started.elapsed()
+                        >= ACTIVE.with(|slot| slot.borrow().as_ref().unwrap().config.connect)
                         || (pending.abandoned
                             && !result.as_ref().is_ok_and(|values| !values.is_empty()))
                     {
@@ -192,7 +195,7 @@ mod tests {
     fn abandoned_dns_results_are_discarded_or_keep_original_ttl() {
         // Exercise a real cancelled resolver call, then advance only its stored
         // lookup timestamp to cover ageing without sleeping for eleven seconds.
-        for (failure, age) in [(false, 11), (true, 11), (true, 1), (false, 1)] {
+        for (failure, age) in [(false, 11000), (true, 11000), (true, 1), (false, 1)] {
             let (started, ready) = mpsc::channel();
             let (release, wait) = mpsc::channel();
             let wait = Mutex::new(wait);
@@ -221,7 +224,7 @@ mod tests {
             let first = resolver.clone();
             let worker = thread::spawn(move || {
                 set_request_cancel(cancelled);
-                let _scope = RequestScope::new(Duration::from_secs(30));
+                let _scope = RequestScope::new(Duration::from_secs(30), TimingConfig::testing());
                 first.resolve(
                     &"https://cache.test".parse().unwrap(),
                     &Config::default(),
@@ -233,7 +236,7 @@ mod tests {
             assert!(
                 matches!(worker.join().unwrap(), Err(ureq::Error::Io(error)) if error.kind() == io::ErrorKind::ConnectionAborted)
             );
-            let lookup_start = Instant::now() - Duration::from_secs(age);
+            let lookup_start = Instant::now() - Duration::from_millis(age);
             resolver
                 .state
                 .lock()
@@ -243,7 +246,7 @@ mod tests {
                 .unwrap()
                 .started = lookup_start;
             release.send(()).unwrap();
-            let _scope = RequestScope::new(Duration::from_secs(30));
+            let _scope = RequestScope::new(Duration::from_secs(30), TimingConfig::testing());
             let addresses = resolver
                 .resolve(
                     &"https://cache.test".parse().unwrap(),

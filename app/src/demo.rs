@@ -12,7 +12,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             ];
             fake.fail_rpc(
                 line_wasm_poc::backend::FakeRpc::Unsend(ServerId("6301".into())),
-                line_wasm_poc::backend::Error::Rejected("Synthetic unsend rejection".into()),
+                line_wasm_poc::backend::Error::Rejected(
+                    line_wasm_poc::client::error::RejectReason::SyntheticUnsend,
+                ),
             );
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
         }

@@ -227,22 +227,20 @@ arbitrary-input ECDH parity is not claimed.
 
 ## Differential coverage and reproduction
 
-`src/native_crypto/tests.rs` is compiled only for tests. Each of the ten
-oracle suites is an independent `#[test]`, checking the pinned hash and
-instantiating its own runtimes. Standard test filters work, and the Rust
-test harness reports failures and panics under each suite's name. For
-example, `cargo test --release --offline -p line-wasm-poc aes_matches_oracle`
-runs the AES suite alone.
+The unused T9 native-crypto trial, including its tests, is behind the
+non-default `native-crypto` Cargo feature. Native Go, padding and RFC-vector
+tests run with that feature without needing the WASM blob. Oracle suites are
+explicitly ignored by the harness with a fixture requirement, so missing
+coverage is reported as ignored rather than passed. To run an oracle suite:
 
-When the blob is absent, each oracle test prints one countable line,
-`SKIP native crypto oracle: <test_name>`, and passes. Permission errors and
-wrong hashes fail. The ignored benchmark uses the same named skip behavior.
-Native Go, padding and RFC-vector tests still run without the blob.
-`missing_oracle_skips` exercises the missing-file path without moving or
-copying the real blob. To reproduce an absent-blob run without touching the
-real artifact, set the test-only `LINE_CRYPTO_ORACLE_PATH` to a nonexistent
-path when running the native crypto tests; all fourteen active tests pass
-and ten named skip lines are printed.
+```sh
+cargo test --release --offline --features native-crypto aes_matches_oracle -- --ignored --nocapture
+```
+
+Explicit oracle runs require the pinned fixture at `DEFAULT_WASM` or
+`LINE_CRYPTO_ORACLE_PATH`. A missing fixture fails loudly with the named
+`SKIP native crypto oracle` diagnostic; permission errors and wrong hashes
+also fail. There is no successful early return for an absent oracle.
 
 Four seeded suites each run 320 cases:
 
@@ -292,8 +290,8 @@ MAC verification succeeded before padding rejection.
 ```sh
 GOCACHE="$PWD/target/t9-fixture-go-cache" GOTELEMETRY=off GOPROXY=off \
   go run tools/generate-fixture.go fixtures/letter-sealing-v2.json fixtures/letter-sealing-v2.json
-cargo test --release --offline -p line-wasm-poc native_crypto -- --nocapture
-cargo test --release --offline -p line-wasm-poc native_crypto::tests::benchmark_decrypt -- --ignored --nocapture
+cargo test --release --offline -p line-wasm-poc --features native-crypto native_crypto -- --nocapture
+cargo test --release --offline -p line-wasm-poc --features native-crypto native_crypto::tests::benchmark_decrypt -- --ignored --nocapture
 ```
 
 The round-2 benchmark on this worktree measured a 74-byte fixture message, reused

@@ -1,10 +1,17 @@
+use line_wasm_poc::client::error::RejectReason;
 use line_wasm_poc::{
     backend::{FakeBackend, LiveOp, Op},
     controller::AppState,
-    engine::{Connection, Delta, Intent, StoreLocation, Worker},
+    engine::{Connection, Delta, Intent, StoreLocation, Timing, Worker},
     store::{ChatId, Delivery, Key},
 };
 use std::time::{Duration, Instant};
+fn message_text(row: &line_wasm_poc::store::StoredMessage) -> &str {
+    row.body
+        .get("body")
+        .and_then(|body| body.as_str())
+        .unwrap_or_default()
+}
 struct App {
     worker: Worker,
     state: AppState,
@@ -13,7 +20,15 @@ struct App {
 impl App {
     fn new(fake: FakeBackend, location: StoreLocation) -> Self {
         Self {
-            worker: Worker::start(fake, location),
+            worker: Worker::start_timed(
+                fake,
+                location,
+                Timing {
+                    retry_initial: Duration::from_millis(5),
+                    retry_max: Duration::from_millis(50),
+                    poll: Duration::from_millis(1),
+                },
+            ),
             state: AppState::default(),
             notifications: 0,
         }
@@ -46,11 +61,11 @@ impl App {
         self.until(|s| s.connection == Connection::Online && s.chats.len() == 2);
     }
     fn body_key(&mut self, body: &str) -> Key {
-        self.until(|s| s.messages.values().any(|m| m.body["body"] == body));
+        self.until(|s| s.messages.values().any(|m| message_text(m) == body));
         self.state
             .messages
             .values()
-            .find(|m| m.body["body"] == body)
+            .find(|m| message_text(m) == body)
             .unwrap()
             .key
     }
@@ -89,7 +104,7 @@ fn m13_send_switch_return_with_stale_page() {
         value: true.into(),
     });
     app.until(|s| s.prefs.contains_key("stale_page_applied"));
-    assert_eq!(app.state.messages[&key].body["body"], "durable send");
+    assert_eq!(message_text(&app.state.messages[&key]), "durable send");
 }
 #[test]
 fn m14_closed_chat_incoming_then_open_stale_history() {
@@ -107,7 +122,7 @@ fn m14_closed_chat_incoming_then_open_stale_history() {
         s.chats[&ChatId("alice".into())]
             .preview
             .as_ref()
-            .is_some_and(|m| m.body["body"] == "closed arrival")
+            .is_some_and(|m| message_text(m) == "closed arrival")
     });
     let pages = fake.page_requests("alice");
     app.select("alice");
@@ -117,7 +132,7 @@ fn m14_closed_chat_incoming_then_open_stale_history() {
         app.state
             .messages
             .values()
-            .any(|m| m.body["body"] == "closed arrival")
+            .any(|m| message_text(m) == "closed arrival")
     );
 }
 #[test]
@@ -155,7 +170,7 @@ fn echo_and_send_result_keep_one_identity_in_both_orders() {
             app.state
                 .messages
                 .values()
-                .filter(|m| m.body["body"] == "echo")
+                .filter(|m| message_text(m) == "echo")
                 .count(),
             1
         );
@@ -186,17 +201,12 @@ fn offline_start_shows_cached_chats_and_window() {
     app.until(|s| {
         matches!(s.connection, Connection::Offline { .. })
             && !s.chats.is_empty()
-            && s.messages.values().any(|m| m.body["body"] == "checkpoint")
+            && s.messages.values().any(|m| message_text(m) == "checkpoint")
     });
     assert!(app.state.chats.values().all(|c| c.chat.unread_stale));
     fake.offline(false);
     app.until(|s| s.connection == Connection::Online); // Stream reconnect also resumes persisted revision.
-    let deadline = Instant::now() + Duration::from_secs(4);
-    while !fake.resumed_revisions().contains(&75) && Instant::now() < deadline {
-        if let Ok(d) = app.worker.deltas.recv_timeout(Duration::from_millis(100)) {
-            app.state.apply(d);
-        }
-    }
+    app.until(|_| fake.resumed_revisions().contains(&75));
     assert!(fake.resumed_revisions().contains(&75));
     drop(app);
     std::fs::remove_dir_all(dir).unwrap();
@@ -337,7 +347,7 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
         (FakeRpc::Receipts(chat.clone()), Error::Server(503)),
         (
             FakeRpc::Read(chat.clone()),
-            Error::Rejected("read failed".into()),
+            Error::Rejected(RejectReason::ReadFailed),
         ),
     ];
     for (rpc, error) in &failures {
@@ -345,40 +355,22 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
     }
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.select("alice");
-    let mut read = false;
-    let deadline = Instant::now() + Duration::from_secs(8);
-    loop {
-        let delta = app
-            .worker
-            .deltas
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .expect("RPC retries finish");
-        assert!(!matches!(
-            delta,
-            Delta::Connection(Connection::Offline { .. }) | Delta::Error(_)
-        ));
-        app.state.apply(delta);
-        if !read
-            && app
-                .state
-                .messages
-                .values()
-                .any(|m| m.server_id == Some(ServerId("10".into())))
-        {
-            app.send(Intent::MarkRead {
-                chat: chat.clone(),
-                id: ServerId("10".into()),
-            });
-            read = true;
-        }
+    app.until(|s| {
+        s.messages
+            .values()
+            .any(|m| m.server_id == Some(ServerId("10".into())))
+    });
+    app.send(Intent::MarkRead {
+        chat: chat.clone(),
+        id: ServerId("10".into()),
+    });
+    app.until(|s| {
+        assert!(!matches!(s.connection, Connection::Offline { .. }));
         let calls = fake.calls();
-        if failures
+        failures
             .iter()
             .all(|(rpc, _)| calls.iter().filter(|c| *c == rpc).count() >= 2)
-        {
-            break;
-        }
-    }
+    });
     assert_eq!(app.state.connection, Connection::Online);
     assert_eq!(
         fake.calls()
@@ -493,7 +485,7 @@ fn first_identity_keeps_local_work_and_sends_pending() {
     app.until(|s| {
         s.messages
             .values()
-            .any(|m| m.body["body"] == "before identity" && m.delivery == Delivery::Sent)
+            .any(|m| message_text(m) == "before identity" && m.delivery == Delivery::Sent)
     });
     drop(app);
     let store = Store::open(&root.join(format!("{:x}", Sha256::digest("self")))).unwrap();
@@ -562,16 +554,7 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
     refreshed[0].reactions = json!([{"fromUserMid":"unknown-before-refresh","reactionType":{"predefinedReactionType":3}}]);
     fake.set_page(ChatId("alice".into()), refreshed);
     fake.inject_raw(json!({"type":140,"param1":"10","param2":json!({"chatMid":"alice","curr":{"predefinedReactionType":3}}).to_string()}));
-    let deadline = Instant::now() + Duration::from_secs(5);
-    while fake.page_requests("alice") <= calls {
-        let delta = app
-            .worker
-            .deltas
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .unwrap();
-        assert!(!matches!(delta, Delta::Notify(_) | Delta::Error(_)));
-        app.state.apply(delta);
-    }
+    app.until(|_| fake.page_requests("alice") > calls);
     app.until(|s| s.messages[&key].reactions[0]["fromUserMid"] == "unknown-before-refresh");
     assert_eq!(app.notifications, 0);
     // A FIFO user intent fences the refresh publication and checks for alerts.
@@ -579,19 +562,7 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
         key: "reaction_fence".into(),
         value: true.into(),
     });
-    loop {
-        let delta = app
-            .worker
-            .deltas
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap();
-        assert!(!matches!(delta, Delta::Notify(_) | Delta::Error(_)));
-        let done = matches!(&delta, Delta::Pref {key,..} if key == "reaction_fence");
-        app.state.apply(delta);
-        if done {
-            break;
-        }
-    }
+    app.until(|s| s.prefs.get("reaction_fence") == Some(&true.into()));
     assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
     assert_eq!(
         app.state.chats[&ChatId("alice".into())].chat.unread_count,
@@ -614,7 +585,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
     let key = app.body_key("own confirmed");
     fake.fail_rpc(
         FakeRpc::Unsend(ServerId("11".into())),
-        Error::Rejected("synthetic".into()),
+        Error::Rejected(RejectReason::SyntheticUnsend),
     );
     app.send(Intent::Unsend(key));
     let mut failures = 0;
@@ -634,7 +605,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
     }
     assert_eq!(failures, 1);
     assert!(!app.state.messages[&key].withdrawn);
-    assert_eq!(app.state.messages[&key].body["body"], "own confirmed");
+    assert_eq!(message_text(&app.state.messages[&key]), "own confirmed");
     app.send(Intent::Unsend(key));
     app.until(|s| s.messages[&key].withdrawn);
     assert!(app.state.messages[&key].body.is_null());

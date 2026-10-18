@@ -14,12 +14,15 @@ use std::{
 pub enum SyncState {
     Connected,
     Reconnecting { attempt: u32 },
-    Offline,
     AuthExpired,
 }
 #[derive(Debug)]
 pub enum Event {
     State(SyncState),
+    Failure {
+        attempt: u32,
+        error: crate::client::Error,
+    },
     Operation(Value),
     Resync {
         next_revision: Option<String>,
@@ -88,7 +91,7 @@ fn number(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())
 }
 pub fn backoff(attempt: u32) -> Duration {
-    Duration::from_secs(2u64.saturating_pow(attempt.min(10)).min(600))
+    Duration::from_secs(2u64.saturating_pow(attempt.clamp(1, 6)).min(60))
 }
 fn pause(stop: &AtomicBool, duration: Duration) {
     let end = Instant::now() + duration;
@@ -172,11 +175,23 @@ pub fn receive_from(
                 Err(_) => {}
             }
         }
-        attempt += 1;
-        if !deliver(Event::State(retry_state(attempt))) {
+        attempt = attempt.saturating_add(1);
+        let error = match result {
+            Err(error) => crate::client::error::classify(&error),
+            Ok(status) if (500..600).contains(&status) => {
+                crate::client::Error::Server(i64::from(status))
+            }
+            Ok(_) => crate::client::Error::Protocol,
+        };
+        if !deliver(Event::Failure { attempt, error }) {
             break;
         }
         pause(stop, backoff(attempt));
+        if !stop.load(Ordering::Relaxed)
+            && !deliver(Event::State(SyncState::Reconnecting { attempt }))
+        {
+            break;
+        }
     }
     Ok(())
 }
@@ -195,13 +210,6 @@ pub(super) fn expired_refresh(error: &anyhow::Error) -> bool {
         })
 }
 
-fn retry_state(attempt: u32) -> SyncState {
-    if attempt >= 5 {
-        SyncState::Offline
-    } else {
-        SyncState::Reconnecting { attempt }
-    }
-}
 pub(super) fn refresh(
     api: &mut Api,
     state: &mut Value,
@@ -403,7 +411,7 @@ mod tests {
         r.commit(&v);
         assert!(!r.accepts(&v));
         assert!(!r.accepts(&json!({"revision":"10"})));
-        assert_eq!(backoff(30), Duration::from_secs(600));
+        assert_eq!(backoff(30), Duration::from_secs(60));
     }
 }
 

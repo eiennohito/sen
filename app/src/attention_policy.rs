@@ -1,6 +1,4 @@
-//! Pure attention decisions. Callers supply authoritative unread state and emit
-//! Account only on a connection-state transition; this module never invents a
-//! count or repeats an account alert on every poll.
+//! Pure message attention decisions. Callers supply authoritative unread state.
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,18 +31,10 @@ pub struct Context {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-// Quiet event kinds are intentionally accepted for callers that classify before filtering.
-#[allow(dead_code)]
 pub enum EventKind {
     Message,
     Mention,
     GroupEvent,
-    SendFailure,
-    Account,
-    Reconnected,
-    OwnMessage,
-    Receipt,
-    Reaction,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -54,8 +44,6 @@ pub enum InApp {
     List,
     Latest,
     Inline,
-    Header,
-    Transient,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -73,12 +61,7 @@ pub struct Actions {
 }
 
 pub fn decide(preferences: &Preferences, context: Context, event: EventKind) -> Actions {
-    if context.replay
-        || matches!(
-            event,
-            EventKind::OwnMessage | EventKind::Receipt | EventKind::Reaction
-        )
-    {
+    if context.replay {
         return Actions::default();
     }
     match event {
@@ -112,34 +95,6 @@ pub fn decide(preferences: &Preferences, context: Context, event: EventKind) -> 
                 ..Actions::default()
             }
         }
-        EventKind::SendFailure => {
-            let notify = preferences.enabled && !context.active;
-            Actions {
-                notify,
-                failure_marker: true,
-                attention: notify,
-                in_app: if context.current {
-                    InApp::Inline
-                } else {
-                    InApp::List
-                },
-                ..Actions::default()
-            }
-        }
-        EventKind::Account => Actions {
-            notify: preferences.enabled && !context.active,
-            in_app: InApp::Header,
-            ..Actions::default()
-        },
-        EventKind::Reconnected => Actions {
-            in_app: if context.active {
-                InApp::Transient
-            } else {
-                InApp::None
-            },
-            ..Actions::default()
-        },
-        EventKind::OwnMessage | EventKind::Receipt | EventKind::Reaction => Actions::default(),
     }
 }
 
@@ -278,46 +233,7 @@ mod tests {
         );
     }
     #[test]
-    fn failures_are_separate_from_unread_and_account_alerts_are_quiet() {
-        let result = decide(
-            &enabled(),
-            Context {
-                muted: true,
-                ..Default::default()
-            },
-            EventKind::SendFailure,
-        );
-        assert!(result.notify && result.attention && result.failure_marker);
-        assert!(!result.badge && !result.sound);
-        let account = decide(&enabled(), Context::default(), EventKind::Account);
-        assert!(account.notify);
-        assert!(!account.badge && !account.sound && !account.attention);
-        assert_eq!(account.in_app, InApp::Header);
-        assert_eq!(
-            decide(
-                &enabled(),
-                Context {
-                    active: true,
-                    ..Default::default()
-                },
-                EventKind::Reconnected
-            )
-            .in_app,
-            InApp::Transient
-        );
-    }
-    #[test]
-    fn replay_own_receipts_and_old_reactions_never_alert() {
-        for event in [
-            EventKind::OwnMessage,
-            EventKind::Receipt,
-            EventKind::Reaction,
-        ] {
-            assert_eq!(
-                decide(&enabled(), Context::default(), event),
-                Actions::default()
-            );
-        }
+    fn replay_never_alerts() {
         for event in [
             EventKind::Message,
             EventKind::Mention,

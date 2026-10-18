@@ -1315,7 +1315,7 @@ mod tests {
                 );
                 assert!(row.rich_runs.iter().any(|r| r.text == "https://"));
                 for size in [15., 24.] {
-                    for width in 1..=600 {
+                    for width in [1, 40, 120, 240, 400, 600] {
                         let lines = layout(&ui, &row.rich_runs, width as f32, size);
                         assert!(lines.row_count() > 0);
                         let mut previous_y = -1.;

@@ -853,7 +853,7 @@ impl Client {
             Ok(message) => message,
             Err(error) => {
                 let _ = self.reset_runtime();
-                return Err(error.context(SendFailure::Rejected));
+                return Err(error);
             }
         };
         self.requests.insert(request_seq, message.clone());

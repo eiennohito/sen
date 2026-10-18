@@ -9,6 +9,10 @@ members = ["app", "ui"]
 default-members = ["."]
 resolver = "3"
 
+[features]
+default = []
+native-crypto = []
+
 [dependencies]
 anyhow = "1"
 base64 = "0.22"

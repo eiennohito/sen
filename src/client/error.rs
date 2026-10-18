@@ -2,8 +2,6 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetCause {
     Unreachable,
-    Server(i64),
-    Protocol,
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
@@ -16,9 +14,52 @@ pub enum Error {
     #[error("server error {0}")]
     Server(i64),
     #[error("send rejected: {0}")]
-    Rejected(String),
+    Rejected(RejectReason),
     #[error("response decode failed")]
     Decode,
+    #[error("protocol error")]
+    Protocol,
     #[error("crypto failed")]
     Crypto,
+}
+
+/// Stable rejection categories; diagnostic errors never become row text.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
+pub enum RejectReason {
+    #[serde(rename = "Synthetic send failure")]
+    #[error("Synthetic send failure")]
+    SyntheticSend,
+    #[serde(rename = "Synthetic friends failure")]
+    #[error("Synthetic friends failure")]
+    SyntheticFriends,
+    #[serde(rename = "Synthetic sign-in is unavailable")]
+    #[error("Synthetic sign-in is unavailable")]
+    SyntheticSignIn,
+    #[serde(rename = "read failed")]
+    #[error("read failed")]
+    ReadFailed,
+    #[serde(rename = "Synthetic unsend rejection")]
+    #[error("Synthetic unsend rejection")]
+    SyntheticUnsend,
+    #[serde(other)]
+    #[serde(rename = "Message was not accepted")]
+    #[error("Message was not accepted")]
+    NotAccepted,
+}
+
+/// Preserve source categories; unclassified response failures are decode errors.
+pub(crate) fn classify(error: &anyhow::Error) -> Error {
+    if let Some(error) = error.downcast_ref::<Error>() {
+        return error.clone();
+    }
+    if let Some(error) = error.downcast_ref::<crate::client::RpcError>() {
+        return if matches!(error.http, 401 | 403) {
+            Error::Auth
+        } else if (500..600).contains(&error.http) {
+            Error::Server(i64::from(error.http))
+        } else {
+            Error::Server(error.code)
+        };
+    }
+    Error::Decode
 }

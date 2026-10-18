@@ -18,7 +18,9 @@ pub struct LocalId(pub String);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Delivery {
     Pending,
-    Rejected { reason: String },
+    Rejected {
+        reason: crate::client::error::RejectReason,
+    },
     Uncertain,
     Sent,
     Read,

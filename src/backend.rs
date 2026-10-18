@@ -7,7 +7,7 @@ use std::sync::{
 };
 use std::time::Duration;
 
-pub use crate::client::error::{Error, NetCause};
+pub use crate::client::error::{Error, NetCause, RejectReason};
 pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Clone, Debug)]
 pub struct Profile {
@@ -52,6 +52,11 @@ pub enum StreamEvent {
     Token(Value),
     Connection(Result<()>),
     Exited,
+    Connecting(u32),
+    Retry {
+        attempt: u32,
+        error: Error,
+    },
 }
 pub type Deliver = Arc<dyn Fn(StreamEvent) -> bool + Send + Sync>;
 /// Each stream invocation runs on its own thread. Returning is supervised by the engine.
@@ -366,7 +371,7 @@ impl FakeBackend {
 impl Backend for FakeBackend {
     fn sign_in(&mut self, _cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
         deliver(PairEvent::Stage("Synthetic sign-in".into()));
-        Err(Error::Rejected("Synthetic sign-in is unavailable".into()))
+        Err(Error::Rejected(RejectReason::SyntheticSignIn))
     }
 
     fn friends(&mut self) -> Result<Vec<crate::client::desktop::Friend>> {
@@ -375,7 +380,7 @@ impl Backend for FakeBackend {
             let mut s = self.0.lock().unwrap();
             s.friends_calls += 1;
             if std::mem::take(&mut s.fail_friends) {
-                return Err(Error::Rejected("Synthetic friends failure".into()));
+                return Err(Error::Rejected(RejectReason::SyntheticFriends));
             }
         }
         if let Some(rows) = &self.0.lock().unwrap().friends {
@@ -572,7 +577,7 @@ impl Backend for FakeBackend {
                 return Err(Error::Offline(NetCause::Unreachable));
             }
             if std::mem::take(&mut s.fail_send) {
-                return Err(Error::Rejected("Synthetic send failure".into()));
+                return Err(Error::Rejected(RejectReason::SyntheticSend));
             }
             s.next_id += 1;
             let mut row = Self::message(&chat.0, s.next_id, text, true);
@@ -630,9 +635,12 @@ impl Backend for FakeBackend {
     ) -> Result<Box<dyn FnOnce() + Send>> {
         let mut s = self.0.lock().unwrap();
         s.revisions.push(revision);
-        s.deliver = Some(deliver);
+        s.deliver = Some(deliver.clone());
         drop(s);
         Ok(Box::new(move || {
+            if !deliver(StreamEvent::Connection(Ok(()))) {
+                return;
+            }
             while !stop.load(Ordering::Relaxed) {
                 std::thread::park_timeout(Duration::from_millis(20));
             }
@@ -681,18 +689,7 @@ impl LineBackend {
     }
 }
 fn rpc(error: anyhow::Error) -> Error {
-    if let Some(e) = error.downcast_ref::<Error>() {
-        return e.clone();
-    }
-    if let Some(e) = error.downcast_ref::<crate::client::RpcError>() {
-        if matches!(e.http, 401 | 403) {
-            Error::Auth
-        } else {
-            Error::Server(e.code)
-        }
-    } else {
-        Error::Offline(NetCause::Unreachable)
-    }
+    crate::client::error::classify(&error)
 }
 fn message_input(chat: &ChatId, m: crate::client::desktop::Message, rev: i64) -> MessageInput {
     MessageInput {
@@ -816,7 +813,7 @@ impl Backend for LineBackend {
     fn profile(&mut self) -> Result<Profile> {
         let data = self.client.online_profile().map_err(rpc)?;
         Ok(Profile {
-            mid: data["mid"].as_str().unwrap().into(),
+            mid: data["mid"].as_str().ok_or(Error::Decode)?.into(),
             data,
         })
     }
@@ -879,11 +876,23 @@ impl Backend for LineBackend {
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput> {
         self.client
             .send_text_with_request(&chat.0, text, seq)
-            .map(|m| message_input(chat, m, 0))
-            .map_err(|e| match crate::client::desktop::send_failure(&e) {
-                crate::client::desktop::SendFailure::Rejected => Error::Rejected(e.to_string()),
-                _ => rpc(e),
+            .map_err(|e| {
+                if e.downcast_ref::<Error>().is_some()
+                    || e.downcast_ref::<crate::client::RpcError>()
+                        .is_some_and(|e| {
+                            matches!(e.http, 401 | 403) || (500..600).contains(&e.http)
+                        })
+                {
+                    return rpc(e);
+                }
+                match crate::client::desktop::send_failure(&e) {
+                    crate::client::desktop::SendFailure::Rejected => {
+                        Error::Rejected(RejectReason::NotAccepted)
+                    }
+                    _ => rpc(e),
+                }
             })
+            .map(|m| message_input(chat, m, 0))
     }
     fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()> {
         self.client.unsend(&id.0, seq).map_err(rpc)
@@ -921,11 +930,12 @@ impl Backend for LineBackend {
                         StreamEvent::Raw(v)
                     }
                     Event::Token(v) => StreamEvent::Token(v),
-                    Event::State(s) => StreamEvent::Connection(match s {
-                        SyncState::Connected => Ok(()),
-                        SyncState::AuthExpired => Err(Error::Auth),
-                        _ => Err(Error::Offline(NetCause::Unreachable)),
-                    }),
+                    Event::State(s) => match s {
+                        SyncState::Connected => StreamEvent::Connection(Ok(())),
+                        SyncState::AuthExpired => StreamEvent::Connection(Err(Error::Auth)),
+                        SyncState::Reconnecting { attempt } => StreamEvent::Connecting(attempt),
+                    },
+                    Event::Failure { attempt, error } => StreamEvent::Retry { attempt, error },
                     Event::Resync {
                         next_revision,
                         complete,

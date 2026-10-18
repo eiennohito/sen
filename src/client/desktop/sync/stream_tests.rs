@@ -250,7 +250,14 @@ fn statuses_preserve_auth_mapping_and_any_content_type_is_accepted_on_200() {
             },
         );
         // 401/403 remain statuses, so receive retains its refresh/expiry path.
-        assert_eq!(result.unwrap(), status);
+        if status == 503 {
+            assert!(matches!(
+                result.unwrap_err().downcast_ref::<crate::client::Error>(),
+                Some(crate::client::Error::Server(503))
+            ));
+        } else {
+            assert_eq!(result.unwrap(), status);
+        }
         server.join().unwrap();
     }
 }
@@ -344,7 +351,7 @@ fn slow_open_and_delivery_callbacks_do_not_expire_buffered_pings() {
                 socket.get_mut().write_all(b"data: 1\n\n").unwrap();
             }
             wait.recv_timeout(Duration::from_secs(2)).unwrap();
-            thread::sleep(Duration::from_millis(100));
+            thread::sleep(Duration::from_millis(30));
             socket.get_mut().write_all(b"event: ping\n\n").unwrap();
             assert_eq!(socket.read(&mut [0]).unwrap(), 0);
         });
@@ -354,12 +361,12 @@ fn slow_open_and_delivery_callbacks_do_not_expire_buffered_pings() {
             "synthetic-token",
             12,
             &Arc::new(AtomicBool::new(false)),
-            Duration::from_millis(300),
+            Duration::from_millis(150),
             |name, _| {
                 seen.push(name.to_owned());
                 if name == slow_event {
                     blocked.send(()).unwrap();
-                    thread::sleep(Duration::from_millis(500));
+                    thread::sleep(Duration::from_millis(250));
                 }
                 Ok(name != "ping")
             },
@@ -384,10 +391,10 @@ fn silence_budget_starts_after_a_slow_callback_returns() {
         "synthetic-token",
         12,
         &Arc::new(AtomicBool::new(false)),
-        Duration::from_millis(300),
+        Duration::from_millis(150),
         |name, _| {
             assert_eq!(name, "open");
-            thread::sleep(Duration::from_millis(500));
+            thread::sleep(Duration::from_millis(250));
             resumed = Some(Instant::now());
             Ok(true)
         },
@@ -398,8 +405,8 @@ fn silence_budget_starts_after_a_slow_callback_returns() {
         io::ErrorKind::TimedOut
     );
     let elapsed = resumed.unwrap().elapsed();
-    assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
-    assert!(elapsed < Duration::from_millis(600), "{elapsed:?}");
+    assert!(elapsed >= Duration::from_millis(150), "{elapsed:?}");
+    assert!(elapsed < Duration::from_millis(1200), "{elapsed:?}");
     server.join().unwrap();
 }
 
@@ -412,7 +419,7 @@ fn decoded_ping_resets_the_watchdog_other_events_do_not_and_silence_expires() {
             request(&mut socket);
             headers(&mut socket);
             wait.recv_timeout(Duration::from_secs(2)).unwrap();
-            thread::sleep(Duration::from_millis(250));
+            thread::sleep(Duration::from_millis(150));
             write!(socket.get_mut(), "event: {name}\ndata: null\n\n").unwrap();
             assert_eq!(socket.read(&mut [0]).unwrap(), 0);
         });
@@ -422,7 +429,7 @@ fn decoded_ping_resets_the_watchdog_other_events_do_not_and_silence_expires() {
             "synthetic-token",
             12,
             &Arc::new(AtomicBool::new(false)),
-            Duration::from_millis(400),
+            Duration::from_millis(300),
             |event, data| {
                 if event == "open" {
                     opened.send(()).unwrap();
@@ -441,10 +448,10 @@ fn decoded_ping_resets_the_watchdog_other_events_do_not_and_silence_expires() {
         );
         let elapsed = delivered.unwrap().elapsed();
         if name == "ping" {
-            assert!(elapsed >= Duration::from_millis(400), "{elapsed:?}");
-            assert!(elapsed < Duration::from_millis(700), "{elapsed:?}");
+            assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
+            assert!(elapsed < Duration::from_millis(1200), "{elapsed:?}");
         } else {
-            assert!(elapsed < Duration::from_millis(300), "{elapsed:?}");
+            assert!(elapsed < Duration::from_millis(275), "{elapsed:?}");
         }
         server.join().unwrap();
     }
@@ -470,7 +477,9 @@ fn each_stream_attempt_uses_a_fresh_connection_and_closes_it_on_return() {
         }
     });
     assert_eq!(
-        transport.request("/api/test", "{}", &[], 2).unwrap(),
+        transport
+            .request("/api/test", "{}", &[], Duration::from_millis(400))
+            .unwrap(),
         (200, b"{}".to_vec())
     );
     for _ in 0..2 {

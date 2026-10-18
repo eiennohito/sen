@@ -649,10 +649,11 @@ impl Store {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         let mut pending = Vec::new();
         for (chat, local, ack) in rows {
+            let local = server_sort(&ServerId(local))?;
             if ack
                 .map(|id| server_sort(&ServerId(id)))
                 .transpose()?
-                .is_none_or(|ack| server_sort(&ServerId(local)).unwrap() > ack)
+                .is_none_or(|ack| local > ack)
             {
                 pending.push(ChatId(chat));
             }

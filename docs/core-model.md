@@ -188,6 +188,7 @@ list loader, not to refresh.
 
 ```rust
 enum Connection {
+    Fatal,                         // worker failed; restart required
     Local,                         // store open, no network attempt yet
     Connecting { attempt: u32 },
     Online,
@@ -215,10 +216,28 @@ and run on the transition to `Online`. They are not dropped.
 
 ### Typed errors
 
-`client::Error { Offline(NetCause), Auth(AuthCause), Server{code},
-Rejected{code}, Decode, Crypto, Store }`, built with `thiserror` at the
+`client::Error { Offline(NetCause), Auth, SessionInvalid, Server(code),
+Rejected(RejectReason), Decode, Protocol, Crypto }`, built with `thiserror` at the
 `Client` boundary. The engine maps errors to connection transitions and
-per-row states. User-facing text is produced only in the presenter.
+per-row states. Transport I/O (including DNS, reset and timeout) is Offline; HTTP 5xx is
+Server even when its body is not JSON. Invalid responses/missing fields are
+Decode or Protocol; WASM failures are Crypto. Only Offline changes network
+availability; Auth and SessionInvalid remain terminal identity states. Other
+RPC failures retry their intent without changing the connection state. Rejected
+sends store a typed reason whose presentation preserves the existing wording.
+Store errors remain separate transaction errors.
+
+Each refresh intent (including stream startup/restart) has its own exponential backoff: 2 seconds, 4, 8, 16,
+32, then a 60-second cap, reset after success. Profile reconnection uses the
+same policy and publishes the actual attempt in `Connecting`. `Timing` is
+passed at worker startup; tests inject millisecond delays and scheduler waits.
+Transport configuration separately supplies connect, socket polling, pool-idle
+and asset budgets; each RPC and stream supplies a duration for its request or
+ping budget. Tests select short budgets explicitly.
+
+An unexpected worker return or panic sends one `Delta::Fatal`. The controller
+enters `Connection::Fatal`, disables sends and shows “Something went wrong —
+restart”. Normal shutdown sends no fatal delta.
 
 ### Sync supervisor
 
@@ -251,6 +270,7 @@ answers with a snapshot, then pushes deltas in commit order over a single FIFO
 
 ```rust
 enum Delta {
+    Fatal,
     Connection(Connection),
     Chats { upsert: Vec<ChatItem>, remove: Vec<ChatId> },
     Window { sub: SubId, upsert: Vec<MessageItem>, remove: Vec<Key>,

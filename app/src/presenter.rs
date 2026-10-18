@@ -133,7 +133,7 @@ impl Presenter {
         row.can_unsend = m.outgoing && m.server_id.is_some() && !m.withdrawn;
         row.recoverable = matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain);
         row.delivery_detail = match &m.delivery {
-            Delivery::Rejected { reason } => reason.clone(),
+            Delivery::Rejected { reason } => reason.to_string(),
             Delivery::Uncertain => {
                 "The message may have arrived. Check before sending again.".into()
             }
@@ -425,7 +425,7 @@ impl Presenter {
             Connection::Online => ConnectionState::Online,
             Connection::Offline { .. } => ConnectionState::Offline,
             Connection::AuthExpired => ConnectionState::AuthExpired,
-            Connection::SessionInvalid => ConnectionState::SessionInvalid,
+            Connection::SessionInvalid | Connection::Fatal => ConnectionState::SessionInvalid,
             Connection::SigningIn => ConnectionState::SigningIn,
         });
         ui.set_connection_status(
@@ -436,6 +436,7 @@ impl Presenter {
                 Connection::Offline { .. } => "Offline — reconnecting automatically",
                 Connection::AuthExpired => "Sign in required",
                 Connection::SessionInvalid => "Session unavailable",
+                Connection::Fatal => "Something went wrong — restart",
                 Connection::SigningIn => "Signing in…",
             }
             .into(),

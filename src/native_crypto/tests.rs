@@ -20,38 +20,20 @@ fn decode(value: &Value) -> Vec<u8> {
     STANDARD.decode(value.as_str().unwrap()).unwrap()
 }
 
-fn wasm(test_name: &str) -> Result<Option<Vec<u8>>> {
+fn wasm(test_name: &str) -> Result<Vec<u8>> {
     let path = std::env::var_os("LINE_CRYPTO_ORACLE_PATH")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_WASM));
-    let wasm = wasm_at(&path)?;
-    if wasm.is_none() {
-        eprintln!("SKIP native crypto oracle: {test_name}");
-    }
-    Ok(wasm)
+    wasm_at(&path).with_context(|| format!("SKIP native crypto oracle: {test_name}: fixture missing or invalid; set LINE_CRYPTO_ORACLE_PATH"))
 }
 
-fn wasm_at(path: &Path) -> Result<Option<Vec<u8>>> {
-    let bytes = match fs::read(path) {
-        Ok(bytes) => bytes,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            return Ok(None);
-        }
-        Err(error) => return Err(error.into()),
-    };
+fn wasm_at(path: &Path) -> Result<Vec<u8>> {
+    let bytes = fs::read(path)?;
     ensure!(
         format!("{:x}", Sha256::digest(&bytes)) == HASH,
         "oracle hash"
     );
-    Ok(Some(bytes))
-}
-
-#[test]
-fn missing_oracle_skips() -> Result<()> {
-    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("target/absent-crypto-oracle/ltsm.wasm");
-    let wasm = wasm_at(&path)?;
-    assert!(wasm.is_none());
-    Ok(())
+    Ok(bytes)
 }
 
 struct Inputs(u64);
@@ -258,10 +240,9 @@ fn independent_go_vectors() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn fixed_vectors_match_oracle() -> Result<()> {
-    let Some(wasm) = wasm("fixed_vectors_match_oracle")? else {
-        return Ok(());
-    };
+    let wasm = wasm("fixed_vectors_match_oracle")?;
     let wasm = wasm.as_slice();
     let mut oracle = Oracle::new(wasm)?;
     let f = fixture();
@@ -293,10 +274,9 @@ fn fixed_vectors_match_oracle() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn derive_and_hmac_match_oracle() -> Result<()> {
-    let Some(wasm) = wasm("derive_and_hmac_match_oracle")? else {
-        return Ok(());
-    };
+    let wasm = wasm("derive_and_hmac_match_oracle")?;
     let wasm = wasm.as_slice();
     let mut oracle = Oracle::new(wasm)?;
     let mut inputs = Inputs::new();
@@ -333,10 +313,9 @@ fn derive_and_hmac_match_oracle() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn aes_matches_oracle() -> Result<()> {
-    let Some(wasm) = wasm("aes_matches_oracle")? else {
-        return Ok(());
-    };
+    let wasm = wasm("aes_matches_oracle")?;
     let wasm = wasm.as_slice();
     let mut oracle = Oracle::new(wasm)?;
     let mut inputs = Inputs::new();
@@ -372,10 +351,9 @@ fn aes_matches_oracle() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn letter_sealing_matches_oracle() -> Result<()> {
-    let Some(wasm) = wasm("letter_sealing_matches_oracle")? else {
-        return Ok(());
-    };
+    let wasm = wasm("letter_sealing_matches_oracle")?;
     let wasm = wasm.as_slice();
     let mut oracle = Oracle::new(wasm)?;
     let mut inputs = Inputs::new();
@@ -439,10 +417,9 @@ fn letter_sealing_matches_oracle() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn tampering_is_rejected_by_both() -> Result<()> {
-    let Some(wasm) = wasm("tampering_is_rejected_by_both")? else {
-        return Ok(());
-    };
+    let wasm = wasm("tampering_is_rejected_by_both")?;
     let wasm = wasm.as_slice();
     let native = Channel::new(shared());
     let text = b"Synthetic authenticated message spanning several cipher blocks.";
@@ -519,10 +496,9 @@ fn tampering_is_rejected_by_both() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn secure_key_boundary() -> Result<()> {
-    let Some(wasm) = wasm("secure_key_boundary")? else {
-        return Ok(());
-    };
+    let wasm = wasm("secure_key_boundary")?;
     let wasm = wasm.as_slice();
     for len in [0, 16, 32, 48, 64, 193] {
         let mut rt = Runtime::new(wasm)?;
@@ -617,9 +593,7 @@ fn secure_key_boundary() -> Result<()> {
 #[test]
 #[ignore = "release benchmark; synthetic fixture, no account access"]
 fn benchmark_decrypt() -> Result<()> {
-    let Some(wasm) = wasm("benchmark_decrypt")? else {
-        return Ok(());
-    };
+    let wasm = wasm("benchmark_decrypt")?;
     let started = Instant::now();
     let mut oracle = Oracle::new(&wasm)?;
     let init = started.elapsed();
@@ -715,10 +689,9 @@ fn native_rejects_authenticated_invalid_v1_padding() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn authenticated_invalid_v1_padding() -> Result<()> {
-    let Some(wasm) = wasm("authenticated_invalid_v1_padding")? else {
-        return Ok(());
-    };
+    let wasm = wasm("authenticated_invalid_v1_padding")?;
     let wasm = wasm.as_slice();
     native_rejects_authenticated_invalid_v1_padding()?;
     let valid = v1_padded_frame(&[16; 16]);
@@ -775,10 +748,9 @@ fn rfc7748_vectors() {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn x25519_matches_oracle() -> Result<()> {
-    let Some(wasm) = wasm("x25519_matches_oracle")? else {
-        return Ok(());
-    };
+    let wasm = wasm("x25519_matches_oracle")?;
     let wasm = wasm.as_slice();
     let mut oracle = Oracle::new(wasm)?;
     let mut inputs = Inputs::new();
@@ -828,10 +800,9 @@ fn x25519_matches_oracle() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn low_order_points_match_oracle() -> Result<()> {
-    let Some(wasm) = wasm("low_order_points_match_oracle")? else {
-        return Ok(());
-    };
+    let wasm = wasm("low_order_points_match_oracle")?;
     let wasm = wasm.as_slice();
     // All seven standard small-order encodings, including noncanonical 0/1.
     let points = [
@@ -873,10 +844,9 @@ fn low_order_points_match_oracle() -> Result<()> {
 }
 
 #[test]
+#[ignore = "requires the local WASM oracle; run explicitly with --ignored"]
 fn arbitrary_point_boundary() -> Result<()> {
-    let Some(wasm) = wasm("arbitrary_point_boundary")? else {
-        return Ok(());
-    };
+    let wasm = wasm("arbitrary_point_boundary")?;
     let wasm = wasm.as_slice();
     let mut oracle = Oracle::new(wasm)?;
     let scalar = derive_key(&shared(), b"salt", b"info")?;

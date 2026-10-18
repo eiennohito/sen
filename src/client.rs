@@ -245,12 +245,15 @@ impl Api {
             path,
             &body,
             &headers,
-            if poll_seconds > 0 {
+            Duration::from_secs(if poll_seconds > 0 {
                 poll_seconds + 10
             } else {
                 30
-            },
+            }),
         )?;
+        if (500..600).contains(&http) {
+            return Err(Error::Server(i64::from(http)).into());
+        }
         if (400..500).contains(&http) {
             return Err(RpcError {
                 method: path.rsplit('/').next().unwrap_or("RPC").into(),
@@ -260,11 +263,8 @@ impl Api {
             }
             .into());
         }
-        let response: Value = serde_json::from_slice(&bytes)
-            .context("server returned invalid JSON; body not logged")?;
-        let code = response["code"]
-            .as_i64()
-            .context("missing LINE response code")?;
+        let response: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Decode)?;
+        let code = response["code"].as_i64().ok_or(Error::Decode)?;
         if http != 200 || code != 0 {
             return Err(RpcError {
                 method: path.rsplit('/').next().unwrap_or("RPC").into(),
@@ -274,7 +274,10 @@ impl Api {
             }
             .into());
         }
-        Ok(response["data"].clone())
+        response
+            .get("data")
+            .cloned()
+            .ok_or_else(|| Error::Decode.into())
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {
         let service = if poll_seconds > 0 {
@@ -318,12 +321,13 @@ fn decode(value: &str) -> Result<Vec<u8>> {
             return Ok(b);
         }
     }
-    bail!("invalid base64 key material")
+    Err(anyhow::Error::new(Error::Decode).context("invalid base64 key material"))
 }
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
         .as_str()
         .filter(|s| !s.is_empty())
+        .ok_or(Error::Decode)
         .with_context(|| format!("missing {field}"))
 }
 fn percent_encode(value: &str) -> String {

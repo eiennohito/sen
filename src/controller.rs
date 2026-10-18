@@ -147,6 +147,11 @@ impl AppState {
     }
     pub fn apply(&mut self, delta: Delta) {
         match delta {
+            Delta::Fatal => {
+                self.connection = Connection::Fatal;
+                self.error = Some("Something went wrong — restart".into());
+                self.submitting = None;
+            }
             Delta::Reset => *self = Self::default(),
             Delta::Submitted { chat, text } => {
                 if self.selected.as_ref() == Some(&chat) && self.composer == text {
@@ -192,7 +197,7 @@ impl AppState {
                 }
                 self.reply_targets = replies
                     .into_iter()
-                    .map(|m| (m.server_id.clone().unwrap(), m))
+                    .filter_map(|m| Some((m.server_id.clone()?, m)))
                     .collect();
                 if self.unread_divider.is_none() {
                     self.unread_divider = unread_anchor;
@@ -208,8 +213,11 @@ impl AppState {
                 self.composer = text
             }
             Delta::Pref { key, value } => {
-                if key == "last_chat" && self.selected.is_none() {
-                    self.selected = Some(ChatId(value.as_str().unwrap().into()));
+                if key == "last_chat"
+                    && self.selected.is_none()
+                    && let Some(chat) = value.as_str()
+                {
+                    self.selected = Some(ChatId(chat.into()));
                     self.window_sub = 1;
                     self.window_anchor = Anchor::Unread;
                 }

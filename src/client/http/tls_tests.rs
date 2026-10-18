@@ -43,8 +43,8 @@ fn fixture() -> (Transport, TcpListener, Arc<ServerConfig>) {
         .proxy(None)
         .max_redirects(0)
         .http_status_as_error(false)
-        .timeout_connect(Some(CONNECT_BUDGET))
-        .max_idle_age(POOL_IDLE)
+        .timeout_connect(Some(Config::testing().connect))
+        .max_idle_age(Config::testing().pool_idle)
         .tls_config(
             ureq::tls::TlsConfig::builder()
                 .root_certs(vec![root].into())
@@ -52,7 +52,7 @@ fn fixture() -> (Transport, TcpListener, Arc<ServerConfig>) {
         )
         .build();
     let transport = Transport {
-        asset_timeout: Duration::from_secs(15),
+        config: Config::testing(),
         agent: Agent::with_parts(config, PollConnector::default(), PollResolver::default()),
         base: format!(
             "https://localhost:{}",
@@ -275,9 +275,11 @@ fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
         );
         (accepts, deliveries)
     });
-    transport.request("/api/test", "{}", &[], 3).unwrap();
+    transport
+        .request("/api/test", "{}", &[], Duration::from_millis(600))
+        .unwrap();
     control.armed.store(true, Ordering::Relaxed);
-    let result = transport.request("/api/test", SECOND_BODY, &[], 3);
+    let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
     done.send(()).unwrap();
     assert_eq!(server.join().unwrap(), (2, 1));
     assert_eq!(result.unwrap(), (200, b"{}".to_vec()));
@@ -310,8 +312,10 @@ fn tls_failure_after_full_send_is_not_retried() {
         );
         (accepts, deliveries)
     });
-    transport.request("/api/test", "{}", &[], 3).unwrap();
-    let result = transport.request("/api/test", SECOND_BODY, &[], 3);
+    transport
+        .request("/api/test", "{}", &[], Duration::from_millis(600))
+        .unwrap();
+    let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
     done.send(()).unwrap();
     assert_eq!(server.join().unwrap(), (1, 1));
     assert_eq!(
@@ -335,7 +339,7 @@ fn streaming_get_uses_verified_tls_directly_and_through_connect() {
                 .proxy(Some(proxy))
                 .max_redirects(0)
                 .http_status_as_error(false)
-                .timeout_connect(Some(CONNECT_BUDGET))
+                .timeout_connect(Some(Config::testing().connect))
                 .tls_config(transport.agent.config().tls_config().clone())
                 .build();
             transport.agent = Agent::with_parts(
@@ -420,7 +424,7 @@ fn streaming_get_uses_verified_tls_directly_and_through_connect() {
         );
         if wrong_host {
             assert_eq!(
-                format!("{:#}", result.unwrap_err()),
+                result.unwrap_err().to_string(),
                 "HTTPS transport failed; response not logged"
             );
         } else {
@@ -437,7 +441,7 @@ fn buffered_http_and_tls_bytes_survive_a_spent_watchdog_budget() {
         .proxy(None)
         .max_redirects(0)
         .http_status_as_error(false)
-        .timeout_connect(Some(CONNECT_BUDGET))
+        .timeout_connect(Some(Config::testing().connect))
         .input_buffer_size(1024)
         .tls_config(transport.agent.config().tls_config().clone())
         .build();

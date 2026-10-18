@@ -28,12 +28,44 @@ use ureq::{
 };
 
 const MAX_BODY: usize = 1048576;
-const POLL: Duration = Duration::from_millis(50);
 static NEXT_ATTEMPT: AtomicU64 = AtomicU64::new(1);
-const CONNECT_BUDGET: Duration = Duration::from_secs(10);
-// Retire before the assumed >=30s gateway idle window; liveness checks and the
-// restricted retry still handle servers that close sooner. No live timing claim.
-const POOL_IDLE: Duration = Duration::from_secs(15);
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct Config {
+    connect: Duration,
+    poll: Duration,
+    pool_idle: Duration,
+    asset_timeout: Duration,
+    asset_connect: Duration,
+}
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            connect: Duration::from_secs(10),
+            poll: Duration::from_millis(50),
+            pool_idle: Duration::from_secs(15),
+            asset_timeout: Duration::from_secs(15),
+            asset_connect: Duration::from_secs(5),
+        }
+    }
+}
+#[cfg(test)]
+impl Config {
+    fn testing() -> Self {
+        Self {
+            connect: Duration::from_millis(250),
+            poll: Duration::from_millis(5),
+            ..Self::default()
+        }
+    }
+}
+fn poll_interval() -> Duration {
+    ACTIVE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .map_or(Config::default().poll, |s| s.config.poll)
+    })
+}
 
 mod dns;
 use dns::PollResolver;
@@ -45,6 +77,7 @@ thread_local! {
 }
 
 struct RequestState {
+    config: Config,
     cancel: Option<Arc<AtomicBool>>,
     deadline: Instant,
     connect_deadline: Instant,
@@ -78,13 +111,14 @@ impl std::error::Error for PingExpired {}
 struct RequestScope;
 
 impl RequestScope {
-    fn new(timeout: Duration) -> Self {
+    fn new(timeout: Duration, config: Config) -> Self {
         ACTIVE.with(|slot| {
             assert!(slot.borrow().is_none(), "nested HTTP request");
             *slot.borrow_mut() = Some(RequestState {
+                config,
                 cancel: REQUEST_CANCEL.with(|slot| slot.borrow().clone()),
                 deadline: Instant::now() + timeout,
-                connect_deadline: Instant::now() + CONNECT_BUDGET,
+                connect_deadline: Instant::now() + config.connect,
                 connecting: true,
                 connector_depth: 0,
                 attempt: 0,
@@ -254,8 +288,8 @@ impl<In: UreqTransport> Connector<In> for PollTcpConnector {
             match connect_polled(*addr, remaining) {
                 Ok(stream) => {
                     stream.set_nodelay(true)?;
-                    stream.set_read_timeout(Some(POLL))?;
-                    stream.set_write_timeout(Some(POLL))?;
+                    stream.set_read_timeout(Some(poll_interval()))?;
+                    stream.set_write_timeout(Some(poll_interval()))?;
                     let socket = Arc::new(Socket {
                         stream,
                         closed: AtomicBool::new(false),
@@ -314,7 +348,7 @@ fn connect_polled(addr: std::net::SocketAddr, remaining: Duration) -> Result<Tcp
                     events: libc::POLLOUT,
                     revents: 0,
                 };
-                let timeout = POLL.min(remaining).as_millis().max(1) as i32;
+                let timeout = poll_interval().min(remaining).as_millis().max(1) as i32;
                 if unsafe { libc::poll(&mut poll, 1, timeout) } < 0 {
                     let error = io::Error::last_os_error();
                     if error.kind() != io::ErrorKind::Interrupted {
@@ -580,11 +614,10 @@ fn environment_proxy() -> Result<Option<ureq::Proxy>> {
 
 #[derive(Clone)]
 pub(super) struct Transport {
+    config: Config,
     agent: Agent,
     #[cfg(test)]
     base: String,
-    #[cfg(test)]
-    asset_timeout: Duration,
 }
 
 impl Transport {
@@ -598,6 +631,7 @@ impl Transport {
     pub(super) fn assets(&self) -> Self {
         // A stalled asset lookup must not hold the RPC resolver's lock.
         Self {
+            config: self.config,
             agent: Agent::with_parts(
                 self.agent.config().clone(),
                 PollConnector::default(),
@@ -605,26 +639,26 @@ impl Transport {
             ),
             #[cfg(test)]
             base: self.base.clone(),
-            #[cfg(test)]
-            asset_timeout: self.asset_timeout,
         }
     }
 
     fn with_parts(proxy: Option<ureq::Proxy>, resolver: impl Resolver) -> Self {
+        Self::configured(proxy, resolver, Config::default())
+    }
+    fn configured(proxy: Option<ureq::Proxy>, resolver: impl Resolver, timing: Config) -> Self {
         let config = Agent::config_builder()
             .https_only(!cfg!(test))
             .proxy(proxy)
             .max_redirects(0)
             .http_status_as_error(false)
-            .timeout_connect(Some(CONNECT_BUDGET))
-            .max_idle_age(POOL_IDLE)
+            .timeout_connect(Some(timing.connect))
+            .max_idle_age(timing.pool_idle)
             .build();
         Self {
+            config: timing,
             agent: Agent::with_parts(config, PollConnector::default(), resolver),
             #[cfg(test)]
             base: BASE.into(),
-            #[cfg(test)]
-            asset_timeout: Duration::from_secs(15),
         }
     }
 
@@ -641,7 +675,7 @@ impl Transport {
         let base = BASE;
         #[cfg(test)]
         let base = &self.base;
-        let _scope = RequestScope::new(timeout);
+        let _scope = RequestScope::new(timeout, self.config);
         ACTIVE.with(|slot| {
             let mut slot = slot.borrow_mut();
             let state = slot.as_mut().unwrap();
@@ -667,6 +701,9 @@ impl Transport {
                 remaining: timeout,
             });
         });
+        if parts.status.is_server_error() {
+            return Err(super::Error::Server(i64::from(parts.status.as_u16())).into());
+        }
         consume(parts.status.as_u16(), &parts.headers, &mut reader)
     }
 
@@ -675,14 +712,14 @@ impl Transport {
         path: &str,
         body: &str,
         headers: &[(&str, &str)],
-        timeout: u64,
+        timeout: Duration,
     ) -> Result<(u16, Vec<u8>)> {
         let validated = validate(path, headers)?;
         #[cfg(not(test))]
         let base = BASE;
         #[cfg(test)]
         let base = &self.base;
-        let _scope = RequestScope::new(Duration::from_secs(timeout));
+        let _scope = RequestScope::new(timeout, self.config);
         let mut response = loop {
             check_request().map_err(transport_error)?;
             ACTIVE.with(|slot| {
@@ -740,6 +777,9 @@ impl Transport {
             }
         };
         let status = response.status().as_u16();
+        if (500..600).contains(&status) {
+            return Err(super::Error::Server(i64::from(status)).into());
+        }
         ensure!(
             response
                 .headers()
@@ -757,8 +797,7 @@ impl Transport {
             let remaining = (MAX_BODY - bytes.len() + 1).min(chunk.len());
             let n = reader.read(&mut chunk[..remaining]);
             check_request().map_err(transport_error)?;
-            let n =
-                n.map_err(|_| anyhow::anyhow!("HTTPS response read failed; response not logged"))?;
+            let n = n.map_err(|_| super::Error::Offline(super::error::NetCause::Unreachable))?;
             if n == 0 {
                 return Ok((status, bytes));
             }
@@ -771,15 +810,12 @@ impl Transport {
     }
 
     pub(super) fn asset(&self, url: &str, headers: &[(&str, &str)], cap: usize) -> Result<Vec<u8>> {
-        #[cfg(not(test))]
-        let timeout = Duration::from_secs(15);
-        #[cfg(test)]
-        let timeout = self.asset_timeout;
-        let _scope = RequestScope::new(timeout);
+        let timeout = self.config.asset_timeout;
+        let _scope = RequestScope::new(timeout, self.config);
         ACTIVE.with(|slot| {
             let mut slot = slot.borrow_mut();
             let state = slot.as_mut().unwrap();
-            state.connect_deadline = Instant::now() + Duration::from_secs(5);
+            state.connect_deadline = Instant::now() + self.config.asset_connect;
             state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
         });
         check_request().map_err(asset_error)?;
@@ -839,7 +875,7 @@ impl Transport {
 
     #[cfg(test)]
     pub(in crate::client) fn asset_timeout(mut self, timeout: Duration) -> Self {
-        self.asset_timeout = timeout;
+        self.config.asset_timeout = timeout;
         self
     }
 
@@ -861,8 +897,9 @@ impl StreamReader {
     pub(super) fn ping(&mut self) {
         ACTIVE.with(|slot| {
             let mut slot = slot.borrow_mut();
-            let watchdog = slot.as_mut().unwrap().watchdog.as_mut().unwrap();
-            watchdog.remaining = watchdog.timeout;
+            if let Some(watchdog) = slot.as_mut().and_then(|state| state.watchdog.as_mut()) {
+                watchdog.remaining = watchdog.timeout;
+            }
         });
     }
 }
@@ -946,7 +983,15 @@ fn transport_error(error: ureq::Error) -> anyhow::Error {
     } else {
         Failure::Network
     };
-    failure.transport_error()
+    let category = match error {
+        ureq::Error::Io(_)
+        | ureq::Error::Timeout(_)
+        | ureq::Error::ConnectionFailed
+        | ureq::Error::HostNotFound
+        | ureq::Error::Tls(_) => super::Error::Offline(super::error::NetCause::Unreachable),
+        _ => super::Error::Protocol,
+    };
+    anyhow::Error::new(category).context(failure.transport_error().to_string())
 }
 
 #[cfg(test)]
@@ -965,7 +1010,7 @@ pub(in crate::client) mod tests {
     ) -> (Transport, thread::JoinHandle<T>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let mut transport = Transport::with_parts(None, PollResolver::default());
+        let mut transport = Transport::configured(None, PollResolver::default(), Config::testing());
         transport.base = format!("http://{}", listener.local_addr().unwrap());
         (transport, thread::spawn(move || serve(listener)))
     }
@@ -1018,7 +1063,7 @@ pub(in crate::client) mod tests {
     #[test]
     fn local_connect_wakes_before_the_poll_interval() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let _scope = RequestScope::new(Duration::from_secs(1));
+        let _scope = RequestScope::new(Duration::from_secs(1), Config::testing());
         let started = Instant::now();
         let _stream =
             connect_polled(listener.local_addr().unwrap(), Duration::from_secs(1)).unwrap();
@@ -1049,7 +1094,9 @@ pub(in crate::client) mod tests {
         });
         for _ in 0..2 {
             assert_eq!(
-                transport.request("/api/test", "{}", &[], 2).unwrap(),
+                transport
+                    .request("/api/test", "{}", &[], Duration::from_millis(400))
+                    .unwrap(),
                 (200, b"{}".to_vec())
             );
         }
@@ -1072,7 +1119,12 @@ pub(in crate::client) mod tests {
         });
         assert_eq!(
             transport
-                .request("/api/test", "{}", &[("x-line-access", "secret")], 2)
+                .request(
+                    "/api/test",
+                    "{}",
+                    &[("x-line-access", "secret")],
+                    Duration::from_millis(400)
+                )
                 .unwrap(),
             (302, vec![])
         );
@@ -1103,7 +1155,9 @@ pub(in crate::client) mod tests {
                 }
                 let _ = stream.get_mut().write_all(&body);
             });
-            let error = transport.request("/api/test", "{}", &[], 2).unwrap_err();
+            let error = transport
+                .request("/api/test", "{}", &[], Duration::from_millis(400))
+                .unwrap_err();
             assert_eq!(error.to_string(), "HTTPS response exceeds 1048576 bytes");
             server.join().unwrap();
         }
@@ -1121,7 +1175,9 @@ pub(in crate::client) mod tests {
             .unwrap();
             stream.get_mut().write_all(&vec![b'x'; MAX_BODY]).unwrap();
         });
-        let (status, bytes) = transport.request("/api/test", "{}", &[], 2).unwrap();
+        let (status, bytes) = transport
+            .request("/api/test", "{}", &[], Duration::from_millis(400))
+            .unwrap();
         assert_eq!(status, 200);
         assert_eq!(bytes, vec![b'x'; MAX_BODY]);
         server.join().unwrap();
@@ -1129,7 +1185,7 @@ pub(in crate::client) mod tests {
 
     #[test]
     fn rejects_invalid_paths_and_headers_without_requests() {
-        let mut transport = Transport::new().unwrap();
+        let mut transport = Transport::configured(None, PollResolver::default(), Config::testing());
         transport.base = "http://127.0.0.1:0".into();
         for path in [
             "//other.test/api/",
@@ -1139,7 +1195,7 @@ pub(in crate::client) mod tests {
         ] {
             assert_eq!(
                 transport
-                    .request(path, "{}", &[], 1)
+                    .request(path, "{}", &[], Duration::from_millis(200))
                     .unwrap_err()
                     .to_string(),
                 "invalid API path"
@@ -1151,7 +1207,7 @@ pub(in crate::client) mod tests {
             ("name", "secret\r\nnext"),
         ] {
             let error = transport
-                .request("/api/test", "{}", &[header], 1)
+                .request("/api/test", "{}", &[header], Duration::from_millis(200))
                 .unwrap_err();
             assert_eq!(format!("{error:#}"), "invalid header");
         }
@@ -1174,10 +1230,15 @@ pub(in crate::client) mod tests {
             });
             let started = Instant::now();
             let error = transport
-                .request("/api/test", "{}", &[("x-line-access", "secret-token")], 1)
+                .request(
+                    "/api/test",
+                    "{}",
+                    &[("x-line-access", "secret-token")],
+                    Duration::from_millis(200),
+                )
                 .unwrap_err();
             assert!(!format!("{error:#}").contains("secret-token"));
-            assert!(started.elapsed() >= Duration::from_millis(900));
+            assert!(started.elapsed() >= Duration::from_millis(150));
             assert!(started.elapsed() < Duration::from_secs(2));
             release.send(()).unwrap();
             server.join().unwrap();
@@ -1197,23 +1258,29 @@ pub(in crate::client) mod tests {
                 if stream.get_mut().write_all(b"x").is_err() {
                     break;
                 }
-                thread::sleep(Duration::from_millis(150));
+                thread::sleep(Duration::from_millis(30));
             }
         });
         let started = Instant::now();
-        assert!(transport.request("/api/test", "{}", &[], 1).is_err());
-        assert!(started.elapsed() >= Duration::from_millis(900));
+        assert!(
+            transport
+                .request("/api/test", "{}", &[], Duration::from_millis(200))
+                .is_err()
+        );
+        assert!(started.elapsed() >= Duration::from_millis(150));
         assert!(started.elapsed() < Duration::from_secs(2));
         server.join().unwrap();
     }
 
     #[test]
     fn precancelled_request_does_not_connect() {
-        let mut transport = Transport::new().unwrap();
+        let mut transport = Transport::configured(None, PollResolver::default(), Config::testing());
         transport.base = "http://127.0.0.1:0".into();
         let cancel = Arc::new(AtomicBool::new(true));
         super::super::set_request_cancel(cancel);
-        let error = transport.request("/api/test", "{}", &[], 5).unwrap_err();
+        let error = transport
+            .request("/api/test", "{}", &[], Duration::from_millis(1000))
+            .unwrap_err();
         REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = None);
         assert_eq!(error.to_string(), "HTTPS request cancelled");
     }
@@ -1262,10 +1329,12 @@ pub(in crate::client) mod tests {
                 if warmup {
                     // The pooled socket starts with a different token and deadline.
                     super::super::set_request_cancel(Arc::new(AtomicBool::new(false)));
-                    transport.request("/api/test", "{}", &[], 2).unwrap();
+                    transport
+                        .request("/api/test", "{}", &[], Duration::from_millis(400))
+                        .unwrap();
                 }
                 super::super::set_request_cancel(cancel);
-                let result = transport.request("/api/test", "{}", &[], 5);
+                let result = transport.request("/api/test", "{}", &[], Duration::from_millis(1000));
                 (transport, result)
             });
             wait.recv_timeout(Duration::from_secs(2)).unwrap();
@@ -1276,7 +1345,9 @@ pub(in crate::client) mod tests {
             assert_eq!(result.unwrap_err().to_string(), "HTTPS request cancelled");
             assert!(started.elapsed() < Duration::from_millis(200));
             assert_eq!(
-                transport.request("/api/test", "{}", &[], 2).unwrap(),
+                transport
+                    .request("/api/test", "{}", &[], Duration::from_millis(400))
+                    .unwrap(),
                 (200, b"{}".to_vec())
             );
             server.join().unwrap();

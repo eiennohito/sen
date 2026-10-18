@@ -15,6 +15,7 @@ use std::{
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Connection {
+    Fatal,
     Local,
     Connecting { attempt: u32 },
     Online,
@@ -22,6 +23,29 @@ pub enum Connection {
     AuthExpired,
     SessionInvalid,
     SigningIn,
+}
+/// Retry policy and scheduler resolution, injectable for offline tests.
+#[derive(Clone, Copy, Debug)]
+pub struct Timing {
+    pub retry_initial: Duration,
+    pub retry_max: Duration,
+    pub poll: Duration,
+}
+impl Default for Timing {
+    fn default() -> Self {
+        Self {
+            retry_initial: Duration::from_secs(2),
+            retry_max: Duration::from_secs(60),
+            poll: Duration::from_millis(100),
+        }
+    }
+}
+impl Timing {
+    fn delay(self, attempt: u32) -> Duration {
+        self.retry_initial
+            .saturating_mul(2u32.saturating_pow(attempt.saturating_sub(1).min(31)))
+            .min(self.retry_max)
+    }
 }
 #[derive(Clone, Debug)]
 pub struct WindowSub {
@@ -78,6 +102,7 @@ pub enum Intent {
 }
 #[derive(Clone)]
 pub enum Delta {
+    Fatal,
     Reset,
     Pair(PairEvent),
     PairFailed {
@@ -142,6 +167,7 @@ pub enum Delta {
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Refresh {
+    Stream,
     Send(Key),
     Friends,
     Members(ChatId),
@@ -246,6 +272,19 @@ impl Worker {
     pub fn start_with<B: Backend + 'static>(
         open: impl FnOnce() -> anyhow::Result<(B, StoreLocation)> + Send + 'static,
     ) -> Self {
+        Self::start_with_timing(open, Timing::default())
+    }
+    pub fn start_timed(
+        backend: impl Backend + 'static,
+        location: StoreLocation,
+        timing: Timing,
+    ) -> Self {
+        Self::start_with_timing(move || Ok((backend, location)), timing)
+    }
+    pub fn start_with_timing<B: Backend + 'static>(
+        open: impl FnOnce() -> anyhow::Result<(B, StoreLocation)> + Send + 'static,
+        timing: Timing,
+    ) -> Self {
         let inbox = Arc::new(Inbox::default());
         let sender = Sender(inbox.clone());
         let (tx, deltas) = mpsc::channel();
@@ -257,55 +296,60 @@ impl Worker {
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
         let join = thread::spawn(move || {
-            let (backend, location) = match open() {
-                Ok(account) => account,
-                Err(_) => {
-                    let _ = tx.send(Delta::Connection(Connection::SessionInvalid));
-                    return;
-                }
-            };
-            use sha2::{Digest, Sha256};
-            let mut account_root = None;
-            let store = match location {
-                StoreLocation::Memory => Store::open_in_memory(),
-                StoreLocation::Directory(p) => Store::open(&p),
-                StoreLocation::Account { root, mid } => {
-                    let store = if let Some(mid) = mid {
-                        Store::open(&root.join(format!("{:x}", Sha256::digest(mid))))
-                    } else {
-                        Store::open_in_memory()
+            let fatal = tx.clone();
+            let worker_inbox = inbox.clone();
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> anyhow::Result<()> {
+                    let (backend, location) = open()?;
+                    use sha2::{Digest, Sha256};
+                    let mut account_root = None;
+                    let store = match location {
+                        StoreLocation::Memory => Store::open_in_memory(),
+                        StoreLocation::Directory(p) => Store::open(&p),
+                        StoreLocation::Account { root, mid } => {
+                            let store = if let Some(mid) = mid {
+                                Store::open(&root.join(format!("{:x}", Sha256::digest(mid))))
+                            } else {
+                                Store::open_in_memory()
+                            };
+                            account_root = Some(root);
+                            store
+                        }
                     };
-                    account_root = Some(root);
-                    store
-                }
-            };
-            match store {
-                Ok(store) => {
-                    let mut e = Engine {
-                        backend: Box::new(backend),
-                        store,
-                        account_root,
-                        inbox,
-                        tx,
-                        connection: Connection::Local,
-                        list: None,
-                        window: None,
-                        chat_keys: BTreeSet::new(),
-                        message_keys: BTreeSet::new(),
-                        seq: 0,
-                        stream: None,
-                        assets_stop: worker_cancel,
-                        list_sweep: vec![],
-                        continuous: true,
-                        retry_after: Default::default(),
-                    };
-                    if let Err(error) = e.run() {
-                        e.emit(Delta::Error(error.to_string()));
+                    match store {
+                        Ok(store) => {
+                            let mut e = Engine {
+                                backend: Box::new(backend),
+                                store,
+                                account_root,
+                                inbox,
+                                tx,
+                                connection: Connection::Local,
+                                list: None,
+                                window: None,
+                                chat_keys: BTreeSet::new(),
+                                message_keys: BTreeSet::new(),
+                                seq: 0,
+                                stream: None,
+                                assets_stop: worker_cancel,
+                                list_sweep: vec![],
+                                continuous: true,
+                                retry_after: Default::default(),
+                                retry_attempts: Default::default(),
+                                timing,
+                                attempt: 0,
+                                reconnect_at: None,
+                            };
+                            e.run()?;
+                        }
+                        Err(e) => return Err(e.into()),
                     }
-                }
-                Err(e) => {
-                    let _ = tx.send(Delta::Error(e.to_string()));
-                }
+                    Ok(())
+                }));
+            worker_inbox.lanes.lock().unwrap().stopped = true;
+            worker_inbox.wake.notify_all();
+            if !matches!(outcome, Ok(Ok(()))) {
+                let _ = fatal.send(Delta::Fatal);
             }
         });
         Self {
@@ -328,6 +372,10 @@ impl Drop for Worker {
     }
 }
 struct Engine {
+    timing: Timing,
+    attempt: u32,
+    reconnect_at: Option<Instant>,
+    retry_attempts: std::collections::BTreeMap<Refresh, u32>,
     retry_after: std::collections::BTreeMap<Refresh, Instant>,
     continuous: bool,
     list_sweep: Vec<ChatInput>,
@@ -359,11 +407,17 @@ impl Engine {
             Error::Auth => Connection::AuthExpired,
             Error::SessionInvalid => Connection::SessionInvalid,
             Error::Offline(cause) => Connection::Offline {
-                retry_at: Instant::now() + Duration::from_secs(2),
+                retry_at: Instant::now() + self.timing.delay(self.attempt.max(1)),
                 cause,
             },
             _ => return,
         };
+        if matches!(
+            connection,
+            Connection::AuthExpired | Connection::SessionInvalid
+        ) {
+            self.reconnect_at = None;
+        }
         self.continuous = false;
         self.connection(connection);
     }
@@ -379,7 +433,7 @@ impl Engine {
             Refresh::Send(_) => 2,
             Refresh::ChatList | Refresh::MoreChats => 3,
             Refresh::Read(_) | Refresh::Older(..) | Refresh::Newer(..) | Refresh::Receipts(_) => 4,
-            Refresh::Friends | Refresh::Members(_) => 5,
+            Refresh::Stream | Refresh::Friends | Refresh::Members(_) => 5,
             Refresh::Recent(_) => 6,
             Refresh::Details(_) => 7,
         }
@@ -405,7 +459,11 @@ impl Engine {
         self.list = Some((1, 100));
         self.publish()?;
         if let Some(v) = self.store.get_pref("last_chat")? {
-            let chat = ChatId(v.as_str().unwrap().into());
+            let chat = ChatId(
+                v.as_str()
+                    .ok_or_else(|| StoreError::Invalid("last_chat must be a string".into()))?
+                    .into(),
+            );
             self.open(WindowSub {
                 sub: 1,
                 chat,
@@ -450,15 +508,11 @@ impl Engine {
                         break Work::Refresh(r);
                     }
                     if matches!(self.connection,Connection::Offline {retry_at,..} if Instant::now()>=retry_at)
+                        || self.reconnect_at.is_some_and(|at| Instant::now() >= at)
                     {
                         break Work::Reconnect;
                     }
-                    q = self
-                        .inbox
-                        .wake
-                        .wait_timeout(q, Duration::from_millis(100))
-                        .unwrap()
-                        .0;
+                    q = self.inbox.wake.wait_timeout(q, self.timing.poll).unwrap().0;
                 }
             };
             let writes = self.store.writes();
@@ -466,7 +520,13 @@ impl Engine {
                 Work::User(Intent::Stop) => break,
                 Work::User(i) => self.intent(i),
                 Work::Live(e) => self.live(e),
-                Work::Refresh(r) => self.refresh(r),
+                Work::Refresh(r) => {
+                    let result = self.refresh(r.clone());
+                    if r != Refresh::Stream && !self.retry_after.contains_key(&r) {
+                        self.retry_attempts.remove(&r);
+                    }
+                    result
+                }
                 Work::Reconnect => self.online(),
             };
             match result {
@@ -505,22 +565,36 @@ impl Engine {
             {
                 Ok(run) => run,
                 Err(e) => {
-                    self.error(e);
+                    self.rpc_failed(Refresh::Stream, e);
                     return Ok(());
                 }
             };
         let stream_stop = stop.clone();
-        let j = thread::spawn(move || {
-            run();
-            if !stream_stop.load(Ordering::Relaxed) {
-                deliver(StreamEvent::Exited);
-            }
-        });
+        let j = thread::Builder::new()
+            .name("line-sync".into())
+            .spawn(move || {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+                if !stream_stop.load(Ordering::Relaxed) {
+                    deliver(StreamEvent::Exited);
+                }
+            })
+            .map_err(StoreError::Io)?;
         self.stream = Some((stop, j));
+        self.inbox
+            .lanes
+            .lock()
+            .unwrap()
+            .refresh
+            .remove(&Refresh::Stream);
+        self.retry_after.remove(&Refresh::Stream);
         Ok(())
     }
     fn online(&mut self) -> Result<()> {
-        self.connection(Connection::Connecting { attempt: 1 });
+        self.reconnect_at = None;
+        self.attempt = self.attempt.saturating_add(1);
+        self.connection(Connection::Connecting {
+            attempt: self.attempt,
+        });
         match self.backend.profile() {
             Ok(p) => {
                 let account = self.store.account()?;
@@ -558,7 +632,13 @@ impl Engine {
                     {
                         self.open(WindowSub {
                             sub: 1,
-                            chat: ChatId(chat.as_str().unwrap().into()),
+                            chat: ChatId(
+                                chat.as_str()
+                                    .ok_or_else(|| {
+                                        StoreError::Invalid("last_chat must be a string".into())
+                                    })?
+                                    .into(),
+                            ),
                             anchor: Anchor::Unread,
                             before: 80,
                             after: 80,
@@ -583,12 +663,19 @@ impl Engine {
                 }
                 self.start_stream()?;
             }
-            Err(e) => self.error(e),
+            Err(e) => {
+                self.reconnect_at = Some(Instant::now() + self.timing.delay(self.attempt));
+                self.error(e);
+            }
         };
         Ok(())
     }
     fn next_seq(&mut self) -> Result<u32> {
-        self.seq += 1;
+        self.seq = self
+            .seq
+            .checked_add(1)
+            .filter(|seq| *seq <= 0x7fff_ffff)
+            .ok_or_else(|| StoreError::Invalid("request sequence exhausted".into()))?;
         self.store.set_pref("request_seq", Value::from(self.seq))?;
         Ok(self.seq)
     }
@@ -820,11 +907,13 @@ impl Engine {
     }
     fn send(&mut self, key: Key) -> Result<()> {
         let m = self.store.message(key)?;
-        match self.backend.send(
-            &m.chat_id,
-            m.body["body"].as_str().unwrap(),
-            m.request_seq.unwrap(),
-        ) {
+        let text = m.body["body"]
+            .as_str()
+            .ok_or_else(|| StoreError::Invalid("send body must be text".into()))?;
+        let seq = m
+            .request_seq
+            .ok_or_else(|| StoreError::Invalid("send sequence missing".into()))?;
+        match self.backend.send(&m.chat_id, text, seq) {
             Ok(row) => {
                 // Apply queued live operations before the result, preserving an echo-first RPC.
                 loop {
@@ -835,8 +924,7 @@ impl Engine {
                         None => break,
                     }
                 }
-                self.store
-                    .link_sent(m.request_seq.unwrap(), row.server_id, row.created_ms)?;
+                self.store.link_sent(seq, row.server_id, row.created_ms)?;
             }
             Err(e) => {
                 let delivery = match &e {
@@ -926,12 +1014,15 @@ impl Engine {
         }
     }
     fn retry_later(&mut self, r: Refresh) {
+        let attempt = self.retry_attempts.entry(r.clone()).or_default();
+        *attempt = attempt.saturating_add(1);
         self.retry_after
-            .insert(r.clone(), Instant::now() + Duration::from_secs(2));
+            .insert(r.clone(), Instant::now() + self.timing.delay(*attempt));
         self.inbox.refresh(r);
     }
     fn refresh(&mut self, r: Refresh) -> Result<()> {
         match r {
+            Refresh::Stream => self.start_stream()?,
             Refresh::Send(key) => self.send(key)?,
             Refresh::Friends => match self.backend.friends() {
                 Ok(rows) => {
@@ -996,9 +1087,8 @@ impl Engine {
                 let id = self
                     .store
                     .chat(&chat)?
-                    .unwrap()
-                    .last_read_server_id
-                    .unwrap();
+                    .and_then(|c| c.last_read_server_id)
+                    .ok_or_else(|| StoreError::Invalid("read marker missing".into()))?;
                 match self.backend.mark_read(&chat, &id) {
                     Ok(()) => {
                         self.store.confirm_read(&chat, &id)?;
@@ -1082,7 +1172,23 @@ impl Engine {
                 Err(e) => self.error(e),
             },
             StreamEvent::Token(v) => self.backend.token(v),
+            StreamEvent::Retry { attempt, error } => {
+                self.attempt = self.attempt.max(attempt);
+                self.error(error);
+            }
+            StreamEvent::Connecting(attempt) => {
+                if matches!(
+                    self.connection,
+                    Connection::Offline { .. } | Connection::Connecting { .. }
+                ) {
+                    self.connection(Connection::Connecting {
+                        attempt: self.attempt.max(attempt),
+                    });
+                }
+            }
             StreamEvent::Connection(Ok(())) => {
+                self.retry_attempts.remove(&Refresh::Stream);
+                self.attempt = 0;
                 let reconnect = self.connection != Connection::Online;
                 self.connection(Connection::Online);
                 if reconnect {
@@ -1097,12 +1203,9 @@ impl Engine {
                 self.continuous = false;
                 if !matches!(
                     self.connection,
-                    Connection::AuthExpired | Connection::SessionInvalid
+                    Connection::AuthExpired | Connection::SessionInvalid | Connection::Fatal
                 ) {
-                    self.connection(Connection::Offline {
-                        retry_at: Instant::now() + Duration::from_secs(2),
-                        cause: NetCause::Unreachable,
-                    });
+                    self.retry_later(Refresh::Stream);
                 }
             }
         };
@@ -1187,7 +1290,7 @@ impl Engine {
 pub fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
+        .unwrap_or_default()
         .as_millis() as i64
 }
 

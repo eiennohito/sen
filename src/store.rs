@@ -204,7 +204,8 @@ impl Store {
                     |r| r.get(0),
                 )?;
                 let marker = marker.map(|id| server_sort(&ServerId(id))).transpose()?;
-                if marker.is_none_or(|id| server_sort(&m.server_id).unwrap() > id) {
+                let incoming = server_sort(&m.server_id)?;
+                if marker.is_none_or(|id| incoming > id) {
                     let c = self.increment_unread(&m.chat_id)?;
                     changes.chats_changed.extend(c.chats_changed);
                 }

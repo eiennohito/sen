@@ -178,7 +178,7 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
     s.mark_failed(
         k,
         Delivery::Rejected {
-            reason: "denied".into(),
+            reason: crate::client::error::RejectReason::NotAccepted,
         },
     )
     .unwrap();
