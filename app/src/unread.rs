@@ -415,6 +415,7 @@ impl View {
     }
     pub(crate) fn read_exposure(&mut self, ui: &AppWindow, exposed: Vec<String>) {
         self.unread.exposed = exposed;
+        self.retain_previews(ui);
         let state = ui.global::<State>();
         let eligibility = Eligibility {
             active: state.get_window_active(),
@@ -427,7 +428,7 @@ impl View {
         };
         if let Some(priority) = &self.asset_priority {
             let exposed: HashSet<_> = self.unread.exposed.iter().map(String::as_str).collect();
-            let keys = self
+            let mut keys = self
                 .messages
                 .iter()
                 .filter(|m| eligibility.visible && exposed.contains(m.id.as_str()))
@@ -442,6 +443,7 @@ impl View {
                         )
                 })
                 .collect::<Vec<_>>();
+            keys.extend(self.preview_priority_keys(ui));
             priority.set(
                 if eligibility.visible {
                     self.current.clone()
@@ -450,6 +452,22 @@ impl View {
                 },
                 keys,
             );
+        }
+        let visible = self.preview_priority_keys(ui);
+        self.preview_requested.retain(|key| visible.contains(key));
+        let keys: Vec<_> = self
+            .preview_keys(ui)
+            .into_iter()
+            .filter(|key| !self.preview_requested.contains(key))
+            .collect();
+        if !self.demo_preview_loading
+            && !keys.is_empty()
+            && self.commands.as_ref().is_some_and(|tx| {
+                tx.try_send(account::Command::PreviewAssets { keys: keys.clone() })
+                    .is_ok()
+            })
+        {
+            self.preview_requested.extend(keys);
         }
         let allowed = eligibility.allowed();
         if let Some(gate) = &self.read_gate {

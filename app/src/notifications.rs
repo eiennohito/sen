@@ -19,6 +19,18 @@ pub(crate) fn preferences(ui: &AppWindow) -> Preferences {
         group_events: state.get_notification_group_events(),
     }
 }
+fn notification_body(message: &account::MessageView) -> &str {
+    if !message.body.is_empty() {
+        message.body.as_str()
+    } else if message.photo {
+        "Photo"
+    } else if message.sticker {
+        "Sticker"
+    } else {
+        message.rich.file_name.as_deref().unwrap_or("New message")
+    }
+}
+
 impl View {
     pub(crate) fn apply_notification_settings(&self, ui: &AppWindow) {
         let preferences = &self.saved.notifications;
@@ -183,15 +195,7 @@ impl View {
         } else {
             EventKind::Message
         };
-        let body = if !message.body.is_empty() {
-            message.body.as_str()
-        } else if message.photo {
-            "Photo"
-        } else if message.sticker {
-            "Sticker"
-        } else {
-            message.rich.file_name.as_deref().unwrap_or("New message")
-        };
+        let body = notification_body(message);
         self.attention_notice(ui, chat, body, &message.id, kind);
     }
     fn attention_notice(
@@ -456,4 +460,26 @@ pub(crate) fn install(ui: &AppWindow, state: Rc<RefCell<View>>) {
             state.borrow().demo_notification(&ui, kind);
         }
     });
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::*;
+    #[test]
+    fn notifications_keep_sticker_text_without_the_history_type_glyph() {
+        let mut message = account::MessageView {
+            body: "Nice!".into(),
+            sticker: true,
+            ..Default::default()
+        };
+        message.rich.content_type = 7;
+        assert_eq!(message_text(&message), "☺ Sticker · Nice!");
+        assert_eq!(notification_body(&message), "Nice!");
+        message.body.clear();
+        assert_eq!(notification_body(&message), "Sticker");
+        message.body = "Hi [笑]".into();
+        message.rich.content_type = 0;
+        message.sticker = false;
+        assert_eq!(notification_body(&message), "Hi [笑]");
+    }
 }

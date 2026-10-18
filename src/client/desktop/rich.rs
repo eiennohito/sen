@@ -6,6 +6,10 @@ use std::collections::HashSet;
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RichContent {
     pub content_type: i64,
+    #[serde(default)]
+    pub album_count: Option<u64>,
+    #[serde(default)]
+    pub caption: Option<String>,
     pub emoji: Vec<InlineEmoji>,
     pub reply: Option<ReplyReference>,
     pub file_name: Option<String>,
@@ -67,6 +71,13 @@ pub fn parse(raw: &Value) -> RichContent {
     let text = raw["text"].as_str().unwrap_or_default();
     let mut details = RichContent {
         content_type,
+        album_count: matches!(content_type, 1 | 2)
+            .then(|| number(&metadata["GTOTAL"]))
+            .flatten()
+            .filter(|n| *n > 1),
+        caption: matches!(content_type, 1 | 2)
+            .then(|| nonempty(&raw["text"]))
+            .flatten(),
         reply: (raw["messageRelationType"].as_i64() == Some(3))
             .then(|| nonempty(&raw["relatedMessageId"]))
             .flatten()
@@ -289,6 +300,27 @@ mod tests {
         assert!(system.withdrawn);
         assert_eq!(system.system_text.as_deref(), Some("Synthetic system item"));
         assert_eq!(system.system_key.as_deref(), Some("C_J"));
+    }
+
+    #[test]
+    fn album_count_and_caption_are_optional_media_details() {
+        let rich = parse(
+            &json!({"contentType":1,"text":"Riverside", "contentMetadata":{"GID":"group", "GTOTAL":"4"}}),
+        );
+        assert_eq!(rich.album_count, Some(4));
+        assert_eq!(rich.caption.as_deref(), Some("Riverside"));
+        for total in ["0", "1", "bad", "-1"] {
+            assert!(
+                parse(&json!({"contentType":2,"contentMetadata":{"GTOTAL":total}}))
+                    .album_count
+                    .is_none()
+            );
+        }
+        assert!(
+            parse(&json!({"contentType":0,"text":"plain","contentMetadata":{"GTOTAL":"4"}}))
+                .caption
+                .is_none()
+        );
     }
 
     #[test]

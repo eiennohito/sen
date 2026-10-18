@@ -14,6 +14,7 @@ pub(crate) struct View {
     pub(crate) unread: unread::Unread,
     pub(crate) asset_priority:
         Option<std::sync::Arc<line_wasm_poc::client::desktop::assets::Priority>>,
+    pub(crate) preview_requested: Vec<String>,
     pub(crate) read_activity: Option<bool>,
     pub(crate) read_gate: Option<std::sync::Arc<account::ReadGate>>,
     pub(crate) attention: Option<attention::Attention>,
@@ -31,6 +32,8 @@ pub(crate) struct View {
     pub(crate) messages: Vec<MessageRow>,
     pub(crate) paging: RefCell<HashMap<String, history_window::HistoryWindow>>,
     pub(crate) recent: HashMap<String, Vec<MessageRow>>,
+    pub(crate) demo_previews: bool,
+    pub(crate) demo_preview_loading: bool,
     pub(crate) demo_paging: bool,
     pub(crate) demo_page_failure: bool,
     pub(crate) history: HashMap<String, Reading>,
@@ -68,8 +71,7 @@ impl View {
         if last.sort_key < self.rows[index].activity || last.sort_key == order_key(i64::MAX) {
             return;
         }
-        self.rows[index].preview = single_line(&last.body).into();
-        self.rows[index].outgoing_preview = last.outgoing;
+        preview::set(&mut self.rows[index], last, ui.get_text_size());
         self.rows[index].activity = last.sort_key.clone();
         self.rows[index].time = list_time(last.sort_key.parse().unwrap_or(0)).into();
         self.filter(ui);
@@ -205,10 +207,26 @@ impl View {
             .map(|r| (r.y, r.latest, r.editor_y))
             .unwrap_or((0., true, 0.));
         if self.demo && self.messages.is_empty() {
-            self.messages = demo::examples()
-                .get(index)
-                .map(|chat| chat.messages.clone())
-                .unwrap_or_default();
+            self.messages = (if self.demo_previews {
+                demo::preview_examples()
+            } else {
+                demo::examples()
+            })
+            .get(index)
+            .map(|chat| chat.messages.clone())
+            .unwrap_or_default();
+            if self.demo_previews
+                && let Some(last) = self.messages.last_mut()
+            {
+                last.sort_key = self.rows[index].activity.clone();
+                last.delivered_time = last.sort_key.clone();
+                last.time = display_time(last.sort_key.parse().unwrap_or(0)).into();
+            }
+        }
+        if self.demo_preview_loading {
+            for row in &mut self.messages {
+                demo::clear_picture(row);
+            }
         }
         let (anchor, caret) = reading
             .map(|r| (r.editor_anchor, r.editor_caret))
@@ -697,8 +715,7 @@ impl View {
             account::Update::ChatMeta {
                 chat,
                 title,
-                preview,
-                timestamp,
+                message,
                 unread,
                 muted,
             } => {
@@ -711,9 +728,10 @@ impl View {
                     if let Some(muted) = muted {
                         self.rows[index].muted = muted;
                     }
-                    self.rows[index].preview = single_line(&preview).into();
-                    self.rows[index].activity = order_key(timestamp).into();
-                    self.rows[index].time = list_time(timestamp).into();
+                    let message = message_row(*message);
+                    preview::set(&mut self.rows[index], &message, ui.get_text_size());
+                    self.rows[index].activity = message.sort_key.clone();
+                    self.rows[index].time = list_time(message.sort_key.parse().unwrap_or(0)).into();
                     self.filter(ui);
                 }
             }
@@ -1101,6 +1119,23 @@ impl View {
                 // Canonical indices retain identity while the visible list is
                 // sorted newest-first. Updates wait for an active click to finish.
                 for chat in chats {
+                    let previous = self
+                        .ids
+                        .iter()
+                        .position(|id| id == &chat.id)
+                        .map(|i| self.rows[i].preview_runs.clone())
+                        .unwrap_or_default();
+                    let mut preview_row = ChatRow {
+                        preview_runs: previous,
+                        preview: single_line(&chat.preview).into(),
+                        outgoing_preview: chat.outgoing_preview,
+                        ..Default::default()
+                    };
+                    if let Some(message) = chat.preview_message {
+                        preview::set(&mut preview_row, &message_row(message), ui.get_text_size());
+                    } else {
+                        preview_row.preview_runs = ModelRc::default();
+                    }
                     self.unread.server_through(
                         &chat.id,
                         chat.unread,
@@ -1116,7 +1151,8 @@ impl View {
                         self.rows[index].outgoing_preview = chat.outgoing_preview;
                         self.rows[index].muted = chat.muted.unwrap_or(false);
                         self.rows[index].title = single_line(&chat.title).into();
-                        self.rows[index].preview = single_line(&chat.preview).into();
+                        self.rows[index].preview = preview_row.preview;
+                        self.rows[index].preview_runs = preview_row.preview_runs;
                         self.rows[index].activity = order_key(chat.timestamp).into();
                         self.rows[index].time = list_time(chat.timestamp).into();
                         self.rows[index].initial = name_initial(&chat.title);
@@ -1136,7 +1172,8 @@ impl View {
                             muted: chat.muted.unwrap_or(false),
                             title: single_line(&chat.title).into(),
                             initial: name_initial(&chat.title),
-                            preview: single_line(&chat.preview).into(),
+                            preview: preview_row.preview,
+                            preview_runs: preview_row.preview_runs,
                             activity: order_key(chat.timestamp).into(),
                             time: list_time(chat.timestamp).into(),
                             avatar_key: chat.avatar_key.into(),
@@ -1312,6 +1349,9 @@ impl View {
                 self.persist(ui);
             }
             account::Update::Image { key, pixels } => {
+                if self.demo_previews && self.demo_preview_loading {
+                    return;
+                }
                 let image = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
                     &pixels.rgba,
                     pixels.width,
@@ -1347,6 +1387,7 @@ impl View {
                         }
                     }
                 }
+                self.preview_image(ui, &key, Some(&image));
                 for row in &mut self.rows {
                     if row.avatar_key == key {
                         row.avatar = image.clone();
@@ -1355,11 +1396,13 @@ impl View {
                 let chats = ui.get_chats();
                 if let Some(rows) = chats.as_any().downcast_ref::<VecModel<ChatRow>>() {
                     for i in 0..rows.row_count() {
-                        if let Some(mut row) = rows.row_data(i)
-                            && row.avatar_key == key
-                        {
-                            row.avatar = image.clone();
-                            rows.set_row_data(i, row);
+                        if let Some(mut row) = rows.row_data(i) {
+                            if row.avatar_key == key {
+                                row.avatar = image.clone();
+                            }
+                            if row.avatar_key == key {
+                                rows.set_row_data(i, row);
+                            }
                         }
                     }
                 }
@@ -1417,6 +1460,7 @@ impl View {
                 self.render(ui);
             }
             account::Update::ImageFailed { key, failure } => {
+                self.preview_image(ui, &key, None);
                 for row in self
                     .messages
                     .iter_mut()
@@ -1427,7 +1471,18 @@ impl View {
                     )
                     .chain(self.recent.values_mut().flat_map(|rows| rows.iter_mut()))
                 {
+                    if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
+                        for i in 0..runs.row_count() {
+                            let mut run = runs.row_data(i).unwrap();
+                            if run.image_key == key {
+                                run.picture = Default::default();
+                                run.has_picture = false;
+                                runs.set_row_data(i, run);
+                            }
+                        }
+                    }
                     if row.image_key == key {
+                        row.has_picture = false;
                         row.image_failed = true;
                         row.image_failure = format!("{failure:?}").into();
                         row.image_error = failure.image_text().into();

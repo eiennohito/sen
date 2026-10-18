@@ -33,3 +33,5 @@ mod layers;
 mod paging;
 
 mod media;
+
+mod previews;

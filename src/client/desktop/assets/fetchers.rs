@@ -17,6 +17,11 @@ const FAILURE_TTL: Duration = Duration::from_secs(300);
 pub struct Priority(Mutex<(String, HashSet<String>)>);
 
 impl Priority {
+    pub fn exposed(&self, chat: &str, key: &str) -> bool {
+        let priority = self.0.lock().unwrap();
+        priority.0 == chat || priority.1.contains(key)
+    }
+
     pub fn set(&self, chat: String, keys: impl IntoIterator<Item = String>) {
         *self.0.lock().unwrap() = (
             chat,

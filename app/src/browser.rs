@@ -262,6 +262,7 @@ impl View {
         );
         ui.set_chats(ModelRc::new(VecModel::from(rows)));
         ui.set_list_y(restored);
+        self.retain_previews(ui);
     }
 }
 

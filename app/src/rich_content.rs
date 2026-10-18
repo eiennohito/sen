@@ -503,7 +503,26 @@ pub(crate) fn install(ui: &AppWindow, state: Rc<RefCell<View>>) {
         // A new observer handle triggers reflow without copying the rows.
         ModelRc::new(rows)
     });
-    let metrics = RefCell::new(Measurements::default());
+    let metrics = Rc::new(RefCell::new(Measurements::default()));
+    let preview_metrics = metrics.clone();
+    let preview_weak = ui.as_weak();
+    ui.global::<State>()
+        .on_preview_layout(move |rows, prefix, width, size| {
+            let Some(ui) = preview_weak.upgrade() else {
+                return ModelRc::default();
+            };
+            crate::preview::layout(&rows, &prefix, width, size, |text| {
+                let key = (text.into(), size.to_bits());
+                if let Some(value) = preview_metrics.borrow_mut().get(&key) {
+                    return value.0;
+                }
+                let value = ui.invoke_measure_rich(text.into(), size);
+                preview_metrics
+                    .borrow_mut()
+                    .insert(key, (value.width, value.height));
+                value.width
+            })
+        });
     let weak = ui.as_weak();
     ui.global::<State>()
         .on_rich_layout(move |rows, width, size, previous| {
@@ -633,6 +652,40 @@ mod tests {
                 output
             });
         observed
+    }
+
+    #[test]
+    fn missing_emoji_reserves_the_loaded_geometry() {
+        std::thread::spawn(|| {
+            let _window = snapshot::install().unwrap();
+            let ui = create_app_window().unwrap();
+            let mut message = demo::rich_fixture().remove(1);
+            links::decorate_message(&mut message, "contact");
+            let before = layout(&ui, &message.rich_runs, 140., 24.);
+            if let Some(runs) = message
+                .rich_runs
+                .as_any()
+                .downcast_ref::<VecModel<RichRun>>()
+            {
+                for i in 0..runs.row_count() {
+                    let mut run = runs.row_data(i).unwrap();
+                    if run.emoji {
+                        run.picture = Default::default();
+                        run.has_picture = false;
+                        runs.set_row_data(i, run);
+                    }
+                }
+            }
+            let after = layout(&ui, &message.rich_runs, 140., 24.);
+            let geometry = |rows: ModelRc<RichRun>| {
+                rows.iter()
+                    .map(|run| (run.x, run.y, run.measured_width, run.measured_height))
+                    .collect::<Vec<_>>()
+            };
+            assert_eq!(geometry(before), geometry(after));
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]

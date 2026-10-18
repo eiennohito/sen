@@ -401,6 +401,7 @@ mod history_window;
 mod message_perf;
 mod paging;
 mod present;
+mod preview;
 mod rich_content;
 mod view;
 use members::member_initial;
@@ -411,6 +412,7 @@ struct Options {
     paths: account::Paths,
     demo: bool,
     demo_rich: bool,
+    demo_previews: bool,
     demo_photos: bool,
     demo_groups: bool,
     demo_friends: bool,
@@ -442,6 +444,7 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
         locations,
         demo: false,
         demo_rich: false,
+        demo_previews: false,
         demo_photos: false,
         demo_groups: false,
         demo_friends: false,
@@ -468,6 +471,10 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                 std::process::exit(0);
             }
             "--demo" => out.demo = true,
+            "--demo-previews" => {
+                out.demo = true;
+                out.demo_previews = true;
+            }
             "--debug-background" => out.debug_background = true,
             "--demo-notify" => {
                 out.demo = true;
@@ -589,7 +596,7 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: line-desktop [--demo | --demo-rich | --demo-photos | --demo-groups | --demo-friends | --demo-notify] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile] [--snapshot-case long-url|mixed|cjk|emoji] [--snapshot-scene SCENE]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT and --demo-text-size 12..24 set offline preview geometry.\n--demo-color-scheme light|dark selects an offline preview theme; --demo-dark is an alias for dark.\n--debug-background disables desktop integration for automation. --build-info reports the build capabilities. --help (-h) shows this help.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
+                    "Usage: line-desktop [--demo | --demo-previews | --demo-rich | --demo-photos | --demo-groups | --demo-friends | --demo-notify] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile] [--snapshot-case long-url|mixed|cjk|emoji] [--snapshot-scene SCENE]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT and --demo-text-size 12..24 set offline preview geometry.\n--demo-color-scheme light|dark selects an offline preview theme; --demo-dark is an alias for dark.\n--debug-background disables desktop integration for automation. --build-info reports the build capabilities. --help (-h) shows this help.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
                 );
                 std::process::exit(0);
             }
@@ -731,8 +738,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.set_demo(true);
         ui.set_connected(true);
         let weak = ui.as_weak();
-        let demo_worker =
-            account::start_demo(state.borrow().demo_send_failure.clone(), move |event| {
+        let demo_worker = account::start_demo(
+            state.borrow().demo_send_failure.clone(),
+            if options.demo_previews {
+                demo::preview_assets()
+            } else {
+                HashMap::new()
+            },
+            move |event| {
                 let _ = weak.upgrade_in_event_loop(move |ui| {
                     UI_STATE.with(|slot| {
                         if let Some(state) = slot.borrow().as_ref() {
@@ -740,7 +753,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     });
                 });
-            });
+            },
+        );
         state.borrow_mut().commands = Some(demo_worker.commands.clone());
         *worker.borrow_mut() = Some(demo_worker);
         if let Some(dark) = options.demo_dark {
@@ -748,10 +762,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         ui.set_text_size(options.snapshot_text_size);
         ui.set_account_name("Offline preview".into());
-        for (index, chat) in demo::examples().into_iter().enumerate() {
+        state.borrow_mut().demo_previews = options.demo_previews;
+        ui.global::<State>().set_preview_demo(options.demo_previews);
+        let examples = if options.demo_previews {
+            demo::preview_examples()
+        } else {
+            demo::examples()
+        };
+        for (index, chat) in examples.into_iter().enumerate() {
             let mut view = state.borrow_mut();
             view.ids.push(index.to_string());
+            if options.demo_previews {
+                view.unread.server(&index.to_string(), Some(0), None);
+            }
+            let mut preview_row = ChatRow::default();
+            if let Some(last) = chat.messages.last() {
+                preview::set(&mut preview_row, last, ui.get_text_size());
+            }
             view.rows.push(ChatRow {
+                preview_runs: preview_row.preview_runs,
                 index: index as i32,
                 group: index == 1,
                 member_count: if index == 1 { 25 } else { 0 },
@@ -763,7 +792,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .unwrap_or_default()
                     .into(),
                 title: chat.title.into(),
-                preview: single_line(chat.preview).into(),
+                preview: if options.demo_previews {
+                    preview_row.preview
+                } else {
+                    single_line(chat.preview).into()
+                },
                 activity: chat
                     .messages
                     .last()
@@ -788,7 +821,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                         "散歩とコーヒーが好き 🌿",
                         "Saturday by the river",
                         "Ideas for a quiet afternoon",
-                    ][i]
+                    ][i % 3]
                         .into(),
                     group: i == 1,
                     avatar: row.avatar.clone(),

@@ -176,6 +176,38 @@ pub(crate) fn outgoing_timestamp(item: &storage::Outgoing) -> i64 {
     }
 }
 
+pub(crate) fn message_text(m: &account::MessageView) -> String {
+    let kind = crate::links::kind(m.rich.content_type, m.rich.withdrawn, m.decryption_failed);
+    let mut body = crate::links::placeholder(kind)
+        .map(|label| {
+            if kind == MessageKind::System {
+                m.rich
+                    .system_text
+                    .clone()
+                    .map(|text| format!("ⓘ {text}"))
+                    .unwrap_or_else(|| label.into())
+            } else if matches!(kind, MessageKind::File | MessageKind::Contact) && !m.body.is_empty()
+            {
+                format!("{label} · {}", m.body)
+            } else {
+                label.into()
+            }
+        })
+        .unwrap_or_else(|| m.body.clone());
+    if kind == MessageKind::Sticker && !m.body.is_empty() && m.body != "Sticker" {
+        body = format!("{body} · {}", m.body);
+    }
+    if matches!(kind, MessageKind::Photo | MessageKind::Video) {
+        if let Some(count) = m.rich.album_count {
+            body = format!("▧ Album · {count} items");
+        }
+        if let Some(caption) = &m.rich.caption {
+            body = format!("{body} · {caption}");
+        }
+    }
+    body
+}
+
 pub(crate) fn message_row(m: account::MessageView) -> MessageRow {
     let kind = crate::links::kind(m.rich.content_type, m.rich.withdrawn, m.decryption_failed);
     let rich_runs = if kind == MessageKind::Text && !m.emoji.is_empty() {
@@ -195,22 +227,7 @@ pub(crate) fn message_row(m: account::MessageView) -> MessageRow {
         .map(crate::rich_content::duration)
         .or_else(|| m.rich.file_size.map(crate::rich_content::file_size))
         .unwrap_or_default();
-    let body = crate::links::placeholder(kind)
-        .map(|label| {
-            if kind == MessageKind::System {
-                m.rich
-                    .system_text
-                    .clone()
-                    .map(|text| format!("ⓘ {text}"))
-                    .unwrap_or_else(|| label.into())
-            } else if matches!(kind, MessageKind::File | MessageKind::Contact) && !m.body.is_empty()
-            {
-                format!("{label} · {}", m.body)
-            } else {
-                label.into()
-            }
-        })
-        .unwrap_or(m.body);
+    let body = message_text(&m);
     let reactions = m
         .reactions
         .into_iter()

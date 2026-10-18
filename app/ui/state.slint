@@ -1,6 +1,7 @@
 import { ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
+    in-out property <bool> preview-demo;
     in-out property <bool> window-active: false;
     in-out property <int> unread-conversations;
     in-out property <bool> unread-stale;
@@ -8,6 +9,11 @@ export global State {
     in-out property <bool> unread-locating;
     in-out property <bool> unread-boundary-unknown;
     callback read-state-changed();
+    changed list-y => { self.read-state-changed(); }
+    changed chats => { self.read-state-changed(); }
+    changed section => { self.read-state-changed(); }
+    in-out property <length> chat-list-height;
+    changed chat-list-height => { self.read-state-changed(); }
     changed window-active => { self.read-state-changed(); }
     changed modal-open => { self.read-state-changed(); }
     changed loading-history => { self.read-state-changed(); }
@@ -209,6 +215,7 @@ export global State {
     callback open-photo(string);
     callback open-link(string);
     pure callback rich-source([RichRun]) -> [RichRun];
+    callback preview-layout([RichRun], string, float, float) -> [RichRun];
     callback rich-layout([RichRun], float, float, [RichRun]) -> [RichRun];
     callback save-file(string);
     in-out property <string> file-save-id;

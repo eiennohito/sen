@@ -201,9 +201,13 @@ fn demo_composer_transport_and_history() {
         let (ui, mut view) = synthetic_ui();
         ui.set_connected(true);
         let (tx, rx) = std::sync::mpsc::channel();
-        let worker = account::start_demo(view.demo_send_failure.clone(), move |event| {
-            tx.send(event).unwrap();
-        });
+        let worker = account::start_demo(
+            view.demo_send_failure.clone(),
+            HashMap::new(),
+            move |event| {
+                tx.send(event).unwrap();
+            },
+        );
         view.commands = Some(worker.commands.clone());
         let state = Rc::new(RefCell::new(view));
         let weak = ui.as_weak();
@@ -374,9 +378,13 @@ fn demo_early_clock_fixtures_and_send_order() {
             ui.set_demo(true);
             ui.set_connected(true);
             let (tx, rx) = std::sync::mpsc::channel();
-            let worker = account::start_demo(view.demo_send_failure.clone(), move |event| {
-                tx.send(event).unwrap();
-            });
+            let worker = account::start_demo(
+                view.demo_send_failure.clone(),
+                HashMap::new(),
+                move |event| {
+                    tx.send(event).unwrap();
+                },
+            );
             let state = Rc::new(RefCell::new(view));
             state.borrow_mut().commands = Some(worker.commands.clone());
             let check = |rows: &[MessageRow]| {
@@ -467,9 +475,13 @@ fn demo_refused_prepared_send_does_not_arm_failure() {
         let _window = snapshot::install().unwrap();
         let (ui, view) = synthetic_ui();
         let (tx, rx) = std::sync::mpsc::channel();
-        let worker = account::start_demo(view.demo_send_failure.clone(), move |event| {
-            tx.send(event).unwrap();
-        });
+        let worker = account::start_demo(
+            view.demo_send_failure.clone(),
+            HashMap::new(),
+            move |event| {
+                tx.send(event).unwrap();
+            },
+        );
         let state = Rc::new(RefCell::new(view));
         state.borrow_mut().commands = Some(worker.commands.clone());
         for kind in [3, 10] {

@@ -141,6 +141,29 @@ when full. Permanent classes do not expire while retained; retriable failures
 become eligible again after 300 seconds. Timeout, network and 5xx thumbnails may
 also retry once when sync reconnects, at normal visibility priority. Item Retry bypasses
 both the retained failure and thumbnail cache and gets explicit-request priority.
+Chat-list previews carry the same typed message, emoji keys and media thumbnail
+keys as history. A measured single-line renderer is instantiated only for rows
+at the viewport; ordinary text and drafts retain native Text elision. Preview
+text follows selection foreground and images retain their asset colours. Emoji
+text for accessibility, copy, notifications and search remains the original span
+placeholder (for example `[笑]`). Missing emoji retain history's reserved image
+box and small fallback font, so loading never reflows the conversation.
+Photos, video thumbnails and stickers use the existing preview/sticker routes;
+albums use optional GTOTAL counts and media captions. List thumbnails have no
+Retry control. Their descriptors are registered without downloading; exposed
+list keys join the fetchers' existing priority mailbox and request thumbnails.
+Shared emoji keys keep all chat owners. History page jobs always queue with
+chat identity; a deferred priority update cannot discard them. Preview pictures
+are reduced to twice their line height (at most 69 px) and shared by asset key.
+Retention favours visible rows, then the nearest two margin rows. Its byte budget
+comes from viewport rows, available image slots and text size, capped at 16 MiB;
+images beyond the line's maximum possible slots are excluded. Only missing keys
+are requested, preserving outstanding requests across overlapping scroll ranges.
+Returning rows request through the same thumbnail cache. Stickers use contain; photos use square crops.
+Loaded media labels omit the type glyph; text-only labels keep it, including
+albums. Notifications retain their prior text, including sticker STKTXT.
+`cargo test --release --offline -p line-desktop chat_preview_performance -- --ignored --nocapture` probes 500 chat rows and 60 scroll redraws.
+
 Late history responses are checked against both chat ID and request generation.
 Submission saves a durable pending item before queueing a network command,
 then clears the submitted editor. Confirmation updates the item by local ID;

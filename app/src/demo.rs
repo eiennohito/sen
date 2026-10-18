@@ -183,6 +183,47 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
     if !state.borrow().demo {
         return;
     }
+    if matches!(kind, 32 | 33) && state.borrow().demo_previews {
+        let mut view = state.borrow_mut();
+        view.demo_preview_loading = kind == 32;
+        view.preview_requested.clear();
+        if kind == 32 {
+            for row in &view.rows {
+                if let Some(runs) = row
+                    .preview_runs
+                    .as_any()
+                    .downcast_ref::<VecModel<RichRun>>()
+                {
+                    for i in 0..runs.row_count() {
+                        let mut run = runs.row_data(i).unwrap();
+                        run.picture = Default::default();
+                        run.has_picture = false;
+                        runs.set_row_data(i, run);
+                    }
+                }
+            }
+            for row in &mut view.messages {
+                clear_picture(row);
+            }
+            for history in view.history.values_mut() {
+                for row in &mut history.messages {
+                    clear_picture(row);
+                }
+            }
+            for rows in view.recent.values_mut() {
+                for row in rows {
+                    clear_picture(row);
+                }
+            }
+            view.render(ui);
+        } else {
+            for (key, pixels) in preview_assets() {
+                view.update(ui, account::Update::Image { key, pixels });
+            }
+        }
+        view.history_exposure(ui);
+        return;
+    }
     if (20..30).contains(&kind) {
         let mut view = state.borrow_mut();
         view.messages = vec![media_failure((kind - 20) as usize)];
@@ -670,5 +711,186 @@ pub(crate) fn media_failure(index: usize) -> MessageRow {
         image_error: failure.image_text().into(),
         image_retryable: failure.retriable(),
         ..message("Photo", "12:00", false)
+    }
+}
+
+pub(crate) fn preview_examples() -> Vec<Conversation> {
+    let mut chats = Vec::new();
+    for (i, (title, body)) in [
+        ("One LINE emoji", "[笑]"),
+        ("Several LINE emoji", "[笑][笑][笑]"),
+        ("Mixed LINE emoji", "日😀[笑]本🌸 [笑] See you soon"),
+        (
+            "Long LINE emoji",
+            "Hi [笑] a long preview [笑] with enough text to elide at the row width [笑] end",
+        ),
+        ("Missing LINE emoji", "Waiting [笑] for you"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let emoji = body
+            .match_indices("[笑]")
+            .map(|(start, text)| account::EmojiView {
+                span: line_wasm_poc::client::desktop::rich::InlineEmoji {
+                    start_utf16: body[..start].encode_utf16().count(),
+                    end_utf16: body[..start + text.len()].encode_utf16().count(),
+                    start_byte: start,
+                    end_byte: start + text.len(),
+                    fallback: text.into(),
+                    product_id: "synthetic".into(),
+                    sticon_id: "smile".into(),
+                    version: None,
+                    animated: false,
+                },
+                image_key: if i == 4 {
+                    "demo-missing-emoji"
+                } else {
+                    "demo-inline"
+                }
+                .into(),
+            })
+            .collect::<Vec<_>>();
+        let timestamp = fixture_time("10:43") - i as i64 * 60_000;
+        let row = message_row(account::MessageView {
+            id: format!("preview-emoji-{i}"),
+            body: body.into(),
+            timestamp,
+            delivered_time: timestamp,
+            outgoing: i == 2,
+            emoji,
+            ..Default::default()
+        });
+        if i != 4
+            && let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>()
+        {
+            for i in 0..runs.row_count() {
+                let mut run = runs.row_data(i).unwrap();
+                if run.emoji {
+                    run.picture = avatar(0);
+                    run.has_picture = true;
+                    runs.set_row_data(i, run);
+                }
+            }
+        }
+        chats.push(Conversation {
+            title,
+            preview: body,
+            initial: "L",
+            messages: vec![row],
+        });
+    }
+    for (i, (title, body, kind)) in [
+        (
+            "Photo preview",
+            "Photo · Riverside walk",
+            MessageKind::Photo,
+        ),
+        ("Album preview", "Album · 4 items", MessageKind::Photo),
+        ("Sticker preview", "Sticker", MessageKind::Sticker),
+        ("Animated sticker preview", "Sticker", MessageKind::Sticker),
+        ("Missing photo preview", "Photo", MessageKind::Photo),
+        ("File preview", "File · walk.pdf", MessageKind::File),
+        ("Video preview", "Video · Weekend walk", MessageKind::Video),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let media = kind != MessageKind::File;
+        let timestamp = fixture_time("10:43") - (5 + i) as i64 * 60_000;
+        let mut row = message_row(account::MessageView {
+            id: format!("preview-media-{i}"),
+            timestamp,
+            delivered_time: timestamp,
+            body: if kind == MessageKind::Sticker {
+                "Nice!"
+            } else if kind == MessageKind::File {
+                "walk.pdf"
+            } else {
+                ""
+            }
+            .into(),
+            photo: kind == MessageKind::Photo,
+            sticker: kind == MessageKind::Sticker,
+            image_key: if media {
+                format!("demo-preview-{i}")
+            } else {
+                String::new()
+            },
+            rich: line_wasm_poc::client::desktop::rich::RichContent {
+                content_type: match kind {
+                    MessageKind::Photo => 1,
+                    MessageKind::Video => 2,
+                    MessageKind::Sticker => 7,
+                    _ => 14,
+                },
+                album_count: (i == 1).then_some(4),
+                caption: match i {
+                    0 => Some("Riverside walk".into()),
+                    6 => Some("Weekend walk".into()),
+                    _ => None,
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        row.has_picture = media && i != 4;
+        row.picture = if row.has_picture {
+            thumbnail(kind == MessageKind::Sticker)
+        } else {
+            Default::default()
+        };
+        row.image_failed = i == 4;
+        if i == 4 {
+            row.image_failure = "Http(404)".into();
+            row.image_error = "Not available for this sender".into();
+        }
+        chats.push(Conversation {
+            title,
+            preview: body,
+            initial: "M",
+            messages: vec![row],
+        });
+    }
+    chats
+}
+
+pub(crate) fn preview_assets()
+-> HashMap<String, std::sync::Arc<line_wasm_poc::client::desktop::assets::Pixels>> {
+    let mut assets = HashMap::new();
+    for chat in preview_examples() {
+        for row in chat.messages {
+            let pictures = std::iter::once((row.image_key, row.picture, row.has_picture)).chain(
+                row.rich_runs
+                    .iter()
+                    .map(|run| (run.image_key, run.picture, run.has_picture)),
+            );
+            for (key, picture, loaded) in pictures {
+                if loaded && let Some(pixels) = picture.to_rgba8() {
+                    assets.insert(
+                        key.to_string(),
+                        std::sync::Arc::new(line_wasm_poc::client::desktop::assets::Pixels {
+                            width: pixels.width(),
+                            height: pixels.height(),
+                            rgba: pixels.as_bytes().to_vec(),
+                        }),
+                    );
+                }
+            }
+        }
+    }
+    assets
+}
+
+pub(crate) fn clear_picture(row: &mut MessageRow) {
+    row.picture = Default::default();
+    row.has_picture = false;
+    if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
+        for i in 0..runs.row_count() {
+            let mut run = runs.row_data(i).unwrap();
+            run.picture = Default::default();
+            run.has_picture = false;
+            runs.set_row_data(i, run);
+        }
     }
 }

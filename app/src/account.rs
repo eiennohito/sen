@@ -6,7 +6,7 @@ use line_wasm_poc::client::desktop::{
     sync::{self, SyncState},
 };
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     sync::{
         Arc,
@@ -48,6 +48,9 @@ pub struct Paths {
 // Extended contracts are consumed by S8/S10/S11 in subsequent sessions.
 #[allow(dead_code)]
 pub enum Command {
+    PreviewAssets {
+        keys: Vec<String>,
+    },
     Stop,
     ReadActivity {
         allowed: bool,
@@ -120,6 +123,7 @@ pub struct ChatView {
     pub id: String,
     pub title: String,
     pub preview: String,
+    pub preview_message: Option<MessageView>,
     pub timestamp: i64,
     pub avatar_key: String,
     pub unread: Option<u64>,
@@ -153,6 +157,7 @@ pub struct EmojiView {
     pub image_key: String,
 }
 #[allow(dead_code)]
+#[derive(Default)]
 pub struct MessageView {
     pub id: String,
     pub sender_id: String,
@@ -214,8 +219,7 @@ pub enum Update {
     ChatMeta {
         chat: String,
         title: String,
-        preview: String,
-        timestamp: i64,
+        message: Box<MessageView>,
         unread: Option<u64>,
         muted: Option<bool>,
     },
@@ -475,6 +479,7 @@ impl Worker {
 
 pub fn start_demo(
     failure: Arc<std::sync::atomic::AtomicU8>,
+    pictures: HashMap<String, Arc<Pixels>>,
     publish: impl Fn(Update) + Send + 'static,
 ) -> Worker {
     let now = crate::present::fixed_now();
@@ -482,6 +487,17 @@ pub fn start_demo(
         while let Ok(command) = inbox.rx.recv() {
             if inbox.cancel.load(Ordering::Relaxed) || matches!(command, Command::Stop) {
                 break;
+            }
+            if let Command::PreviewAssets { keys } = &command {
+                for key in keys {
+                    if let Some(pixels) = pictures.get(key) {
+                        publish(Update::Image {
+                            key: key.clone(),
+                            pixels: pixels.clone(),
+                        });
+                    }
+                }
+                continue;
             }
             let Command::Send {
                 id,
@@ -625,6 +641,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                 }
                 match command {
                     Command::Stop => break,
+                    Command::PreviewAssets { .. } => { worker_preview_assets(&command, fetchers.as_ref().unwrap(), &jobs, &fetch_priority, &publish); },
                     Command::RetryImage { .. } => unreachable!(),
                     Command::ReadActivity { .. } => {},
                     Command::MarkReadExplicit { chat,up_to_message } => match client.mark_read(&chat,&up_to_message) {Ok(())=>{markers.confirmed(&chat,&up_to_message);publish(Update::ReadMarked{chat,up_to_message});},Err(_)=>publish(Update::ReadFailed{chat})},
@@ -796,9 +813,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         },
                     },
                 }
-                for (asset, chat) in jobs.entries.drain(..) {
-                    queue_thumbnail(fetchers.as_ref().unwrap(), asset, chat, &publish);
-                }
+                queue_jobs(fetchers.as_ref().unwrap(), &mut jobs, &publish);
                 jobs.chat = None;
             } else if let Some(event) = asset_event {
                 match event {
@@ -890,6 +905,36 @@ fn worker_asset_command(
         _ => return false,
     }
     true
+}
+
+fn worker_preview_assets(
+    command: &Command,
+    fetchers: &impl AssetQueue,
+    jobs: &Jobs,
+    priority: &Priority,
+    publish: &impl Fn(Update),
+) {
+    let Command::PreviewAssets { keys } = command else {
+        return;
+    };
+    let mut seen = HashSet::new();
+    for key in keys
+        .iter()
+        .take(256)
+        .filter(|key| seen.insert(key.as_str()))
+    {
+        if let Some((asset, chats)) = jobs.previews.get(key)
+            && let Some(chat) = chats.iter().find(|chat| priority.exposed(chat, key))
+        {
+            queue_thumbnail(fetchers, asset.clone(), Some(chat.clone()), publish);
+        }
+    }
+}
+
+fn queue_jobs(fetchers: &impl AssetQueue, jobs: &mut Jobs, publish: &impl Fn(Update)) {
+    for (asset, chat) in jobs.entries.drain(..) {
+        queue_thumbnail(fetchers, asset, chat, publish);
+    }
 }
 
 fn queue_thumbnail(
@@ -1119,6 +1164,8 @@ fn publish_echoes(chat: &str, messages: &[Message], publish: &impl Fn(Update)) {
 struct Jobs {
     chat: Option<String>,
     entries: Vec<(Asset, Option<String>)>,
+    previews: HashMap<String, (Asset, HashSet<String>)>,
+    preview_activity: HashMap<String, i64>,
 }
 fn asset_key(asset: Option<Asset>, jobs: &mut Jobs) -> String {
     if let Some(asset) = asset {
@@ -1130,10 +1177,31 @@ fn asset_key(asset: Option<Asset>, jobs: &mut Jobs) -> String {
     }
 }
 fn chat_view(chat: Chat, jobs: &mut Jobs) -> ChatView {
+    let mut preview_jobs = Jobs {
+        chat: Some(chat.id.clone()),
+        ..Default::default()
+    };
+    let preview_message = chat
+        .preview_message
+        .map(|message| message_view(message, &mut preview_jobs));
+    jobs.previews.retain(|_, (_, chats)| {
+        chats.remove(&chat.id);
+        !chats.is_empty()
+    });
+    jobs.preview_activity
+        .insert(chat.id.clone(), chat.timestamp_ms);
+    for (asset, _) in preview_jobs.entries {
+        jobs.previews
+            .entry(asset.key())
+            .or_insert_with(|| (asset, HashSet::new()))
+            .1
+            .insert(chat.id.clone());
+    }
     ChatView {
         id: chat.id,
         title: chat.title,
         preview: chat.preview,
+        preview_message,
         timestamp: chat.timestamp_ms,
         avatar_key: asset_key(chat.avatar, jobs),
         unread: chat.unread,
@@ -1146,7 +1214,8 @@ fn chat_view(chat: Chat, jobs: &mut Jobs) -> ChatView {
     }
 }
 fn message_view(message: Message, jobs: &mut Jobs) -> MessageView {
-    MessageView {
+    let start = jobs.entries.len();
+    let row = MessageView {
         id: message.id,
         sender_id: message.sender_id,
         sender_name: message.sender_name,
@@ -1187,7 +1256,27 @@ fn message_view(message: Message, jobs: &mut Jobs) -> MessageView {
                 image_key: asset_key(reaction.asset, jobs),
             })
             .collect(),
+    };
+    if let Some(chat) = &jobs.chat
+        && jobs
+            .preview_activity
+            .get(chat)
+            .is_none_or(|timestamp| *timestamp <= row.timestamp)
+    {
+        jobs.previews.retain(|_, (_, chats)| {
+            chats.remove(chat);
+            !chats.is_empty()
+        });
+        for (asset, _) in &jobs.entries[start..] {
+            jobs.previews
+                .entry(asset.key())
+                .or_insert_with(|| (asset.clone(), HashSet::new()))
+                .1
+                .insert(chat.clone());
+        }
+        jobs.preview_activity.insert(chat.clone(), row.timestamp);
     }
+    row
 }
 
 /// Uses the same library as the worker. Emits counts only; never sends messages.
@@ -1413,6 +1502,52 @@ mod tests {
     }
 
     #[test]
+    fn list_preview_assets_are_registered_without_background_downloads() {
+        let body = "Hi [笑]";
+        let mut message: Message = serde_json::from_value(serde_json::json!({
+            "id":"123", "body":body, "timestamp_ms":1,
+            "outgoing":false, "image":null,"reactions":[],"encrypted":false,
+            "decryption_failed":false
+        }))
+        .unwrap();
+        message.rich = line_wasm_poc::client::desktop::rich::parse(&serde_json::json!({
+            "text":body,"contentMetadata":{"REPLACE":{"sticon":{"resources":[{"S":3,"E":6,"productId":"synthetic","sticonId":"smile"}]}}}
+        }));
+        let mut jobs = Jobs::default();
+        let chat = chat_view(
+            Chat {
+                id: "chat".into(),
+                title: "葵".into(),
+                preview: body.into(),
+                preview_message: Some(message.clone()),
+                timestamp_ms: 1,
+                avatar: None,
+                unread: None,
+                muted: None,
+                last_read_message: None,
+                last_message_id: None,
+                member_count: None,
+                outgoing_preview: false,
+                group: false,
+            },
+            &mut jobs,
+        );
+        assert!(jobs.entries.is_empty());
+        let preview = chat.preview_message.unwrap();
+        assert_eq!(preview.emoji.len(), 1);
+        assert!(jobs.previews.contains_key(&preview.emoji[0].image_key));
+        assert_eq!(preview.emoji[0].span.fallback, "[笑]");
+        jobs.chat = Some("other".into());
+        message_view(message.clone(), &mut jobs);
+        message.rich = Default::default();
+        message.timestamp_ms = 2;
+        message_view(message, &mut jobs);
+        let owners = &jobs.previews[&preview.emoji[0].image_key].1;
+        assert!(owners.contains("chat"));
+        assert!(!owners.contains("other"));
+    }
+
+    #[test]
     fn legacy_cached_text_remains_visible_without_assuming_unread_metadata() {
         let mut message: Message = serde_json::from_value(serde_json::json!({
             "id":"123", "body":"cached text", "timestamp_ms":1,
@@ -1509,6 +1644,98 @@ mod media_worker_tests {
         fn thumbnail(&self, _asset: Asset, _chat: Option<String>) -> bool {
             false
         }
+    }
+
+    #[derive(Default)]
+    struct RecordingAssets {
+        queued: Mutex<Vec<(String, Option<String>)>>,
+        failure: Option<Failure>,
+    }
+    impl AssetQueue for RecordingAssets {
+        fn retry(&self, _: &str) -> bool {
+            false
+        }
+        fn failure(&self, _: &str) -> Option<Failure> {
+            self.failure
+        }
+        fn reconnected(&self) {}
+        fn thumbnail(&self, asset: Asset, chat: Option<String>) -> bool {
+            self.queued.lock().unwrap().push((asset.key(), chat));
+            self.failure.is_none()
+        }
+    }
+
+    #[test]
+    fn preview_assets_worker_limits_deduplicates_checks_visibility_and_reports_failure() {
+        let asset = Asset::attachment(&serde_json::json!({"id":"42", "contentType":14})).unwrap();
+        let key = asset.key();
+        let mut jobs = Jobs::default();
+        jobs.previews
+            .insert(key.clone(), (asset, HashSet::from(["closed".into()])));
+        let priority = Priority::default();
+        priority.set("other".into(), []);
+        let assets = RecordingAssets::default();
+        let events = std::cell::RefCell::new(Vec::new());
+        let publish = |event| events.borrow_mut().push(event);
+        let command = Command::PreviewAssets {
+            keys: vec![key.clone(), key.clone(), "unknown".into()],
+        };
+        worker_preview_assets(&command, &assets, &jobs, &priority, &publish);
+        assert!(assets.queued.lock().unwrap().is_empty());
+        priority.set("other".into(), [key.clone()]);
+        worker_preview_assets(&command, &assets, &jobs, &priority, &publish);
+        assert_eq!(
+            *assets.queued.lock().unwrap(),
+            vec![(key.clone(), Some("closed".into()))]
+        );
+        assert!(events.borrow().is_empty());
+        let failed = RecordingAssets {
+            failure: Some(Failure::Http(403)),
+            ..Default::default()
+        };
+        worker_preview_assets(&command, &failed, &jobs, &priority, &publish);
+        assert!(
+            matches!(events.borrow_mut().pop(), Some(Update::ImageFailed { key: found, failure: Failure::Http(403) }) if found == key)
+        );
+        let beyond_limit = Command::PreviewAssets {
+            keys: std::iter::repeat_n("unknown".into(), 256)
+                .chain([key])
+                .collect(),
+        };
+        worker_preview_assets(&beyond_limit, &assets, &jobs, &priority, &publish);
+        assert_eq!(assets.queued.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn history_page_before_deferred_priority_update_is_queued_with_its_chat() {
+        let asset = Asset::attachment(&serde_json::json!({"id":"43", "contentType":14})).unwrap();
+        let key = asset.key();
+        let priority = Priority::default();
+        priority.set("old-chat".into(), []);
+        assert!(!priority.exposed("new-chat", &key));
+        let assets = RecordingAssets::default();
+        let mut jobs = Jobs {
+            entries: vec![(asset.clone(), Some("new-chat".into()))],
+            ..Default::default()
+        };
+        queue_jobs(&assets, &mut jobs, &|_| {
+            panic!("accepted history thumbnail failed")
+        });
+        assert_eq!(
+            *assets.queued.lock().unwrap(),
+            vec![(key.clone(), Some("new-chat".into()))]
+        );
+        assert!(jobs.entries.is_empty());
+        let failed = RecordingAssets {
+            failure: Some(Failure::Network),
+            ..Default::default()
+        };
+        jobs.entries.push((asset, Some("new-chat".into())));
+        let events = std::cell::RefCell::new(Vec::new());
+        queue_jobs(&failed, &mut jobs, &|event| events.borrow_mut().push(event));
+        assert!(
+            matches!(events.borrow_mut().pop(), Some(Update::ImageFailed { key: found, failure: Failure::Network }) if found == key)
+        );
     }
 
     #[test]

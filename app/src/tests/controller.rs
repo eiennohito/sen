@@ -340,6 +340,7 @@ fn controller_scenario(stop: usize) {
         id: id.into(),
         title: id.into(),
         preview: "first line\nsecond line\tlast".into(),
+        preview_message: None,
         timestamp,
         unread: None,
         muted: None,

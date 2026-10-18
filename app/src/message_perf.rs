@@ -79,3 +79,55 @@ fn near_cap_distinct_performance() {
     }).join().unwrap();
     }
 }
+
+#[test]
+#[ignore = "release preview performance probe"]
+fn chat_preview_performance() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        rich_content::install(&ui, Rc::new(RefCell::new(View::default())));
+        window.set_size(slint::PhysicalSize::new(980, 720));
+        ui.show().unwrap();
+        let rows = (0..500)
+            .map(|i| {
+                let mut message = demo::rich_fixture().remove(1);
+                message.body = format!("Chat {i} {}", message.body).into();
+                if let Some(runs) = message
+                    .rich_runs
+                    .as_any()
+                    .downcast_ref::<VecModel<RichRun>>()
+                {
+                    let mut run = runs.row_data(0).unwrap();
+                    run.text = format!("Chat {i} {}", run.text).into();
+                    runs.set_row_data(0, run);
+                }
+                let mut row = ChatRow {
+                    index: i,
+                    title: format!("Conversation {i}").into(),
+                    preview: single_line(&message.body).into(),
+                    ..Default::default()
+                };
+                preview::set(&mut row, &message, 15);
+                row
+            })
+            .collect::<Vec<_>>();
+        let started = Instant::now();
+        ui.set_chats(ModelRc::new(VecModel::from(rows)));
+        let _ = draw(&window, 980);
+        let first = started.elapsed().as_secs_f64() * 1000.;
+        let mut scroll = Vec::new();
+        for i in 1..=60 {
+            ui.set_list_y(-(i as f32 * ui.get_chat_row_height() * 7.));
+            scroll.push(draw(&window, 980));
+        }
+        scroll.sort_by(f64::total_cmp);
+        println!(
+            "PREVIEW PERF 500: first={first:.3}ms scroll median={:.3}ms p95={:.3}ms max={:.3}ms",
+            scroll[30], scroll[56], scroll[59]
+        );
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}

@@ -17,6 +17,7 @@ pub struct Chat {
     pub id: String,
     pub title: String,
     pub preview: String,
+    pub preview_message: Option<Message>,
     pub timestamp_ms: i64,
     pub avatar: Option<Asset>,
     pub unread: Option<u64>,
@@ -387,7 +388,11 @@ impl Client {
             });
             let timestamp_ms = last.map(message_timestamp).unwrap_or(0);
             let member_count = info.and_then(|chat| rich::group_member_count(chat, &self.my_mid));
-            let preview = last.map(|m| self.message(m).body).unwrap_or_default();
+            let preview_message = last.map(|m| self.message(m));
+            let preview = preview_message
+                .as_ref()
+                .map(|m| m.body.clone())
+                .unwrap_or_default();
             chats.push(Chat {
                 group: !is_user(&id),
                 member_count,
@@ -400,6 +405,7 @@ impl Client {
                 id,
                 title,
                 preview,
+                preview_message,
                 timestamp_ms,
                 avatar,
                 outgoing_preview: last
@@ -727,7 +733,7 @@ impl Client {
             None
         } else {
             match content {
-                1 => Asset::photo(&data),
+                1 | 2 => Asset::photo(&data),
                 7 => Asset::sticker(meta),
                 _ => None,
             }

@@ -77,6 +77,10 @@ export component DemoScenarios inherits Rectangle {
                         VerticalLayout {
                             padding-right: 12px; spacing: 8px; alignment: start;
                             demo-marker := Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.small; }
+                            if State.preview-demo: HorizontalLayout {
+                                Button { text: "Preview loading"; clicked => { root.run(32); } }
+                                Button { text: "Preview loaded"; clicked => { root.run(33); } }
+                            }
                             VerticalLayout {
                                 visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
                                 spacing: 8px; alignment: start;

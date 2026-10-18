@@ -1,7 +1,7 @@
-export struct RichRun { text: string, break-before: bool, url: string, link-start: bool, link-first: bool, link-id: int, link-width: float, positioned: bool, natural-width: float, image-key: string, picture: image, has-picture: bool, emoji: bool, newline: bool, x: float, y: float, measured-width: float, measured-height: float, available: float }
+export struct RichRun { text: string, break-before: bool, url: string, link-start: bool, link-first: bool, link-id: int, link-width: float, positioned: bool, natural-width: float, image-key: string, picture: image, has-picture: bool, emoji: bool, thumbnail: bool, contain: bool, thumbnail-text: string, newline: bool, x: float, y: float, measured-width: float, measured-height: float, available: float }
 export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
 export struct LinkRow { label: string, url: string }
-export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, draft: bool, draft-preview: string, failed: bool, muted: bool, outgoing-preview: bool, group: bool, index: int, title: string, preview: string, initial: string, activity: string, time: string, avatar: image, avatar-key: string }
+export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, draft: bool, draft-preview: string, failed: bool, muted: bool, outgoing-preview: bool, group: bool, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, activity: string, time: string, avatar: image, avatar-key: string }
 export struct FriendRow { header: bool, id: string, name: string, initial: string, status: string, group: bool, avatar: image, avatar-key: string }
 export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
