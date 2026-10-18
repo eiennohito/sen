@@ -186,6 +186,9 @@ pub(crate) fn message_row(m: account::MessageView) -> MessageRow {
         .collect::<Vec<_>>();
     MessageRow {
         skip_badge: m.skip_badge,
+        rich_fallback: kind == MessageKind::Text
+            && !m.emoji.is_empty()
+            && rich_runs.row_count() == 0,
         rich_runs,
         reply_id: reply_id.into(),
         reply_preview: "Reply to message".into(),

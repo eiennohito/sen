@@ -184,7 +184,8 @@ export global State {
     callback start-friend-chat();
     callback open-photo(string);
     callback open-link(string);
-    callback rich-measure([RichRun], int, float, float, float);
+    pure callback rich-source([RichRun]) -> [RichRun];
+    callback rich-layout([RichRun], float, float, [RichRun]) -> [RichRun];
     callback save-file(string);
     in-out property <string> file-save-id;
     in-out property <string> file-save-status;

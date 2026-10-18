@@ -280,9 +280,28 @@ A 512-message / 16 MiB decoded memo fingerprints the raw message, including
 reactions. Selection reads the cached page; Refresh explicitly fetches updates.
 The SSE adapter supplies live operations and catch-up when authenticated;
 offline account startup is still unavailable. Asset arrivals mutate affected
-Slint rows while preserving stable row identity. Inline-image messages use
-Select text to expose their intact fallback body for selection; cross-run drag
-selection and contextual shaping remain Slint 1.18 deviations.
+Slint rows while preserving stable row identity. Messages with inline images
+or links render one bounded, measured flow at Unicode line-break
+opportunities, with link actions on the matching body spans. Breaks are
+computed over the whole body; link style edges preserve its punctuation
+rules. URL delimiters provide additional internal breaks without splitting
+consecutive delimiters. Only an oversized unbreakable span falls back to
+grapheme breaks. A hidden public Text measures runs at 64 times the font size,
+reducing rounding to 1/64 px. Packing sums run widths; only oversized spans need
+joined-text measurements. Each window owns a separate measurement LRU keyed by
+text and font size: at most 4096 entries and 1 MiB of string bytes, with another
+1 MiB reserved for bounded map/tree/allocation overhead. This fixed 2 MiB budget
+is separate from paging because entries are shared across messages and survive
+delegate recycling; entries retain neither messages nor images. Synchronous
+init/change handlers pack runs before painting. The 2048-run fallback keeps the
+original selectable body and its context-menu link actions. Select text in the
+context menu exposes the intact body for native selection; dragging a link in a
+text-only message selects its body. A click on an inline image message only
+focuses it. Paint models contain only positioned line segments; measurement
+and packing complete synchronously without a delayed remeasurement timer.
+Cross-run drag selection and contextual shaping remain Slint 1.18 deviations.
+Native body selection falls back to character wrapping when a measured word
+exceeds the bubble width.
 
 The synthetic release benchmark isolates channel construction: 140.15 ms per
 message rebuilding versus 4.54 ms reusing. Connected performance and memory

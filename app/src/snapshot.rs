@@ -46,3 +46,27 @@ pub fn save(
     file.write_all(pixels.as_bytes())?;
     Ok(())
 }
+
+pub(crate) fn message_case(
+    name: &str,
+) -> Result<Vec<crate::MessageRow>, Box<dyn std::error::Error>> {
+    if name == "emoji" {
+        let mut row = crate::demo::rich_fixture().remove(1);
+        row.reply_id = "".into();
+        return Ok(vec![row]);
+    }
+    let body = match name {
+        "long-url" => format!("https://example.org/{}", "averylongunbrokenpath".repeat(8)),
+        "mixed" => "Before https://www.example.jp after ordinary words. Next: https://example.org/a?b=c&name=one_two#part after.".into(),
+        "cjk" => "日本語の前置き https://www.example.jp。続きの日本語と https://example.org/長い/道?名前=値。終わり".into(),
+        _ => return Err(format!("unknown message snapshot case {name}").into()),
+    };
+    Ok(vec![crate::MessageRow {
+        id: format!("snapshot-{name}").into(),
+        body: body.into(),
+        outgoing: true,
+        time: "2026/10/17 12:00".into(),
+        sort_key: crate::present::order_key(1_792_206_000_000).into(),
+        ..Default::default()
+    }])
+}

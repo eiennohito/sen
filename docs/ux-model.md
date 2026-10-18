@@ -346,7 +346,13 @@ not configurable in v1.
   browser layout the strip belongs between browser search and the list.
 - In Friends, F6 or Shift+Tab from history enters the recovery actions; forward
   Tab retains the Friends navigation order.
-- Messages are click-focusable for selection but not Tab stops.
+- Messages are click-focusable for selection but not Tab stops. Slint 1.18
+  cannot style links or inline images inside a selectable TextInput. Messages
+  with those features use a measured flow: Select text in the context menu
+  exposes the original body for native selection. Dragging non-link text in
+  that flow does not select a range; dragging a link in a text-only message
+  selects the whole body. An emoji message enters fallback selection only
+  through its context menu. Cross-run drag selection remains a deviation.
 - Selection (which chat is open) and focus (which control receives keys)
   are visually distinct and independent.
 - Incoming data never moves focus. Completion of a send never moves focus.

@@ -2655,6 +2655,7 @@ dependencies = [
  "serde_json",
  "slint",
  "slint-build",
+ "unicode-linebreak",
  "unicode-segmentation",
  "url",
  "zbus",

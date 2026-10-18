@@ -52,12 +52,22 @@ pub(crate) fn bytes(row: &MessageRow) -> usize {
         + row
             .rich_runs
             .iter()
-            .map(|run| run.text.len() + run.image_key.len() + pixels(&run.picture) + 192)
+            .map(|run| 2 * run.text.len() + run.image_key.len() + pixels(&run.picture) + 192)
             .sum::<usize>()
         + row
             .links
             .iter()
-            .map(|link| link.label.len() + link.url.len() + 64)
+            .map(|link| link.label.len() + 64)
+            .sum::<usize>()
+        + row
+            .rich_runs
+            .iter()
+            .map(|run| run.url)
+            .chain(row.links.iter().map(|link| link.url))
+            .filter(|url| !url.is_empty())
+            .collect::<std::collections::HashSet<_>>()
+            .iter()
+            .map(|url| url.len())
             .sum::<usize>()
 }
 fn release_oversized_pixels(row: &mut MessageRow) {

@@ -1,7 +1,10 @@
 export { State } from "state.slint";
+export { Palette } from "std-widgets.slint";
 import { Button, LineEdit, TextEdit, ScrollView, ComboBox, Palette } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
+import { TextMetrics, RichMetric } from "text-metrics.slint";
+export { RichMetric } from "text-metrics.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { Pane } from "scrollpane.slint";
 export { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow, RichRun } from "types.slint";
@@ -28,6 +31,8 @@ export component AppWindow inherits Window {
     public function list-scroll(delta: length) { chats-surface.scroll(delta); }
     public function list-jump(y: length) { chats-surface.jump(y); }
     public function preview-dark(dark: bool) { if State.demo { Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light; } }
+    rich-metrics := TextMetrics {}
+    public function measure-rich(content: string, size: float) -> RichMetric { return rich-metrics.measure(content, size); }
     in property <bool> migration-needed;
     in property <string> migration-error;
     in-out property <string> desktop-warning <=> State.desktop-warning;

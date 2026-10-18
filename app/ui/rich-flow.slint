@@ -2,27 +2,70 @@ import { RichRun } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
-// Each run is measured by the same native text shaper that paints it.
 export component RichFlow inherits Rectangle {
     in property <[RichRun]> runs;
-    in property <string> message-id;
     in property <brush> text-color: Tokens.foreground;
+    callback select-text();
     background: transparent;
-    height: root.runs.length > 0 ? root.runs[root.runs.length - 1].y * 1px + max(Tokens.base * 1.5, root.runs[root.runs.length - 1].measured-height * 1px) : 0px;
-    for run[index] in root.runs: Rectangle {
+    clip: true;
+    callback fallback(bool);
+    callback natural-width(float);
+    property <[RichRun]> source: State.rich-source(root.runs);
+    property <[RichRun]> lines;
+    property <length> text-size: Tokens.base;
+    property <bool> measuring;
+    function reflow() {
+        if !root.measuring && root.width >= 1px {
+            root.measuring = true;
+            root.lines = State.rich-layout(root.source, root.width / 1px, root.text-size / 1px, root.lines);
+            root.natural-width(root.lines.length > 0 ? root.lines[0].natural-width : 0);
+            root.fallback(root.lines.length == 0);
+            root.measuring = false;
+        }
+    }
+    changed source => { root.reflow(); }
+    changed width => { root.reflow(); }
+    changed text-size => { root.reflow(); }
+    init => { root.reflow(); }
+    height: root.lines.length == 0 ? 0px : root.lines[root.lines.length - 1].y * 1px + root.lines[root.lines.length - 1].measured-height * 1px;
+    for run in root.lines: Rectangle {
         x: run.x * 1px; y: run.y * 1px;
-        width: run.emoji ? Tokens.base * 1.4 : measure.preferred-width;
-        height: Tokens.base * 1.5;
-        property <float> measured-width: self.width / 1px;
-        property <float> measured-height: self.height / 1px;
-        property <float> available: root.width / 1px;
-        changed measured-width => { State.rich-measure(root.runs, index, self.measured-width, self.measured-height, self.available); }
-        changed measured-height => { State.rich-measure(root.runs, index, self.measured-width, self.measured-height, self.available); }
-        changed available => { State.rich-measure(root.runs, index, self.measured-width, self.measured-height, self.available); }
-        init => { State.rich-measure(root.runs, index, self.measured-width, self.measured-height, self.available); }
+        width: run.measured-width * 1px;
+        height: run.measured-height * 1px;
         background: transparent;
-        measure := Text { visible: false; text: run.newline ? "" : run.text; font-size: Tokens.base; }
-        Text { accessible-role: none; visible: !run.newline && (!run.emoji || !run.has-picture); text: run.text; font-size: run.emoji ? Tokens.small : Tokens.base; color: root.text-color; vertical-alignment: center; overflow: elide; }
-        Image { visible: run.emoji && run.has-picture; source: run.picture; width: 100%; height: 100%; image-fit: contain; accessible-role: image; accessible-label: run.text; }
+        Text { x: 0px; y: 0px; width: parent.width; height: parent.height; min-width: 0px; min-height: 0px; preferred-width: parent.width; preferred-height: parent.height; accessible-role: none; wrap: no-wrap; visible: !run.emoji || !run.has-picture; text: run.text; font-size: run.emoji ? Tokens.small : Tokens.base; color: run.url != "" ? Tokens.accent : root.text-color; vertical-alignment: center; overflow: clip; }
+        if run.emoji && run.has-picture: Image { width: parent.width; height: parent.height; source: run.picture; image-fit: contain; accessible-role: image; accessible-label: run.text; }
+        if run.link-start: ContextMenuArea {
+            x: 0px; y: 0px;
+            width: min(run.link-width * 1px, root.width - run.x * 1px);
+            height: parent.height;
+            Menu {
+                MenuItem { title: run.url; enabled: false; }
+                MenuItem { title: "Open link"; activated => { State.open-link(run.url); } }
+                MenuItem { title: "Copy link"; activated => { link-copy.select-all(); link-copy.copy(); } }
+            }
+            Rectangle { y: parent.height - 2px; height: 1px; background: Tokens.accent; }
+            link-copy := TextInput { visible: false; text: run.url; read-only: true; }
+            link-focus := FocusScope {
+                visible: run.link-first;
+                accessible-role: button; accessible-label: "Open link " + run.url; accessible-description: run.url;
+                accessible-action-default => { State.open-link(run.url); }
+                key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-link(run.url); return accept; } reject }
+            }
+            TouchArea {
+                mouse-cursor: pointer;
+                property <bool> dragged;
+                property <length> start-x;
+                property <length> start-y;
+                moved => { if self.pressed && (abs(self.mouse-x - self.start-x) > 4px || abs(self.mouse-y - self.start-y) > 4px) { self.dragged = true; } }
+                pointer-event(event) => {
+                    if event.kind == PointerEventKind.up && self.dragged { root.select-text(); }
+                    else if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { parent.show({ x: self.mouse-x, y: self.mouse-y }); }
+                    else if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { self.dragged = false; self.start-x = self.mouse-x; self.start-y = self.mouse-y; }
+                }
+                clicked => { if !self.dragged { if run.link-first { link-focus.focus(); } State.open-link(run.url); } }
+                Tooltip { Text { text: run.url; font-size: Tokens.small; color: Tokens.foreground; } }
+            }
+        }
     }
 }

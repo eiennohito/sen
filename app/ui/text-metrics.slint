@@ -1,0 +1,15 @@
+export struct RichMetric { width: float, height: float }
+
+export component TextMetrics inherits Rectangle {
+    visible: false;
+    width: 0px; height: 0px;
+    property <string> content;
+    property <length> text-size;
+    probe := Text { visible: false; text: root.content; font-size: root.text-size * 64; wrap: no-wrap; }
+    line := Text { visible: false; text: ""; font-size: root.text-size * 64; wrap: no-wrap; }
+    public function measure(content: string, size: float) -> RichMetric {
+        root.content = content;
+        root.text-size = size * 1px;
+        return { width: probe.preferred-width / 64px, height: line.preferred-height / 64px };
+    }
+}

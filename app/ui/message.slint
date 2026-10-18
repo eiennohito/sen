@@ -5,9 +5,35 @@ import { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind } from "types.
 import { RichFlow } from "rich-flow.slint";
 import { Pane } from "scrollpane.slint";
 
+component TextAction inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> focus-on-click: true;
+    callback clicked();
+    width: label.preferred-width + 8px; height: max(24px, Tokens.small * 1.5);
+    horizontal-stretch: 0;
+    background: touch.has-hover ? Tokens.alternate-background : transparent;
+    opacity: root.enabled ? 1 : 0.45;
+    label := Text { text: root.text; color: Tokens.accent; font-size: Tokens.small; vertical-alignment: center; horizontal-alignment: center; }
+    action-focus := FocusScope {
+        enabled: root.enabled; accessible-role: button; accessible-label: root.text;
+        accessible-action-default => { if root.enabled { root.clicked(); } }
+        key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.clicked(); return accept; } reject }
+        Rectangle { background: transparent; border-width: parent.has-focus ? 1px : 0px; border-color: Tokens.accent; }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { if root.focus-on-click { action-focus.focus(); } root.clicked(); } }
+    public function focus-action() { action-focus.focus(); }
+}
+
 export component Message inherits VerticalLayout {
     in property <MessageRow> message;
     property <bool> selecting-rich: false;
+    property <bool> rich-focused: false;
+    property <bool> rich-fallback: false;
+    property <float> rich-width;
+    property <bool> copying-rich;
+    property <bool> showing-rich: root.message.rich-runs.length > 0 && !root.selecting-rich && !root.rich-fallback;
+    function copy-message() { root.copying-rich = true; body.select-all(); body.copy(); root.copying-rich = false; }
 
     property <bool> system-item: root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn;
     property <length> anchor-top: root.y + (root.system-item ? (root.message.day-label != "" ? 27px : 0px) + (root.message.id == State.unread-divider ? 31px : 0px) : message-content.y + message-column.y + message-bubble.y);
@@ -49,7 +75,7 @@ export component Message inherits VerticalLayout {
                         message-column := VerticalLayout {
                             horizontal-stretch: 0;
                             min-width: min(State.history-width - 140px, root.message.image-key != "" ? 200px : 72px);
-                            preferred-width: root.message.image-key != "" ? min(340px, State.history-width - 140px) : min(max(72px, min(480px, State.history-width - 140px)), body-measure.preferred-width + 24px);
+                            preferred-width: root.message.image-key != "" ? min(340px, State.history-width - 140px) : min(max(72px, min(480px, State.history-width - 140px)), (root.showing-rich ? (root.rich-width > 0 ? root.rich-width * 1px : 480px) : body-measure.preferred-width) + 24px);
                             max-width: max(72px, min(480px, State.history-width - 140px));
                             spacing: 3px;
                             if root.message.group-start && !root.message.outgoing && root.message.sender-name != "": Text {
@@ -58,43 +84,74 @@ export component Message inherits VerticalLayout {
                             }
                             message-bubble := Rectangle {
                                 background: root.message.sticker ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface;
-                                border-width: body.has-focus || State.highlight-message == root.message.id ? 2px : root.message.sticker ? 0px : 1px;
-                                border-color: body.has-focus || State.highlight-message == root.message.id ? Tokens.accent : Tokens.border;
+                                border-width: (body.has-focus || root.rich-focused) || State.highlight-message == root.message.id ? 2px : root.message.sticker ? 0px : 1px;
+                                border-color: (body.has-focus || root.rich-focused) || State.highlight-message == root.message.id ? Tokens.accent : Tokens.border;
                                 border-radius: 9px;
                                 height: bubble-content.preferred-height;
-                                body-measure := Text { visible: false; text: root.message.body; font-size: Tokens.base; }
+                                body-measure := Text { visible: false; text: root.showing-rich ? "" : root.message.body; font-size: Tokens.base; wrap: word-wrap; }
                                 bubble-content := VerticalLayout {
                                     padding: 10px; spacing: 6px; alignment: start;
-                                    if root.message.reply-id != "": Button { text: "Reply"; accessible-label: "Jump to replied message"; clicked => { State.jump-message(root.message.reply-id); } }
-                                    if root.message.reply-id != "": Text { text: root.message.reply-preview; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
-                                    if root.message.kind == MessageKind.file: Button { text: State.file-saving && State.file-save-id == root.message.id ? "Saving…" : "Save"; enabled: !State.file-saving; clicked => { State.save-file(root.message.id); } }
-                                    if State.file-save-id == root.message.id && State.file-save-status != "": Text { text: State.file-save-status; font-size: Tokens.small; wrap: word-wrap; color: Tokens.secondary; }
-                                    if root.message.detail != "": Text { text: root.message.detail; wrap: word-wrap; font-size: Tokens.small; color: Tokens.secondary; }
+                                    if root.message.reply-id != "": Rectangle {
+                                        height: quote.preferred-height + 12px;
+                                        background: Tokens.alternate-background;
+                                        border-radius: 3px;
+                                        Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Tokens.accent; }
+                                        quote-measure := Text { visible: false; text: root.message.reply-preview; font-size: Tokens.small; wrap: word-wrap; }
+                                        quote := Text { x: 10px; y: 6px; width: parent.width - 16px; text: root.message.reply-preview; color: Tokens.secondary; font-size: Tokens.small; wrap: quote-measure.min-width > self.width ? char-wrap : word-wrap; }
+                                        quote-focus := FocusScope {
+                                            accessible-role: button; accessible-label: "Jump to replied message"; accessible-description: root.message.reply-preview;
+                                            accessible-action-default => { State.jump-message(root.message.reply-id); }
+                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.jump-message(root.message.reply-id); return accept; } reject }
+                                            Rectangle { background: transparent; border-width: parent.has-focus ? 1px : 0px; border-color: Tokens.accent; }
+                                        }
+                                        TouchArea { mouse-cursor: pointer; clicked => { quote-focus.focus(); State.jump-message(root.message.reply-id); } }
+                                    }
                                     if root.message.rich-runs.length > 0 && !root.selecting-rich: ContextMenuArea {
-                                        height: rich-flow.height;
+                                        visible: !root.rich-fallback;
+                                        height: self.visible ? rich-flow.height : 0px;
                                         Menu {
                                             MenuItem { title: "Select text"; activated => { root.selecting-rich = true; body.focus(); } }
-                                            MenuItem { title: "Copy message"; activated => { body.select-all(); body.copy(); } }
+                                            MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
                                         }
-                                        rich-flow := RichFlow { accessible-role: text; accessible-label: root.message.accessible-label; text-color: root.message.outgoing ? Tokens.selection-foreground : Tokens.foreground; runs: root.message.rich-runs; message-id: root.message.id; width: parent.width; }
-                                        TouchArea { accessible-role: button; accessible-label: "Select rich message text"; accessible-description: root.message.accessible-label; accessible-action-default => { root.selecting-rich = true; body.focus(); } clicked => { root.selecting-rich = true; body.focus(); } }
+                                        rich-focus := FocusScope {
+                                            accessible-role: text; accessible-label: root.message.accessible-label; accessible-value: root.message.body; accessible-description: self.has-focus ? "Focused message" : root.message.accessible-label;
+                                            changed has-focus => { root.rich-focused = self.has-focus; }
+                                            accessible-action-default => { self.focus(); }
+                                            key-pressed(event) => {
+                                                if State.ime-active { return reject; }
+                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else { State.focus-composer(); } return accept; }
+                                                return State.reading-key(event);
+                                            }
+                                        }
+                                        TouchArea {
+                                            clicked => { rich-focus.focus(); }
+                                            pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { parent.show({ x: self.mouse-x, y: self.mouse-y }); } }
+                                        }
+                                        rich-flow := RichFlow {
+                                            text-color: root.message.outgoing ? Tokens.outgoing-foreground : Tokens.foreground; runs: root.message.rich-runs; width: parent.width;
+                                            natural-width(width) => { root.rich-width = width; }
+                                            fallback(failed) => { root.rich-fallback = failed; }
+                                            select-text => { if !root.message.has-inline-emoji { root.selecting-rich = true; body.focus(); body.select-all(); } }
+                                        }
                                     }
-                                    if root.selecting-rich: Button { text: "Show emoji"; clicked => { root.selecting-rich = false; } }
+                                    if root.selecting-rich: Button { text: root.message.has-inline-emoji ? "Show emoji" : "Show message"; clicked => { root.selecting-rich = false; } }
                                     ContextMenuArea {
-                                        visible: (!root.message.sticker || root.message.image-key == "") && (root.message.rich-runs.length == 0 || root.selecting-rich);
+                                        visible: (!root.message.sticker || root.message.image-key == "") && (root.message.rich-runs.length == 0 || root.selecting-rich || root.rich-fallback);
                                         height: self.visible ? body.preferred-height : 0px;
                                         Menu {
                                             MenuItem { title: "Copy selection"; activated => { body.copy(); } }
-                                            MenuItem { title: "Copy message"; activated => { body.select-all(); body.copy(); } }
+                                            MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
+                                            for link in root.message.links: MenuItem { title: "Open link " + link.url; activated => { State.open-link(link.url); } }
                                             if root.message.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
                                         }
                                         body := TextInput {
-                                            text: root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
-                                            wrap: word-wrap; color: root.message.outgoing ? Tokens.selection-foreground : Tokens.foreground;
+                                            text: root.showing-rich && !root.copying-rich ? "" : root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
+                                            wrap: body-measure.min-width > self.width ? char-wrap : word-wrap; color: root.message.outgoing ? Tokens.outgoing-foreground : Tokens.foreground;
                                             font-size: Tokens.base;
-                                            height: self.preferred-height;
+                                            height: root.showing-rich ? 0px : self.preferred-height;
                                             accessible-label: root.message.accessible-label;
-                                            selection-background-color: Tokens.selection;
+                                            selection-background-color: Tokens.message-selection;
+                                            selection-foreground-color: Tokens.message-selection-foreground;
                                             // Explicit surface traversal is the click-only equivalent on Slint 1.18.
                                             key-pressed(event) => {
                                                 if State.ime-active { return reject; }
@@ -107,29 +164,16 @@ export component Message inherits VerticalLayout {
                                             changed cursor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else { State.release-deferred(); } }
                                         }
                                     }
-                                    // Keep the original body selectable as one text range.
-                                    // Slint 1.18 cannot style links inside TextInput, so URL
-                                    // actions are separate runs until the rich renderer (S11).
-                                    for link in root.message.links: ContextMenuArea {
-                                        height: link-text.preferred-height + 3px;
-                                        Menu {
-                                            MenuItem { title: link.url; enabled: false; }
-                                            MenuItem { title: "Open link"; activated => { State.open-link(link.url); } }
-                                            MenuItem { title: "Copy link"; activated => { link-copy.select-all(); link-copy.copy(); } }
-                                        }
-                                        link-text := Text { text: link.label; color: Tokens.accent; font-size: Tokens.base; wrap: word-wrap; accessible-role: button; accessible-label: "Open link " + link.url; accessible-description: link.url; accessible-action-default => { State.open-link(link.url); } }
-                                        Rectangle { y: parent.height - 1px; height: 1px; background: Tokens.accent; }
-                                        link-copy := TextInput { visible: false; text: link.url; read-only: true; }
-                                        TouchArea {
-                                            mouse-cursor: pointer;
-                                            property <bool> dragged;
-                                            property <length> start-x;
-                                            property <length> start-y;
-                                            pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { parent.show({ x: self.mouse-x, y: self.mouse-y }); } else if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { self.dragged = false; self.start-x = self.mouse-x; self.start-y = self.mouse-y; } }
-                                            moved => { if self.pressed && (abs(self.mouse-x - self.start-x) > 4px || abs(self.mouse-y - self.start-y) > 4px) { self.dragged = true; body.focus(); body.select-all(); } }
-                                            clicked => { if !self.dragged { State.open-link(link.url); } }
-                                            Tooltip { Text { text: link.url; font-size: Tokens.small; color: Tokens.foreground; } }
-                                        }
+                                    if root.message.detail != "": Rectangle {
+                                        height: detail.preferred-height;
+                                        detail-measure := Text { visible: false; text: root.message.detail; font-size: Tokens.small; wrap: word-wrap; }
+                                        detail := Text { x: 0px; y: 0px; width: parent.width; text: root.message.detail; font-size: Tokens.small; color: Tokens.secondary; wrap: detail-measure.min-width > self.width ? char-wrap : word-wrap; }
+                                    }
+                                    if root.message.kind == MessageKind.file: TextAction { text: State.file-saving && State.file-save-id == root.message.id ? "Saving…" : "Save"; enabled: !State.file-saving; clicked => { State.save-file(root.message.id); } }
+                                    if State.file-save-id == root.message.id && State.file-save-status != "": Rectangle {
+                                        height: saved.preferred-height;
+                                        save-measure := Text { visible: false; text: State.file-save-status; font-size: Tokens.small; wrap: word-wrap; }
+                                        saved := Text { x: 0px; y: 0px; width: parent.width; text: State.file-save-status; font-size: Tokens.small; color: Tokens.secondary; wrap: save-measure.min-width > self.width ? char-wrap : word-wrap; }
                                     }
                                     if root.message.image-key != "": Rectangle {
                                         // Geometry does not change when a thumbnail arrives or fails.
@@ -152,19 +196,20 @@ export component Message inherits VerticalLayout {
                             }
                             if root.message.recoverable: Text { text: root.message.delivery == "Not sent" ? "Message was not sent." : "Confirmation unavailable. The message may have arrived."; color: Tokens.danger; font-size: Tokens.time; wrap: word-wrap; }
                             if root.message.recoverable: HorizontalLayout {
-                                spacing: 8px;
-                                Button {
+                                spacing: 8px; alignment: start;
+                                TextAction {
                                     text: root.message.delivery == "Not sent" ? "Retry" : "Resend";
+                                    focus-on-click: false;
                                     enabled: State.demo || (State.connected && State.storage-error == "");
                                     clicked => { State.retry-message(root.message.id); }
                                     property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "resend";
-                                    changed restore-action => { if self.restore-action { self.focus(); State.recovery-focus-id = ""; } }
+                                    changed restore-action => { if self.restore-action { self.focus-action(); State.recovery-focus-id = ""; } }
                                 }
-                                Button {
+                                TextAction {
                                     text: "Edit";
                                     clicked => { State.recover-message(root.message.id); }
                                     property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "edit";
-                                    changed restore-action => { if self.restore-action { self.focus(); State.recovery-focus-id = ""; } }
+                                    changed restore-action => { if self.restore-action { self.focus-action(); State.recovery-focus-id = ""; } }
                                 }
                             }
                             HorizontalLayout {
@@ -177,13 +222,12 @@ export component Message inherits VerticalLayout {
                         }
                         // Time appears once per sender/time group, beside the
                         // bubble. Status has a fixed slot and never adds a row.
-                        VerticalLayout {
+                        Rectangle {
                             width: root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8;
-                            spacing: 0px;
-                            Rectangle { vertical-stretch: 1; }
                             HorizontalLayout {
+                                y: max(0px, message-column.y + message-bubble.y + message-bubble.height - self.height);
                                 height: max(16px, Tokens.time * 1.4); spacing: 2px;
-                                Text { text: root.message.group-start ? root.message.clock : ""; accessible-label: root.message.group-start ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
+                                Text { text: (root.message.group-start || root.message.recoverable) ? root.message.clock : ""; accessible-label: (root.message.group-start || root.message.recoverable) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
                                 if root.message.outgoing: Image {
                                     width: 16px; height: 16px;
                                     source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/sending.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/read.svg") : root.message.delivery == "Not sent" ? @image-url("../assets/icons/rejected.svg") : root.message.delivery == "Unconfirmed" ? @image-url("../assets/icons/uncertain.svg") : @image-url("../assets/icons/sent.svg");

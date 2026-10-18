@@ -84,6 +84,7 @@ pub(crate) fn decorate_message(row: &mut MessageRow, fallback_sender: &str) {
             })
             .collect::<Vec<_>>(),
     ));
+    crate::rich_content::decorate_links(row);
     let sender = if row.sender_name.is_empty() {
         fallback_sender
     } else {

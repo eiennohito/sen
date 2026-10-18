@@ -395,6 +395,8 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
 mod browser;
 mod deferred;
 mod history_window;
+#[cfg(all(test, not(debug_assertions)))]
+mod message_perf;
 mod paging;
 mod present;
 mod rich_content;
@@ -414,6 +416,7 @@ struct Options {
     demo_dark: bool,
     debug_background: bool,
     snapshot: Option<String>,
+    snapshot_case: Option<String>,
     snapshot_size: (u32, u32),
     snapshot_text_size: i32,
     snapshot_profile: bool,
@@ -443,6 +446,7 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
         demo_dark: false,
         debug_background: false,
         snapshot: None,
+        snapshot_case: None,
         snapshot_size: (980, 720),
         snapshot_text_size: 15,
         snapshot_profile: false,
@@ -521,18 +525,25 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                 out.snapshot_profile = true;
                 out.demo = true;
             }
+            "--snapshot-case" => {
+                out.snapshot_case = Some(args.next().ok_or("missing snapshot case")?);
+                out.demo = true;
+            }
             "--snapshot" => {
                 out.snapshot = Some(args.next().ok_or("missing snapshot path")?);
                 out.demo = true;
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups | --demo-friends] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT and --demo-text-size 12..24 set offline preview geometry; --demo-dark selects the dark palette.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
+                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups | --demo-friends] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile] [--snapshot-case long-url|mixed|cjk|emoji]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT and --demo-text-size 12..24 set offline preview geometry; --demo-dark selects the dark palette.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
                 );
                 std::process::exit(0);
             }
             _ => return Err(format!("unknown option {arg}").into()),
         }
+    }
+    if out.snapshot_case.is_some() && out.snapshot.is_none() {
+        return Err("--snapshot-case requires --snapshot".into());
     }
     if !out.explicit_paths && !out.demo {
         out.configured_paths = out.locations.load_existing()?;
@@ -994,6 +1005,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     if options.demo_friends {
         state.borrow_mut().browse(&ui, 1);
+    }
+    if let Some(case) = &options.snapshot_case {
+        let mut view = state.borrow_mut();
+        view.messages = snapshot::message_case(case)?;
+        view.render(&ui);
+        ui.invoke_show_history(0., false);
     }
     state.borrow().send_availability(&ui);
     if options.demo_dark {

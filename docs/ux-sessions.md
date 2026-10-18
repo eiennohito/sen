@@ -54,14 +54,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| M1 | URLs render twice: plain in the body (not styled, not clickable) and again as a centred underlined run under the body that looks like a preview card. | `app/ui/message.slint:113` | Until inline styling exists, render the body once with the URL run replacing the matching text, not duplicating it. |
-| M2 | Unbroken URLs paint past the bubble: body `TextInput` and link `Text` both use `word-wrap` with no character-break fallback; bubble width is capped at 480. | `app/ui/message.slint:93`, `:120` | `char-wrap` fallback for runs longer than the bubble. |
-| M3 | Single click on an emoji message replaces it with fallback text and injects a "Show emoji" button into the bubble. | `app/ui/message.slint:81` | Selection mode only from the context menu; a click focuses, nothing more. |
-| M4 | Reply quote carries a full-width button labelled "Reply" that jumps to the quoted message. | `app/ui/message.slint:68` | Clickable quote block, no button, no "Reply" label. |
-| M5 | Rich text layout leaves a gap after the first emoji run on a line (stale run measurement). | `app/ui/rich-flow.slint`, `app/src/rich_content.rs` | Re-measure after the first layout pass before positioning. |
-| M6 | Failed-send rows put the delivery mark beside the Retry/Edit buttons, not beside the bubble, and drop the time. Retry/Edit are 160 px standard buttons. | `app/ui/message.slint:153`, `:181` | Mark stays in the time slot beside the bubble; actions are compact text buttons under the explanation. |
-| M7 | File and media rows are ordered Save, size, name; duration above "Video". | `app/ui/message.slint:70`, `:72` | Name, then size or duration, then action. |
-| M8 | Text selection inside an outgoing bubble is invisible: `outgoing-bubble` and `selection` are the same palette role. In dark themes incoming bubbles are close to it as well. | `app/ui/tokens.slint:22`, `:25` | Own role for the outgoing bubble; contrast-check selection against both bubbles. |
 | M9 | Unread badge on the selected chat row is accent on selection (blue on blue). | `app/ui/chats.slint:98` | Invert on selected rows. |
 
 ## C — Composer, input, feedback
@@ -100,3 +92,5 @@ P, then the UI groups in any order. V closes the loop.
 | T6 | Reconnects are a quiet inline "Connecting…" header state plus a transient "Reconnected" (no notification or sound); only Offline, Signed out and Session expired raise the strip. Startup failures carry a Session reason so Sign in again stays reachable, also after a failed Retry. |
 | S7 | The strip is one bordered line anchored below the headers over scrollable content only; the scroll range gains a compensated top inset so nothing moves and everything can be revealed; read exposure uses the visible height. Keyboard: forward Tab and F6. |
 | C2 | List failures stay in the list footer with a Retry that re-issues exactly the failed request; wording matches the button. |
+| M1–M4, M6–M8 | URLs render once, inline and activatable, in a measured rich flow: line breaks are computed once over the whole body with UAX #14 plus URL delimiters inside links, characters break only inside a run wider than the bubble, the 2048-run cap falls back to the selectable body, and widths come from a public 64× Text measurement with a bounded LRU cache. A click only focuses; the quote block is the jump target; failed rows keep mark and time beside the bubble with compact actions; attachments read name, size, action; outgoing bubbles have their own palette role (selection contrast 5.8–8.6:1). First frame and text-size change are faster than before; resize is 2.5–3.5× slower but under 10 ms. Cross-run drag selection is a documented deviation. |
+| M5 | Not reproduced on `ded2def` (headless, live, text-size switch); no fix claimed. |

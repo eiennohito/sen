@@ -471,7 +471,7 @@ if args.reading:
         call("dispatch_key_event", windowHandle=window, text=text)
 
     def reading_bodies():
-        return [item for item in tree() if item.get("accessibleRole") == "TextInput" and item.get("accessibleLabel", "").startswith(("Incoming from ", "Outgoing, "))]
+        return [item for item in tree() if item.get("accessibleRole") in ("TextInput", "Text") and item.get("accessibleLabel", "").startswith(("Incoming from ", "Outgoing, "))]
 
     demo_scenario("Reading fixtures")
     time.sleep(0.05)
@@ -512,6 +512,9 @@ if args.reading:
     call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Release")
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == first.get("accessibleValue"), "dragging URL action did not select original message text"
     call("set_element_value", elementHandle=composer, value=before_copy)
+    call("click_element", elementHandle=element("Show message", "Button")["handle"])
+    first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
+    link = element("Open link " + url, "Button")
     call("click_element", elementHandle=link["handle"], button="Right")
     copy_link = next(item for item in tree() if item.get("accessibleLabel") == "Copy link")
     call("click_element", elementHandle=copy_link["handle"])
@@ -596,14 +599,22 @@ if args.rich:
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
     time.sleep(0.05)
     reply = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Jump to replied message")
-    origin_y = rich_element("Select rich message text", "Button")["absolutePosition"]["y"]
+    def emoji_body():
+        return next(item for item in rich_tree() if item.get("accessibleRole") == "Text" and "日😀[笑]本🌸" in item.get("accessibleLabel", ""))
+    origin_y = emoji_body()["absolutePosition"]["y"]
     call("click_element", elementHandle=reply["handle"])
     time.sleep(0.05)
     rich_element("Return to message", "Button")
     call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
     time.sleep(0.05)
-    assert abs(rich_element("Select rich message text", "Button")["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor"
-    call("click_element", elementHandle=rich_element("Select rich message text", "Button")["handle"])
+    assert abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor"
+    call("click_element", elementHandle=emoji_body()["handle"])
+    rich_element("[笑]", "Image")
+    assert not any(item.get("accessibleLabel") == "Show emoji" for item in rich_tree()), "click entered emoji fallback mode"
+    assert emoji_body().get("accessibleDescription") == "Focused message", "click did not focus the bubble"
+    call("click_element", elementHandle=emoji_body()["handle"], button="Right")
+    select_text = next(item for item in rich_tree() if item.get("accessibleLabel") == "Select text")
+    call("click_element", elementHandle=select_text["handle"])
     body = next(item for item in rich_tree() if item.get("accessibleRole") == "TextInput" and "日😀[笑]本🌸" in item.get("accessibleValue", ""))
     original = body["accessibleValue"]
     def rich_ctrl(letter):

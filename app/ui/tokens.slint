@@ -22,5 +22,8 @@ export global Tokens {
     out property <brush> selection: Palette.selection-background;
     out property <brush> border: Palette.border;
     out property <brush> danger: Palette.color-scheme == ColorScheme.dark ? #ffbdab : #943824;
-    out property <brush> outgoing-bubble: Palette.selection-background;
+    out property <brush> outgoing-bubble: Palette.color-scheme == ColorScheme.dark ? #204a35 : #d8f3dc;
+    out property <brush> outgoing-foreground: Palette.color-scheme == ColorScheme.dark ? #e4f6e9 : #18291e;
+    out property <color> message-selection: Palette.color-scheme == ColorScheme.dark ? #a8c9ff : #2459a6;
+    out property <color> message-selection-foreground: Palette.color-scheme == ColorScheme.dark ? #122139 : #ffffff;
 }
