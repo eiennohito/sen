@@ -31,7 +31,7 @@ impl Failure {
         match self {
             Self::Timeout => "Image took too long to load",
             Self::Network => "Couldn’t load this image",
-            Self::Http(404) => "Not available for this sender",
+            Self::Http(404) => "Image is no longer available",
             Self::Http(403) => "You don’t have access to this image",
             Self::Http(500..=599) => "Image is temporarily unavailable",
             Self::Http(_) => "Image is unavailable",

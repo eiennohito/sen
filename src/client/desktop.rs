@@ -82,6 +82,8 @@ pub struct Message {
     pub outgoing: bool,
     pub image: Option<Asset>,
     pub reactions: Vec<Reaction>,
+    #[serde(default)]
+    pub reaction_entries: Value,
     pub encrypted: bool,
     pub decryption_failed: bool,
     #[serde(default)]
@@ -723,6 +725,7 @@ impl Client {
             outgoing: data["from"].as_str() == Some(&self.my_mid),
             image,
             reactions: reactions(&data["reactions"]),
+            reaction_entries: data["reactions"].clone(),
             encrypted,
             decryption_failed: failed,
             request_seq: self
@@ -823,6 +826,10 @@ impl Client {
         ))
     }
 
+    pub fn unsend(&mut self, id: &str, seq: u32) -> Result<()> {
+        self.talk("unsendMessage", json!([seq, id]))?;
+        Ok(())
+    }
     pub fn send_text(&mut self, to: &str, text: &str) -> Result<Message> {
         self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
         self.send_text_with_request(to, text, self.request_seq)
@@ -1051,7 +1058,7 @@ fn pack_chunks(bytes: &[u8], version: u64, sender: u64, receiver: u64) -> Result
     Ok(result)
 }
 
-fn reactions(value: &Value) -> Vec<Reaction> {
+pub fn reactions(value: &Value) -> Vec<Reaction> {
     let mut groups: Vec<Reaction> = Vec::new();
     for item in value.as_array().into_iter().flatten() {
         let kind = &item["reactionType"];

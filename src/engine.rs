@@ -57,6 +57,7 @@ pub enum Intent {
         chat: ChatId,
         text: String,
     },
+    Unsend(Key),
     Retry(Key),
     Resend(Key),
     Discard(Key),
@@ -135,6 +136,7 @@ pub enum Delta {
         chat: ChatId,
         text: String,
     },
+    UnsendFailed(Key),
     Error(String),
     StoreSaved,
 }
@@ -776,6 +778,22 @@ impl Engine {
                 self.store.discard(key)?;
                 self.publish()?;
             }
+            Intent::Unsend(key) => {
+                let row = self.store.message(key)?;
+                if row.outgoing
+                    && !row.withdrawn
+                    && let Some(id) = row.server_id
+                {
+                    let seq = self.next_seq()?;
+                    match self.backend.unsend(&id, seq) {
+                        Ok(()) => {
+                            self.store.withdraw(&id)?;
+                            self.publish()?;
+                        }
+                        Err(_) => self.emit(Delta::UnsendFailed(key)),
+                    }
+                }
+            }
             Intent::Copy(key) => {
                 let m = self.store.message(key)?;
                 self.emit(Delta::Copy {
@@ -873,8 +891,21 @@ impl Engine {
     fn page(&mut self, chat: ChatId, kind: PageKind) -> Result<()> {
         match self.backend.messages(&chat, &kind) {
             Ok(page) => {
+                let recent = matches!(page.kind, PageKind::Recent);
                 self.store
                     .apply_page(&chat, page.kind, &page.rows, page.reaches_start)?;
+                if recent {
+                    // Page RPCs have no revision; a quiet refresh covers operations
+                    // already processed, including an actorless reaction operation.
+                    let revision = self.store.sync_revision()?;
+                    for row in &page.rows {
+                        self.store.set_reactions(
+                            &row.server_id,
+                            row.reactions.clone(),
+                            revision,
+                        )?;
+                    }
+                }
                 self.inbox.refresh(Refresh::Receipts(chat.clone()));
                 self.publish()?;
             }
@@ -1032,6 +1063,9 @@ impl Engine {
                     } else {
                         false
                     };
+                    if let Op::Recent(chat) = &op.op {
+                        self.inbox.refresh(Refresh::Recent(chat.clone()));
+                    }
                     self.store.apply_operation(&op, self.continuous)?;
                     if fresh
                         && !op.replay

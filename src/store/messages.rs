@@ -524,7 +524,9 @@ impl Store {
         server_sort(id)?;
         self.mutate(|tx, c| {
             tx.execute("INSERT OR IGNORE INTO withdrawal VALUES(?)", [&id.0])?;
-            if let Some(mut row) = by_server(tx, id)? {
+            if let Some(mut row) = by_server(tx, id)?
+                && !row.withdrawn
+            {
                 row.withdrawn = true;
                 row.body = serde_json::Value::Null;
                 save(tx, &row)?;

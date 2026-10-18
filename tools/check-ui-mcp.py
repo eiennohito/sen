@@ -595,6 +595,40 @@ if args.auth_recovery:
     print("PASS: offline/expired feedback placement, F6/Tab order, sign-in dismissal and draft preservation")
 
 if args.layers:
+    demo_scenario("Protocol fixtures")
+    # Public OA metadata assets use the same offline media paths as other photos.
+    call("click_element", elementHandle=element("Open photo", "Button")["handle"])
+    element("Photo in viewer", "Image")
+    call("dispatch_key_event", windowHandle=window, text="\x1b")
+    demo_scenario("Live reaction")
+    element("👍 1", "Text")
+
+    def unsend_menu(body):
+        message = next(item for item in tree() if body in item.get("accessibleLabel", "") and item.get("accessibleRole") in ("Text", "TextInput"))
+        call("click_element", elementHandle=message["handle"], button="Right")
+        call("click_element", elementHandle=element("Unsend", "Text")["handle"])
+        element("Unsend message?", "Text")
+        element("It will be removed for everyone.", "Text")
+        assert element("Cancel", "Button").get("accessibleDescription", "") in ("", "Focused")
+        draft_before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
+        call("dispatch_key_event", windowHandle=window, text="x")
+        assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == draft_before, "Unsend let typing reach the draft"
+
+    unsend_menu("Unsend success fixture")
+    call("dispatch_key_event", windowHandle=window, text="\x1b")
+    unsend_menu("Unsend success fixture")
+    call("click_element", elementHandle=element("Cancel", "Button")["handle"])
+    unsend_menu("Unsend failure fixture")
+    call("click_element", elementHandle=element("Unsend", "Button")["handle"])
+    element("Couldn't unsend.", "Text")
+    assert any("Unsend failure fixture" in item.get("accessibleLabel", "") for item in tree())
+    unsend_menu("Unsend success fixture")
+    call("click_element", elementHandle=element("Unsend", "Button")["handle"])
+    deadline = time.monotonic() + 2
+    while not any("Message unsent" in item.get("accessibleLabel", "") for item in tree()):
+        assert time.monotonic() < deadline, "Unsend success did not replace the row"
+        time.sleep(.05)
+    print("PASS: protocol OA image/original, quiet live reaction, Unsend menu, Escape/Cancel, failure and success")
     def bounds_by_id(qualified_id):
         handles = call("find_elements_by_id", windowHandle=window, elementsId=qualified_id)["elementHandles"]
         assert len(handles) == 1, f"non-unique geometry: {qualified_id}"
@@ -713,7 +747,7 @@ if args.reading:
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=-1800, deltaX=0)
     labels.extend(item.get("accessibleLabel", "") for item in tree())
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=1800, deltaX=0)
-    for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "System message", "Message withdrawn", "Unable to decrypt message", "Unknown message"):
+    for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "System message", "Message unsent", "Unable to decrypt message", "Unknown message"):
         assert any(expected in label for label in labels), f"missing placeholder: {expected}"
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     first_y = first["absolutePosition"]["y"]
@@ -816,7 +850,7 @@ if args.rich:
     labels = [item.get("accessibleLabel", "") for item in rich_tree()]
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=-800, deltaX=0)
     labels += [item.get("accessibleLabel", "") for item in rich_tree()]
-    for expected in ("2.0 KB", "2:05", "0:12", "Contact · 葵", "葵 joined the group", "Message withdrawn"):
+    for expected in ("2.0 KB", "2:05", "0:12", "Contact · 葵", "葵 joined the group", "Message unsent"):
         assert any(expected in label for label in labels), f"missing rich metadata: {expected}"
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
     reply = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Jump to replied message")
@@ -923,7 +957,7 @@ if args.media:
     cases = [
         ("Media timeout", "Image took too long to load", True),
         ("Media network", "Couldn’t load this image", True),
-        ("Media 404", "Not available for this sender", False),
+        ("Media 404", "Image is no longer available", False),
         ("Media 403", "You don’t have access to this image", True),
         ("Media 500", "Image is temporarily unavailable", True),
         ("Media unsupported sender", "Not available for this sender", False),

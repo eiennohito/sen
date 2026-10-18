@@ -84,12 +84,17 @@ export component Message inherits VerticalLayout {
                                 text: root.message.sender-name; accessible-label: "Sender: " + root.message.sender-name;
                                 color: Tokens.secondary; font-size: Tokens.small; overflow: elide;
                             }
-                            message-bubble := Rectangle {
+                            message-bubble := ContextMenuArea {
+                                Menu {
+                                    if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
+                                }
                                 property <bool> selected: body.has-focus || root.rich-focused || State.highlight-message == root.message.id;
-                                background: self.selected ? Tokens.bubble-selection : root.message.sticker ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface;
-                                border-width: self.selected ? 2px : root.message.sticker ? 0px : 1px;
-                                border-color: self.selected ? Tokens.bubble-selection-border : Tokens.border;
+                                Rectangle { width: 100%; height: 100%;
+                                background: parent.selected ? Tokens.bubble-selection : root.message.sticker ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface;
+                                border-width: parent.selected ? 2px : root.message.sticker ? 0px : 1px;
+                                border-color: parent.selected ? Tokens.bubble-selection-border : Tokens.border;
                                 border-radius: 9px;
+                                }
                                 height: bubble-content.preferred-height;
                                 body-measure := Text { visible: false; text: root.showing-rich ? "" : root.message.body; font-size: Tokens.base; wrap: word-wrap; }
                                 bubble-content := VerticalLayout {
@@ -115,6 +120,7 @@ export component Message inherits VerticalLayout {
                                         Menu {
                                             MenuItem { title: "Select text"; activated => { root.selecting-rich = true; body.focus(); } }
                                             MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
+                                            if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
                                         }
                                         rich-focus := FocusScope {
                                             accessible-role: text; accessible-label: root.message.accessible-label; accessible-value: root.message.body; accessible-description: self.has-focus ? "Focused message" : root.message.accessible-label;
@@ -144,6 +150,7 @@ export component Message inherits VerticalLayout {
                                         Menu {
                                             MenuItem { title: "Copy selection"; activated => { body.copy(); } }
                                             MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
+                                            if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
                                             for link in root.message.links: MenuItem { title: "Open link " + link.url; activated => { State.open-link(link.url); } }
                                             if root.message.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
                                         }
@@ -202,6 +209,7 @@ export component Message inherits VerticalLayout {
                                     }
                                 }
                             }
+                            if State.unsend-feedback-id == root.message.id: Text { text: "Couldn't unsend."; color: Tokens.danger; font-size: Tokens.time; }
                             if root.message.recoverable: Text { text: root.message.delivery == "Rejected" ? "Message was not sent." : "Confirmation unavailable. The message may have arrived."; color: Tokens.danger; font-size: Tokens.time; wrap: word-wrap; }
                             if root.message.recoverable: HorizontalLayout {
                                 spacing: 8px; alignment: start;

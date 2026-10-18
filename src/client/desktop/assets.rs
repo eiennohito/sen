@@ -22,6 +22,8 @@ pub struct Asset {
     #[serde(default)]
     original_suffix: Option<String>,
     #[serde(default)]
+    original_url: Option<String>,
+    #[serde(default)]
     failure: Option<Failure>,
 }
 
@@ -30,7 +32,7 @@ impl Asset {
         self.failure
     }
     pub fn kind(&self) -> &'static str {
-        if self.private {
+        if self.private || official_url(&self.url) {
             "photo"
         } else if self.url.contains("/sticonshop/") {
             "reaction"
@@ -69,6 +71,7 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 64,
+            original_url: None,
             original_suffix: None,
             failure: None,
         })
@@ -92,6 +95,7 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 256,
+            original_url: None,
             original_suffix: None,
             failure: None,
         })
@@ -112,14 +116,32 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 32,
+            original_url: None,
             original_suffix: None,
             failure: None,
         })
     }
 
-    pub(super) fn photo(message: &Value) -> Option<Self> {
+    pub(crate) fn photo(message: &Value) -> Option<Self> {
         let meta = &message["contentMetadata"];
         let id = message["id"].as_str()?;
+        if meta["SID"].is_null()
+            && meta["OID"].is_null()
+            && let Some(url) = meta["PREVIEW_URL"].as_str()
+        {
+            let download = meta["DOWNLOAD_URL"].as_str();
+            return Some(Self {
+                url: url.into(),
+                private: false,
+                key_material: None,
+                talk_meta: None,
+                dimension: 384,
+                original_suffix: None,
+                original_url: download.map(str::to_owned),
+                failure: (!official_url(url) || download.is_some_and(|u| !official_url(u)))
+                    .then_some(Failure::UnsupportedHost),
+            });
+        }
         let sid = meta["SID"].as_str().unwrap_or("m");
         let oid = meta["OID"].as_str().unwrap_or(id);
         let failure = route_failure(sid, oid);
@@ -136,6 +158,7 @@ impl Asset {
             talk_meta: Some(talk_meta(id)),
             dimension: 384,
             failure,
+            original_url: None,
             original_suffix: Some(
                 if meta["MEDIA_CONTENT_INFO"]
                     .as_str()
@@ -173,6 +196,7 @@ impl Asset {
             key_material: key,
             talk_meta: Some(talk_meta(id)),
             dimension: 0,
+            original_url: None,
             original_suffix: None,
             failure: route_failure(sid, oid).or_else(|| {
                 ["DOWNLOAD_URL", "DOWNLOAD_URL_RENEWAL"]
@@ -185,6 +209,13 @@ impl Asset {
 
     /// Chrome's encrypted source uses the bare OID; __ud-preview is only a thumbnail.
     pub fn original(&self) -> Option<Self> {
+        if let Some(url) = &self.original_url {
+            let mut original = self.clone();
+            original.url = url.clone();
+            original.original_url = None;
+            original.dimension = 8192;
+            return Some(original);
+        }
         if !self.private {
             return None;
         }
@@ -246,8 +277,15 @@ fn allowed_url(url: &str) -> bool {
     let host = rest.split('/').next().unwrap_or_default();
     matches!(
         host,
-        "profile.line-scdn.net" | "stickershop.line-scdn.net" | "obs.line-apps.com"
+        "profile.line-scdn.net"
+            | "stickershop.line-scdn.net"
+            | "obs.line-apps.com"
+            | "manager.line-scdn.net"
     ) && !url.contains(['\r', '\n', '\\'])
+}
+
+fn official_url(url: &str) -> bool {
+    url.starts_with("https://manager.line-scdn.net/") && allowed_url(url)
 }
 
 fn segment(value: &str) -> Option<&str> {
@@ -681,6 +719,36 @@ mod tests {
     }
     #[test]
     fn asset_paths_cannot_change_origins_or_escape_segments() {
+        let oa = Asset::photo(&json!({"id":"99","contentMetadata":{
+            "PREVIEW_URL":"https://manager.line-scdn.net/id/clearpreview",
+            "DOWNLOAD_URL":"https://manager.line-scdn.net/id/original"}}))
+        .unwrap();
+        assert_eq!(oa.kind(), "photo");
+        assert_eq!(oa.url, "https://manager.line-scdn.net/id/clearpreview");
+        assert_eq!(
+            oa.original().unwrap().url,
+            "https://manager.line-scdn.net/id/original"
+        );
+        assert!(!oa.private && oa.key_material.is_none() && oa.talk_meta.is_none());
+        assert!(oa.failure.is_none());
+        for url in [
+            "http://manager.line-scdn.net/id",
+            "https://manager.line-scdn.net.evil.invalid/id",
+            "https://manager.line-scdn.net@evil.invalid/id",
+            "https://manager.line-scdn.net:443/id",
+            "https://evil.invalid/id",
+        ] {
+            let bad =
+                Asset::photo(&json!({"id":"99","contentMetadata":{"PREVIEW_URL":url}})).unwrap();
+            assert_eq!(bad.failure, Some(Failure::UnsupportedHost));
+            let bad_original = Asset::photo(
+                &json!({"id":"99","contentMetadata":{"PREVIEW_URL":oa.url,"DOWNLOAD_URL":url}}),
+            )
+            .unwrap()
+            .original()
+            .unwrap();
+            assert_eq!(bad_original.failure, Some(Failure::UnsupportedHost));
+        }
         assert!(Asset::avatar("https://evil.invalid/image").is_none());
         assert!(Asset::sticker(&json!({"STKID":"../../escape"})).is_none());
         assert!(!allowed_url(

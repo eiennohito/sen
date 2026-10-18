@@ -177,7 +177,20 @@ impl Store {
                     changes
                 }
                 Op::Withdraw(id) => self.withdraw(id)?,
-                Op::Checkpoint => Changes::default(),
+                Op::Reaction { id, actor, curr } => {
+                    if let Some(row) = messages::by_server(&self.conn, id)? {
+                        let mut entries = row.reactions.as_array().cloned().unwrap_or_default();
+                        entries.retain(|entry| entry["fromUserMid"].as_str() != Some(actor));
+                        if curr.as_object().is_some_and(|v| !v.is_empty()) {
+                            entries
+                                .push(serde_json::json!({"fromUserMid":actor,"reactionType":curr}));
+                        }
+                        self.set_reactions(id, entries.into(), live.revision)?
+                    } else {
+                        Changes::default()
+                    }
+                }
+                Op::Recent(_) | Op::Checkpoint => Changes::default(),
             };
             if let Op::Message(m) = &live.op
                 && fresh

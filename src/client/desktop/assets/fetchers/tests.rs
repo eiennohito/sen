@@ -967,3 +967,28 @@ fn refused_visible_enqueue_retains_a_job_for_explicit_retry() {
     let job = queue.entries[&key].job.as_ref().unwrap();
     assert!(job.bypass && job.boost);
 }
+
+#[test]
+fn official_image_urls_fetch_plain_bytes_without_line_headers() {
+    let (http, requests, server) = local_server(2, |_, stream| respond(stream, b"plain image"));
+    let asset = Asset::photo(&json!({"id":"99","contentMetadata":{
+        "PREVIEW_URL":"https://manager.line-scdn.net/id/clearpreview",
+        "DOWNLOAD_URL":"https://manager.line-scdn.net/id/original"}}))
+    .unwrap();
+    for asset in [asset.clone(), asset.original().unwrap()] {
+        assert_eq!(
+            asset.fetch(&http, Some("must-not-send")).unwrap(),
+            b"plain image"
+        );
+        let request = requests
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap()
+            .to_ascii_lowercase();
+        assert!(
+            !request.contains("x-line-")
+                && !request.contains("x-talk-meta")
+                && !request.contains("must-not-send")
+        );
+    }
+    server.join().unwrap();
+}
