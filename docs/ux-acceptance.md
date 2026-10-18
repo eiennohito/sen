@@ -118,8 +118,8 @@ observations below do not verify the current build.
 | CMP5 | Switching chats keeps text, caret, selection, and scroll per chat; clicking the open chat changes nothing | yes (text, byte-offset caret/selection, scroll; unchanged-chat guard) | S M |
 | CMP6 | Drafts survive restart in private storage; nothing moves between chats or accounts | yes | S |
 | CMP7 | After submit the composer is empty, focused, and a late result cannot alter newer text | yes (synthetic submit and focus checks) | S M |
-| CMP8 | Pasting text keeps line breaks; pasting or dropping media opens the attachment preview | part (multiline text preserved; media preview absent) | S M |
-| CMP9 | Attachment selection shows a preview with destination, remove, cancel, Send; nothing transmits on selection or drop | no | — |
+| CMP8 | Pasting text keeps line breaks; pasting or dropping media opens the attachment preview | yes; media live unverified | S M (injected local paths); physical clipboard/drop P— |
+| CMP9 | Attachment selection shows a preview with destination, remove, cancel, Send; nothing transmits on selection or drop | yes; live unverified | S; compose MCP (preview/remove/send/progress), light/dark screenshots |
 | CMP10 | Shortcut help is in Settings, not a permanent caption under the composer | yes | S M |
 | CMP11 | Sticker popover uses cached owned packages, tabs and four-column images; activation sends immediately and closes; Escape closes | yes; live unverified | S; compose MCP |
 | CMP12 | New chat selects one friend locally; first send works without an existing chat. Multiple friends create a named group with progress/failure and open on success | yes; live unverified | S; compose MCP |
@@ -227,7 +227,7 @@ the cached image or original export. No custom font or phase 6b profile layout i
 | OS7 | Background mode and autostart are off by default and explicit preferences | yes (explicit opt-in preferences, verified tray host, managed autostart) | S (private tray host/lifecycle/autostart); physical tray P— |
 | OS8 | System theme, accent, font, and per-monitor scale are followed | yes (Palette roles, default font and toolkit scale) | S M; physical per-monitor checks P— |
 | OS9 | Links open through the default handler after activation | yes ([T8 resolved at 05cd26d](ux-sessions.md#resolved)) | S M (demo stub); P— |
-| OS10 | File picking and drops use the portal file chooser and `text/uri-list` | no | — |
+| OS10 | File picking and drops use the portal file chooser and `text/uri-list` | yes (zbus OpenFile multiple, URI clipboard and batched winit drops; no GTK) | S; headless path injection M; physical portal/drop P— |
 | OS11 | Accessibility tree exposes roles, labels, and states for every control | part | M |
 | OS12 | Quit flushes drafts and stops sync; logout withdraws notifications and badge | part (Quit flushes state, joins sync and withdraws attention; logout flow unavailable) | S; desktop withdrawal P— |
 
@@ -298,6 +298,8 @@ Keep account contents and private screenshots out of Git. Newest first.
 | before 2026-10-15 | earlier | Real account: chat list, recent messages, photos, stickers, paid reactions displayed; one real send not yet validated | Native session, since invalidated by the Chrome login | Historical; does not prove current authorization. |
 | 2026-10-18 | Phase 6a working tree | VIS1–VIS4, VIS6, FB3; visual-design implementation outside §3.4 | Offline fmt, all-target workspace Clippy with warnings denied, workspace tests, release ui-debug; fresh owned headless MCP scopes | PASS: 199 tests, 6 ignored prerequisites; fmt/Clippy/build pass. Default, unread, scenarios, friends, layout-photos, reading, rich, media, auth-recovery, layers and focus pass separately at 980×720; layers/focus/friends/scenarios also pass separately at 1280×900. Six size/theme variants (980×720, 1280×900, 420×760; light/dark) captured through MCP and inspected in `target/phase6a/`. Native-menu styling and absent software shadows are recorded above. No account, external network, Git commands or physical-input verification. |
 | 2026-10-18 | Phase 4 known defects | MSG5, CMP7; continuous send linking, first-identity local work, C6/C7, S23/S24 and wide layouts | Offline workspace tests, formatting, all-target Clippy with warnings denied, release ui-debug; fresh owned headless demos | 196 tests pass (6 prerequisite-dependent tests ignored). At 980×720, unread, scenarios, friends, layout-photos, reading, rich, media, auth-recovery, layers and focus pass separately; at 1280×900, layers, focus, friends and scenarios pass separately with profiles as side panels. No account, external network or physical-input verification. |
+
+| 2026-10-19 | Phase 8; release ui-debug SHA `b1389d00d4e6` | P3, CMP8, CMP9, OS10 | Offline workspace tests, fmt, all-target Clippy with warnings denied, release ui-debug; fresh owned headless demos | PASS: 199 tests, 5 prerequisite-dependent tests ignored. All primary check groups pass separately at 980×720, plus layers/focus/friends/scenarios separately at 1280×900. Compose checks pass in light/dark at 980×720 and 420×760: automation-only path injection opens the dialog, removes one item, sends ordered rows, observes nonzero upload progress and waits for sent rows. Dialog/uploading screenshots inspected in all four variants; progress aligns to the thumbnail and grows from the left. Independent media fixture also verifies encryption against the received envelope. No account, external network or Git commands; physical portal/clipboard/drop and live sends remain unverified. |
 
 Detailed narratives of the earlier follow-ups (identity-preserving model
 edits, encrypted state storage, authentication recovery, newest-first

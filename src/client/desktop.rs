@@ -654,7 +654,7 @@ impl Client {
     }
 
     fn authorize_media(&mut self, asset: &Asset) -> Result<()> {
-        if asset.private && self.obs_access.is_none() {
+        if asset.local_attachment().is_none() && asset.private && self.obs_access.is_none() {
             let result = self.talk("acquireEncryptedAccessToken", json!([2]))?;
             let text = result.as_str().context("invalid media access response")?;
             let token = text
@@ -668,6 +668,9 @@ impl Client {
         Ok(())
     }
     pub fn media_token(&mut self, asset: &Asset) -> Result<Option<String>> {
+        if asset.local_attachment().is_some() {
+            return Ok(None);
+        }
         self.authorize_media(asset)?;
         Ok(self.obs_access.clone())
     }
@@ -856,6 +859,10 @@ impl Client {
     }
 
     fn encrypted_text(&mut self, to: &str, text: &str) -> Result<Value> {
+        self.encrypted_payload(to, 0, &json!({"text":text}))
+    }
+
+    fn encrypted_payload(&mut self, to: &str, content_type: u64, payload: &Value) -> Result<Value> {
         let key = self.state["e2ee_keys"]
             .as_array()
             .context("missing own keys")?
@@ -870,8 +877,8 @@ impl Client {
             ensure!(
                 negotiation["allowedTypes"]
                     .as_array()
-                    .is_some_and(|v| v.contains(&json!(0))),
-                "recipient does not support encrypted text"
+                    .is_some_and(|v| v.contains(&json!(content_type))),
+                "recipient does not support this encrypted content"
             );
             let public = &negotiation["publicKey"];
             let id = public["keyId"].as_u64().context("missing peer key ID")?;
@@ -914,10 +921,7 @@ impl Client {
             self.api.rt.destroy("E2EEKey", transfer_key)?;
             (id, shared["specVersion"].as_u64().unwrap_or(2), ch)
         };
-        let h = self
-            .api
-            .rt
-            .bytes(&serde_json::to_vec(&json!({"text":text}))?);
+        let h = self.api.rt.bytes(&serde_json::to_vec(payload)?);
         let encrypted = if version == 1 {
             bytes_method(&mut self.api.rt, "E2EEChannel", "encryptV1", ch, &[h])?
         } else {
@@ -930,7 +934,15 @@ impl Client {
                 "E2EEChannel",
                 "encryptV2",
                 ch,
-                &[dest, from, sender_id, receiver_id, 0, self.sequence, h],
+                &[
+                    dest,
+                    from,
+                    sender_id,
+                    receiver_id,
+                    content_type,
+                    self.sequence,
+                    h,
+                ],
             )?;
             self.api.rt.free_string(dest)?;
             self.api.rt.free_string(from)?;
@@ -946,7 +958,7 @@ impl Client {
             .to_string();
         Ok(
             json!({"to":to,"from":self.my_mid,"toType":if is_user(to){0}else if to.starts_with(['C','c']){2}else{1},
-            "createdTime":now,"sessionId":0,"contentType":0,"hasContent":false,
+            "createdTime":now,"sessionId":0,"contentType":content_type,"hasContent":content_type != 0,
             "contentMetadata":{"e2eeVersion":version.to_string()},"chunks":chunks}),
         )
     }
@@ -1186,3 +1198,5 @@ mod decrypted_metadata_tests {
         assert_eq!(raw["contentMetadata"]["FILE_NAME"], "example.txt");
     }
 }
+
+mod upload;

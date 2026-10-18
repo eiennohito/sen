@@ -80,6 +80,7 @@ struct RequestState {
     config: Config,
     cancel: Option<Arc<AtomicBool>>,
     deadline: Instant,
+    idle: Option<Duration>,
     connect_deadline: Instant,
     connecting: bool,
     connector_depth: usize,
@@ -118,6 +119,7 @@ impl RequestScope {
                 config,
                 cancel: REQUEST_CANCEL.with(|slot| slot.borrow().clone()),
                 deadline: Instant::now() + timeout,
+                idle: None,
                 connect_deadline: Instant::now() + config.connect,
                 connecting: true,
                 connector_depth: 0,
@@ -155,6 +157,16 @@ impl Drop for RequestScope {
             }
         });
     }
+}
+
+fn byte_progress() {
+    ACTIVE.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let state = slot.as_mut().expect("HTTP request scope");
+        if let Some(idle) = state.idle {
+            state.deadline = Instant::now() + idle;
+        }
+    });
 }
 
 fn check_request() -> Result<(), ureq::Error> {
@@ -502,7 +514,10 @@ impl UreqTransport for PollTransport {
             // write_all here could duplicate request bytes (including on TLS).
             match (&self.socket.stream).write(&self.buffers.output()[sent..amount]) {
                 Ok(0) => return Err(record_write_failure(io::ErrorKind::WriteZero)),
-                Ok(n) => sent += n,
+                Ok(n) => {
+                    sent += n;
+                    byte_progress();
+                }
                 Err(error) if retryable(&error) => continue,
                 Err(error) => return Err(record_write_failure(error.kind())),
             }
@@ -536,6 +551,9 @@ impl UreqTransport for PollTransport {
             match result {
                 Ok(n) => {
                     self.socket.check()?;
+                    if n > 0 {
+                        byte_progress();
+                    }
                     self.buffers.input_appended(n);
                     return Ok(n > 0);
                 }
@@ -807,6 +825,70 @@ impl Transport {
             );
             bytes.extend_from_slice(&chunk[..n]);
         }
+    }
+
+    /// A media POST is never retried automatically. Progress counts body bytes read by HTTP.
+    pub(super) fn upload(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        bytes: &[u8],
+        progress: &mut dyn FnMut(u64),
+    ) -> Result<String> {
+        let _scope = RequestScope::new(Duration::from_secs(60), self.config);
+        ACTIVE
+            .with(|slot| slot.borrow_mut().as_mut().unwrap().idle = Some(Duration::from_secs(60)));
+        check_request()?;
+        let mut request = self
+            .agent
+            .post(url)
+            .header("content-type", "application/x-www-form-urlencoded");
+        for (name, value) in headers {
+            ensure!(!value.contains(['\r', '\n']), "invalid upload header");
+            let mut value = HeaderValue::from_str(value)?;
+            value.set_sensitive(true);
+            request = request.header(*name, value);
+        }
+        struct Body<'a> {
+            bytes: &'a [u8],
+            sent: u64,
+            progress: &'a mut dyn FnMut(u64),
+        }
+        impl Read for Body<'_> {
+            fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+                let n = self.bytes.read(out)?;
+                self.sent += n as u64;
+                (self.progress)(self.sent);
+                Ok(n)
+            }
+        }
+        let mut body = Body {
+            bytes,
+            sent: 0,
+            progress,
+        };
+        let response = request
+            .header("content-length", bytes.len().to_string())
+            .send(ureq::SendBody::from_reader(&mut body))
+            .map_err(|error| {
+                let stalled = matches!(error, ureq::Error::Timeout(_))
+                    || ACTIVE
+                        .with(|slot| Instant::now() >= slot.borrow().as_ref().unwrap().deadline);
+                super::Error::Rejected(if stalled {
+                    super::error::RejectReason::UploadStalled
+                } else {
+                    super::error::RejectReason::UploadFailed
+                })
+            })?;
+        if response.status() != 201 {
+            return Err(super::Error::Rejected(super::error::RejectReason::UploadRefused).into());
+        }
+        Ok(response
+            .headers()
+            .get("x-obs-oid")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or_default()
+            .to_owned())
     }
 
     pub(super) fn asset(&self, url: &str, headers: &[(&str, &str)], cap: usize) -> Result<Vec<u8>> {

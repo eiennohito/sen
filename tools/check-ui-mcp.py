@@ -275,6 +275,7 @@ if args.focus:
             if not narrow:
                 expected += ["葵", "More"] + recovery + ["Message history", "Message draft"]
                 if element("Stickers", "Button").get("accessibleEnabled"): expected.append("Stickers")
+                if element("Attach", "Button").get("accessibleEnabled"): expected.append("Attach")
                 if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
             check_chain(f"{surface} {suffix}", expected, (search_label, "TextInput"))
             call("set_element_value", elementHandle=element(search_label, "TextInput")["handle"], value="葵")
@@ -289,6 +290,7 @@ if args.focus:
             if chat == "Weekend plans": expected.append(element("Members", "Button")["accessibleLabel"])
             expected += ["More"] + recovery + ["Message history", "Message draft"]
             if element("Stickers", "Button").get("accessibleEnabled"): expected.append("Stickers")
+            if element("Attach", "Button").get("accessibleEnabled"): expected.append("Attach")
             if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
             check_chain(f"conversation {chat} {suffix}", expected, ("Message draft", "TextInput"))
             if chat == "Weekend plans":
@@ -314,6 +316,7 @@ if args.focus:
         if panel:
             prefix += ["Weekend plans", element("Members", "Button")["accessibleLabel"], "More"] + recovery + ["Message history", "Message draft"]
             if element("Stickers", "Button").get("accessibleEnabled"): prefix.append("Stickers")
+            if element("Attach", "Button").get("accessibleEnabled"): prefix.append("Attach")
             if element("Send", "Button").get("accessibleEnabled"): prefix.append("Send")
         check_chain(f"profile {layer_kind} {suffix}", prefix + ["Profile more", "Close details", "Open profile photo", "Chat", "Rename"], ("Close details", "Button"))
         focus_key("\x1b")
@@ -450,7 +453,31 @@ if args.compose:
     surface_shot("new-group")
     compose_click("Create group")
     wait_for(lambda: any(item.get("accessibleLabel") == "Compose test group" for item in tree()), "created group did not open")
-    print("PASS: react/cancel, owned sticker picker/send, new 1:1 first send and group creation")
+    # The portal is unavailable in headless runs; this guarded field injects local paths.
+    import struct, zlib
+    with tempfile.TemporaryDirectory(prefix="line-attach-ui-") as directory:
+        directory = Path(directory)
+        def png_chunk(kind, data):
+            return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+        photo = directory / "Holiday.png"
+        scanlines = b"".join(b"\0" + bytes([58, 145, 191]) * 160 for _ in range(120))
+        photo.write_bytes(b"\x89PNG\r\n\x1a\n" + png_chunk(b"IHDR", struct.pack(">IIBBBBB",160,120,8,2,0,0,0)) + png_chunk(b"IDAT", zlib.compress(scanlines)) + png_chunk(b"IEND", b""))
+        file = directory / "Notes.txt"; file.write_text("Synthetic file")
+        removed = directory / "Remove.txt"; removed.write_text("Remove this item")
+        call("dispatch_key_event", windowHandle=window, text="\uf70f")
+        injection = element("Attachment paths", "TextInput")
+        call("set_element_value", elementHandle=injection["handle"], value=json.dumps([str(photo), str(file), str(removed)]))
+        compose_click("Preview attachments")
+        element("Send 3", "Button")
+        surface_shot("attachments")
+        compose_click("Remove Remove.txt")
+        element("Send 2", "Button")
+        assert not any(item.get("accessibleLabel", "").startswith("Uploading") for item in tree()), "selection uploaded before Send"
+        compose_click("Send 2")
+        wait_for(lambda: any(item.get("accessibleLabel", "").startswith("Uploading ") and item.get("accessibleLabel") not in ("Uploading 0%", "Uploading 100%") for item in tree()), "upload progress did not appear")
+        surface_shot("uploading")
+        wait_for(lambda: any(item.get("accessibleValue") == "Notes.txt" for item in tree()) and not any(item.get("accessibleLabel", "").startswith("Uploading") or item.get("accessibleLabel") == "Sending" for item in tree()), "attachment rows did not finish")
+    print("PASS: react/cancel, stickers, new chats, attachment preview/remove/send/progress")
 
 if args.scenarios:
     def key(text, event_type="PressAndRelease"):
@@ -487,8 +514,7 @@ if args.scenarios:
     call("set_element_value", elementHandle=composer, value="")
     call("click_element", elementHandle=composer)
     ctrl("v")
-    copied = call("get_element_properties", elementHandle=composer).get("accessibleValue")
-    assert copied == expected_text, "clipboard lost selected text/emoji or included metadata"
+    wait_for(lambda: call("get_element_properties", elementHandle=composer).get("accessibleValue") == expected_text, "clipboard lost selected text/emoji or included metadata")
     call("click_element", elementHandle=element("Latest · 3 new", "Button")["handle"])
     assert not any("Latest" in item.get("accessibleLabel", "") for item in tree() if item.get("accessibleRole") == "Button"), "Latest did not resume following"
     demo_scenario("Receive 3")
