@@ -407,6 +407,13 @@ profile in offline headless snapshots. `--snapshot-scene` selects `chats`,
 `composer`, `composer-reason`, `latest`, or `return` for shell layout captures.
 `conversation` starts at the first date divider; `failed-send` shows an uncertain
 outgoing item at latest.
+`chats-hover` points at an unselected row; `chats-unread` keeps the selected
+row's unread badge visible. `message-selected-incoming` and
+`message-selected-outgoing` isolate the bubble selection highlight.
+`session-expired` shows both recovery actions; `friends-offline` combines
+the Friends list with the connection strip. Settings fills the window below
+740 px and sizes to its content above that boundary. Friends row heights use
+the measured name and status line heights plus padding and spacing.
 The `chats-query-offline` and `return-offline` variants add the connection
 strip to the query and both-pill captures. Combine scenes with
 `--snapshot-size`, `--snapshot-text-size`, and `--demo-color-scheme`. In the UI,

@@ -101,7 +101,7 @@ export component Chats inherits Rectangle {
 for chat[i] in State.chats: Rectangle {
                         width: chat-list.visible-width; height: State.chat-row-height;
                         border-radius: 6px; clip: true;
-                        background: chat.index == State.selected-chat ? Tokens.selection : row-touch.has-hover ? Tokens.alternate-background : transparent;
+                        background: chat.index == State.selected-chat ? Tokens.selection : row-touch.has-hover ? Tokens.chat-hover : transparent;
                         border-width: (list-focus.has-focus || search.has-focus) && i == State.result-focus ? 2px : 0px;
                         border-color: Tokens.accent;
                         Rectangle {
@@ -117,7 +117,7 @@ for chat[i] in State.chats: Rectangle {
                             Text { x: 0px; y: name.height + 4px; width: max(0px,parent.width - markers.width - 4px); height: max(0px, parent.height - self.y); text: chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.preview; wrap: no-wrap; overflow: elide; }
                             markers := HorizontalLayout {
                                 x: parent.width - self.width; y: name.height + 4px; spacing: 4px; width: (chat.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
-                                if chat.unread > 0 || chat.unread-unknown: Rectangle { width: 32px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: chat.unread-unknown ? "•" : chat.unread > 99 ? "99+" : "" + chat.unread; color: Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
+                                if chat.unread > 0 || chat.unread-unknown: Rectangle { width: 32px; height: 20px; border-radius: 10px; background: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.accent; Text { text: chat.unread-unknown ? "•" : chat.unread > 99 ? "99+" : "" + chat.unread; color: chat.index == State.selected-chat ? Tokens.accent : Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
                                 if chat.draft: Image { source: @image-url("../assets/icons/draft.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.accent; width: 16px; height: 16px; accessible-role: image; accessible-label: "Draft"; }
                                 if chat.failed: Image { source: @image-url("../assets/icons/failed.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.danger; width: 16px; height: 16px; accessible-role: image; accessible-label: "Send failed"; }
                                 if chat.muted: Image { source: @image-url("../assets/icons/muted.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; width: 16px; height: 16px; accessible-role: image; accessible-label: "Muted"; }

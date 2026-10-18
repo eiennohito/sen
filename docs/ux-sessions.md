@@ -37,11 +37,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| S5 | Chat-row hover is invisible: hover colour equals the pane background. | `app/ui/chats.slint:83` vs `app/ui/app.slint:172` | Distinct hover role. |
-| S9 | Bubble focus border uses the same accent ring as the composer. | `app/ui/message.slint:62` | Style as a selection highlight, not a focus ring. |
-| S16 | Connection strip follow-ups: at 360×520 text 24 the status elides to "Sessio…" beside its actions; Retry and Sign in again have faint borders in dark mode; narrow Friends centres keyboard-selected rows on the full list height, ignoring the strip inset; the demo "List load failure" scenario inherits the previous scenario's connection state. | `app/ui/connection-notice.slint`, `app/ui/friends.slint:15`, `app/src/demo.rs` | Shorter visible status at narrow sizes; stronger action affordance in dark; use the visible height in Friends; reset demo state per scenario. |
-| S18 | At 360×520 with 24 px text, friend rows overflow into each other (status text overlaps the next row). | `app/ui/friends.slint` | Row height from text metrics. |
-| S19 | At 360×520 the content-sized Settings dialog leaves the composer visible beneath it; reads as a broken sheet. | `app/ui/layers.slint` | Full-window sheet below 740 px, content-sized above. |
 | S21 | Tab order breaks ux-model §8.2 (pre-existing): narrow group chat reverse Tab is a two-stop trap Members ↔ Back; with the connection strip, forward Tab from the draft cycles Draft → Retry → Sign in → History → Draft and never reaches the rail or browser; reverse from Navigation never reaches history or the composer. `check-ui-mcp.py --focus` only checks ≥ 3 stops and the union over seeds, so it prints PASS on these; its `sys.exit(0)` also skips every later check when combined with other flags. | `app/ui/conversation.slint`, `app/ui/connection-notice.slint`, `app/ui/app.slint`, `tools/check-ui-mcp.py:164–196` | One Tab cycle containing every expected stop, reverse the mirror of forward; the check asserts exactly that and falls through instead of exiting. |
 | S22 | With no layer open and a conversation shown, focus in browser search, resizing 1000 → 700 px leaves no focused item at all (pre-existing). | `app/ui/state.slint` (`covered-content`) | Treat the hidden browser as covered content and move focus to the visible conversation. |
 
@@ -49,7 +44,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| M9 | Unread badge on the selected chat row is accent on selection (blue on blue). | `app/ui/chats.slint:98` | Invert on selected rows. |
 
 ## C — Composer, input, feedback
 
@@ -103,3 +97,5 @@ P, then the UI groups in any order. V closes the loop.
 | M11 | Latest keeps the measured row geometry (rows whose layout didn't change never re-report it), so the next reply jump scrolls and shows Return; obsolete jump highlight and errors are cleared. |
 | S15 | Focus moves to visible content whenever a layer starts covering it (auth, viewer, settings, profile, members), in both width directions; no change when nothing is covered. `check-ui-mcp.py --layers` reads the geometry from the UI tree. |
 | S20 | The connection-strip and shell wrappers no longer take Tab focus; Send and Back have focus descriptions; no unlabelled stop remains in the forward or reverse chains. |
+| S5, S9, M9 | Chat rows have a hover role distinct from selection (3.1–3.2:1 against the pane); the selected bubble is a tinted fill with a 2 px selection border instead of the composer ring; the selected row's unread badge inverts. Minor: hover is heavy (dark text 12:1 → 4.5:1) and a selected outgoing bubble loses its green tint. |
+| S16, S18, S19 | Narrow strip shows a compact status ("Expired") with the full status in the accessible label; Retry/Sign in again borders are visible in dark (light border and pressed style also changed); narrow Friends centres keyboard selection on the visible height; demo connection scenarios reset prior failures; Friends row height comes from text metrics; Settings is a full-window sheet below 740 px. Minor: compact status says "Sign in" when signed out (reads as an action, duplicates the button) and switches on width only, not text size. |

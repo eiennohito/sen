@@ -6,6 +6,11 @@ import { SearchField } from "search-field.slint";
 import { IconButton } from "icon-button.slint";
 export component Friends inherits Rectangle {
     visible: State.section == 1;
+    out property <length> row-height: max(70px, name-metric.preferred-height + status-metric.preferred-height + 20px);
+    changed row-height => { State.friend-row-height = root.row-height; }
+    init => { State.friend-row-height = root.row-height; }
+    name-metric := Text { visible: false; text: "友 Ag"; font-size: Tokens.base; font-weight: 600; }
+    status-metric := Text { visible: false; text: "友 Ag"; font-size: Tokens.preview; }
     public function focus-search() { friend-search.focus(); }
     public function focus-list() { list-focus.focus(); }
     public function move-cursor(delta: int) {
@@ -13,7 +18,7 @@ export component Friends inherits Rectangle {
         if friend-search.has-focus && State.friend-result >= 0 && State.friend-result < State.friends.length && State.friends[State.friend-result].header {
             State.friend-result = max(0, min(State.friends.length - 1, State.friend-result + (delta >= 0 ? 1 : -1)));
         }
-        friend-list.jump(-max(0px, State.friend-result * State.friend-row-height - friend-list.height / 2));
+        friend-list.jump(-max(0px, State.friend-result * State.friend-row-height - friend-list.visible-height / 2));
     }
     public function activate() {
         if State.friend-result < 0 || State.friend-result >= State.friends.length { return; }

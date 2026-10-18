@@ -37,6 +37,33 @@ fn fixture(ui: &AppWindow) -> View {
     view
 }
 
+#[test]
+fn demo_connection_scenarios_do_not_inherit_failures() {
+    std::thread::spawn(|| {
+        let _window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let view = Rc::new(RefCell::new(fixture(&ui)));
+        for previous in [4, 16, 17, 19] {
+            demo::scenario(&view, &ui, previous);
+            demo::scenario(&view, &ui, 18);
+            assert!(ui.get_connected());
+            assert!(!ui.get_connection_failed());
+            assert!(!ui.get_auth_expired());
+            assert!(!ui.get_session_unavailable());
+            assert!(!ui.get_retrying_connection());
+            assert!(!ui.global::<State>().get_connection_feedback_visible());
+            assert!(!ui.get_list_error().is_empty());
+        }
+        demo::scenario(&view, &ui, 19);
+        demo::scenario(&view, &ui, 17);
+        assert_eq!(ui.get_connection_status(), "Offline");
+        assert!(!ui.global::<State>().get_sign_in_available());
+        assert!(ui.get_list_error().is_empty());
+    })
+    .join()
+    .unwrap();
+}
+
 fn render_history(
     view: &mut View,
     ui: &AppWindow,

@@ -84,9 +84,10 @@ export component Message inherits VerticalLayout {
                                 color: Tokens.secondary; font-size: Tokens.small; overflow: elide;
                             }
                             message-bubble := Rectangle {
-                                background: root.message.sticker ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface;
-                                border-width: (body.has-focus || root.rich-focused) || State.highlight-message == root.message.id ? 2px : root.message.sticker ? 0px : 1px;
-                                border-color: (body.has-focus || root.rich-focused) || State.highlight-message == root.message.id ? Tokens.accent : Tokens.border;
+                                property <bool> selected: body.has-focus || root.rich-focused || State.highlight-message == root.message.id;
+                                background: self.selected ? Tokens.bubble-selection : root.message.sticker ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface;
+                                border-width: self.selected ? 2px : root.message.sticker ? 0px : 1px;
+                                border-color: self.selected ? Tokens.bubble-selection-border : Tokens.border;
                                 border-radius: 9px;
                                 height: bubble-content.preferred-height;
                                 body-measure := Text { visible: false; text: root.showing-rich ? "" : root.message.body; font-size: Tokens.base; wrap: word-wrap; }

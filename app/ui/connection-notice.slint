@@ -15,11 +15,11 @@ component Action inherits Rectangle {
     width: self.preferred-width;
     height: max(32px, Tokens.base * 1.4 + 8px);
     border-radius: 4px;
-    background: touch.pressed ? Tokens.selection : touch.has-hover ? Tokens.surface : transparent;
+    background: touch.pressed ? Tokens.accent : touch.has-hover ? Tokens.surface : transparent;
     border-width: focus.has-focus ? 2px : 1px;
-    border-color: focus.has-focus ? Tokens.accent : Tokens.border;
+    border-color: focus.has-focus ? Tokens.accent : Tokens.action-border;
     opacity: root.enabled ? 1 : 0.45;
-    caption := Text { width: 100%; height: 100%; text: root.label; font-size: root.text-size; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; }
+    caption := Text { width: 100%; height: 100%; text: root.label; font-size: root.text-size; color: touch.pressed ? Tokens.selection-foreground : Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; }
     focus := FocusScope {
         enabled: root.enabled;
         accessible-role: button; accessible-label: root.description; accessible-enabled: root.enabled;
@@ -42,6 +42,7 @@ export component ConnectionNotice inherits Rectangle {
     visible: State.connection-feedback-visible;
     background: Tokens.surface; border-width: 1px; border-color: Tokens.secondary;
     property <string> status: !State.connection-failed ? "Reconnected" : State.retrying-connection ? "Retrying…" : State.connection-status;
+    property <string> compact-status: root.width < 400px && State.connection-failed && !State.retrying-connection && State.sign-in-available ? (State.auth-expired ? "Expired" : "Sign in") : root.status;
     accessible-role: banner; accessible-label: State.connection-failed ? "Connection needs attention" : "Connection restored";
     public function focus-first() { retry.focus-action(); }
     public function focus-action() { if State.sign-in-available { sign-in.focus-action(); } else { retry.focus-action(); } }
@@ -55,7 +56,7 @@ export component ConnectionNotice inherits Rectangle {
         key-pressed(event) => { if event.text == Key.F6 { root.leave(false); return accept; } if State.demo && !State.modal-open && event.text == Key.F12 { root.scenarios-requested(); return accept; } State.browser-key(event) }
         HorizontalLayout {
             padding: 4px; spacing: 2px; alignment: start;
-            Text { text: root.status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; min-width: 0px; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
+            Text { text: root.compact-status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; min-width: 0px; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
             retry := Action {
                 visible: State.connection-failed; width: self.visible ? self.preferred-width : 0px;
                 label: "Retry"; description: "Retry connection";

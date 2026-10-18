@@ -545,6 +545,12 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                     "members-offline",
                     "member-profile-offline",
                     "chats",
+                    "chats-hover",
+                    "chats-unread",
+                    "message-selected-incoming",
+                    "message-selected-outgoing",
+                    "session-expired",
+                    "friends-offline",
                     "conversation",
                     "failed-send",
                     "chats-query",
@@ -1130,6 +1136,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             "chats" => ui.set_show_conversation(false),
+            "chats-hover" | "chats-unread" => {
+                ui.set_show_conversation(false);
+                if options.snapshot_scene == "chats-hover" {
+                    snapshot::render(&window, options.snapshot_size)?;
+                    let row = ui.invoke_connection_first_row();
+                    ui.window()
+                        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
+                            position: slint::LogicalPosition::new(
+                                row.x + 20.,
+                                row.y + row.height * 1.5,
+                            ),
+                        });
+                }
+            }
+            "message-selected-incoming" | "message-selected-outgoing" => {
+                let mut view = state.borrow_mut();
+                view.messages = vec![MessageRow {
+                    id: "selected-bubble".into(),
+                    body: "選択したメッセージ\nSelected message".into(),
+                    outgoing: options.snapshot_scene.ends_with("-outgoing"),
+                    ..Default::default()
+                }];
+                view.render(&ui);
+                ui.global::<State>()
+                    .set_highlight_message("selected-bubble".into());
+                ui.invoke_show_history(0., false);
+            }
+            "session-expired" => {
+                state.borrow_mut().update(
+                    &ui,
+                    account::Update::Sync(
+                        line_wasm_poc::client::desktop::sync::SyncState::AuthExpired,
+                    ),
+                );
+            }
+            "friends-offline" => {
+                state.borrow_mut().browse(&ui, 1);
+                ui.set_friend_result(2);
+                ui.invoke_focus_friend_list();
+            }
             "conversation" => {
                 snapshot::render(&window, options.snapshot_size)?;
                 ui.invoke_show_history(0., false);

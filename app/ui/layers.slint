@@ -139,7 +139,7 @@ export component Layers inherits Rectangle {
         x: State.narrow ? 0px : (parent.width - self.width) / 2;
         y: State.narrow ? 0px : (parent.height - self.height) / 2;
         width: State.narrow ? parent.width : min(560px, parent.width - 48px);
-        height: min(parent.height - (State.narrow ? 0px : 48px), settings-title.height + 56px + (State.narrow ? settings-section.preferred-height + 12px + settings-content.preferred-height : max(settings-section.preferred-height, settings-content.preferred-height)));
+        height: State.narrow ? parent.height : min(parent.height - 48px, settings-title.height + 56px + max(settings-section.preferred-height, settings-content.preferred-height));
         visible: State.settings-open && !State.auth-open && !State.viewer-open;
         background: Tokens.background; border-width: 1px; border-color: Tokens.border;
         FocusScope {

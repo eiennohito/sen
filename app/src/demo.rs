@@ -383,11 +383,11 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
             19 => account::Update::Sync(SyncState::AuthExpired),
             _ => account::Update::ChatsFailed(account::ListRequest::Refresh),
         };
-        if kind == 16 {
-            state
-                .borrow_mut()
-                .update(ui, account::Update::Sync(SyncState::Connected));
-        }
+        state
+            .borrow_mut()
+            .update(ui, account::Update::Sync(SyncState::Connected));
+        ui.global::<State>().set_reconnected_notice(false);
+        ui.set_list_error("".into());
         state.borrow_mut().update(ui, event);
         if kind == 16 {
             let weak = ui.as_weak();
