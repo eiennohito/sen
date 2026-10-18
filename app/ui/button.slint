@@ -1,0 +1,26 @@
+import { Tokens } from "tokens.slint";
+export component Button inherits Rectangle {
+    in property <string> text;
+    in property <bool> enabled: true;
+    in property <bool> primary;
+    in property <bool> danger;
+    in property <bool> text-button;
+    out property <bool> has-focus: focus.has-focus;
+    callback clicked();
+    forward-focus: focus;
+    accessible-role: button; accessible-label: root.text; accessible-enabled: root.enabled; accessible-description: root.has-focus ? "Focused" : "";
+    accessible-action-default => { if root.enabled { root.clicked(); } }
+    horizontal-stretch: 0;
+    preferred-width: label.preferred-width + 32px;
+    min-width: self.preferred-width;
+    height: 32px; border-radius: 8px;
+    opacity: root.enabled ? 1 : 0.4;
+    background: root.primary ? (root.danger ? Tokens.danger : Tokens.accent-strong) : touch.has-hover ? Tokens.surface-hover : root.text-button ? transparent : Tokens.surface-2;
+    label := Text { text: root.text; font-size: Tokens.base; font-weight: 600; color: root.primary ? Tokens.on-accent : root.danger ? Tokens.danger : root.text-button ? Tokens.accent-strong : Tokens.text; horizontal-alignment: center; vertical-alignment: center; }
+    focus := FocusScope {
+        enabled: root.enabled;
+        key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.clicked(); return accept; } reject }
+    }
+    Rectangle { x: -4px; y: -4px; width: root.width + 8px; height: root.height + 8px; background: transparent; border-radius: 12px; border-width: focus.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+}

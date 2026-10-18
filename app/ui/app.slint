@@ -1,7 +1,7 @@
 import { PanelState } from "types.slint";
 export { State } from "state.slint";
 export { Palette } from "std-widgets.slint";
-import { Button, LineEdit, TextEdit, ScrollView, ComboBox, Palette } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { TextMetrics, RichMetric } from "text-metrics.slint";
@@ -32,7 +32,7 @@ export component AppWindow inherits Window {
     public function connection-first-row() -> FeedbackRect { return chats-surface.first-row-bounds; }
     public function list-scroll(delta: length) { chats-surface.scroll(delta); }
     public function list-jump(y: length) { chats-surface.jump(y); }
-    public function preview-dark(dark: bool) { if State.demo { Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light; } }
+    public function preview-dark(dark: bool) { if State.demo { Tokens.preview-dark(dark); } }
     rich-metrics := TextMetrics {}
     public function measure-rich(content: string, size: float) -> RichMetric { return rich-metrics.measure(content, size); }
     in-out property <string> desktop-warning <=> State.desktop-warning;

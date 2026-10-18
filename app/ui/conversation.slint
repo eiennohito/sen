@@ -1,4 +1,8 @@
-import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { EmptyState } from "empty-state.slint";
+import { DatePill } from "history-pill.slint";
+import { Avatar } from "avatar.slint";
+import { Button } from "button.slint";
+import { LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
@@ -11,14 +15,17 @@ import { Composer } from "composer.slint";
 component HistoryPill inherits Rectangle {
     in property <string> text;
     in property <string> label: root.text;
+    in property <bool> latest;
     in property <bool> enabled;
     callback activated();
     callback traversed(bool);
     public function focus-pill() { focus.focus(); }
-    preferred-width: root.visible ? label.preferred-width + 16px : 0px; preferred-height: root.visible ? max(32px, label.preferred-height + 12px) : 0px;
-    border-radius: self.height / 2; background: touch.has-hover ? Tokens.selection : Tokens.background;
-    border-width: focus.has-focus ? 2px : 1px; border-color: focus.has-focus ? Tokens.accent : Tokens.border;
-    label := Text { x: 8px; width: parent.width - 16px; height: parent.height; text: root.text; font-size: Tokens.small; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; overflow: elide; accessible-role: none; }
+    preferred-width: root.visible ? (root.latest ? 36px : label.preferred-width + 24px) : 0px; preferred-height: root.visible ? 36px : 0px;
+    border-radius: self.height / 2; background: touch.has-hover ? Tokens.surface-hover : Tokens.bg; drop-shadow-color: #00000026; drop-shadow-blur: 8px; drop-shadow-offset-y: 2px;
+    border-width: focus.has-focus ? 2px : 0px; border-color: Tokens.accent-strong;
+    label := Text { x: 8px; width: parent.width - 16px; height: parent.height; visible: !root.latest; text: root.text; font-size: Tokens.small; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; overflow: elide; accessible-role: none; }
+    if root.latest: Image { x: 8px; y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/down.svg"); colorize: Tokens.text; }
+    if root.latest && State.new-count > 0: Rectangle { x: 20px; y: -4px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: "" + State.new-count; font-size: Tokens.small; font-weight: 600; color: Tokens.on-accent; horizontal-alignment: center; vertical-alignment: center; } }
     focus := FocusScope {
         enabled: root.enabled; accessible-role: button; accessible-label: root.label;
         accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
@@ -44,43 +51,63 @@ export component Conversation inherits Rectangle {
           VerticalLayout {
             spacing: 0px;
             header := Rectangle {
-                height: max(64px, Tokens.heading * 1.4 + 28px) + (State.chat-subtitle != "" ? Tokens.small * 1.4 + 5px : 0px) + (State.unread-locating || State.unread-boundary-unknown ? Tokens.small * 1.4 + 5px : 0px); background: Tokens.surface;
+                height: 56px; background: Tokens.bg;
+                Rectangle { y: parent.height - 1px; width: parent.width; height: 1px; background: Tokens.divider; }
                 FocusScope {
                     focus-on-tab-navigation: false;
-                    members-button := FocusScope {
-                        x: title.absolute-position.x - header.absolute-position.x - 4px; y: 8px;
-                        width: title.width + 8px; height: header.height - 16px;
-                        visible: State.chat-group; enabled: self.visible;
-                        accessible-role: button; accessible-label: State.member-count >= 0 ? "Members, " + State.member-count : "Members";
-                        accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
-                        accessible-action-default => { State.open-members(); }
-                        Rectangle { border-radius: 6px; background: target.pressed ? Tokens.selection : target.has-hover ? Tokens.alternate-background : transparent; border-width: members-button.has-focus ? 2px : 0px; border-color: Tokens.accent; }
-                        key-pressed(event) => { if !State.ime-active && (event.text == Key.Return || event.text == " ") { State.open-members(); return accept; } reject }
-                        target := TouchArea { mouse-cursor: pointer; clicked => { members-button.focus(); State.open-members(); } }
-                    }
                     key-pressed(event) => {
                         if event.text == Key.Tab && !State.ime-active {
-                            if State.narrow && !members-button.has-focus {
-                                if event.modifiers.shift { root.focus-last(); } else if State.chat-group { members-button.focus(); } else { root.focus-after-header(); }
-                                return accept;
+                            if event.modifiers.shift {
+                                if more-button.has-focus { if State.chat-group { members-button.focus-button(); } else { title-focus.focus(); } }
+                                else if members-button.has-focus { title-focus.focus(); }
+                                else if title-focus.has-focus && State.narrow { back-button.focus-button(); }
+                                else if State.narrow { root.focus-last(); }
+                                else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); }
+                            } else {
+                                if back-button.has-focus { title-focus.focus(); }
+                                else if title-focus.has-focus && State.chat-group { members-button.focus-button(); }
+                                else if !more-button.has-focus { more-button.focus-button(); }
+                                else { root.focus-after-header(); }
                             }
-                            if event.modifiers.shift { if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } }
-                            else { root.focus-after-header(); }
                             return accept;
                         }
                         reject
                     }
-                VerticalLayout {
-                    padding: 14px; spacing: 5px;
                     HorizontalLayout {
-                        back-button := IconButton { visible: State.narrow; enabled: State.narrow; width: State.narrow ? 40px : 0px; label: "Back"; focus-description: "Focused"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } } }
-                        if State.narrow && State.unread-conversations > 0: Rectangle { width: 24px; height: 22px; border-radius: 11px; background: Tokens.accent; Text { text: State.unread-stale ? "•" : "" + State.unread-conversations; color: Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
-                        title := Text { text: State.chat-title; color: Tokens.foreground; font-size: Tokens.heading; font-weight: 700; overflow: elide; vertical-alignment: center; }
-                        Text { width: Tokens.small * 6.5; horizontal-stretch: 0; text: State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
+                        y: 12px; height: 32px; padding-left: 16px; padding-right: 16px; spacing: 8px;
+                        back-button := IconButton { visible: State.narrow; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Back"; focus-description: "Focused"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } }
+                            if State.unread-conversations > 0: Rectangle { x: 20px; y: -4px; width: State.unread-stale ? 8px : 20px; height: State.unread-stale ? 8px : 20px; border-radius: self.height / 2; background: Tokens.accent;
+                                if !State.unread-stale: Text { text: State.unread-conversations > 999 ? "999+" : "" + State.unread-conversations; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                        title-button := Rectangle {
+                            horizontal-stretch: 1; height: 32px; border-radius: 8px;
+                            background: title-touch.has-hover ? Tokens.surface-hover : transparent;
+                            HorizontalLayout {
+                                spacing: 8px; padding: 0px;
+                                Avatar { width: 32px; height: 32px; identity: State.chat-id; initial: State.chat-initial; picture: State.chat-avatar; label: "Conversation avatar"; }
+                                VerticalLayout { spacing: 0px; alignment: center;
+                                    Text { text: State.chat-title; color: Tokens.text; font-size: Tokens.base + 2px; font-weight: 600; overflow: elide; }
+                                    if State.chat-group: Text { text: State.member-count + " members"; color: Tokens.secondary; font-size: Tokens.small; }
+                                }
+                            }
+                            title-focus := FocusScope {
+                                accessible-role: button; accessible-label: State.chat-title; accessible-description: self.has-focus ? "Focused" : "";
+                                accessible-action-default => { State.open-profile(State.chat-id); }
+                                key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-profile(State.chat-id); return accept; } reject }
+                                Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; background: transparent; border-radius: 12px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+                            }
+                            title-touch := TouchArea { clicked => { title-focus.focus(); State.open-profile(State.chat-id); } }
+                        }
+                        members-button := IconButton { visible: State.chat-group; enabled: self.visible; width: self.visible ? 32px : 0px; label: State.member-count >= 0 ? "Members, " + State.member-count : "Members"; focus-description: "Focused"; icon: @image-url("../assets/icons/members.svg"); activated => { State.open-members(); } }
+                        more-button := IconButton { label: "More"; focus-description: "Focused"; icon: @image-url("../assets/icons/more.svg"); activated => { more-menu.show(); } }
                     }
-                    if State.unread-locating || State.unread-boundary-unknown: Text { text: State.unread-locating ? "Finding unread messages…" : "Couldn’t find your first unread message"; color: Tokens.secondary; font-size: Tokens.small; }
-                    if State.chat-subtitle != "": Text { text: State.chat-subtitle; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; TouchArea { enabled: State.chat-group; mouse-cursor: pointer; clicked => { members-button.focus(); State.open-members(); } } }
                 }
+                more-menu := PopupWindow {
+                    x: max(0px, header.width - self.width - 16px); y: 52px; width: 184px; height: 40px;
+                    Rectangle { background: Tokens.bg; border-width: 1px; border-color: Tokens.divider; border-radius: 8px;
+                        Button { x: 4px; y: 4px; text: State.chat-group ? "Group info" : "Profile"; text-button: true; clicked => { more-menu.close(); State.open-profile(State.chat-id); } }
+                    }
                 }
             }
             history-surface := Rectangle {
@@ -92,7 +119,7 @@ export component Conversation inherits Rectangle {
                     if State.ime-active { return reject; }
                     if State.browser-key(event) == accept { return accept; }
                     if State.recovery-kind != "" { return reject; }
-                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-sign-in-opener(); } else if State.chat-group { members-button.focus(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
+                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-sign-in-opener(); } else { more-button.focus-button(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
                     if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.PageUp { history.scroll(history.visible-height * 0.9); history.scrolled(); return accept; }
@@ -112,24 +139,24 @@ export component Conversation inherits Rectangle {
                 vertical-stretch: 1;
                 scrolled => { State.following = State.history-can-follow && self.visible-top == self.inset && !State.history-dragging && State.history-extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } State.history-scrolled(); }
                 VerticalLayout {
-                    padding: 16px; spacing: 5px;
+                    padding: 16px; spacing: 0px;
                     padding-bottom: 16px + root.pill-height;
-                    if !State.has-chat: Text { text: "Choose a conversation"; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
                     Rectangle {
                         height: State.has-chat ? max(32px, Tokens.small * 1.8) : 0px;
                         HorizontalLayout { alignment: center; spacing: 8px;
-                            Text { text: State.older-status; color: Tokens.secondary; font-size: Tokens.small; min-width: 0px; overflow: elide; vertical-alignment: center; }
+                            DatePill { text: State.older-status; visible: State.older-status != ""; }
                         }
                     }
-                    if State.has-chat && State.messages.length == 0: Text { text: "No messages yet"; accessible-label: self.text; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
                     for message in State.messages: Message { message: message; }
                 }
             }
+              if !State.has-chat || State.messages.length == 0: EmptyState { y: history.visible-top; height: parent.height - self.y; text: !State.has-chat ? "Choose a conversation" : "No messages yet"; name: State.has-chat ? State.chat-title : ""; identity: State.chat-id; initial: State.chat-initial; avatar: State.chat-avatar; icon: @image-url("../assets/icons/chats.svg"); }
               history-pills := HorizontalLayout {
-                x: max(8px, (parent.width - self.width) / 2); y: max(0px, parent.height - self.height - 8px);
+                x: max(8px, parent.width - self.width - 16px); y: max(0px, parent.height - self.height - 16px);
                 width: min(parent.width - 16px, latest-button.preferred-width + return-button.preferred-width + (root.latest-visible && State.return-visible ? 8px : 0px));
                 height: max(latest-button.preferred-height, return-button.preferred-height); spacing: root.latest-visible && State.return-visible ? 8px : 0px;
                 latest-button := HistoryPill {
+                    latest: true;
                     visible: root.latest-visible; enabled: self.visible;
                     width: self.visible ? min(self.preferred-width, parent.width - (State.return-visible ? return-button.width + 8px : 0px)) : 0px;
                     label: root.latest-label;
@@ -160,10 +187,10 @@ composer-surface := Composer { }
         }
     
     public function focus-after-header() { if State.connection-actions-enabled { State.focus-connection-first(); } else { history-focus.focus(); } }
-    public function focus-first() { if State.narrow { back-button.focus-button(); } else if State.chat-group { members-button.focus(); } else { root.focus-after-header(); } }
+    public function focus-first() { if State.narrow { back-button.focus-button(); } else { title-focus.focus(); } }
     public function focus-last() { if State.has-chat { composer-surface.focus-last(); } else { history-focus.focus(); } }
-    public function focus-members() { members-button.focus(); }
-    public function focus-header() { if State.chat-group { members-button.focus(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } }
+    public function focus-members() { members-button.focus-button(); }
+    public function focus-header() { more-button.focus-button(); }
     public function restore-editor(anchor: int, caret: int) { composer-surface.restore-editor(anchor, caret); }
     public function focus-editor() { composer-surface.focus-editor(); }
     public function focus-history() { history-focus.focus(); }

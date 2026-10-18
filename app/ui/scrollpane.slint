@@ -26,7 +26,7 @@ export component Pane inherits Rectangle {
         if root.connection-feedback {
             State.connection-area-x = root.area-x;
             State.connection-area-y = root.area-y;
-            State.connection-area-width = root.visible-width;
+            State.connection-area-width = root.width;
             State.connection-area-height = root.height;
         }
     }
@@ -36,7 +36,10 @@ export component Pane inherits Rectangle {
     callback scrolled();
     callback focus-requested();
     in-out property <length> content-y <=> root.offset;
-    out property <length> visible-width: max(0px, root.width - 16px);
+    out property <length> visible-width: max(0px, root.width - 12px);
+    property <bool> scrolling;
+    changed offset => { root.scrolling = true; hide.restart(); }
+    hide := Timer { interval: 1s; triggered => { root.scrolling = false; } }
     in property <length> content-width;
     in property <bool> horizontal-scrollbar-policy;
     clip: true;
@@ -63,21 +66,22 @@ export component Pane inherits Rectangle {
         clip: root.visible-top > 0px;
         content := Rectangle {
             x: 0px; y: root.offset;
-            width: max(0px, root.width - 16px);
+            width: max(0px, root.width - 12px);
             height: self.preferred-height;
             @children
         }
     }
     track := Rectangle {
-        x: parent.width - 16px; width: 16px; height: parent.height;
-        background: Tokens.alternate-background;
+        x: parent.width - 12px; width: 12px; height: parent.height;
+        background: transparent;
         visible: root.extent > 0px;
         thumb := Rectangle {
-            x: 3px; width: 10px;
+            x: (parent.width - self.width) / 2; width: thumb-touch.has-hover || thumb-touch.pressed ? 10px : 6px;
+            visible: root.scrolling || thumb-touch.has-hover || thumb-touch.pressed;
             height: min(track.height, max(32px, track.height * track.height / max(1px, root.height + root.extent)));
             y: (track.height - self.height) * (max(0px, min(root.extent, -root.offset)) / max(1px, root.extent));
             border-radius: 5px;
-            background: thumb-touch.pressed ? Tokens.accent : Tokens.secondary;
+            background: Tokens.text-secondary.with-alpha(0.45);
         }
         thumb-touch := TouchArea {
             property <length> start-offset;

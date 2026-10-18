@@ -1,6 +1,11 @@
 import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
+    pure callback avatar-tint(string) -> color;
+    in-out property <string> account-initial;
+    in-out property <string> chat-id;
+    in-out property <string> chat-initial;
+    in-out property <image> chat-avatar;
     in-out property <PanelState> panel: none;
     callback request-panel(PanelState);
     in-out property <bool> preview-demo;
@@ -122,7 +127,7 @@ export global State {
     in-out property <string> send-reason;
     in-out property <bool> list-pressed;
     in-out property <bool> list-release-pending;
-    in-out property <length> chat-row-height: max(82px, self.text-size * 3.2px + 20px);
+    in-out property <length> chat-row-height: max(68px, self.text-size * 2.8px + 20px);
     in-out property <bool> background-mode;
     in-out property <bool> tray-available;
     in-out property <bool> autostart;
@@ -166,7 +171,7 @@ export global State {
     out property <bool> sign-in-available: self.auth-expired || self.session-unavailable;
     out property <bool> connection-feedback-visible: self.connection-failed && !self.window-modal-open && !(self.profile-open && self.profile-sheet && !self.members-open);
     out property <bool> connection-actions-enabled: self.sign-in-available && self.connection-feedback-visible && !self.retrying-connection && !self.auth-busy;
-    out property <length> connection-notice-height: max(40px, self.text-size * 1.4px + 16px);
+    out property <length> connection-notice-height: 36px;
     in-out property <length> connection-area-x;
     in-out property <length> connection-area-y;
     in-out property <length> connection-area-width;

@@ -1,4 +1,8 @@
-import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { IconButton } from "icon-button.slint";
+import { Avatar } from "avatar.slint";
+import { DatePill } from "history-pill.slint";
+import { Button } from "button.slint";
+import { LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind } from "types.slint";
@@ -15,7 +19,7 @@ component TextAction inherits Rectangle {
     horizontal-stretch: 0;
     background: touch.has-hover ? Tokens.alternate-background : transparent;
     opacity: root.enabled ? 1 : 0.45;
-    label := Text { text: root.text; color: Tokens.accent; font-size: Tokens.small; vertical-alignment: center; horizontal-alignment: center; }
+    label := Text { text: root.text; color: Tokens.accent-strong; font-size: Tokens.small; vertical-alignment: center; horizontal-alignment: center; }
     action-focus := FocusScope {
         enabled: root.enabled; accessible-role: button; accessible-label: root.action-label;
         accessible-action-default => { if root.enabled { root.clicked(); } }
@@ -28,6 +32,7 @@ component TextAction inherits Rectangle {
 
 export component Message inherits VerticalLayout {
     in property <MessageRow> message;
+    property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.unknown || root.message.kind == MessageKind.undecryptable;
     property <bool> selecting-rich: false;
     property <bool> rich-focused: false;
     property <bool> rich-fallback: false;
@@ -50,15 +55,11 @@ export component Message inherits VerticalLayout {
     changed anchor-top => { root.report-geometry(); }
     changed anchor-height => { root.report-geometry(); }
     init => { root.report-geometry(); }
-                        vertical-stretch: 0; spacing: 3px;
-                        if root.message.id == State.unread-divider: Text { text: "Unread messages"; color: Tokens.accent; font-size: Tokens.small; horizontal-alignment: center; height: 28px; }
-                        if root.message.day-label != "": Text {
-                            text: root.message.day-label; color: Tokens.secondary; font-size: Tokens.time;
-                            height: 24px; horizontal-alignment: center; vertical-alignment: center;
-                        }
-                        if root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn: Text {
-                            text: root.message.body; accessible-label: root.message.accessible-label; horizontal-alignment: center; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap;
-                        }
+                        vertical-stretch: 0; spacing: 2px;
+                        padding-top: root.message.group-start ? 12px : 0px;
+                        if root.message.id == State.unread-divider: Text { text: "Unread messages"; color: Tokens.accent-strong; font-size: Tokens.small; horizontal-alignment: center; height: 28px; }
+                        if root.message.day-label != "": HorizontalLayout { alignment: center; DatePill { text: root.message.day-label; } }
+                        if root.system-item: HorizontalLayout { alignment: center; DatePill { text: root.message.body; accessible-role: text; accessible-label: root.message.accessible-label; icon: root.message.kind == MessageKind.withdrawn ? @image-url("../assets/icons/withdrawn.svg") : @image-url("../assets/icons/info.svg"); } }
                         message-content := HorizontalLayout {
                         visible: !root.system-item;
                         height: root.system-item ? 0px : self.preferred-height;
@@ -66,18 +67,13 @@ export component Message inherits VerticalLayout {
                         if root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
                         if !root.message.outgoing && root.message.sender-name != "": VerticalLayout {
                             width: 32px; spacing: 0px;
-                            Rectangle {
-                                height: 32px; visible: root.message.group-start;
-                                background: root.message.has-sender-avatar ? transparent : Tokens.selection; border-radius: 16px;
-                                Text { visible: !root.message.has-sender-avatar; text: root.message.sender-initial; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
-                                Image { width: 32px; height: 32px; source: root.message.sender-avatar; visible: root.message.has-sender-avatar; image-fit: contain; accessible-role: image; accessible-label: root.message.sender-name + " avatar"; }
-                            }
+                            Avatar { width: 32px; height: 32px; visible: root.message.group-start; identity: root.message.sender-id; initial: root.message.sender-initial; picture: root.message.sender-avatar; label: root.message.sender-name + " avatar"; }
                             Rectangle { vertical-stretch: 1; }
                         }
                         message-column := VerticalLayout {
                             horizontal-stretch: 0;
-                            min-width: min(State.history-width - 140px, root.message.image-key != "" ? 200px : 72px);
-                            preferred-width: root.message.image-key != "" ? min(340px, State.history-width - 140px) : min(max(72px, min(480px, State.history-width - 140px)), (root.showing-rich ? (root.rich-width > 0 ? root.rich-width * 1px : 480px) : body-measure.preferred-width) + 24px);
+                            min-width: min(State.history-width - 140px, root.message.image-key != "" || root.message.photo ? 200px : 72px);
+                            preferred-width: root.card ? min(300px, State.history-width - 140px) : root.message.image-key != "" || root.message.photo ? min(340px, State.history-width - 140px) : min(max(72px, min(480px, State.history-width - 140px)), (root.showing-rich ? (root.rich-width > 0 ? root.rich-width * 1px : 480px) : body-measure.preferred-width) + 24px);
                             max-width: max(72px, min(480px, State.history-width - 140px));
                             spacing: 3px;
                             if root.message.group-start && !root.message.outgoing && root.message.sender-name != "": Text {
@@ -86,26 +82,28 @@ export component Message inherits VerticalLayout {
                             }
                             message-bubble := ContextMenuArea {
                                 Menu {
+                                    if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
                                     if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
                                 }
                                 property <bool> selected: body.has-focus || root.rich-focused || State.highlight-message == root.message.id;
                                 Rectangle { width: 100%; height: 100%;
-                                background: parent.selected ? Tokens.bubble-selection : root.message.sticker ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface;
-                                border-width: parent.selected ? 2px : root.message.sticker ? 0px : 1px;
+                                background: parent.selected ? Tokens.bubble-selection : root.message.sticker || root.message.photo ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface-2;
+                                border-width: parent.selected ? 2px : 0px;
                                 border-color: parent.selected ? Tokens.bubble-selection-border : Tokens.border;
-                                border-radius: 9px;
+                                border-radius: 16px;
                                 }
                                 height: bubble-content.preferred-height;
                                 body-measure := Text { visible: false; text: root.showing-rich ? "" : root.message.body; font-size: Tokens.base; wrap: word-wrap; }
                                 bubble-content := VerticalLayout {
-                                    padding: 10px; spacing: 6px; alignment: start;
+                                    padding-top: 8px; padding-bottom: 8px; padding-left: 12px; padding-right: 12px; spacing: 6px; alignment: start;
                                     if root.message.reply-id != "": Rectangle {
-                                        height: quote.preferred-height + 12px;
-                                        background: Tokens.alternate-background;
+                                        height: quote.preferred-height + quote-sender.preferred-height + 16px;
+                                        background: Tokens.text.with-alpha(0.06);
                                         border-radius: 3px;
-                                        Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Tokens.accent; }
+                                        Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: Tokens.accent-strong; }
                                         quote-measure := Text { visible: false; text: root.message.reply-preview; font-size: Tokens.small; wrap: word-wrap; }
-                                        quote := Text { x: 10px; y: 6px; width: parent.width - 16px; text: root.message.reply-preview; color: Tokens.secondary; font-size: Tokens.small; wrap: quote-measure.min-width > self.width ? char-wrap : word-wrap; }
+                                        quote-sender := Text { x: 10px; y: 6px; width: parent.width - 16px; text: root.message.reply-sender; color: Tokens.text; font-size: Tokens.small; font-weight: 600; overflow: elide; }
+                                        quote := Text { x: 10px; y: quote-sender.height + 10px; width: parent.width - 16px; text: root.message.reply-preview; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; }
                                         quote-focus := FocusScope {
                                             accessible-role: button; accessible-label: "Jump to replied message"; accessible-description: root.message.reply-preview;
                                             accessible-action-default => { State.jump-message(root.message.reply-id); }
@@ -120,6 +118,7 @@ export component Message inherits VerticalLayout {
                                         Menu {
                                             MenuItem { title: "Select text"; activated => { root.selecting-rich = true; body.focus(); } }
                                             MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
+                                            if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
                                             if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
                                         }
                                         rich-focus := FocusScope {
@@ -145,11 +144,12 @@ export component Message inherits VerticalLayout {
                                     }
                                     if root.selecting-rich: Button { text: root.message.has-inline-emoji ? "Show emoji" : "Show message"; clicked => { root.selecting-rich = false; } }
                                     ContextMenuArea {
-                                        visible: root.message.body != "" && (!root.message.sticker || root.message.image-key == "") && (root.message.rich-runs.length == 0 || root.selecting-rich || root.rich-fallback);
+                                        visible: !root.message.photo && !root.card && root.message.body != "" && (!root.message.sticker || root.message.image-key == "") && (root.message.rich-runs.length == 0 || root.selecting-rich || root.rich-fallback);
                                         height: self.visible ? body.preferred-height : 0px;
                                         Menu {
                                             MenuItem { title: "Copy selection"; activated => { body.copy(); } }
                                             MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
+                                            if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
                                             if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
                                             for link in root.message.links: MenuItem { title: "Open link " + link.url; activated => { State.open-link(link.url); } }
                                             if root.message.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
@@ -174,23 +174,47 @@ export component Message inherits VerticalLayout {
                                             changed cursor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else {  } }
                                         }
                                     }
-                                    if root.message.detail != "": Rectangle {
+                                    if root.card: HorizontalLayout {
+                                        spacing: 12px; height: max(48px, card-title.preferred-height + card-meta.preferred-height + 4px);
+                                        Rectangle { width: 40px; height: 40px; border-radius: 8px; background: Tokens.bg.with-alpha(0.6);
+                                            Image { x: 10px; y: 10px; width: 20px; height: 20px; colorize: Tokens.text;
+                                                source: root.message.kind == MessageKind.video ? @image-url("../assets/icons/video.svg") : root.message.kind == MessageKind.voice ? @image-url("../assets/icons/voice.svg") : root.message.kind == MessageKind.file ? @image-url("../assets/icons/file.svg") : root.message.kind == MessageKind.contact ? @image-url("../assets/icons/contact.svg") : root.message.kind == MessageKind.location ? @image-url("../assets/icons/location.svg") : root.message.kind == MessageKind.undecryptable ? @image-url("../assets/icons/lock.svg") : @image-url("../assets/icons/unknown.svg");
+                                            }
+                                        }
+                                        VerticalLayout { spacing: 4px; alignment: center;
+                                            card-title := TextInput { read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else { State.focus-composer(); } return accept; } State.reading-key(event) } }
+                                            card-meta := Text { text: root.message.detail; color: Tokens.secondary; font-size: Tokens.small; }
+                                        }
+                                        if root.message.kind == MessageKind.file && (!root.message.file-failed || root.message.file-retryable): IconButton { label: root.message.file-failed ? "Retry file" : "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !State.file-saving; activated => { State.save-file(root.message.id); } }
+                                    }
+                                    if !root.card && root.message.detail != "": Rectangle {
                                         height: detail.preferred-height;
                                         detail-measure := Text { visible: false; text: root.message.detail; font-size: Tokens.small; wrap: word-wrap; }
                                         detail := Text { x: 0px; y: 0px; width: parent.width; text: root.message.detail; font-size: Tokens.small; color: Tokens.secondary; wrap: detail-measure.min-width > self.width ? char-wrap : word-wrap; }
                                     }
-                                    if root.message.kind == MessageKind.file && (!root.message.file-failed || root.message.file-retryable): TextAction { action-label: root.message.file-failed ? "Retry file" : "Save"; text: State.file-saving && State.file-save-id == root.message.id ? "Saving…" : root.message.file-failed ? "Retry" : "Save"; enabled: !State.file-saving; clicked => { State.save-file(root.message.id); } }
+
                                     if root.message.file-failed: Text { text: root.message.file-error; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
                                     if State.file-save-id == root.message.id && State.file-save-status != "": Rectangle {
                                         height: saved.preferred-height;
                                         save-measure := Text { visible: false; text: State.file-save-status; font-size: Tokens.small; wrap: word-wrap; }
                                         saved := Text { x: 0px; y: 0px; width: parent.width; text: State.file-save-status; font-size: Tokens.small; color: Tokens.secondary; wrap: save-measure.min-width > self.width ? char-wrap : word-wrap; }
                                     }
-                                    if root.message.image-key != "": Rectangle {
+                                    if root.message.image-key != "" || root.message.photo: Rectangle {
                                         // Geometry does not change when a thumbnail arrives or fails.
-                                        height: 180px;
-                                        clip: true;
+                                        height: root.message.sticker ? 120px : 180px;
+                                        border-radius: 12px; clip: true;
                                         Image { source: root.message.picture; width: 100%; height: 100%; image-fit: contain; visible: root.message.has-picture; accessible-role: image; accessible-label: root.message.photo ? "Photo preview" : "Message image"; }
+                                        // Software clips are rectangular: cover the four outside corners
+                                        // at the contained image's actual bounds, without touching cached pixels.
+                                        if root.message.photo && root.message.has-picture: Rectangle {
+                                            width: min(parent.width, parent.height * root.message.picture.width / max(1, root.message.picture.height));
+                                            height: min(parent.height, parent.width * root.message.picture.height / max(1, root.message.picture.width));
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                            Image { x: 0px; y: 0px; width: 12px; height: 12px; source: @image-url("../assets/photo-corner-0.svg"); colorize: Tokens.bg; }
+                                            Image { x: parent.width - 12px; y: 0px; width: 12px; height: 12px; source: @image-url("../assets/photo-corner-1.svg"); colorize: Tokens.bg; }
+                                            Image { x: parent.width - 12px; y: parent.height - 12px; width: 12px; height: 12px; source: @image-url("../assets/photo-corner-2.svg"); colorize: Tokens.bg; }
+                                            Image { x: 0px; y: parent.height - 12px; width: 12px; height: 12px; source: @image-url("../assets/photo-corner-3.svg"); colorize: Tokens.bg; }
+                                        }
                                         if root.message.photo && root.message.has-picture: FocusScope {
                                             accessible-role: button; accessible-label: "Open photo"; accessible-description: self.has-focus ? "Focused" : "";
                                             accessible-action-default => { State.open-photo(root.message.image-key); }
@@ -203,16 +227,16 @@ export component Message inherits VerticalLayout {
                                         }
                                         if !root.message.has-picture: VerticalLayout {
                                             padding: 8px; spacing: 8px; alignment: center;
-                                            Text { text: root.message.image-failed ? root.message.image-error : root.message.sticker ? root.message.body : "Loading image…"; color: root.message.sticker && !root.message.image-failed ? Tokens.foreground : Tokens.secondary; horizontal-alignment: center; wrap: word-wrap; }
+                                            Text { text: root.message.image-failed ? root.message.image-error : root.message.sticker ? root.message.body : root.message.image-key == "" ? "Photo unavailable" : "Loading image…"; color: root.message.sticker && !root.message.image-failed ? Tokens.foreground : Tokens.secondary; horizontal-alignment: center; wrap: word-wrap; }
                                             if root.message.image-failed && root.message.image-retryable: HorizontalLayout { alignment: center; TextAction { text: "Retry"; action-label: "Retry image"; clicked => { State.retry-image(root.message.image-key); } } }
                                         }
                                     }
                                 }
                             }
                             if State.unsend-feedback-id == root.message.id: Text { text: "Couldn't unsend."; color: Tokens.danger; font-size: Tokens.time; }
-                            if root.message.recoverable: Text { text: root.message.delivery == "Rejected" ? "Message was not sent." : "Confirmation unavailable. The message may have arrived."; color: Tokens.danger; font-size: Tokens.time; wrap: word-wrap; }
                             if root.message.recoverable: HorizontalLayout {
                                 spacing: 8px; alignment: start;
+                                Text { text: root.message.delivery == "Rejected" ? "Not sent" : "Maybe not sent"; color: Tokens.danger; font-size: Tokens.small; vertical-alignment: center; }
                                 TextAction {
                                     text: root.message.delivery == "Rejected" ? "Retry" : "Resend";
                                     focus-on-click: false;
@@ -222,12 +246,6 @@ export component Message inherits VerticalLayout {
                                     changed restore-action => { if self.restore-action { self.focus-action(); State.recovery-focus-id = ""; } }
                                 }
                                 TextAction { text: "Discard"; clicked => { State.discard-message(root.message.id); } }
-                                TextAction {
-                                    text: "Copy"; action-label: "Copy to composer";
-                                    clicked => { State.recover-message(root.message.id); }
-                                    property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "edit";
-                                    changed restore-action => { if self.restore-action { self.focus-action(); State.recovery-focus-id = ""; } }
-                                }
                             }
                             HorizontalLayout {
                                 spacing: 4px;
@@ -247,10 +265,10 @@ export component Message inherits VerticalLayout {
                                 Text { text: (root.message.group-start || root.message.recoverable) ? root.message.clock : ""; accessible-label: (root.message.group-start || root.message.recoverable) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
                                 if root.message.outgoing: Image {
                                     width: 16px; height: 16px;
-                                    source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/sending.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/read.svg") : root.message.delivery == "Rejected" ? @image-url("../assets/icons/rejected.svg") : root.message.delivery == "Unconfirmed" ? @image-url("../assets/icons/uncertain.svg") : @image-url("../assets/icons/sent.svg");
+                                    source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/clock.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == "Rejected" ? @image-url("../assets/icons/error.svg") : root.message.delivery == "Unconfirmed" ? @image-url("../assets/icons/warning.svg") : @image-url("../assets/icons/check.svg");
                                     accessible-role: image;
                                     accessible-label: root.message.delivery == "Sending…" ? "Sending" : root.message.delivery == "" ? "Sent" : root.message.delivery;
-                                    colorize: root.message.recoverable ? Tokens.danger : Tokens.secondary;
+                                    colorize: root.message.delivery == "Rejected" ? Tokens.danger : root.message.delivery == "Read" ? Tokens.accent-strong : Tokens.secondary;
                                 }
                             }
                         }

@@ -159,17 +159,17 @@ pub(crate) fn kind(content_type: i64, withdrawn: bool, decryption_failed: bool) 
 pub(crate) fn placeholder(kind: MessageKind) -> Option<&'static str> {
     match kind {
         MessageKind::Text => None,
-        MessageKind::Photo => Some("▧ Photo"),
-        MessageKind::Sticker => Some("☺ Sticker"),
-        MessageKind::Video => Some("▶ Video"),
-        MessageKind::Voice => Some("♫ Voice message"),
-        MessageKind::File => Some("▤ File"),
-        MessageKind::Location => Some("⌖ Location"),
-        MessageKind::Contact => Some("♙ Contact"),
-        MessageKind::System => Some("ⓘ System message"),
+        MessageKind::Photo => Some("Photo"),
+        MessageKind::Sticker => Some("Sticker"),
+        MessageKind::Video => Some("Video"),
+        MessageKind::Voice => Some("Voice message"),
+        MessageKind::File => Some("File"),
+        MessageKind::Location => Some("Location"),
+        MessageKind::Contact => Some("Contact"),
+        MessageKind::System => Some("System message"),
         MessageKind::Withdrawn => Some("Message unsent"),
-        MessageKind::Undecryptable => Some("⚿ Unable to decrypt message"),
-        MessageKind::Unknown => Some("◇ Unknown message"),
+        MessageKind::Undecryptable => Some("Couldn't decrypt this message"),
+        MessageKind::Unknown => Some("Unsupported message"),
     }
 }
 

@@ -1,0 +1,19 @@
+import { Tokens } from "tokens.slint";
+import { Avatar } from "avatar.slint";
+export component EmptyState inherits Rectangle {
+    in property <string> text;
+    in property <string> name;
+    in property <image> icon;
+    in property <image> avatar;
+    in property <string> initial;
+    in property <string> identity;
+    VerticalLayout {
+        x: 16px; y: max(0px, (parent.height - self.preferred-height) / 2); width: parent.width - 32px; height: self.preferred-height; spacing: 12px;
+        HorizontalLayout { alignment: center;
+            if root.name != "": Avatar { width: 96px; height: 96px; identity: root.identity; initial: root.initial; picture: root.avatar; }
+            if root.name == "": Image { width: 48px; height: 48px; source: root.icon; colorize: Tokens.secondary; }
+        }
+        if root.name != "": Text { text: root.name; font-size: Tokens.base; color: Tokens.text; font-weight: 600; horizontal-alignment: center; }
+        Text { text: root.text; font-size: Tokens.base; color: root.name != "" ? Tokens.secondary : Tokens.text; horizontal-alignment: center; wrap: word-wrap; }
+    }
+}
