@@ -183,6 +183,13 @@ in this order:
    intent that is already present is a no-op, so nothing overwrites anything.
    Each intent records its reason only for logging.
 
+Refresh intents are internal and have no UI. Freshness is the app's job: it
+refreshes on open, on reconnect and when the store knows it is behind. No
+surface gets a Refresh or Reload control. The PoC's Retry buttons for history
+loading, the chat list and the connection banner go away. The only
+user-initiated retries left are on things the user did: a failed send (Retry,
+Discard) and an explicitly opened original or file that failed to download.
+
 A live operation applies its delta directly (move the chat up, write the row,
 bump unread). It only schedules `ChatDetails(chat)` when the chat is unknown
 or its metadata op changed. The chat-list pagination cursor belongs to the
@@ -300,24 +307,27 @@ store and controller:
 
 ## Implementation phases
 
-Each phase is one Codex task in its own worktree, reviewed before merge.
-`main` stays buildable and the app usable after each phase.
+The new code replaces the old path; it does not adapt to it. No adapters or
+shims keep the PoC's `View`, `Update` protocol or worker loop running next to
+the new ones. Existing conventions are kept only where they are sound on their
+own merits (the transport, crypto, asset fetchers and rich-text rendering are).
+The rewrite lands on one branch and merges when the new path works end to end;
+intermediate phases need not leave a usable app. Each phase gets one review
+focused on data loss and broken flows, not style.
 
 1. **Store library** (`src/store/`): schema, migrations, merge functions,
-   order, segments, outbox states, legacy import. Pure unit tests, no UI.
-2. **Engine and backend seam**: `Backend` trait, `LineBackend` (moved from
-   `Client`), `FakeBackend`, scheduler, connection state machine, two-phase
-   open, sync supervisor with persisted revision, typed errors. The current
-   `Update` protocol is kept temporarily through an adapter so the old `View`
-   still runs.
-3. **Controller and presenter**: `AppState`, deltas, keyed models. Delete
-   `history`, `recent`, `aliases`, `deferred.rs`, the outbox in `Saved`, the
-   demo branches and `start_demo`. Snapshot scenes move to `FakeBackend`
-   scripts. Probably split into 3a (chat list and window) and 3b (outbox,
-   unread, connection banner).
-4. **Cleanup**: remove the legacy encryption and the old cache code (the old files are deleted separately, see "Legacy import"), media cache
-   LRU without expiry (D8), update app-design.md and ux-acceptance rows, reset
-   V6 rows.
+   order, segments, outbox states. Pure unit tests, no UI.
+2. **Engine, controller and presenter, together**: `Backend` trait,
+   `LineBackend` (from `Client`), `FakeBackend`, scheduler, connection state
+   machine, two-phase open, sync supervisor with persisted revision, typed
+   errors, deltas, `AppState`, keyed models. Delete the old worker loop,
+   `View`'s message copies, `history`, `recent`, `aliases`, `deferred.rs`,
+   `Saved`'s outbox, the demo branches and `start_demo`. The demo and snapshot
+   scenes run on `FakeBackend`.
+3. **Cleanup**: remove the legacy encryption and the old cache code (the old
+   files are deleted separately, see "Legacy import"), media cache LRU without
+   expiry (D8), update app-design.md and the ux-acceptance rows, reset the V6
+   rows.
 
 Out of scope here: U-group surfaces, P-group protocol additions (the engine
 gets a slot for reaction and unsend ops, which T5/P7 then fill), and T9.
