@@ -520,6 +520,13 @@ pub(crate) fn install(ui: &AppWindow, state: Rc<RefCell<View>>) {
             return;
         }
         let mut view = state.borrow_mut();
+        if view
+            .messages
+            .iter()
+            .any(|row| row.id == id && row.file_failed && !row.file_retryable)
+        {
+            return;
+        }
         ui.global::<State>().set_file_save_id(id.clone());
         ui.global::<State>().set_file_save_status("".into());
         ui.global::<State>().set_file_saving(true);
@@ -545,8 +552,14 @@ pub(crate) fn install(ui: &AppWindow, state: Rc<RefCell<View>>) {
             .is_none_or(|tx| tx.try_send(command).is_err())
         {
             ui.global::<State>().set_file_saving(false);
-            ui.global::<State>()
-                .set_file_save_status("Could not start download. Try again.".into());
+            let request = view.file_request;
+            view.update(
+                &ui,
+                account::Update::FileFailed {
+                    request,
+                    failure: line_wasm_poc::client::desktop::assets::Failure::Network,
+                },
+            );
         }
     });
 }

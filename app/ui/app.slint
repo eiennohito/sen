@@ -152,7 +152,7 @@ export component AppWindow inherits Window {
     callback select-chat(int);
     callback search-changed(string);
     callback draft-edited();
-    callback refresh(); callback retry-list(); callback retry-history(); callback more(); callback send();
+    callback retry-image(string); callback retry-list(); callback retry-history(); callback more(); callback send();
     callback settings-changed(); callback retry-storage(); callback recover-message(string); callback demo-event(int); callback release-deferred();
     public function show-history(y: length, latest: bool) {
         root.following = latest;

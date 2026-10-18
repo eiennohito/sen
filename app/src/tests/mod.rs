@@ -31,3 +31,5 @@ mod composer;
 mod layers;
 
 mod paging;
+
+mod media;

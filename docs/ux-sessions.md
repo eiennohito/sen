@@ -19,7 +19,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| T4 | Image failures discard the error (`Err(_)`), blacklist the key for 300 s, and the placeholder says "Refresh to retry" while Refresh re-publishes the cached failure without a network call. | `app/src/account.rs:499`, `:516`; `app/ui/message.slint:149` | Keep the failure class (timeout, HTTP status, unsupported host, rejected OID). Retry on explicit user action. Placeholder wording must match what Retry will actually do. |
 | T5 | Reaction counts never update live: the sync decoder handles no reaction operation; counts change only when a message page is refetched. | `src/client/desktop/sync.rs` (no match for reaction) | Decode the reaction operation into an in-place row update; it is a quiet event in the attention matrix. |
 | T9 | Crypto runs the Chrome WASM blob in the `wasmi` interpreter for every encrypt and decrypt; the sync thread instantiates a second runtime; the user must supply `ltsm.wasm`. | `src/runtime.rs:506` | Trial done: `src/native_crypto.rs` ports derivation, HMAC, AES-GCM, Letter Sealing V1/V2 and X25519, proven byte-for-byte against the blob (see [crypto-port.md](crypto-port.md)); about 11,000× faster on a V2 decrypt. Blocked: `SecureKey` (SKB) keys are opaque, so stored-key loading, token recovery and MID decoding still need the blob. Next: decide whether to switch message crypto to native while keeping wasmi for key unwrapping. |
 | T11 | Session credentials (refresh token, wrapped keys) are plaintext JSON at mode 0600; drafts are encrypted, credentials are not. | `src/client.rs:88`, usage text at `:771` | Same encrypted store as drafts, or the desktop secret service. |
@@ -28,7 +27,7 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| P1 | Official-account media uses a different route. The client only builds `obs.line-apps.com/r/talk/{SID}/{OID}/preview` with defaults `m` and the message id, so OA images 404 and show as "Preview unavailable". The map records that `DOWNLOAD_URL` variants are refused on purpose. No OA message exists in `dumps/`. | `src/client/desktop/assets.rs:106`, `docs/chromium-ui-map.md:351` | Trace one OA image message (its `contentMetadata` keys and resolved host), add that host to the allowlist, build the right URL. Until then say "Not available for this sender", not "Refresh to retry". |
+| P1 | Official-account media uses a different route. The client only builds `obs.line-apps.com/r/talk/{SID}/{OID}/preview` with defaults `m` and the message id, so OA images 404 and show as "Preview unavailable". The map records that `DOWNLOAD_URL` variants are refused on purpose. No OA message exists in `dumps/`. | `src/client/desktop/assets.rs:106`, `docs/chromium-ui-map.md:351` | Trace one OA image message (its `contentMetadata` keys and resolved host), add that host to the allowlist, build the right URL. Interim wording "Not available for this sender" (any image 404) landed with T4. |
 | P2 | Sticker sending does not exist: no picker, no send path. Listed as "later". For a LINE client it is a daily-use blocker. | `app/ui/composer.slint`, `app/src/composer.rs` | Trace one sticker send (STKID/STKPKGID/STKVER shape is in the HAR), implement the send, then a picker as a panel in wide and a sheet in narrow. |
 | P3 | Attachment sending, paste and drop of media do not exist (CMP8 media, CMP9, OS10). | composer | After P2; needs the upload trace. |
 | P4 | Link detection only matches `https://`, `http://`, `www.`. Bare domains, uppercase schemes and links split across emoji runs are missed. | `app/src/links.rs:13` | Broaden the matcher; run it over the rendered text, not the pre-run body. |
@@ -57,8 +56,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| C3 | Implementation vocabulary in production strings: "Unread boundary unavailable", "Large message retained; some previews may be unavailable", "Preview unavailable · Refresh to retry", "No conversations loaded", "Reconnecting… (attempt N)". | `app/ui/conversation.slint:24`, `:97`; `app/ui/message.slint:149`; `app/ui/chats.slint:61`; `app/src/view.rs:539` | Rewrite per model §9.2. |
-| C4 | Three error strings tell the user to "Use Refresh"; the Refresh buttons are leftovers from before live sync and are the only image-retry path. The refresh icon is drawn with the arrowheads on the wrong ends. | `app/src/view.rs:765`, `:1036`; `app/ui/chats.slint:23`; `app/assets/icons/refresh.svg` | Remove manual Refresh once T2 and T4 give assets their own retry; fix or replace the icon if any refresh control survives. |
 
 ## V — Verification debt
 
@@ -98,3 +95,5 @@ P, then the UI groups in any order. V closes the loop.
 | S12 | Friends headers use chevron icons (no glyphs in labels) and empty sections are omitted. |
 | S13 | Friend avatars fall back to the first grapheme. |
 | C5 | Search Clear is an icon inside the field, shown only with a query; Tab from Clear follows the same narrow-offline rule into the connection strip. `SearchField.enabled` is unused (minor). |
+| T4 | Media failures keep a typed class end to end (timeout, network, 403, 404/unsupported host, 5xx, rejected path, too large, decode, cancelled) with a plain reason; retriable classes show a centred "Retry image"/"Retry file" that refetches past cache and stored failure with a priority boost, transient classes are re-eligible after 300 s and retried once on sync reconnect at normal rank, permanent classes never refetch. Failure records are capped at 256. Minor: a local queue refusal reads as "Couldn't load this image". |
+| C3, C4 | Production strings rewritten per model §9.2; manual Refresh buttons and the refresh icon removed, no string mentions Refresh. |

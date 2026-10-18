@@ -27,6 +27,10 @@ pub(crate) fn bytes(row: &MessageRow) -> usize {
         &row.reply_id,
         &row.accessible_label,
         &row.image_key,
+        &row.image_failure,
+        &row.image_error,
+        &row.file_failure,
+        &row.file_error,
         &row.sort_key,
         &row.time,
         &row.clock,
@@ -39,7 +43,7 @@ pub(crate) fn bytes(row: &MessageRow) -> usize {
     .map(|text| text.len())
     .sum::<usize>()
         + std::mem::size_of::<MessageRow>()
-        + 32 * 18
+        + 32 * 22
         + pixels(&row.picture)
         + pixels(&row.sender_avatar)
         + row
@@ -705,7 +709,7 @@ impl View {
             self.paging_status(ui);
         } else {
             ui.global::<State>()
-                .set_jump_error("Message is outside the loaded history".into());
+                .set_jump_error("This message isn’t in the current history".into());
         }
         visible
     }

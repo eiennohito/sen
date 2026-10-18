@@ -118,7 +118,7 @@ export component Layers inherits Rectangle {
                 Text { text: State.profile-group ? "Group profile" : "Friend profile"; color: Tokens.secondary; }
                 Text { text: State.profile-name; font-size: Tokens.heading; wrap: word-wrap; }
                 ScrollView { Text { text: State.profile-status; wrap: word-wrap; } }
-                if !State.profile-available: Text { text: "This entry is no longer in your friend/group list. Refresh Friends to update it."; wrap: word-wrap; color: Tokens.danger; }
+                if !State.profile-available: Text { text: "This person or group is no longer in your list."; wrap: word-wrap; color: Tokens.danger; }
                 profile-chat := Button { text: "Open chat"; enabled: State.profile-available; clicked => { State.start-friend-chat(); } }
             }
         }
@@ -278,7 +278,7 @@ export component Layers inherits Rectangle {
                     }
                 }
                 if State.viewer-error != "": Text { text: State.viewer-error; wrap: word-wrap; color: Tokens.danger; }
-                if State.viewer-error != "": Button { text: "Retry original"; enabled: !State.viewer-loading; clicked => { State.open-photo(State.viewer-key); } }
+                if State.viewer-error != "" && State.viewer-retryable: Button { text: "Retry"; enabled: !State.viewer-loading; clicked => { State.open-photo(State.viewer-key); } }
                 if State.viewer-save-status != "": Text { text: State.viewer-save-status; wrap: word-wrap; color: Tokens.secondary; }
                 HorizontalLayout {
                     Button { text: "−"; accessible-label: "Zoom out"; enabled: State.viewer-zoom > 0.1; clicked => { root.zoom(0.8, viewport.width / 2, viewport.height / 2); } }

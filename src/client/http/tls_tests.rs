@@ -52,6 +52,7 @@ fn fixture() -> (Transport, TcpListener, Arc<ServerConfig>) {
         )
         .build();
     let transport = Transport {
+        asset_timeout: Duration::from_secs(15),
         agent: Agent::with_parts(config, PollConnector::default(), PollResolver::default()),
         base: format!(
             "https://localhost:{}",

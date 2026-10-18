@@ -116,7 +116,7 @@ fn controller_scenario(stop: usize) {
             server_id: "server".into(),
         },
     );
-    assert!(view.saved.outbox[0].status.starts_with("Server confirmed"));
+    assert_eq!(view.saved.outbox[0].status, "Sent");
     assert_eq!(ui.get_messages().row_data(1).unwrap().delivery, "Sent");
     assert_eq!(ui.get_messages().row_data(1).unwrap().time, pending_time);
     view.update(
@@ -430,6 +430,7 @@ fn controller_scenario(stop: usize) {
     view.update(
         &ui,
         account::Update::OriginalFailed {
+            failure: line_wasm_poc::client::desktop::assets::Failure::Network,
             request: view.viewer_request + 1,
         },
     );
@@ -438,6 +439,7 @@ fn controller_scenario(stop: usize) {
     view.update(
         &ui,
         account::Update::OriginalFailed {
+            failure: line_wasm_poc::client::desktop::assets::Failure::Network,
             request: view.viewer_request,
         },
     );

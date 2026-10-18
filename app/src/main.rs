@@ -306,9 +306,9 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         }
     });
     let weak = ui.as_weak();
-    ui.global::<State>().on_refresh(move || {
+    ui.global::<State>().on_retry_image(move |key| {
         if let Some(ui) = weak.upgrade() {
-            ui.invoke_refresh();
+            ui.invoke_retry_image(key);
         }
     });
     let weak = ui.as_weak();
@@ -936,13 +936,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let weak = ui.as_weak();
     let view = state.clone();
-    ui.on_refresh(move || {
+    ui.on_retry_image(move |key| {
         if let Some(ui) = weak.upgrade() {
-            let mut view = view.borrow_mut();
-            view.generation += 1;
-            ui.set_list_error("".into());
-            ui.set_loading_chats(view.request(&ui, account::Command::Chats { next: false }));
-            view.load(&ui, true);
+            view.borrow_mut().retry_image(&ui, &key);
         }
     });
     let weak = ui.as_weak();
@@ -1052,7 +1048,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mut view = state.borrow_mut();
         view.messages = snapshot::message_case(case)?;
         view.render(&ui);
-        ui.invoke_show_history(0., false);
+        ui.invoke_show_history(0., case.starts_with("media-"));
     }
     state.borrow().send_availability(&ui);
     if let (Some(window), Some(path)) = (snapshot, options.snapshot) {

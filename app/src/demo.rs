@@ -112,6 +112,13 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
     if !state.borrow().demo {
         return;
     }
+    if (20..30).contains(&kind) {
+        let mut view = state.borrow_mut();
+        view.messages = vec![media_failure((kind - 20) as usize)];
+        view.render(ui);
+        ui.invoke_show_history(0., true);
+        return;
+    }
     if kind == 15 {
         let mut view = state.borrow_mut();
         for number in 0..40 {
@@ -580,4 +587,37 @@ pub(super) fn paged_rows(range: std::ops::Range<usize>) -> Vec<MessageRow> {
             }
         })
         .collect()
+}
+
+pub(crate) const MEDIA_FAILURES: [(&str, line_wasm_poc::client::desktop::assets::Failure); 10] = {
+    use line_wasm_poc::client::desktop::assets::Failure::*;
+    [
+        ("timeout", Timeout),
+        ("network", Network),
+        ("404", Http(404)),
+        ("403", Http(403)),
+        ("500", Http(500)),
+        ("unsupported", UnsupportedHost),
+        ("path", RejectedPath),
+        ("large", TooLarge),
+        ("decode", Decode),
+        ("cancelled", Cancelled),
+    ]
+};
+
+pub(crate) fn media_failure(index: usize) -> MessageRow {
+    let (name, failure) = MEDIA_FAILURES[index];
+    MessageRow {
+        id: format!("media-{name}").into(),
+        image_key: format!("media-{name}").into(),
+        kind: MessageKind::Photo,
+        photo: true,
+        image_failed: true,
+        image_failure: format!("{failure:?}").into(),
+        image_error: failure.image_text().into(),
+        image_retryable: failure.retriable(),
+        time: "2026/10/18 12:00".into(),
+        sort_key: order_key(1_792_281_600_000).into(),
+        ..Default::default()
+    }
 }

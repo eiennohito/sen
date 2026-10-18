@@ -41,7 +41,6 @@ export component Chats inherits Rectangle {
                     height: 42px;
                     Text { text: "Chats"; color: Tokens.accent; font-size: Tokens.heading; font-weight: 800; vertical-alignment: center; }
                     Text { width: State.narrow ? Tokens.small * 6.5 : 0px; horizontal-stretch: 0; text: State.narrow && State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
-                    if !State.demo: IconButton { label: "Refresh conversations"; icon: @image-url("../assets/icons/refresh.svg"); enabled: State.connected && !State.loading-chats; activated => { State.refresh(); } }
                 }
                 HorizontalLayout {
                     search := SearchField {
@@ -79,7 +78,7 @@ export component Chats inherits Rectangle {
                         TouchArea { mouse-cursor: pointer; clicked => { State.category = i; State.filter-category(); } }
                     }
                 }
-                if State.chats.length == 0: Text { text: State.query == "" ? "No conversations loaded" : "No match among loaded conversations"; wrap: word-wrap; }
+                if State.chats.length == 0: Text { text: State.query == "" ? "No conversations yet" : "No conversations match your search"; wrap: word-wrap; }
                 list-focus := FocusScope {
                     accessible-role: list; accessible-label: "Conversations";
                     accessible-description: self.has-focus ? "Focused conversations" : "";

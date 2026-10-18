@@ -112,6 +112,7 @@ export global State {
     in-out property <image> viewer-image;
     in-out property <string> viewer-status;
     in-out property <string> viewer-error;
+    in-out property <bool> viewer-retryable;
     in-out property <bool> viewer-loading;
     in-out property <string> viewer-key;
     in-out property <float> viewer-zoom: 1;
@@ -198,7 +199,7 @@ export global State {
     callback select-chat(int);
     callback search-changed(string);
     callback draft-edited();
-    callback refresh();
+    callback retry-image(string);
     callback retry-list();
     callback retry-history();
     callback more();

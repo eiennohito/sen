@@ -63,7 +63,7 @@ assert any(part.get("id", "").endswith("::demo-marker") for part in demo_marker.
 click("Close demo scenarios")
 for destination, search, query in [
     ("Chats", "Find a conversation", "Weekend"),
-    ("Friends", "Search loaded friends and groups", "新しい"),
+    ("Friends", "Search friends and groups", "新しい"),
 ]:
     click(destination)
     assert not any(row.get("accessibleLabel") == "Clear search" for row in tree()), "empty search exposed Clear"
@@ -91,7 +91,7 @@ for destination, search, query in [
     else:
         element("Open profile: 新しい友だち 🌸")
 print("PASS: persistent accessible in-field Clear search after Tab/click away, pointer clear, restored search focus/results and Escape in both destinations")
-for destination, search in [("Chats", "Find a conversation"), ("Friends", "Search loaded friends and groups")]:
+for destination, search in [("Chats", "Find a conversation"), ("Friends", "Search friends and groups")]:
     click(destination)
     click(search, "TextInput")
     query = "0123456789" * 6 + "TAIL66"
@@ -144,7 +144,7 @@ key("\uf70f")
 key("\x1b")
 assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft"
 modified("\x11", "1")
-element("Search loaded friends and groups", "TextInput")
+element("Search friends and groups", "TextInput")
 modified("\x11", "2")
 element("Find a conversation", "TextInput")
 click("葵")

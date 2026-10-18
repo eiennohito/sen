@@ -58,7 +58,7 @@ fn key(event: &account::Update) -> Option<(String, u8)> {
         Incoming { chat, .. } => (format!("incoming:{chat}"), 0),
         Messages { id, .. } => (format!("messages:{id}"), 0),
         ChatMeta { chat, .. } => (format!("meta:{chat}"), 0),
-        Image { key, .. } | ImageFailed { key } => (format!("image:{key}"), 0),
+        Image { key, .. } | ImageFailed { key, .. } => (format!("image:{key}"), 0),
         Sent { id, local_id, .. } => (format!("send:{id}:{local_id}"), 3),
         SendRejected { id, local_id, .. } => (format!("send:{id}:{local_id}"), 2),
         SendFailed { id, local_id } | SendUncertain { id, local_id } => {

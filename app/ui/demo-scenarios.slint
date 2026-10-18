@@ -5,10 +5,13 @@ import { Tokens } from "tokens.slint";
 export component DemoScenarios inherits Rectangle {
     // PopupWindow preserves the exact focused item, including selections in the shell.
     callback scenario-selected();
+    property <bool> media-menu;
+    property <int> media-focus-last;
+    property <bool> media-last-focused;
     public function open() {
-        if State.demo && !State.modal-open { dialog.show(); State.demo-scenarios-open = true; }
+        if State.demo && !State.modal-open { root.media-menu = false; dialog.show(); State.demo-scenarios-open = true; }
     }
-    public function dismiss() { dialog.close(); State.demo-scenarios-open = false; }
+    public function dismiss() { dialog.close(); State.demo-scenarios-open = false; root.media-menu = false; }
     // A fixture may replace the previously focused message or button.
     public function run(kind: int) { root.dismiss(); root.scenario-selected(); State.demo-event(kind); }
     public function notify(kind: int) { root.dismiss(); State.demo-notification(kind); }
@@ -21,7 +24,7 @@ export component DemoScenarios inherits Rectangle {
             background: Tokens.foreground.with-alpha(0.32);
             TouchArea { scroll-event(event) => { accept } }
         }
-        Rectangle {
+        scenario-panel := Rectangle {
             x: State.narrow ? 0px : (parent.width - self.width) / 2;
             y: State.narrow ? 0px : (parent.height - self.height) / 2;
             width: State.narrow ? parent.width : min(560px, parent.width - 48px);
@@ -31,8 +34,8 @@ export component DemoScenarios inherits Rectangle {
                 key-pressed(event) => {
                     if event.text == Key.Escape { root.dismiss(); return accept; }
                     if event.text == Key.Tab {
-                        if event.modifiers.shift && close.has-focus { if State.demo-notifications { exposed.focus(); } else { list-failure.focus(); } return accept; }
-                        if !event.modifiers.shift && ((!State.demo-notifications && list-failure.has-focus) || exposed.has-focus) { close.focus(); return accept; }
+                        if event.modifiers.shift && close.has-focus { if root.media-menu { root.media-focus-last += 1; } else if State.demo-notifications { exposed.focus(); } else { list-failure.focus(); } return accept; }
+                        if !event.modifiers.shift && ((root.media-menu && root.media-last-focused) || (!root.media-menu && ((!State.demo-notifications && list-failure.has-focus) || exposed.has-focus))) { close.focus(); return accept; }
                     }
                     reject
                 }
@@ -45,41 +48,61 @@ export component DemoScenarios inherits Rectangle {
                         VerticalLayout {
                             padding-right: 12px; spacing: 8px; alignment: start;
                             demo-marker := Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.small; }
-                            HorizontalLayout {
-                                Button { text: "History"; accessible-label: "Long history"; clicked => { root.run(0); } }
-                                Button { text: "Arrivals"; accessible-label: "Receive 3"; clicked => { root.run(1); } }
-                            }
-                            HorizontalLayout {
-                                Button { text: "Media"; accessible-label: "Load media"; clicked => { root.run(2); } }
-                                Button { text: "Rejected"; accessible-label: "Rejected send"; clicked => { root.run(10); } }
-                            }
-                            Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { root.run(3); } }
-                            Button { text: "Paged history"; clicked => { root.run(11); } }
-                            if State.paging-demo: Text { text: "History window " + State.messages.length + " · retained " + State.history-retained + " · pages " + State.history-pages; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
-                            Button { text: "Photo preview"; clicked => { root.run(5); } }
-                            Button { text: "Sticker preview"; clicked => { root.run(6); } }
-                            Button { text: "Group preview"; clicked => { root.run(7); } }
-                            HorizontalLayout {
-                                Button { text: "Reading fixtures"; clicked => { root.run(8); } }
-                                Button { text: "History load"; clicked => { root.run(9); } }
-                            }
-                            Button { text: "Unread scenario"; clicked => { root.run(14); } }
-                            Button { text: "Rich content"; clicked => { root.run(12); } }
-                            Button { text: "Long chat list"; clicked => { root.run(15); } }
-                            Button { text: "Login recovery"; clicked => { root.run(4); } }
-                            Button { text: "Reconnect blip"; clicked => { root.run(16); } }
-                            Button { text: "Offline"; clicked => { root.run(17); } }
-                            Button { text: "Expired sign-in"; clicked => { root.run(19); } }
-                            list-failure := Button { text: "List load failure"; clicked => { root.run(18); } }
                             VerticalLayout {
-                                visible: State.demo-notifications; height: self.visible ? self.preferred-height : 0px;
-                                spacing: 8px;
-                                Text { text: "Notification preview scenarios"; color: Tokens.secondary; wrap: word-wrap; }
-                                Button { text: "Demo inactive"; clicked => { root.notify(0); } }
-                                Button { text: "Demo muted"; clicked => { root.notify(1); } }
-                                Button { text: "Demo replay"; clicked => { root.notify(2); } }
-                                Button { text: "Demo mention"; clicked => { root.notify(3); } }
-                                exposed := Button { text: "Demo exposed"; clicked => { root.notify(4); } }
+                                visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
+                                spacing: 8px; alignment: start;
+                                HorizontalLayout {
+                                    Button { text: "History"; accessible-label: "Long history"; clicked => { root.run(0); } }
+                                    Button { text: "Arrivals"; accessible-label: "Receive 3"; clicked => { root.run(1); } }
+                                }
+                                HorizontalLayout {
+                                    Button { text: "Media"; accessible-label: "Media failures"; clicked => { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } }
+                                    Button { text: "Rejected"; accessible-label: "Rejected send"; clicked => { root.run(10); } }
+                                }
+                                Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { root.run(3); } }
+                                Button { text: "Paged history"; clicked => { root.run(11); } }
+                                if State.paging-demo: Text { text: "History window " + State.messages.length + " · retained " + State.history-retained + " · pages " + State.history-pages; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
+                                Button { text: "Photo preview"; clicked => { root.run(5); } }
+                                Button { text: "Sticker preview"; clicked => { root.run(6); } }
+                                Button { text: "Group preview"; clicked => { root.run(7); } }
+                                HorizontalLayout {
+                                    Button { text: "Reading fixtures"; clicked => { root.run(8); } }
+                                    Button { text: "History load"; clicked => { root.run(9); } }
+                                }
+                                Button { text: "Unread scenario"; clicked => { root.run(14); } }
+                                Button { text: "Rich content"; clicked => { root.run(12); } }
+                                Button { text: "Long chat list"; clicked => { root.run(15); } }
+                                Button { text: "Login recovery"; clicked => { root.run(4); } }
+                                Button { text: "Reconnect blip"; clicked => { root.run(16); } }
+                                Button { text: "Offline"; clicked => { root.run(17); } }
+                                Button { text: "Expired sign-in"; clicked => { root.run(19); } }
+                                list-failure := Button { text: "List load failure"; clicked => { root.run(18); } }
+                                VerticalLayout {
+                                    visible: State.demo-notifications; height: self.visible ? self.preferred-height : 0px;
+                                    spacing: 8px;
+                                    Text { text: "Notification preview scenarios"; color: Tokens.secondary; wrap: word-wrap; }
+                                    Button { text: "Demo inactive"; clicked => { root.notify(0); } }
+                                    Button { text: "Demo muted"; clicked => { root.notify(1); } }
+                                    Button { text: "Demo replay"; clicked => { root.notify(2); } }
+                                    Button { text: "Demo mention"; clicked => { root.notify(3); } }
+                                    exposed := Button { text: "Demo exposed"; clicked => { root.notify(4); } }
+                                }
+                            }
+                            if root.media-menu: Rectangle {
+                                height: media-options.preferred-height;
+                                property <int> focus-last: root.media-focus-last;
+                                changed focus-last => { if self.focus-last > 0 { media-last.focus(); } }
+                                media-options := VerticalLayout {
+                                    spacing: 8px; alignment: start;
+                                    Button { text: "Back to scenarios"; clicked => { root.media-menu = false; close.focus(); } }
+                                    Button { text: "Load media"; clicked => { root.run(2); } }
+                                    for label[index] in ["Media timeout", "Media network", "Media 404", "Media 403", "Media 500", "Media unsupported sender", "Media rejected path", "Media too large", "Media decode failure"]: Button { text: label; clicked => { root.run(20 + index); } }
+                                    media-last := Button {
+                                        text: "Media cancelled";
+                                        changed has-focus => { root.media-last-focused = self.has-focus; }
+                                        clicked => { root.run(29); }
+                                    }
+                                }
                             }
                         }
                     }

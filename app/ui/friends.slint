@@ -27,12 +27,11 @@ export component Friends inherits Rectangle {
         padding: 12px; spacing: 8px;
         HorizontalLayout {
             Text { text: "Friends"; font-size: Tokens.heading; color: Tokens.accent; font-weight: 700; }
-            IconButton { label: "Refresh friends"; icon: @image-url("../assets/icons/refresh.svg"); enabled: !State.loading-friends && State.connected; activated => { State.refresh-friends(); } }
         }
         HorizontalLayout {
             friend-search := SearchField {
                 text <=> State.friend-query; placeholder-text: "Search friends and groups";
-                label: "Search loaded friends and groups";
+                label: "Search friends and groups";
                 clear => { State.friend-query = ""; State.filter-friends(); friend-search.focus(); }
                 edited => { State.filter-friends(); }
                 key-pressed(event) => {
@@ -46,7 +45,7 @@ export component Friends inherits Rectangle {
                 }
             }
         }
-        if State.friend-query != "" && State.friends.length == 0: Text { text: "No match among loaded friends and groups"; wrap: word-wrap; }
+        if State.friend-query != "" && State.friends.length == 0: Text { text: "No friends or groups match your search"; wrap: word-wrap; }
         list-focus := FocusScope {
             accessible-role: list; accessible-label: "Friends and groups"; accessible-description: self.has-focus ? "Focused friends and groups" : "";
             key-pressed(event) => {

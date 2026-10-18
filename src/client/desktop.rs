@@ -701,12 +701,16 @@ impl Client {
         stop: Arc<std::sync::atomic::AtomicBool>,
         priority: Arc<assets::Priority>,
         failures: assets::Failures,
-        authorize: impl Fn(&Asset, &std::sync::atomic::AtomicBool) -> Option<String>
+        authorize: impl Fn(
+            &Asset,
+            &std::sync::atomic::AtomicBool,
+        ) -> std::result::Result<Option<String>, assets::Failure>
         + Send
         + Sync
         + 'static,
         publish: impl Fn(assets::Completion, &std::sync::atomic::AtomicBool) + Send + Sync + 'static,
     ) -> assets::Fetchers {
+        failures.scope(&self.my_mid);
         assets::Fetchers::start(
             self.api.http.assets(),
             self.cache.clone(),
@@ -722,20 +726,20 @@ impl Client {
         let item = match self.messages.cached_message(message)? {
             Some(message) => message,
             None => self
-                .messages(chat)?
+                .messages(chat)
+                .map_err(|error| assets::Failure::from_error(&error))?
                 .into_iter()
                 .find(|m| m.id == message)
-                .context("file is outside loaded history")?,
+                .ok_or(assets::Failure::Http(404))?,
         };
+        ensure!(!item.rich.withdrawn, assets::Failure::Http(404));
         ensure!(
-            !item.rich.withdrawn
-                && item
-                    .rich
-                    .file_size
-                    .is_none_or(|size| size <= 16 * 1024 * 1024),
-            "file unavailable or exceeds 16 MiB download limit"
+            item.rich
+                .file_size
+                .is_none_or(|size| size <= 16 * 1024 * 1024),
+            assets::Failure::TooLarge
         );
-        let asset = item.attachment.context("file download unavailable")?;
+        let asset = item.attachment.ok_or(assets::Failure::UnsupportedHost)?;
         Ok((
             item.rich.file_name.unwrap_or_else(|| "attachment".into()),
             asset,

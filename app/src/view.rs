@@ -617,6 +617,14 @@ impl View {
                         if existing.image_key == row.image_key {
                             row.picture = existing.picture.clone();
                             row.has_picture = existing.has_picture;
+                            row.image_failed = existing.image_failed;
+                            row.image_failure = existing.image_failure.clone();
+                            row.image_error = existing.image_error.clone();
+                            row.image_retryable = existing.image_retryable;
+                            row.file_failed = existing.file_failed;
+                            row.file_failure = existing.file_failure.clone();
+                            row.file_error = existing.file_error.clone();
+                            row.file_retryable = existing.file_retryable;
                         }
                         if existing.sender_key == row.sender_key {
                             row.sender_avatar = existing.sender_avatar.clone();
@@ -737,7 +745,7 @@ impl View {
                     .find(|item| item.chat == chat && item.request_seq == Some(request_seq))
                 {
                     item.server_id = server_id;
-                    item.status = "Server confirmed".into();
+                    item.status = "Sent".into();
                     self.render(ui);
                     self.persist(ui);
                 }
@@ -805,7 +813,7 @@ impl View {
             }
             account::Update::FriendsFailed => {
                 ui.set_loading_friends(false);
-                ui.set_friends_error("Could not refresh friends and groups. Loaded entries are kept. Use Refresh to retry.".into());
+                ui.set_friends_error("Couldn’t get friends and groups. Retry.".into());
             }
             account::Update::FileBytes {
                 request,
@@ -813,15 +821,52 @@ impl View {
                 bytes,
             } => {
                 if request == self.file_request {
+                    let id = ui.global::<State>().get_file_save_id();
+                    for row in self
+                        .messages
+                        .iter_mut()
+                        .chain(
+                            self.history
+                                .values_mut()
+                                .flat_map(|h| h.messages.iter_mut()),
+                        )
+                        .chain(self.recent.values_mut().flat_map(|rows| rows.iter_mut()))
+                    {
+                        if row.id == id {
+                            row.file_failed = false;
+                            row.file_failure = "".into();
+                            row.file_error = "".into();
+                            row.file_retryable = false;
+                        }
+                    }
+                    self.render(ui);
                     crate::rich_content::save_download(ui, name, bytes, self.demo);
                 }
             }
-            account::Update::FileFailed { request } => {
+            account::Update::FileFailed { request, failure } => {
                 if request == self.file_request {
-                    ui.global::<State>().set_file_saving(false);
-                    ui.global::<State>().set_file_save_status(
-                        "File unavailable or exceeds the 16 MB download limit.".into(),
-                    );
+                    let state = ui.global::<State>();
+                    state.set_file_saving(false);
+                    state.set_file_save_status("".into());
+                    let id = state.get_file_save_id();
+                    for row in self
+                        .messages
+                        .iter_mut()
+                        .chain(
+                            self.history
+                                .values_mut()
+                                .flat_map(|h| h.messages.iter_mut()),
+                        )
+                        .chain(self.recent.values_mut().flat_map(|rows| rows.iter_mut()))
+                    {
+                        if row.id == id {
+                            row.file_failed = true;
+                            row.file_failure = format!("{failure:?}").into();
+                            row.file_error = failure.file_text().into();
+                            row.file_retryable = failure.retriable();
+                        }
+                    }
+                    self.render(ui);
                 }
             }
             account::Update::Original { request, pixels } => {
@@ -841,12 +886,14 @@ impl View {
                 ui.set_viewer_loading(false);
                 ui.set_viewer_error("".into());
             }
-            account::Update::OriginalFailed { request } => {
+            account::Update::OriginalFailed { request, failure } => {
                 if request != self.viewer_request || !ui.get_viewer_open() {
                     return;
                 }
                 ui.set_viewer_loading(false);
-                ui.set_viewer_error("Could not load the original photo. Retry, or refresh this conversation if the photo is no longer available.".into());
+                ui.set_viewer_error(failure.image_text().into());
+                ui.global::<State>()
+                    .set_viewer_retryable(failure.retriable());
                 ui.set_viewer_status("Preview only".into());
             }
             account::Update::ConnectionFailed(reason) => {
@@ -1123,6 +1170,14 @@ impl View {
                             if row.image_key == previous.image_key {
                                 row.picture = previous.picture.clone();
                                 row.has_picture = previous.has_picture;
+                                row.image_failed = previous.image_failed;
+                                row.image_failure = previous.image_failure.clone();
+                                row.image_error = previous.image_error.clone();
+                                row.image_retryable = previous.image_retryable;
+                                row.file_failed = previous.file_failed;
+                                row.file_failure = previous.file_failure.clone();
+                                row.file_error = previous.file_error.clone();
+                                row.file_retryable = previous.file_retryable;
                             }
                             if row.reactions == previous.reactions {
                                 row.reactions = previous.reactions.clone();
@@ -1238,6 +1293,9 @@ impl View {
                             row.picture = image.clone();
                             row.has_picture = true;
                             row.image_failed = false;
+                            row.image_failure = "".into();
+                            row.image_error = "".into();
+                            row.image_retryable = false;
                         }
                         if let Some(reactions) = row
                             .reactions
@@ -1260,17 +1318,28 @@ impl View {
                 for history in self.history.values_mut() {
                     apply(&mut history.messages, &key, &image);
                 }
+                for rows in self.recent.values_mut() {
+                    apply(rows, &key, &image);
+                }
                 self.bound_all_histories(ui);
                 self.render(ui);
             }
-            account::Update::ImageFailed { key } => {
-                for row in self.messages.iter_mut().chain(
-                    self.history
-                        .values_mut()
-                        .flat_map(|history| history.messages.iter_mut()),
-                ) {
+            account::Update::ImageFailed { key, failure } => {
+                for row in self
+                    .messages
+                    .iter_mut()
+                    .chain(
+                        self.history
+                            .values_mut()
+                            .flat_map(|history| history.messages.iter_mut()),
+                    )
+                    .chain(self.recent.values_mut().flat_map(|rows| rows.iter_mut()))
+                {
                     if row.image_key == key {
                         row.image_failed = true;
+                        row.image_failure = format!("{failure:?}").into();
+                        row.image_error = failure.image_text().into();
+                        row.image_retryable = failure.retriable();
                     }
                 }
                 self.render(ui);
@@ -1286,7 +1355,7 @@ impl View {
                     .iter_mut()
                     .find(|o| o.local_id == local_id && o.chat == id)
                 {
-                    item.status = "Server confirmed · read status unavailable".into();
+                    item.status = "Sent".into();
                     item.server_id = server_id;
                 }
                 self.render(ui);
@@ -1300,8 +1369,7 @@ impl View {
                     .find(|o| o.chat == id && o.local_id == local_id && o.server_id.is_empty())
                 {
                     item.status =
-                        "Confirmation unavailable · may have arrived. Check before sending again."
-                            .into();
+                        "The message may have arrived. Check before sending again.".into();
                 }
                 self.render(ui);
                 self.persist(ui);
@@ -1324,6 +1392,39 @@ impl View {
             }
         }
     }
+    pub(crate) fn retry_image(&mut self, ui: &AppWindow, key: &str) {
+        if !self
+            .messages
+            .iter()
+            .any(|row| row.image_key == key && row.image_retryable)
+        {
+            return;
+        }
+        if self.demo {
+            let pixels = line_wasm_poc::client::desktop::assets::Pixels {
+                width: 2,
+                height: 2,
+                rgba: vec![100; 16],
+            };
+            self.update(
+                ui,
+                account::Update::Image {
+                    key: key.into(),
+                    pixels: std::sync::Arc::new(pixels),
+                },
+            );
+        } else if self.request(ui, account::Command::RetryImage { key: key.into() }) {
+            for row in &mut self.messages {
+                if row.image_key == key {
+                    row.image_failed = false;
+                    row.image_retryable = false;
+                }
+            }
+            self.render(ui);
+        }
+        ui.invoke_focus_history();
+    }
+
     pub(crate) fn open_photo(&mut self, ui: &AppWindow, key: &str) {
         let Some(row) = self
             .messages
@@ -1337,6 +1438,7 @@ impl View {
         ui.set_viewer_image(row.picture.clone());
         ui.set_viewer_status("Preview · loading original…".into());
         ui.set_viewer_error("".into());
+        ui.global::<State>().set_viewer_retryable(true);
         ui.set_viewer_loading(true);
         ui.invoke_show_viewer(key.into());
         if self.demo {
@@ -1374,7 +1476,7 @@ impl View {
             Ok((storage, mut saved)) => {
                 for item in &mut saved.outbox {
                     if item.status == "Pending…" {
-                        item.status = "Confirmation unavailable after restart · may have arrived. Check before sending again.".into();
+                        item.status = "The message may have arrived before closing. Check before sending again.".into();
                     }
                 }
                 ui.set_text_size(if (12..=24).contains(&saved.font_size) {
@@ -1476,9 +1578,7 @@ impl View {
             return;
         }
         let Some(request_seq) = self.allocate_request_seq() else {
-            ui.set_storage_error(
-                "Could not allocate a message request number. Sending is unavailable.".into(),
-            );
+            ui.set_storage_error("Couldn’t prepare this message. Try again.".into());
             self.send_availability(ui);
             return;
         };

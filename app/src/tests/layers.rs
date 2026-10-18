@@ -60,7 +60,17 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
                     key("\t");
                 }
                 key("\n");
-                assert!(!ui.global::<State>().get_demo_scenarios_open());
+                if index == 2 {
+                    // Media failures has a separate bounded scenario list.
+                    assert!(ui.global::<State>().get_demo_scenarios_open());
+                    key("\t"); // Back
+                    key("\t"); // Load media
+                    key("\n");
+                }
+                assert!(
+                    !ui.global::<State>().get_demo_scenarios_open(),
+                    "scenario index {index}"
+                );
                 assert!(!ui.global::<State>().get_modal_open());
             }
             assert_eq!(

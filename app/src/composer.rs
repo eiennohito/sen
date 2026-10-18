@@ -109,9 +109,7 @@ impl View {
             return;
         }
         let Some(request_seq) = self.allocate_request_seq() else {
-            ui.set_storage_error(
-                "Could not allocate a message request number. Sending is unavailable.".into(),
-            );
+            ui.set_storage_error("Couldn’t prepare this message. Try again.".into());
             self.send_availability(ui);
             return;
         };

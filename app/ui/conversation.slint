@@ -62,7 +62,7 @@ export component Conversation inherits Rectangle {
                         Text { text: State.chat-title; color: Tokens.foreground; font-size: Tokens.heading; font-weight: 700; overflow: elide; vertical-alignment: center; }
                         Text { width: Tokens.small * 6.5; horizontal-stretch: 0; text: State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
                     }
-                    if State.unread-locating || State.unread-boundary-unknown: Text { text: State.unread-locating ? "Finding unread messages…" : "Unread boundary unavailable"; color: Tokens.secondary; font-size: Tokens.small; }
+                    if State.unread-locating || State.unread-boundary-unknown: Text { text: State.unread-locating ? "Finding unread messages…" : "Couldn’t find your first unread message"; color: Tokens.secondary; font-size: Tokens.small; }
                     if State.chat-subtitle != "": Text { text: State.chat-subtitle; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; }
                 }
                 }
@@ -146,7 +146,7 @@ export component Conversation inherits Rectangle {
                 }
               }
             }
-            if State.history-budget-warning: Text { text: "Large message retained; some previews may be unavailable"; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
+            if State.history-budget-warning: Text { text: "Some images in this long message may be unavailable"; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
             if State.jump-error != "": Text { text: State.jump-error; color: Tokens.secondary; font-size: Tokens.small; }
 composer-surface := Composer { }
             if State.storage-error != "": HorizontalLayout {

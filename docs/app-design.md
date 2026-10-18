@@ -136,7 +136,11 @@ asset keys directly from UI geometry: visible assets precede the open chat,
 background avatars, then closed chats; newest requests break ties. Queue overflow
 evicts lower-priority pending thumbnails. Reconnect/sign-in stops and joins the
 old fetchers before replacing credentials; shutdown cancels and joins them too.
-Thumbnail failures retain the current 300-second blacklist and refresh behaviour.
+Media failures retain their class in at most 256 records, evicting the oldest
+when full. Permanent classes do not expire while retained; retriable failures
+become eligible again after 300 seconds. Timeout, network and 5xx thumbnails may
+also retry once when sync reconnects, at normal visibility priority. Item Retry bypasses
+both the retained failure and thumbnail cache and gets explicit-request priority.
 Late history responses are checked against both chat ID and request generation.
 Submission saves a durable pending item before queueing a network command,
 then clears the submitted editor. Confirmation updates the item by local ID;
@@ -254,7 +258,7 @@ indivisible oversized text row is retained as an explicit exception, with local
 feedback, so budgeting never silently drops the anchored message. Older/newer
 range cursors reopen evicted pages through the worker's bounded encrypted cache.
 Deferred updates coalesce within bounded chat/image/terminal-event limits;
-loss of exact arrival-count precision shows that a refresh is needed.
+loss of exact arrival-count precision offers Latest to retrieve current messages.
 
 At 980×720, a single 32-bit pixel buffer costs about 2.7 MiB. More buffers,
 HiDPI, font caches, accessibility, WASM memory, and decoded images add to this.
@@ -291,7 +295,10 @@ group sender. Resetting the WASM also resets channel pointers. Recent-message
 pages are encrypted/authenticated with keys derived from the pairing secret;
 the disk budget is 32 MiB / 256 files, separate from image-cache limits.
 A 512-message / 16 MiB decoded memo fingerprints the raw message, including
-reactions. Selection reads the cached page; Refresh explicitly fetches updates.
+reactions. Selection reads the cached page; live sync supplies updates and item Retry
+retries failed media directly. Until the official-account route is supported,
+image 404s and unsupported routes say “Not available for this sender”; the
+retained failure class still distinguishes them.
 The SSE adapter supplies live operations and catch-up when authenticated;
 offline account startup is still unavailable. Asset arrivals mutate affected
 Slint rows while preserving stable row identity. Messages with inline images

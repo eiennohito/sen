@@ -58,6 +58,12 @@ pub fn save(
 pub(crate) fn message_case(
     name: &str,
 ) -> Result<Vec<crate::MessageRow>, Box<dyn std::error::Error>> {
+    if let Some(index) = crate::demo::MEDIA_FAILURES
+        .iter()
+        .position(|(class, _)| name == format!("media-{class}"))
+    {
+        return Ok(vec![crate::demo::media_failure(index)]);
+    }
     if name == "emoji" {
         let mut row = crate::demo::rich_fixture().remove(1);
         row.reply_id = "".into();

@@ -22,7 +22,7 @@ impl View {
         let queued = self.request(ui, account::Command::Friends);
         ui.set_loading_friends(queued);
         if !queued {
-            ui.set_friends_error("Friends could not be loaded. Try Refresh shortly.".into());
+            ui.set_friends_error("Couldn’t get friends and groups. Retry.".into());
         }
     }
     pub(crate) fn filter_friends(&mut self, ui: &AppWindow) {

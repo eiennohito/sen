@@ -8,6 +8,7 @@ import argparse
 import base64
 import json
 import time
+import tempfile
 import datetime
 from pathlib import Path
 import urllib.request
@@ -24,6 +25,7 @@ parser.add_argument("--auth-recovery", action="store_true", help="Exercise the o
 parser.add_argument("--layout-photos", action="store_true", help="Check bounded avatars/media, settings placement, and photo viewer")
 parser.add_argument("--reading", action="store_true", help="Check reading focus, keyboard scroll, stable loading, links and content placeholders")
 parser.add_argument("--rich", action="store_true", help="Check rich emoji fallback copy, reply jump/return, durations and file Save")
+parser.add_argument("--media", action="store_true", help="Check each media failure reason and its item Retry")
 parser.add_argument("--layers", action="store_true", help="Check dialogs, profile panels, viewer input, export, and opener focus")
 args = parser.parse_args()
 counter = 0
@@ -61,23 +63,36 @@ def tree():
 def element(label, role):
     return next(item for item in tree() if (item.get("accessibleLabel") == label or item.get("accessibleLabel", "").startswith(label + ", ")) and item.get("accessibleRole") == role)
 
-def demo_scenario(label):
-    call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
+def scenario_element(label):
+    # Inspect the modal itself with the same bound as the shell behind it.
+    handles = call("find_elements_by_id", windowHandle=window, elementsId="DemoScenarios::scenario-panel")["elementHandles"]
+    assert len(handles) == 1, "demo dialog was not unique"
+    result = call("get_element_tree", elementHandle=handles[0], maxElements=500)
+    assert not result.get("truncated"), "demo dialog exceeded test bound"
+    return next(item for item in result["elements"] if item.get("accessibleLabel") == label and item.get("accessibleRole") == "Button")
+
+def scenario_action(label):
     try:
-        action = element(label, "Button")
+        action = scenario_element(label)
     except StopIteration:
-        close = element("Close demo scenarios", "Button")
+        close = scenario_element("Close demo scenarios")
         position = {"x": close["absolutePosition"]["x"] + close["size"]["width"] / 2, "y": close["absolutePosition"]["y"] + close["size"]["height"] + 60}
-        for delta in (10000, -320, -320, -320):
+        for delta in (10000, *([-320] * 12)):
             call("dispatch_pointer_scroll", windowHandle=window, position=position, deltaY=delta)
             try:
-                action = element(label, "Button")
+                action = scenario_element(label)
                 break
             except StopIteration:
                 pass
         else:
             raise AssertionError(f"demo scenario was not reachable: {label}") from None
-    call("click_element", elementHandle=action["handle"])
+    return action
+
+def demo_scenario(label):
+    call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
+    if label == "Load media":
+        call("click_element", elementHandle=scenario_action("Media failures")["handle"])
+    call("click_element", elementHandle=scenario_action(label)["handle"])
 
 # Refuse to operate on a real account. This script never clicks Send.
 call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
@@ -159,7 +174,7 @@ if args.scenarios:
     call("set_element_value", elementHandle=composer, value="Keep this newer draft")
     demo_scenario("Uncertain send")
     time.sleep(1.2)
-    assert any("Confirmation unavailable" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
+    assert any("may have arrived" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == "Keep this newer draft", "late result replaced newer text"
     call("click_element", elementHandle=element("Edit", "Button")["handle"])
     call("click_element", elementHandle=element("Append", "Button")["handle"])
@@ -251,7 +266,7 @@ if args.layout_photos:
 if args.friends:
     call("set_element_value", elementHandle=composer, value=draft)
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
-    friend_search = element("Search loaded friends and groups", "TextInput")["handle"]
+    friend_search = element("Search friends and groups", "TextInput")["handle"]
     call("set_element_value", elementHandle=friend_search, value="葵")
     friend_rows = [item for item in tree() if item.get("accessibleLabel", "").startswith("Open profile:")]
     assert len(friend_rows) == 1, "friend name search failed"
@@ -265,7 +280,7 @@ if args.friends:
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     call("dispatch_key_event", windowHandle=window, text="\x1b")
-    element("Search loaded friends and groups", "TextInput")
+    element("Search friends and groups", "TextInput")
     call("click_element", elementHandle=element("Chats", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == draft, "friend browsing lost draft"
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
@@ -425,7 +440,7 @@ if args.layers:
     assert element("Navigation", "Button").get("accessibleDescription") == "Focused navigation", "Settings did not restore rail focus"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
-    friend_search = element("Search loaded friends and groups", "TextInput")["handle"]
+    friend_search = element("Search friends and groups", "TextInput")["handle"]
     call("set_element_value", elementHandle=friend_search, value="葵")
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     profile_close_y = element("Close profile", "Button")["absolutePosition"].get("y", 0)
@@ -459,7 +474,7 @@ if args.layers:
         time.sleep(.02)
     assert saved, "Save did not report a completed export"
     exported = Path(saved[0].removeprefix("Saved to "))
-    assert exported.is_relative_to(Path("/tmp/line-desktop-demo-exports")), "preview export escaped its isolated folder"
+    assert exported.is_relative_to((Path(tempfile.gettempdir()) / "line-desktop-demo-exports")), "preview export escaped its isolated folder"
     assert exported.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     exported.unlink()
     call("dispatch_key_event", windowHandle=window, text="\x1b")
@@ -471,7 +486,7 @@ if args.layers:
     close = element("Close profile", "Button")
     assert close["absolutePosition"].get("y", 0) == profile_close_y, "connection feedback moved the profile"
     assert not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()), "sheet did not cover the conversation feedback"
-    browser_search = element("Search loaded friends and groups", "TextInput")
+    browser_search = element("Search friends and groups", "TextInput")
     assert browser_search["absolutePosition"]["x"] + browser_search["size"]["width"] <= close["absolutePosition"]["x"], "profile hid the browser"
     print("PASS: Settings modal focus, profile reading/focus/browser/connection-strip placement, viewer keys/wheel/pan/loaded-photo navigation, isolated PNG export, opener restoration, draft retention")
 
@@ -663,8 +678,33 @@ if args.rich:
     call("click_element", elementHandle=rich_element("Save", "Button")["handle"])
     time.sleep(0.2)
     assert any(item.get("accessibleLabel") == "Saved" for item in rich_tree()), "synthetic file Save did not finish"
-    assert any(path.read_bytes() == b"Synthetic attachment\n" for path in Path("/tmp/line-desktop-demo-exports").glob("*") if path.is_file()), "demo export bytes differ"
+    assert any(path.read_bytes() == b"Synthetic attachment\n" for path in (Path(tempfile.gettempdir()) / "line-desktop-demo-exports").glob("*") if path.is_file()), "demo export bytes differ"
     print("PASS: inline rich image, fallback/newline clipboard, reply jump/return, file duration metadata and synthetic Save")
+
+if args.media:
+    cases = [
+        ("Media timeout", "Image took too long to load", True),
+        ("Media network", "Couldn’t load this image", True),
+        ("Media 404", "Not available for this sender", False),
+        ("Media 403", "You don’t have access to this image", True),
+        ("Media 500", "Image is temporarily unavailable", True),
+        ("Media unsupported sender", "Not available for this sender", False),
+        ("Media rejected path", "Image is unavailable", False),
+        ("Media too large", "Image too large", False),
+        ("Media decode failure", "Couldn’t display this image", False),
+        ("Media cancelled", "Image loading cancelled", True),
+    ]
+    for scenario, reason, retriable in cases:
+        demo_scenario("Media failures")
+        call("click_element", elementHandle=scenario_action(scenario)["handle"])
+        element(reason, "Text")
+        retries = [item for item in tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Retry image"]
+        assert bool(retries) == retriable, (scenario, retries)
+        assert not any("Refresh" in item.get("accessibleLabel", "") for item in tree())
+        if retriable:
+            call("click_element", elementHandle=retries[0]["handle"])
+            assert not any(item.get("accessibleLabel") == reason for item in tree()), "Retry kept the cached failure"
+    print("PASS: all media failure reasons, permanent classes without Retry, and per-item Retry completion")
 
 if args.screenshot:
     result = rpc("tools/call", {"name": "take_screenshot", "arguments": {"windowHandle": window}})

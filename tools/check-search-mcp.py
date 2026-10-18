@@ -167,7 +167,7 @@ assert any(base.get("id", "").endswith("::demo-marker") for base in marker.get("
 click("Close demo scenarios")
 if any(row.get("accessibleLabel") == "Back" and row.get("accessibleRole") == "Button" for row in tree()):
     click("Back")
-for destination, search, listing in [("Chats", "Find a conversation", "Conversations"), ("Friends", "Search loaded friends and groups", "Friends and groups")]:
+for destination, search, listing in [("Chats", "Find a conversation", "Conversations"), ("Friends", "Search friends and groups", "Friends and groups")]:
     click(destination)
     click(search, "TextInput")
     call("move_pointer", windowHandle=window, position={"x": 1, "y": 1})

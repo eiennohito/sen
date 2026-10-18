@@ -77,7 +77,7 @@ click('葵')
 set_draft('Profile shortcut draft')
 window_width = call('get_element_properties', elementHandle=root)['size']['width']
 click('Friends')
-call('set_element_value', elementHandle=element('Search loaded friends and groups', 'TextInput')['handle'], value='葵')
+call('set_element_value', elementHandle=element('Search friends and groups', 'TextInput')['handle'], value='葵')
 click('Open profile: 葵')
 editors = [item for item in tree() if item.get('accessibleLabel') == 'Message draft']
 profile_kind = 'panel' if editors else 'sheet'
@@ -95,14 +95,14 @@ else:
 if editors:
     click('Close profile')
 else:
-    click('Search loaded friends and groups', 'TextInput')
+    click('Search friends and groups', 'TextInput')
     key('\x1b')
 assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Escape from browser did not close the sheet/profile'
 assert value() == 'Profile shortcut draft', 'Ctrl+Enter with a sheet changed the draft'
-assert element('Search loaded friends and groups', 'TextInput').get('accessibleValue') == '葵', 'Escape cleared the browser query before closing the sheet'
+assert element('Search friends and groups', 'TextInput').get('accessibleValue') == '葵', 'Escape cleared the browser query before closing the sheet'
 click('Friends')
 click('Open profile: 葵')
-click('Search loaded friends and groups', 'TextInput')
+click('Search friends and groups', 'TextInput')
 key('\x11', 'Press')
 key('2')
 key('\x11', 'Release')
@@ -115,7 +115,7 @@ assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()
 key('\x1b')
 click('Friends')
 click('Open profile: 葵')
-click('Search loaded friends and groups', 'TextInput')
+click('Search friends and groups', 'TextInput')
 key('\x12', 'Press')
 key('\uf701')
 key('\x12', 'Release')

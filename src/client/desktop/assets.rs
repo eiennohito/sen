@@ -7,6 +7,8 @@ const DISK_LIMIT: u64 = 128 * 1024 * 1024;
 const MEMORY_LIMIT: usize = 24 * 1024 * 1024;
 const MAX_DOWNLOAD: usize = 16 * 1024 * 1024;
 
+mod failure;
+pub use failure::Failure;
 mod fetchers;
 pub use fetchers::{Completion, Failures, Fetchers, Payload, Priority, Purpose};
 
@@ -19,6 +21,8 @@ pub struct Asset {
     dimension: u32,
     #[serde(default)]
     original_suffix: Option<String>,
+    #[serde(default)]
+    failure: Option<Failure>,
 }
 
 impl Asset {
@@ -35,10 +39,11 @@ impl Asset {
     }
     pub fn key(&self) -> String {
         let material = self.key_material.as_deref().unwrap_or("");
+        let failure = self.failure.map(|f| format!(":{f:?}")).unwrap_or_default();
         format!(
             "{:x}",
             Sha256::digest(format!(
-                "v1:{}:{}:{}:{}",
+                "v1:{}:{}:{}:{}{failure}",
                 self.url, self.dimension, self.private, material
             ))
         )
@@ -62,6 +67,7 @@ impl Asset {
             talk_meta: None,
             dimension: 64,
             original_suffix: None,
+            failure: None,
         })
     }
 
@@ -84,6 +90,7 @@ impl Asset {
             talk_meta: None,
             dimension: 256,
             original_suffix: None,
+            failure: None,
         })
     }
 
@@ -103,14 +110,16 @@ impl Asset {
             talk_meta: None,
             dimension: 32,
             original_suffix: None,
+            failure: None,
         })
     }
 
     pub(super) fn photo(message: &Value) -> Option<Self> {
         let meta = &message["contentMetadata"];
         let id = message["id"].as_str()?;
-        let sid = segment(meta["SID"].as_str().unwrap_or("m"))?;
-        let oid = segment(meta["OID"].as_str().unwrap_or(id))?;
+        let sid = meta["SID"].as_str().unwrap_or("m");
+        let oid = meta["OID"].as_str().unwrap_or(id);
+        let failure = route_failure(sid, oid);
         let key = meta["ENC_KM"].as_str().map(str::to_owned);
         let suffix = if key.is_some() {
             "__ud-preview"
@@ -123,6 +132,7 @@ impl Asset {
             key_material: key,
             talk_meta: Some(talk_meta(id)),
             dimension: 384,
+            failure,
             original_suffix: Some(
                 if meta["MEDIA_CONTENT_INFO"]
                     .as_str()
@@ -144,12 +154,12 @@ impl Asset {
             return None;
         }
         let meta = &raw["contentMetadata"];
-        let id = segment(raw["id"].as_str()?)?;
+        let id = raw["id"].as_str()?;
         let key = meta["ENC_KM"].as_str().map(str::to_owned);
         let (sid, oid) = if key.is_some() {
             (
-                segment(meta["SID"].as_str().unwrap_or("m"))?,
-                segment(meta["OID"].as_str().unwrap_or(id))?,
+                meta["SID"].as_str().unwrap_or("m"),
+                meta["OID"].as_str().unwrap_or(id),
             )
         } else {
             ("m", id)
@@ -161,6 +171,12 @@ impl Asset {
             talk_meta: Some(talk_meta(id)),
             dimension: 0,
             original_suffix: None,
+            failure: route_failure(sid, oid).or_else(|| {
+                ["DOWNLOAD_URL", "DOWNLOAD_URL_RENEWAL"]
+                    .iter()
+                    .any(|key| meta[*key].as_str().is_some_and(|url| !url.is_empty()))
+                    .then_some(Failure::UnsupportedHost)
+            }),
         })
     }
 
@@ -191,11 +207,14 @@ impl Asset {
         http: &http::Transport,
         access_token: Option<&str>,
     ) -> Result<Vec<u8>> {
-        ensure!(allowed_url(&self.url), "unsupported asset host");
+        if let Some(failure) = self.failure {
+            return Err(failure.into());
+        }
+        ensure!(allowed_url(&self.url), Failure::UnsupportedHost);
         let application = format!("CHROMEOS\t{VERSION}\tChrome_OS\t");
         let mut headers = Vec::new();
         if self.private {
-            let token = access_token.context("missing media token")?;
+            let token = access_token.ok_or(Failure::Network)?;
             ensure!(!token.contains(['\r', '\n']), "invalid media token");
             headers.push(("X-Line-Access", token));
             headers.push(("X-Line-Application", application.as_str()));
@@ -205,11 +224,16 @@ impl Asset {
         }
         let bytes = http.asset(&self.url, &headers, MAX_DOWNLOAD)?;
         if let Some(key) = &self.key_material {
-            decrypt_media(&bytes, &decode(key)?)
+            decrypt_media(&bytes, &decode(key).map_err(|_| Failure::Decode)?)
+                .map_err(|_| Failure::Decode.into())
         } else {
             Ok(bytes)
         }
     }
+}
+
+fn route_failure(sid: &str, oid: &str) -> Option<Failure> {
+    (segment(sid).is_none() || segment(oid).is_none()).then_some(Failure::RejectedPath)
 }
 
 fn allowed_url(url: &str) -> bool {
@@ -476,14 +500,17 @@ fn prepare_image(bytes: &[u8], dimension: u32) -> Result<(Pixels, Vec<u8>)> {
 }
 
 fn pixels(bytes: &[u8], dimension: u32) -> Result<Pixels> {
-    ensure!(bytes.len() <= MAX_DOWNLOAD, "encoded image too large");
+    ensure!(bytes.len() <= MAX_DOWNLOAD, Failure::TooLarge);
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(8192);
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let decoded = reader.decode().context("unsupported or damaged image")?;
+    let decoded = reader.decode().map_err(|error| match error {
+        image::ImageError::Limits(_) => Failure::TooLarge,
+        _ => Failure::Decode,
+    })?;
     let image = if decoded.width() > dimension || decoded.height() > dimension {
         decoded.thumbnail(dimension, dimension).to_rgba8()
     } else {

@@ -1,7 +1,7 @@
 //! Account RPCs stay on one worker; bounded asset fetchers own downloads and decoding.
 use line_wasm_poc::client::desktop::{
     Chat, Client, Message, SendFailure,
-    assets::{Asset, Completion, Failures, Payload, Pixels, Priority, Purpose},
+    assets::{Asset, Completion, Failure, Failures, Payload, Pixels, Priority, Purpose},
     send_failure,
     sync::{self, SyncState},
 };
@@ -90,6 +90,9 @@ pub enum Command {
         key: String,
         request: u64,
     },
+    RetryImage {
+        key: String,
+    },
     Chats {
         next: bool,
     },
@@ -169,6 +172,7 @@ pub enum Update {
     },
     FileFailed {
         request: u64,
+        failure: Failure,
     },
     Older {
         chat: String,
@@ -237,6 +241,7 @@ pub enum Update {
     },
     OriginalFailed {
         request: u64,
+        failure: Failure,
     },
     ConnectionFailed(ConnectionFailure),
     SignIn(line_wasm_poc::client::pairing::Event),
@@ -266,6 +271,7 @@ pub enum Update {
     ChatsFailed(ListRequest),
     ImageFailed {
         key: String,
+        failure: Failure,
     },
     Image {
         key: String,
@@ -327,7 +333,7 @@ enum AssetEvent {
     MediaToken {
         epoch: u64,
         asset: Asset,
-        reply: SyncSender<Option<String>>,
+        reply: SyncSender<Result<Option<String>, Failure>>,
     },
 }
 
@@ -527,16 +533,26 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
             };
             if let Some(command) = command {
                 // Prefer user commands over outstanding images from an old view.
+                if worker_asset_command(
+                    &command,
+                    fetchers.as_ref().unwrap(),
+                    sync_epoch,
+                    &mut sync_connected,
+                    &publish,
+                ) {
+                    continue;
+                }
                 match command {
                     Command::Stop => break,
+                    Command::RetryImage { .. } => unreachable!(),
                     Command::ReadActivity { .. } => {},
                     Command::MarkReadExplicit { chat,up_to_message } => match client.mark_read(&chat,&up_to_message) {Ok(())=>{markers.confirmed(&chat,&up_to_message);publish(Update::ReadMarked{chat,up_to_message});},Err(_)=>publish(Update::ReadFailed{chat})},
                     Command::SaveFile { chat,message_id,request } => match client.file_asset(&chat,&message_id) {
                         Ok((name,asset)) => {
                             let accepted = fetchers.as_ref().unwrap().enqueue(asset, Some(chat), Purpose::File { request, name });
-                            if !accepted { publish(Update::FileFailed { request }); }
+                            if !accepted { publish(Update::FileFailed { request, failure: Failure::Cancelled }); }
                         },
-                        Err(_) => publish(Update::FileFailed { request }),
+                        Err(error) => publish(Update::FileFailed { request, failure: Failure::from_error(&error) }),
                     },
                     Command::RetainSendRequests { request_seqs } => { let _ = client.retain_send_requests(&request_seqs); },
                     Command::Older { chat, before_message, delivered_time } => match client.older(&chat, &before_message, delivered_time) {
@@ -546,7 +562,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     Command::MarkRead { chat, up_to_message, eligibility_epoch } => { if exposure_gate.accepts(eligibility_epoch) {marker_epochs.insert(chat.clone(),eligibility_epoch);markers.expose(chat,up_to_message,Instant::now());} },
                     Command::Receipts { chat } => { if let Ok(ranges) = client.read_ranges(&chat) { publish(Update::ReadRanges(ranges)); } },
                     Command::Push { epoch, event } => { if epoch != sync_epoch { continue; } match event {
-                        sync::Event::State(state) => { sync_connected = matches!(state, SyncState::Connected); publish(Update::Sync(state)); },
+                        sync::Event::State(_) => unreachable!(),
                         sync::Event::Token(token) => client.replace_token(token),
                         sync::Event::Resync { complete, .. } => {
                             match client.resync() {
@@ -589,8 +605,10 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         let result = client.messages(&chat).and_then(|messages| {
                             messages.into_iter().filter_map(|m| m.image).find(|asset| asset.key() == key).and_then(|asset| asset.original()).ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "photo is no longer loaded").into())
                         });
-                        let accepted = result.ok().is_some_and(|asset| fetchers.as_ref().unwrap().enqueue(asset, Some(chat), Purpose::Original { request }));
-                        if !accepted { publish(Update::OriginalFailed { request }); }
+                        match result {
+                            Ok(asset) => { if !fetchers.as_ref().unwrap().enqueue(asset, Some(chat), Purpose::Original { request }) { publish(Update::OriginalFailed { request, failure: Failure::Cancelled }); } },
+                            Err(error) => publish(Update::OriginalFailed { request, failure: Failure::from_error(&error) }),
+                        }
                     }
                     command @ (Command::Reconnect | Command::Reauthenticate) => {
                         sync_epoch = sync_epoch.wrapping_add(1);
@@ -601,7 +619,6 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         client = reconnected;
                         sync_guard = Some(start_sync(&paths, &push_tx, &cancel, sync_epoch));
                         jobs = Jobs::default();
-                        failures.clear();
                         fetchers = Some(start_fetchers(&client, &asset_tx, &cancel, &fetch_priority, &failures, sync_epoch));
                         publish(Update::Connected(client.account_name.clone()));
                         pending = Some(Command::Chats { next: false });
@@ -637,7 +654,6 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         generation,
                         refresh,
                     } => match if refresh {
-                        fetchers.as_ref().unwrap().clear_failures();
                         client.refresh_messages(&id)
                     } else {
                         client.messages(&id)
@@ -651,7 +667,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                             });
                         },
                         Err(_) => publish(Update::Error {
-                            message: "Could not load recent messages. Already loaded messages are kept. Use Retry messages.".into(),
+                            message: "Couldn’t get recent messages. Messages already shown are still available. Retry.".into(),
                             generation: Some(generation),
                         }),
                     },
@@ -681,10 +697,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                     },
                 }
                 for (asset, chat) in jobs.entries.drain(..) {
-                    fetchers
-                        .as_ref()
-                        .unwrap()
-                        .enqueue(asset, chat, Purpose::Thumbnail);
+                    queue_thumbnail(fetchers.as_ref().unwrap(), asset, chat, &publish);
                 }
                 jobs.chat = None;
             } else if let Some(event) = asset_event {
@@ -699,9 +712,13 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                         asset,
                         reply,
                     } => {
-                        let token = (epoch == sync_epoch)
-                            .then(|| client.media_token(&asset).ok().flatten())
-                            .flatten();
+                        let token = if epoch == sync_epoch {
+                            client
+                                .media_token(&asset)
+                                .map_err(|error| Failure::from_error(&error))
+                        } else {
+                            Err(Failure::Cancelled)
+                        };
                         let _ = reply.try_send(token);
                     }
                 }
@@ -716,6 +733,76 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
             }
         }
     })
+}
+
+trait AssetQueue {
+    fn retry(&self, key: &str) -> bool;
+    fn failure(&self, key: &str) -> Option<Failure>;
+    fn reconnected(&self);
+    fn thumbnail(&self, asset: Asset, chat: Option<String>) -> bool;
+}
+impl AssetQueue for line_wasm_poc::client::desktop::assets::Fetchers {
+    fn retry(&self, key: &str) -> bool {
+        self.retry(key)
+    }
+    fn failure(&self, key: &str) -> Option<Failure> {
+        self.failure(key)
+    }
+    fn reconnected(&self) {
+        self.reconnected();
+    }
+    fn thumbnail(&self, asset: Asset, chat: Option<String>) -> bool {
+        self.enqueue(asset, chat, Purpose::Thumbnail)
+    }
+}
+
+fn worker_asset_command(
+    command: &Command,
+    fetchers: &impl AssetQueue,
+    epoch: u64,
+    connected: &mut bool,
+    publish: &impl Fn(Update),
+) -> bool {
+    match command {
+        Command::RetryImage { key } => {
+            if !fetchers.retry(key)
+                && let Some(failure) = fetchers.failure(key)
+            {
+                publish(Update::ImageFailed {
+                    key: key.clone(),
+                    failure,
+                });
+            }
+        }
+        Command::Push {
+            epoch: event_epoch,
+            event: sync::Event::State(state),
+        } => {
+            if *event_epoch == epoch {
+                let online = matches!(state, SyncState::Connected);
+                if online && !*connected {
+                    fetchers.reconnected();
+                }
+                *connected = online;
+                publish(Update::Sync(state.clone()));
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+fn queue_thumbnail(
+    fetchers: &impl AssetQueue,
+    asset: Asset,
+    chat: Option<String>,
+    publish: &impl Fn(Update),
+) {
+    let key = asset.key();
+    if !fetchers.thumbnail(asset, chat) {
+        let failure = fetchers.failure(&key).unwrap_or(Failure::Network);
+        publish(Update::ImageFailed { key, failure });
+    }
 }
 
 fn start_fetchers(
@@ -745,16 +832,16 @@ fn start_fetchers(
                 stop,
                 &auth_stop,
             ) {
-                return None;
+                return Err(Failure::Cancelled);
             }
             loop {
                 if stop.load(Ordering::Relaxed) || auth_stop.load(Ordering::Relaxed) {
-                    return None;
+                    return Err(Failure::Cancelled);
                 }
                 match rx.recv_timeout(Duration::from_millis(20)) {
                     Ok(token) => return token,
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(_) => return None,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return Err(Failure::Cancelled),
                 }
             }
         },
@@ -764,7 +851,7 @@ fn start_fetchers(
     )
 }
 
-fn publish_asset(completion: Completion, publish: &impl Fn(Update)) {
+pub(crate) fn publish_asset(completion: Completion, publish: &impl Fn(Update)) {
     let Completion {
         key,
         purpose,
@@ -780,9 +867,19 @@ fn publish_asset(completion: Completion, publish: &impl Fn(Update)) {
             name,
             bytes,
         }),
-        (Purpose::Thumbnail, _) => publish(Update::ImageFailed { key }),
-        (Purpose::Original { request }, _) => publish(Update::OriginalFailed { request }),
-        (Purpose::File { request, .. }, _) => publish(Update::FileFailed { request }),
+        (purpose, Err(failure)) => match purpose {
+            Purpose::Thumbnail => publish(Update::ImageFailed { key, failure }),
+            Purpose::Original { request } => publish(Update::OriginalFailed { request, failure }),
+            Purpose::File { request, .. } => publish(Update::FileFailed { request, failure }),
+        },
+        (purpose, Ok(_)) => publish_asset(
+            Completion {
+                key,
+                purpose,
+                result: Err(Failure::Decode),
+            },
+            publish,
+        ),
     }
 }
 
@@ -866,7 +963,10 @@ fn connect(
                     attempt = true;
                 }
             }
-            Ok(Command::Original { request, .. }) => publish(Update::OriginalFailed { request }),
+            Ok(Command::Original { request, .. }) => publish(Update::OriginalFailed {
+                request,
+                failure: Failure::Network,
+            }),
             Ok(Command::Send { id, local_id, .. }) => publish(Update::SendRejected {
                 id,
                 local_id,
@@ -1203,7 +1303,7 @@ mod tests {
                 completion: Completion {
                     key: "synthetic".into(),
                     purpose: Purpose::Thumbnail,
-                    result: Err(())
+                    result: Err(Failure::Network)
                 }
             },
             &worker.stop,
@@ -1277,5 +1377,138 @@ mod tests {
         gate.allow();
         assert!(!gate.accepts(old));
         assert!(gate.accepts(gate.epoch()));
+    }
+}
+
+#[cfg(test)]
+mod media_worker_tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    #[derive(Default)]
+    struct Assets {
+        failures: Mutex<std::collections::HashMap<String, Failure>>,
+        reconnects: std::sync::atomic::AtomicUsize,
+    }
+    impl AssetQueue for Assets {
+        fn retry(&self, key: &str) -> bool {
+            if key == "racing" {
+                self.failures
+                    .lock()
+                    .unwrap()
+                    .insert(key.into(), Failure::Http(404));
+            }
+            false
+        }
+        fn failure(&self, key: &str) -> Option<Failure> {
+            self.failures.lock().unwrap().get(key).copied()
+        }
+        fn reconnected(&self) {
+            self.reconnects.fetch_add(1, Ordering::Relaxed);
+        }
+        fn thumbnail(&self, _asset: Asset, _chat: Option<String>) -> bool {
+            false
+        }
+    }
+
+    #[test]
+    fn worker_retry_preserves_current_class_and_ignores_missing_records() {
+        let mut worker = Worker::spawn(move |inbox| {
+            let assets = Assets::default();
+            assets
+                .failures
+                .lock()
+                .unwrap()
+                .insert("permanent".into(), Failure::Decode);
+            assets
+                .failures
+                .lock()
+                .unwrap()
+                .insert("network".into(), Failure::Network);
+            let events = std::cell::RefCell::new(Vec::new());
+            let mut connected = false;
+            for _ in 0..4 {
+                let command = inbox.rx.recv().unwrap();
+                assert!(worker_asset_command(
+                    &command,
+                    &assets,
+                    2,
+                    &mut connected,
+                    &|event| events.borrow_mut().push(event)
+                ));
+            }
+            let found: Vec<_> = events
+                .into_inner()
+                .into_iter()
+                .map(|event| match event {
+                    Update::ImageFailed { key, failure } => (key, failure),
+                    _ => panic!("unexpected worker event"),
+                })
+                .collect();
+            assert_eq!(
+                found,
+                [
+                    ("permanent".into(), Failure::Decode),
+                    ("network".into(), Failure::Network),
+                    ("racing".into(), Failure::Http(404))
+                ]
+            );
+        });
+        for key in ["permanent", "network", "missing", "racing"] {
+            worker
+                .commands
+                .try_send(Command::RetryImage { key: key.into() })
+                .unwrap();
+        }
+        worker.thread.take().unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn worker_connected_dispatch_retries_only_on_current_epoch_transitions() {
+        let mut worker = Worker::spawn(move |inbox| {
+            let assets = Assets::default();
+            let mut connected = false;
+            for expected in [0, 1, 1, 1, 2] {
+                let command = inbox.rx.recv().unwrap();
+                assert!(worker_asset_command(
+                    &command,
+                    &assets,
+                    2,
+                    &mut connected,
+                    &|_| {}
+                ));
+                assert_eq!(assets.reconnects.load(Ordering::Relaxed), expected);
+            }
+        });
+        for (epoch, state) in [
+            (1, SyncState::Connected),
+            (2, SyncState::Connected),
+            (2, SyncState::Connected),
+            (2, SyncState::Offline),
+            (2, SyncState::Connected),
+        ] {
+            worker
+                .commands
+                .try_send(Command::Push {
+                    epoch,
+                    event: sync::Event::State(state),
+                })
+                .unwrap();
+        }
+        worker.thread.take().unwrap().join().unwrap();
+    }
+
+    #[test]
+    fn refused_visible_thumbnail_reports_a_recoverable_failure() {
+        let assets = Assets::default();
+        let asset = Asset::attachment(&serde_json::json!({"id":"42", "contentType":14})).unwrap();
+        let key = asset.key();
+        let events = std::cell::RefCell::new(Vec::new());
+        queue_thumbnail(&assets, asset, Some("open".into()), &|event| {
+            events.borrow_mut().push(event)
+        });
+        assert!(
+            matches!(events.borrow_mut().pop(), Some(Update::ImageFailed { key: found, failure: Failure::Network }) if found == key)
+        );
     }
 }

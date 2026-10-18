@@ -5,13 +5,14 @@ export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, dr
 export struct FriendRow { header: bool, id: string, name: string, initial: string, status: string, group: bool, avatar: image, avatar-key: string }
 export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
+    file-failed: bool, file-failure: string, file-error: string, file-retryable: bool,
     skip-badge: bool, has-inline-emoji: bool, rich-fallback: bool,
     rich-runs: [RichRun], reply-id: string, reply-preview: string, detail: string,
     kind: MessageKind, links: [LinkRow], accessible-label: string,
     id: string, delivered-time: string, sticker: bool, photo: bool, sort-key: string, body: string, time: string, outgoing: bool,
     sender-id: string, sender-name: string, sender-initial: string, sender-key: string, sender-avatar: image, has-sender-avatar: bool,
     group-start: bool, day-label: string, clock: string,
-    image-key: string, picture: image, has-picture: bool, image-failed: bool,
+    image-key: string, picture: image, has-picture: bool, image-failed: bool, image-failure: string, image-error: string, image-retryable: bool,
     delivery: string, delivery-detail: string, recoverable: bool, reactions: [ReactionRow],
 }
 

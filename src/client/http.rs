@@ -583,6 +583,8 @@ pub(super) struct Transport {
     agent: Agent,
     #[cfg(test)]
     base: String,
+    #[cfg(test)]
+    asset_timeout: Duration,
 }
 
 impl Transport {
@@ -603,6 +605,8 @@ impl Transport {
             ),
             #[cfg(test)]
             base: self.base.clone(),
+            #[cfg(test)]
+            asset_timeout: self.asset_timeout,
         }
     }
 
@@ -619,6 +623,8 @@ impl Transport {
             agent: Agent::with_parts(config, PollConnector::default(), resolver),
             #[cfg(test)]
             base: BASE.into(),
+            #[cfg(test)]
+            asset_timeout: Duration::from_secs(15),
         }
     }
 
@@ -765,14 +771,18 @@ impl Transport {
     }
 
     pub(super) fn asset(&self, url: &str, headers: &[(&str, &str)], cap: usize) -> Result<Vec<u8>> {
-        let _scope = RequestScope::new(Duration::from_secs(15));
+        #[cfg(not(test))]
+        let timeout = Duration::from_secs(15);
+        #[cfg(test)]
+        let timeout = self.asset_timeout;
+        let _scope = RequestScope::new(timeout);
         ACTIVE.with(|slot| {
             let mut slot = slot.borrow_mut();
             let state = slot.as_mut().unwrap();
             state.connect_deadline = Instant::now() + Duration::from_secs(5);
             state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
         });
-        check_request().map_err(transport_error)?;
+        check_request().map_err(asset_error)?;
         #[cfg(test)]
         let local_url = format!(
             "{}{}",
@@ -794,10 +804,10 @@ impl Transport {
             value.set_sensitive(true);
             request = request.header(*name, value);
         }
-        let mut response = request.call().map_err(transport_error)?;
+        let mut response = request.call().map_err(asset_error)?;
         ensure!(
             response.status() == 200,
-            "image unavailable; HTTP response not logged"
+            super::desktop::assets::Failure::Http(response.status().as_u16())
         );
         ensure!(
             response
@@ -806,23 +816,31 @@ impl Transport {
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
                 .is_none_or(|n| n <= cap as u64),
-            "image download too large"
+            super::desktop::assets::Failure::TooLarge
         );
         let mut reader = response.body_mut().as_reader();
         let mut bytes = Vec::new();
         let mut chunk = [0; 8192];
         loop {
-            check_request().map_err(transport_error)?;
+            check_request().map_err(asset_error)?;
             let n = reader.read(&mut chunk[..(cap - bytes.len() + 1).min(8192)]);
-            check_request().map_err(transport_error)?;
-            let n =
-                n.map_err(|_| anyhow::anyhow!("image transport failed; URL and body not logged"))?;
-            ensure!(bytes.len() + n <= cap, "image download too large");
+            check_request().map_err(asset_error)?;
+            let n = n.map_err(|error| asset_error(error.into()))?;
+            ensure!(
+                bytes.len() + n <= cap,
+                super::desktop::assets::Failure::TooLarge
+            );
             if n == 0 {
                 return Ok(bytes);
             }
             bytes.extend_from_slice(&chunk[..n]);
         }
+    }
+
+    #[cfg(test)]
+    pub(in crate::client) fn asset_timeout(mut self, timeout: Duration) -> Self {
+        self.asset_timeout = timeout;
+        self
     }
 
     #[cfg(test)]
@@ -891,19 +909,44 @@ fn validate(path: &str, headers: &[(&str, &str)]) -> Result<Vec<(HeaderName, Hea
     Ok(validated)
 }
 
-fn transport_error(error: ureq::Error) -> anyhow::Error {
+fn asset_error(error: ureq::Error) -> anyhow::Error {
+    use super::desktop::assets::Failure;
     if ACTIVE.with(|slot| {
+        slot.borrow()
+            .as_ref()
+            .and_then(|s| s.cancel.as_ref())
+            .is_some_and(|c| c.load(Ordering::Relaxed))
+    }) {
+        Failure::Cancelled
+    } else if matches!(error, ureq::Error::Timeout(_))
+        || ACTIVE.with(|slot| {
+            slot.borrow()
+                .as_ref()
+                .is_some_and(|s| Instant::now() >= s.deadline)
+        })
+    {
+        Failure::Timeout
+    } else {
+        Failure::Network
+    }
+    .into()
+}
+
+fn transport_error(error: ureq::Error) -> anyhow::Error {
+    use super::desktop::assets::Failure;
+    let failure = if ACTIVE.with(|slot| {
         slot.borrow()
             .as_ref()
             .and_then(|state| state.cancel.as_ref())
             .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
     }) {
-        anyhow::anyhow!("HTTPS request cancelled")
+        Failure::Cancelled
     } else if matches!(error, ureq::Error::Timeout(_)) {
-        anyhow::anyhow!("HTTPS request timed out; response not logged")
+        Failure::Timeout
     } else {
-        anyhow::anyhow!("HTTPS transport failed; response not logged")
-    }
+        Failure::Network
+    };
+    failure.transport_error()
 }
 
 #[cfg(test)]
