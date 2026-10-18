@@ -2,7 +2,7 @@
 use crate::*;
 use line_wasm_poc::client::desktop::{
     assets::{Asset, Pixels},
-    rich::{InlineEmoji, ReplyReference, RichContent},
+    rich::RichContent,
 };
 fn fixture_time(time: &str) -> i64 {
     fixture_time_at(
@@ -148,19 +148,79 @@ fn message(
     let mut row = FakeBackend::message(chat, id, text, outgoing);
     row.created_ms = fixture_time(time);
     row.delivered_ms = Some(row.created_ms);
-    row.body["timestamp_ms"] = row.created_ms.into();
-    row.body["delivered_time"] = row.created_ms.into();
-    row.body["sender_id"] = row.sender_id.clone().into();
-    row.body["sender_name"] = if outgoing { "" } else { "葵" }.into();
     if !outgoing {
-        row.body["sender_avatar"] =
-            serde_json::to_value(image_asset(fake, "avatar-aoi", avatar(0))).unwrap();
+        fake.set_contact(Friend {
+            id: row.sender_id.clone(),
+            profile: ContactProfile {
+                relation: Some(0),
+                ..Default::default()
+            },
+            name: "葵".into(),
+            avatar: Some(image_asset(fake, "avatar-aoi", avatar(0))),
+            ..Default::default()
+        });
     }
     row
 }
-fn rich(row: &mut MessageInput, content: RichContent) {
-    row.content_type = content.content_type as i32;
-    row.body["rich"] = serde_json::to_value(content).unwrap();
+pub(super) fn rich(row: &mut MessageInput, rich: RichContent) {
+    let text = row.body.as_text().to_owned();
+    row.reply = rich.reply.map(Box::new);
+    row.body = if rich.withdrawn {
+        Content::Withdrawn
+    } else {
+        match rich.content_type {
+            0 => Content::Text {
+                text,
+                spans: rich.emoji,
+            },
+            1 => Content::Photo {
+                asset: None,
+                size: None,
+                album_count: rich.album_count,
+                caption: rich.caption,
+            },
+            2 => Content::Video {
+                duration: rich.duration_ms,
+                asset: None,
+                preview: None,
+                album_count: rich.album_count,
+                caption: rich.caption,
+            },
+            3 => Content::Voice {
+                duration: rich.duration_ms,
+                asset: None,
+            },
+            7 => Content::Sticker {
+                pkg: String::new(),
+                id: String::new(),
+                ver: None,
+                asset: None,
+                text: (!text.is_empty()).then_some(text),
+            },
+            13 => Content::Contact {
+                mid: String::new(),
+                name: rich.contact_name,
+            },
+            14 => Content::File {
+                name: rich.file_name,
+                size: rich.file_size,
+                asset: None,
+            },
+            15 => Content::Location {
+                title: None,
+                lat: 0.,
+                lon: 0.,
+            },
+            18 => Content::System {
+                kind: rich.system_key,
+                params: rich.system_args,
+                text: rich.system_text,
+            },
+            content_type => Content::Unknown {
+                content_type: content_type as i32,
+            },
+        }
+    };
 }
 pub fn group(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
     [
@@ -183,15 +243,17 @@ pub fn group(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
     .map(|(i, (body, time, sender, name, outgoing))| {
         let mut row = message(fake, chat, base + i as i64, body, time, outgoing);
         row.sender_id = sender.into();
-        row.body["sender_id"] = sender.into();
-        row.body["sender_name"] = name.into();
         if !outgoing {
-            row.body["sender_avatar"] = serde_json::to_value(image_asset(
-                fake,
-                &format!("avatar-{sender}"),
-                avatar(if sender == "aoi" { 0 } else { 1 }),
-            ))
-            .unwrap();
+            fake.set_contact(Friend {
+                id: sender.into(),
+                name: name.into(),
+                avatar: Some(image_asset(
+                    fake,
+                    &format!("avatar-{sender}"),
+                    avatar(if sender == "aoi" { 0 } else { 1 }),
+                )),
+                ..Default::default()
+            });
         }
         row
     })
@@ -283,8 +345,8 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
                 ..Default::default()
             },
         );
-        if content_type == 14 {
-            row.body["attachment"] = serde_json::to_value(FakeBackend::asset(true)).unwrap();
+        if let Content::File { asset, .. } = &mut row.body {
+            *asset = Some(FakeBackend::asset(true));
         }
         rows.push(row);
     }
@@ -325,12 +387,9 @@ pub fn seed(fake: &FakeBackend) {
         chats.push(ChatInput {
             id: ChatId((*chat).into()),
             title: (*title).into(),
-            kind: if i == 1 { 1 } else { 0 },
+            is_group: i == 1,
             member_count: (i == 1).then_some(25),
-            avatar: Some(
-                serde_json::to_string(&image_asset(fake, &format!("chat-avatar-{i}"), avatar(i)))
-                    .unwrap(),
-            ),
+            avatar: Some(image_asset(fake, &format!("chat-avatar-{i}"), avatar(i))),
             last_message_id: Some(last.server_id.clone()),
             last_message_ms: Some(last.created_ms),
             ..Default::default()
@@ -339,7 +398,7 @@ pub fn seed(fake: &FakeBackend) {
     let mut friends = chats
         .iter()
         .enumerate()
-        .map(|(i, c)| line_wasm_poc::client::desktop::Friend {
+        .map(|(i, c)| line_wasm_poc::store::Friend {
             profile: Default::default(),
             id: c.id.0.clone(),
             name: c.title.clone(),
@@ -349,12 +408,12 @@ pub fn seed(fake: &FakeBackend) {
                 "Ideas for a quiet afternoon",
             ][i]
                 .into(),
-            group: c.kind != 0,
-            avatar: c.avatar.as_ref().map(|a| serde_json::from_str(a).unwrap()),
+            group: c.is_group,
+            avatar: c.avatar.clone(),
             member_count: c.member_count.map(|n| n as usize),
         })
         .collect::<Vec<_>>();
-    friends.push(line_wasm_poc::client::desktop::Friend {
+    friends.push(line_wasm_poc::store::Friend {
         profile: Default::default(),
         id: "new-friend".into(),
         name: "新しい友だち 🌸".into(),
@@ -366,9 +425,15 @@ pub fn seed(fake: &FakeBackend) {
     fake.set_friends(friends);
     fake.set_members(
         (0..26)
-            .map(|i| line_wasm_poc::client::desktop::Member {
+            .map(|i| line_wasm_poc::store::Member {
+                resolved: true,
                 is_self: i == 0,
-                contact: line_wasm_poc::client::desktop::Friend { profile: serde_json::json!({"relation":if i == 1 {0} else {2},"invited":i == 25}),
+                contact: line_wasm_poc::store::Friend {
+                    profile: ContactProfile {
+                        relation: Some(if i == 1 { 0 } else { 2 }),
+                        invited: i == 25,
+                        ..Default::default()
+                    },
                     id: match i {
                         0 => "self".into(),
                         1 => "alice".into(),
@@ -421,7 +486,9 @@ pub fn reading(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
                     ..Default::default()
                 },
             );
-            row.body["decryption_failed"] = (i == 10).into();
+            if i == 10 {
+                row.body = Content::Undecryptable;
+            }
             row
         })
         .collect()
@@ -453,7 +520,7 @@ pub fn photos(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
                     ..Default::default()
                 },
             );
-            row.body["image"] = serde_json::to_value(image_asset(
+            *row.body.image_mut() = Some(image_asset(
                 fake,
                 if portrait {
                     "photo-portrait"
@@ -461,8 +528,7 @@ pub fn photos(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
                     "photo-landscape"
                 },
                 photo(portrait),
-            ))
-            .unwrap();
+            ));
             row
         })
         .collect();
@@ -585,7 +651,7 @@ pub fn previews(fake: &FakeBackend) {
                 )
                 .unwrap();
             }
-            row.body["image"] = asset;
+            *row.body.image_mut() = Some(serde_json::from_value(asset).unwrap());
         }
         chats.push(ChatInput {
             id: ChatId(chat.clone()),
@@ -618,7 +684,6 @@ pub fn paged_rows(
                 false,
             );
             row.created_ms -= (1000 - n) as i64 * 60000;
-            row.body["timestamp_ms"] = row.created_ms.into();
             row
         })
         .collect()
@@ -635,6 +700,6 @@ pub fn sticker(fake: &FakeBackend, chat: &str) -> MessageInput {
     );
     let asset = image_asset(fake, "sticker", photo(true));
     fake.delay_asset(&asset, std::time::Duration::from_secs(1));
-    row.body["image"] = serde_json::to_value(asset).unwrap();
+    *row.body.image_mut() = Some(asset);
     row
 }

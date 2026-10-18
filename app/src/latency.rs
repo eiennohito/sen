@@ -19,7 +19,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
             let asset =
                 demo_data::image_asset(&fake, &format!("latency-{i}"), demo_data::avatar(i % 3));
             assets.push(asset.key());
-            Some(serde_json::to_string(&asset).unwrap())
+            Some(asset)
         } else {
             None
         };
@@ -128,7 +128,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
     d.state.chat_order.clear();
     d.state.selected = None;
     let contacts = (0..300)
-        .map(|i| line_wasm_poc::client::desktop::Friend {
+        .map(|i| line_wasm_poc::store::Friend {
             profile: Default::default(),
             id: format!("contact-{i}"),
             name: format!("Contact {i}"),
@@ -149,7 +149,8 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
             d.state.members = contacts
                 .iter()
                 .cloned()
-                .map(|contact| line_wasm_poc::client::desktop::Member {
+                .map(|contact| line_wasm_poc::store::Member {
+                    resolved: true,
                     contact,
                     is_self: false,
                 })

@@ -97,10 +97,7 @@ pub enum Intent {
         chat: ChatId,
         draft: Draft,
     },
-    Pref {
-        key: String,
-        value: Value,
-    },
+    Prefs(Prefs),
     MarkRead {
         chat: ChatId,
         id: ServerId,
@@ -120,8 +117,8 @@ pub enum Delta {
         text: String,
     },
     Connection(Connection),
-    Profile(Value),
-    Contact(crate::client::desktop::Friend),
+    Profile(crate::store::Profile),
+    Contact(crate::store::Friend),
     Notice {
         mid: String,
         data: Value,
@@ -136,10 +133,10 @@ pub enum Delta {
     },
     MoreChats(bool),
     Notify(crate::store::MessageInput),
-    Friends(Vec<crate::client::desktop::Friend>),
+    Friends(Vec<crate::store::Friend>),
     Members {
         chat: ChatId,
-        rows: Vec<crate::client::desktop::Member>,
+        rows: Vec<crate::store::Member>,
     },
     MediaFailed {
         key: String,
@@ -173,10 +170,7 @@ pub enum Delta {
         chat: ChatId,
         draft: Option<Draft>,
     },
-    Pref {
-        key: String,
-        value: Value,
-    },
+    Prefs(Prefs),
     Copy {
         chat: ChatId,
         text: String,
@@ -417,6 +411,8 @@ impl Worker {
                                 stream: None,
                                 assets_stop: worker_cancel,
                                 list_sweep: vec![],
+                                list_cursor: None,
+                                list_more: false,
                                 continuous: true,
                                 retry_after: Default::default(),
                                 retry_attempts: Default::default(),
@@ -464,6 +460,8 @@ struct Engine {
     retry_after: std::collections::BTreeMap<Refresh, Instant>,
     continuous: bool,
     list_sweep: Vec<ChatInput>,
+    list_cursor: Option<String>,
+    list_more: bool,
     net: mpsc::Sender<NetJob>,
     net_pending: usize,
     generation: u64,
@@ -595,16 +593,11 @@ impl Engine {
         }
     }
     fn run(&mut self) -> Result<()> {
-        self.seq = self
-            .store
-            .get_pref("request_seq")?
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0) as u32;
+        self.seq = self.store.prefs()?.request_seq;
         self.emit(Delta::Connection(Connection::Local));
-        self.emit(Delta::Profile(self.store.account()?.profile_json));
-        for (key, value) in self.store.prefs()? {
-            self.emit(Delta::Pref { key, value });
-        }
+        self.emit(Delta::Profile(self.store.account()?.profile));
+        self.emit_friends()?;
+        self.emit(Delta::Prefs(self.store.prefs()?));
         for row in self.store.all_pending()? {
             if row.delivery == Delivery::Pending {
                 self.store.mark_failed(row.key, Delivery::Uncertain)?;
@@ -613,12 +606,7 @@ impl Engine {
         // The local subscription snapshot is emitted before any RPC.
         self.list = Some((1, 100));
         self.publish()?;
-        if let Some(v) = self.store.get_pref("last_chat")? {
-            let chat = ChatId(
-                v.as_str()
-                    .ok_or_else(|| StoreError::Invalid("last_chat must be a string".into()))?
-                    .into(),
-            );
+        if let Some(chat) = self.store.prefs()?.last_chat {
             self.open(WindowSub {
                 sub: 1,
                 chat,
@@ -805,41 +793,27 @@ impl Engine {
                             for key in keys {
                                 engine.inbox.refresh(Refresh::Send(key));
                             }
-                            for (key, value) in engine.store.prefs()? {
-                                engine.emit(Delta::Pref { key, value });
-                            }
+                            engine.emit(Delta::Prefs(engine.store.prefs()?));
                             if engine.window.is_none()
-                                && let Some(chat) = engine.store.get_pref("last_chat")?
+                                && let Some(chat) = engine.store.prefs()?.last_chat
                             {
                                 engine.open(WindowSub {
                                     sub: 1,
-                                    chat: ChatId(
-                                        chat.as_str()
-                                            .ok_or_else(|| {
-                                                StoreError::Invalid(
-                                                    "last_chat must be a string".into(),
-                                                )
-                                            })?
-                                            .into(),
-                                    ),
+                                    chat,
                                     anchor: Anchor::Unread,
                                     before: 80,
                                     after: 80,
                                 })?;
                             }
                         }
-                        engine.store.set_account(&p.mid, p.data.clone())?;
+                        engine.store.set_account(&p.mid, p.clone())?;
                         if let Some(root) = &engine.account_root {
                             std::fs::create_dir_all(root)?;
                             std::fs::write(root.join("last-mid.tmp"), &p.mid)?;
                             std::fs::rename(root.join("last-mid.tmp"), root.join("last-mid"))?;
                         }
-                        engine.seq = engine
-                            .store
-                            .get_pref("request_seq")?
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0) as u32;
-                        engine.emit(Delta::Profile(p.data));
+                        engine.seq = engine.store.prefs()?.request_seq;
+                        engine.emit(Delta::Profile(p));
                         engine.connection(Connection::Online);
                         engine.inbox.refresh(Refresh::ChatList);
                         for chat in engine.store.pending_reads()? {
@@ -868,15 +842,18 @@ impl Engine {
             .checked_add(1)
             .filter(|seq| *seq <= 0x7fff_ffff)
             .ok_or_else(|| StoreError::Invalid("request sequence exhausted".into()))?;
-        self.store.set_pref("request_seq", Value::from(self.seq))?;
+        let mut prefs = self.store.prefs()?;
+        prefs.request_seq = self.seq;
+        self.store.set_prefs(&prefs)?;
         Ok(self.seq)
     }
     fn open(&mut self, w: WindowSub) -> Result<()> {
         if self.store.chat(&w.chat)?.is_none() {
             self.inbox.refresh(Refresh::Details(w.chat.clone()));
         }
-        self.store
-            .set_pref("last_chat", Value::from(w.chat.0.clone()))?;
+        let mut prefs = self.store.prefs()?;
+        prefs.last_chat = Some(w.chat.clone());
+        self.store.set_prefs(&prefs)?;
         if self.window.as_ref().is_none_or(|old| old.chat != w.chat) {
             self.emit(Delta::Draft {
                 chat: w.chat.clone(),
@@ -890,18 +867,13 @@ impl Engine {
     }
     // Friends always reach the UI in store order, so a refresh does not reshuffle rows.
     fn emit_friends(&mut self) -> Result<()> {
-        let rows = self
-            .store
-            .contacts()?
-            .into_iter()
-            .map(serde_json::from_value::<crate::client::desktop::Friend>)
-            .collect::<std::result::Result<Vec<_>, _>>()?;
+        let rows = self.store.contacts()?.into_iter().collect::<Vec<_>>();
         for row in &rows {
             self.emit(Delta::Contact(row.clone()));
         }
         self.emit(Delta::Friends(
             rows.into_iter()
-                .filter(|r: &crate::client::desktop::Friend| r.group || r.profile["relation"] == 0)
+                .filter(|r: &crate::store::Friend| r.group || r.profile.relation == Some(0))
                 .collect(),
         ));
         Ok(())
@@ -938,6 +910,8 @@ impl Engine {
                                 }
                                 engine.inbox.wake.notify_all();
                                 engine.list_sweep.clear();
+                                engine.list_cursor = None;
+                                engine.list_more = false;
                                 engine.retry_after.clear();
                                 for row in engine.store.all_pending()? {
                                     if row.delivery == Delivery::Pending {
@@ -966,8 +940,8 @@ impl Engine {
                 );
             }
             Intent::Contact(mid) => {
-                if let Some(row) = self.store.contacts()?.into_iter().find(|v| v["id"] == mid) {
-                    self.emit(Delta::Contact(serde_json::from_value(row)?));
+                if let Some(row) = self.store.contacts()?.into_iter().find(|v| v.id == mid) {
+                    self.emit(Delta::Contact(row));
                 }
                 self.inbox.refresh(Refresh::Contact(mid));
             }
@@ -998,32 +972,20 @@ impl Engine {
                             match &action {
                                 ProfileAction::Rename { mid, name }
                                 | ProfileAction::AddFriend { mid, chat: name } => {
-                                    if let Some(raw) = engine
-                                        .store
-                                        .contacts()?
-                                        .into_iter()
-                                        .find(|v| v["id"] == *mid)
+                                    if let Some(raw) =
+                                        engine.store.contacts()?.into_iter().find(|v| v.id == *mid)
                                     {
-                                        let mut row: crate::client::desktop::Friend =
-                                            serde_json::from_value(raw)?;
-                                        if row.profile.is_null() {
-                                            row.profile = serde_json::json!({});
-                                        }
+                                        let mut row = raw;
                                         if matches!(&action, ProfileAction::Rename { .. }) {
-                                            if row.profile["displayName"].is_null() {
-                                                row.profile["displayName"] =
-                                                    row.name.clone().into();
+                                            if row.profile.original_name.is_none() {
+                                                row.profile.original_name = Some(row.name.clone());
                                             }
-                                            row.profile["displayNameOverridden"] =
-                                                name.clone().into();
+                                            row.profile.overridden_name = Some(name.clone());
                                             row.name = name.clone();
                                         } else {
-                                            row.profile["relation"] = 0.into();
+                                            row.profile.relation = Some(0);
                                         }
-                                        engine.store.save_contacts(&[(
-                                            mid.clone(),
-                                            serde_json::to_value(&row)?,
-                                        )])?;
+                                        engine.store.save_contacts(std::slice::from_ref(&row))?;
                                         engine.emit(Delta::Contact(row));
                                         engine.emit_friends()?;
                                     }
@@ -1064,12 +1026,7 @@ impl Engine {
             }
             Intent::Members(chat) => {
                 self.emit(Delta::Members {
-                    rows: self
-                        .store
-                        .members(&chat)?
-                        .into_iter()
-                        .map(serde_json::from_value)
-                        .collect::<std::result::Result<Vec<_>, _>>()?,
+                    rows: self.store.members(&chat)?.into_iter().collect::<Vec<_>>(),
                     chat: chat.clone(),
                 });
                 self.inbox.refresh(Refresh::Members(chat));
@@ -1127,7 +1084,7 @@ impl Engine {
                     &chat,
                     LocalId(format!("{}-{seq}", now_ms())),
                     seq,
-                    serde_json::json!({"body":text}),
+                    Content::text(&text),
                     now_ms(),
                 )?;
                 self.store.clear_draft(&chat)?;
@@ -1189,7 +1146,7 @@ impl Engine {
                 }
                 let row = self.store.message(key)?;
                 if row.outgoing
-                    && !row.withdrawn
+                    && !row.body.is_withdrawn()
                     && let Some(id) = row.server_id
                 {
                     let seq = self.next_seq()?;
@@ -1213,7 +1170,7 @@ impl Engine {
                 let m = self.store.message(key)?;
                 self.emit(Delta::Copy {
                     chat: m.chat_id,
-                    text: m.body["body"].as_str().unwrap_or_default().into(),
+                    text: m.body.as_text().into(),
                 });
             }
             Intent::Draft { chat, draft } => {
@@ -1223,9 +1180,12 @@ impl Engine {
                 self.window = window;
                 result?;
             }
-            Intent::Pref { key, value } => {
-                self.store.set_pref(&key, value.clone())?;
-                self.emit(Delta::Pref { key, value });
+            Intent::Prefs(mut prefs) => {
+                let stored = self.store.prefs()?;
+                prefs.last_chat = stored.last_chat;
+                prefs.request_seq = stored.request_seq;
+                self.store.set_settings(&prefs)?;
+                self.emit(Delta::Prefs(prefs));
             }
             Intent::MarkRead { chat, id } => {
                 self.store.mark_read(&chat, id.clone())?;
@@ -1238,9 +1198,7 @@ impl Engine {
     }
     fn send(&mut self, key: Key) -> Result<()> {
         let m = self.store.message(key)?;
-        let text = m.body["body"]
-            .as_str()
-            .ok_or_else(|| StoreError::Invalid("send body must be text".into()))?;
+        let text = m.body.as_text();
         let seq = m
             .request_seq
             .ok_or_else(|| StoreError::Invalid("send sequence missing".into()))?;
@@ -1285,21 +1243,39 @@ impl Engine {
         Ok(())
     }
     fn load_chats(&mut self, next: bool) -> Result<()> {
+        if !next && self.list_more {
+            self.inbox.refresh(Refresh::MoreChats);
+            return Ok(());
+        }
+
+        let cursor = if next { self.list_cursor.clone() } else { None };
         self.rpc(
-            move |backend| backend.chats(next),
+            move |backend| backend.chats(cursor),
             move |engine, result| {
                 match result {
-                    Ok(page) => {
+                    Ok(mut page) => {
+                        for chat in &mut page.chats {
+                            if chat.title.trim().is_empty()
+                                && let Some(old) = engine.store.chat(&chat.id)?
+                            {
+                                chat.title = old.title;
+                                chat.avatar = old.avatar;
+                                chat.member_count = old.member_count;
+                            }
+                        }
                         if !next {
                             engine.list_sweep.clear();
                         }
+                        engine.list_cursor = page.cursor;
+                        engine.list_more = page.more;
                         engine.list_sweep.extend(page.chats.clone());
                         engine.store.upsert_chats(&engine.list_sweep, !page.more)?;
                         for m in page.previews {
                             engine.store.apply_live(&m.chat_id, &m, false, None)?;
                         }
                         for c in &page.chats {
-                            if c.title.is_empty() || (c.kind != 0 && c.member_count.is_none()) {
+                            if c.title.trim().is_empty() || (c.is_group && c.member_count.is_none())
+                            {
                                 engine.inbox.refresh(Refresh::Details(c.id.clone()));
                             }
                         }
@@ -1325,6 +1301,20 @@ impl Engine {
         );
         Ok(())
     }
+    fn resolve_senders(&self, rows: &[MessageInput]) -> Result<()> {
+        let known = self
+            .store
+            .contacts()?
+            .into_iter()
+            .map(|c| c.id)
+            .collect::<BTreeSet<_>>();
+        for row in rows {
+            if !row.outgoing && !row.sender_id.is_empty() && !known.contains(&row.sender_id) {
+                self.inbox.refresh(Refresh::Contact(row.sender_id.clone()));
+            }
+        }
+        Ok(())
+    }
     fn page(&mut self, chat: ChatId, kind: PageKind) -> Result<()> {
         if self.store.stored_page(&chat, &kind)? {
             return Ok(());
@@ -1336,6 +1326,7 @@ impl Engine {
             move |engine, result| {
                 match result {
                     Ok(page) => {
+                        engine.resolve_senders(&page.rows)?;
                         let recent = matches!(page.kind, PageKind::Recent);
                         engine.store.apply_page(
                             &chat,
@@ -1411,14 +1402,15 @@ impl Engine {
                     move |engine, result| {
                         match result {
                             Ok(row) => {
-                                if row.profile["relation"] == 2 {
+                                if row.profile.relation == Some(2) {
                                     engine.inbox.refresh(Refresh::Notice(mid.clone()));
                                 }
-                                engine
-                                    .store
-                                    .save_contacts(&[(mid.clone(), serde_json::to_value(&row)?)])?;
+                                engine.store.save_contacts(std::slice::from_ref(&row))?;
                                 engine.emit(Delta::Contact(row));
                             }
+                            // A contact the server returns without a profile (e.g. a deleted
+                            // account) is a final answer; retrying would loop forever.
+                            Err(Error::Decode) => {}
                             Err(e) => engine.rpc_failed(Refresh::Contact(mid), e),
                         };
                         Ok(())
@@ -1461,19 +1453,11 @@ impl Engine {
                         match result {
                             Ok(mut rows) => {
                                 for row in &mut rows {
-                                    if !row.group && row.profile["relation"].is_null() {
-                                        if row.profile.is_null() {
-                                            row.profile = serde_json::json!({});
-                                        }
-                                        row.profile["relation"] = 0.into();
+                                    if !row.group && row.profile.relation.is_none() {
+                                        row.profile.relation = Some(0);
                                     }
                                 }
-                                engine.store.save_contacts(
-                                    &rows
-                                        .iter()
-                                        .map(|r| (r.id.clone(), serde_json::to_value(r).unwrap()))
-                                        .collect::<Vec<_>>(),
-                                )?;
+                                engine.store.save_contacts(&rows)?;
                                 engine.emit_friends()?;
                             }
                             Err(e) => engine.rpc_failed(Refresh::Friends, e),
@@ -1488,34 +1472,33 @@ impl Engine {
                     move |backend| backend.members(&net_chat),
                     move |engine, result| {
                         match result {
-                            Ok(rows) => {
+                            Ok(mut rows) => {
                                 let existing = engine.store.contacts()?;
+                                for member in &mut rows {
+                                    if !member.resolved
+                                        && let Some(old) =
+                                            existing.iter().find(|c| c.id == member.contact.id)
+                                    {
+                                        let invited = member.contact.profile.invited;
+                                        member.contact = old.clone();
+                                        member.contact.profile.invited = invited;
+                                    }
+                                }
                                 let contacts = rows
                                     .iter()
-                                    .filter(|m| !m.is_self && !m.contact.profile.is_null())
+                                    .filter(|m| !m.is_self && m.resolved)
                                     .filter_map(|m| {
                                         let mut contact = m.contact.clone();
-                                        contact.profile.as_object_mut()?.remove("invited");
-                                        let old = existing.iter().find(|v| v["id"] == contact.id);
-                                        if old.is_some_and(|v| v["profile"]["relation"] == 0) {
+                                        contact.profile.invited = false;
+                                        let old = existing.iter().find(|v| v.id == contact.id);
+                                        if old.is_some_and(|v| v.profile.relation == Some(0)) {
                                             return None;
                                         }
-                                        Some((
-                                            contact.id.clone(),
-                                            serde_json::to_value(contact).unwrap(),
-                                        ))
+                                        Some(contact)
                                     })
                                     .collect::<Vec<_>>();
                                 engine.store.save_contacts(&contacts)?;
-                                engine.store.save_members(
-                                    &chat,
-                                    &rows
-                                        .iter()
-                                        .map(|r| {
-                                            (r.contact.id.clone(), serde_json::to_value(r).unwrap())
-                                        })
-                                        .collect::<Vec<_>>(),
-                                )?;
+                                engine.store.save_members(&chat, &rows)?;
                                 engine.emit(Delta::Members { chat, rows });
                             }
                             Err(e) => engine.rpc_failed(Refresh::Members(chat), e),
@@ -1585,8 +1568,9 @@ impl Engine {
                 {
                     let net_chat = chat.clone();
                     let net_id = id.clone();
+                    let seq = self.next_seq()?;
                     self.rpc(
-                        move |backend| backend.mark_read(&net_chat, &net_id),
+                        move |backend| backend.mark_read(&net_chat, &net_id, seq),
                         move |engine, result| {
                             match result {
                                 Ok(()) => {
@@ -1623,8 +1607,11 @@ impl Engine {
                 | StreamEvent::Connecting(_)
                 | StreamEvent::Retry { .. }
                 | StreamEvent::Exited
-                | StreamEvent::Raw(_)
-                | StreamEvent::Token(_) => return Ok(()),
+                | StreamEvent::Raw(_) => return Ok(()),
+                StreamEvent::RefreshToken { reply } => {
+                    let _ = reply.send(Err(Error::Auth));
+                    return Ok(());
+                }
                 StreamEvent::Authorize { reply, .. } => {
                     let _ = reply.send(Err(crate::client::desktop::assets::Failure::Network));
                     return Ok(());
@@ -1671,13 +1658,16 @@ impl Engine {
                     if let Op::Recent(chat) = &op.op {
                         self.inbox.refresh(Refresh::Recent(chat.clone()));
                     }
+                    if let Op::Message(m) = &op.op {
+                        self.resolve_senders(std::slice::from_ref(m.as_ref()))?;
+                    }
                     self.store.apply_operation(&op, self.continuous)?;
                     if fresh
                         && !op.replay
                         && let Op::Message(m) = &op.op
                         && !m.outgoing
                     {
-                        self.emit(Delta::Notify(m.clone()));
+                        self.emit(Delta::Notify(m.as_ref().clone()));
                     }
                     self.publish()?;
                 }
@@ -1695,7 +1685,7 @@ impl Engine {
                             if self
                                 .store
                                 .chat(&ChatId(id.clone()))?
-                                .is_some_and(|c| c.kind != 0) =>
+                                .is_some_and(|c| c.is_group) =>
                         {
                             self.store.remove_chat(&ChatId(id))?;
                             self.publish()?;
@@ -1728,7 +1718,16 @@ impl Engine {
                     },
                 );
             }
-            StreamEvent::Token(v) => self.rpc(move |backend| backend.token(v), |_, ()| Ok(())),
+            StreamEvent::RefreshToken { reply } => {
+                let stop = self.assets_stop.clone();
+                self.rpc(
+                    move |backend| backend.refresh_token(&stop),
+                    move |_, result| {
+                        let _ = reply.send(result);
+                        Ok(())
+                    },
+                );
+            }
             StreamEvent::Retry { attempt, error } => {
                 self.attempt = self.attempt.max(attempt);
                 self.error(error);
@@ -1874,7 +1873,7 @@ impl Engine {
             self.message_keys = keys;
             let mut replies = Vec::new();
             for row in &window.rows {
-                if let Some(id) = row.body["rich"]["reply"]["message_id"].as_str()
+                if let Some(id) = row.reply.as_ref().map(|r| r.message_id.as_str())
                     && let Some(target) = self.store.message_by_server(&ServerId(id.into()))?
                 {
                     replies.push(target);

@@ -81,6 +81,18 @@ def element(label, role, read_tree=tree):
                 raise AssertionError(f"Missing {role} {label!r}; visible controls: {labels}") from None
             time.sleep(0.05)
 
+def wait_for(predicate, message):
+    # MCP input dispatch completes before worker deltas and layout callbacks.
+    # Poll the observable outcome instead of assuming one RPC or a sleep drains them.
+    deadline = time.monotonic() + 5
+    while True:
+        result = predicate()
+        if result:
+            return result
+        assert time.monotonic() < deadline, message
+        time.sleep(.05)
+
+
 def scenario_element(label):
     # Inspect the modal itself with the same bound as the shell behind it.
     handles = call("find_elements_by_id", windowHandle=window, elementsId="DemoScenarios::scenario-panel")["elementHandles"]
@@ -518,12 +530,30 @@ def check_detail_stack():
     element("Search members", "TextInput")
     click("Open member: 葵")
     element("Profile", "Text")
+    click("Rename")
+    call("set_element_value", elementHandle=element("Name", "TextInput")["handle"], value="Aoi test 🌿")
+    click("Save")
+    element("Aoi test 🌿", "Text")
+    element("葵", "Text")
+    click("Rename")
+    call("set_element_value", elementHandle=element("Name", "TextInput")["handle"], value="葵")
+    click("Save")
+    element("葵", "Text")
     click("Open profile photo")
     element("Photo in viewer", "Image")
     key("\x1b")
     focused("Open profile photo")
     click("Back")
     focused("Group members", "List")
+    click("Open member: 蓮")
+    click("Add friend")
+    element("Rename", "Button")
+    element("Chat", "Button")
+    click("Back")
+    click("Open member: Unknown member")
+    assert not any(item.get("accessibleLabel") in ("Chat", "Rename", "Add friend") for item in tree()), "unknown profile exposed a write"
+    click("Back")
+    call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="葵")
     click("Back")
     focused("Members (25)")
     click("Members (25)")
@@ -537,6 +567,18 @@ def check_detail_stack():
     click("Close details")
     assert not any(item.get("accessibleLabel")=="Close details" for item in tree()), "close did not clear the stack"
     focused("Friends and groups", "List")
+    click("Open profile: Weekend plans")
+    click("Notifications", "Checkbox")
+    deadline = time.monotonic() + 3
+    while element("Notifications", "Checkbox").get("accessibleValue") != "Off":
+        assert time.monotonic() < deadline, "mute did not update"
+        time.sleep(.02)
+    click("Leave group")
+    element("Leave group?", "Text")
+    key("\x1b")
+    click("Leave group")
+    click("Leave")
+    click("Close details")
     click("Chats")
     smoke_chat("葵")
     print("PASS: group info → members → profile, Back/Escape pop, × closes stack, opener focus restoration")
@@ -922,9 +964,9 @@ if args.rich:
             assert not any(item.get("accessibleLabel") == "Return to message" for item in rich_tree()), "Latest retained the return anchor"
             latest_y = emoji_body()["absolutePosition"]["y"]
             call("click_element", elementHandle=rich_element("Jump to replied message", "Button")["handle"])
-            assert abs(emoji_body()["absolutePosition"]["y"] - latest_y) > 1, "reply jump after Latest did not scroll"
+            wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - latest_y) > 1, "reply jump after Latest did not scroll")
             call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
-            assert abs(emoji_body()["absolutePosition"]["y"] - latest_y) <= 1, "Return after Latest lost its origin"
+            wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - latest_y) <= 1, "Return after Latest lost its origin")
         print("PASS: Latest → reply jump → Return → Latest → reply jump → Return")
         call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
         reply = rich_element("Jump to replied message", "Button")
@@ -955,6 +997,7 @@ if args.rich:
             assert rich_element(label, role).get("accessibleDescription", "").startswith("Focused"), f"forward Tab skipped {label}"
         assert call("get_element_properties", elementHandle=composer).get("accessibleDescription") == "Focused message draft", "history/Latest/Return/composer Tab order changed"
         call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
+        wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return did not restore its origin")
         restored_y = emoji_body()["absolutePosition"]["y"]
         assert abs(restored_y - origin_y) <= 1, f"Offline appearing moved reply return: {origin_y} -> {restored_y}"
         print(f"PASS: reply return with Offline appearing: y={origin_y} -> {restored_y}")
@@ -969,6 +1012,7 @@ if args.rich:
             assert time.monotonic() < deadline, "synthetic reconnect did not clear the strip"
             time.sleep(0.1)
         call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
+        wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return did not restore its origin")
         restored_y = emoji_body()["absolutePosition"]["y"]
         assert abs(restored_y - origin_y) <= 1, f"Offline disappearing moved reply return: {origin_y} -> {restored_y}"
         reply = rich_element("Jump to replied message", "Button")
@@ -985,7 +1029,7 @@ if args.rich:
         call("click_element", elementHandle=rich_element("Jump to replied message", "Button")["handle"])
         rich_element("Return to message", "Button")  # The restored quote must accept another jump.
         call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
-        assert abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor with unchanged inset"
+        wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor with unchanged inset")
     else:
         # At 1280×900 this eight-row fixture fits; no Latest pill or scroll is needed.
         origin_y=emoji_body()["absolutePosition"]["y"]
@@ -1053,16 +1097,18 @@ print(f"PASS: MCP draft retention, chat selection, filtering, local demo Ctrl+En
 
 if args.unread:
     demo_scenario("Long history")
-    time.sleep(.15)  # Let the fixture's store window and first geometry reports settle.
-    call("dispatch_pointer_scroll",windowHandle=window,position={"x":600,"y":280},deltaY=700,deltaX=0)
-    time.sleep(.1)
+    wait_for(lambda: any("39: compact message" in item.get("accessibleValue", item.get("accessibleLabel", "")) for item in tree()), "long history page was not applied")
+    def scroll_unread_history():
+        call("dispatch_pointer_scroll",windowHandle=window,position={"x":600,"y":280},deltaY=700,deltaX=0)
+        return any(item.get("accessibleLabel") == "Latest" for item in tree())
+    wait_for(scroll_unread_history, "long history did not scroll away from Latest")
     candidates=[item for item in tree() if item.get("accessibleRole")=="TextInput" and any(base.get("id","").endswith("::body") for base in item.get("typeNamesAndIds",[])) and 120<item["absolutePosition"]["y"]<380]
     anchor=candidates[0] if candidates else None
     demo_scenario("Unread scenario")
-    current=element("葵","Button")
-    other=element("Weekend plans","Button")
-    assert ", 3 unread" in current["accessibleLabel"],"open-chat arrivals lost unread before exposure"
-    assert ", 2 unread" in other["accessibleLabel"],"other-chat unread badge did not update"
+    def unread_badge(label, count):
+        return any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith(label + ", ") and f", {count} unread" in item["accessibleLabel"] for item in tree())
+    wait_for(lambda: unread_badge("葵", 3), "open-chat arrivals lost unread before exposure")
+    wait_for(lambda: unread_badge("Weekend plans", 2), "other-chat unread badge did not update")
     if anchor:
         after=next(item for item in tree() if item.get("accessibleRole")==anchor.get("accessibleRole") and item.get("accessibleValue")==anchor.get("accessibleValue"))
         assert abs(after["absolutePosition"]["y"]-anchor["absolutePosition"]["y"])<=1, f"unread arrivals moved content: {anchor['absolutePosition']} -> {after['absolutePosition']}"

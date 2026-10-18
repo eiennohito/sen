@@ -24,16 +24,16 @@ pub struct DetailEntry {
 }
 pub struct AppState {
     pub detail: Vec<DetailEntry>,
-    pub contacts: BTreeMap<String, crate::client::desktop::Friend>,
+    pub contacts: BTreeMap<String, crate::store::Friend>,
     pub group_info: BTreeMap<ChatId, serde_json::Value>,
     pub notices: BTreeMap<String, serde_json::Value>,
     pub action: Option<crate::backend::ProfileAction>,
     pub action_error: String,
-    pub friends: Vec<crate::client::desktop::Friend>,
-    pub members: Vec<crate::client::desktop::Member>,
+    pub friends: Vec<crate::store::Friend>,
+    pub members: Vec<crate::store::Member>,
     pub connection: Connection,
     pub panel: Panel,
-    pub profile: serde_json::Value,
+    pub profile: Profile,
     pub chats: BTreeMap<ChatId, ChatListItem>,
     pub chat_order: Vec<ChatId>,
     pub chat_sub: u64,
@@ -50,7 +50,7 @@ pub struct AppState {
     pub reaches_end: bool,
     pub composer: String,
     pub submitting: Option<(ChatId, String)>,
-    pub prefs: BTreeMap<String, serde_json::Value>,
+    pub prefs: Prefs,
     pub error: Option<String>,
 }
 impl Default for AppState {
@@ -66,7 +66,7 @@ impl Default for AppState {
             members: vec![],
             connection: Connection::Local,
             panel: Panel::Chats,
-            profile: serde_json::Value::Null,
+            profile: Profile::default(),
             chats: BTreeMap::new(),
             chat_order: vec![],
             chat_sub: 1,
@@ -83,7 +83,7 @@ impl Default for AppState {
             reaches_end: false,
             composer: String::new(),
             submitting: None,
-            prefs: BTreeMap::new(),
+            prefs: Prefs::default(),
             error: None,
         }
     }
@@ -189,31 +189,6 @@ impl AppState {
         rows.sort_by(|a, b| a.sort.cmp(&b.sort));
         rows
     }
-    fn locate_unread(&mut self) {
-        let Some(chat) = self.selected.as_ref().and_then(|id| self.chats.get(id)) else {
-            return;
-        };
-        if self.unread_divider.is_none() && chat.chat.unread_count > 0 {
-            let incoming = self
-                .rows()
-                .into_iter()
-                .filter(|m| !m.outgoing && m.server_id.is_some())
-                .collect::<Vec<_>>();
-            let key = if let Some(marker) = &chat.chat.last_read_server_id {
-                let marker = format!("{:0>20}", marker.0);
-                incoming
-                    .iter()
-                    .find(|m| m.sort.sort_id > marker)
-                    .map(|m| m.key)
-            } else if self.reaches_end && incoming.len() >= chat.chat.unread_count as usize {
-                Some(incoming[incoming.len() - chat.chat.unread_count as usize].key)
-            } else {
-                None
-            };
-            self.unread_divider = key;
-        }
-        self.unread_boundary_unknown = chat.chat.unread_count > 0 && self.unread_divider.is_none();
-    }
     pub fn apply(&mut self, delta: Delta) {
         match delta {
             Delta::Fatal => {
@@ -229,14 +204,16 @@ impl AppState {
                 self.submitting = None;
             }
             Delta::Contact(row) => {
-                for m in &mut self.members {
-                    if m.contact.id == row.id {
-                        m.contact = row.clone();
-                    }
-                }
                 for f in &mut self.friends {
                     if f.id == row.id {
                         *f = row.clone();
+                    }
+                }
+                for member in &mut self.members {
+                    if member.contact.id == row.id {
+                        let invited = member.contact.profile.invited;
+                        member.contact = row.clone();
+                        member.contact.profile.invited = invited;
                     }
                 }
                 self.contacts.insert(row.id.clone(), row);
@@ -328,17 +305,16 @@ impl AppState {
             Delta::Copy { chat, text } if self.selected.as_ref() == Some(&chat) => {
                 self.composer = text
             }
-            Delta::Pref { key, value } => {
-                if key == "last_chat"
-                    && self.selected.is_none()
-                    && let Some(chat) = value.as_str()
+            Delta::Prefs(prefs) => {
+                if self.selected.is_none()
+                    && let Some(chat) = &prefs.last_chat
                 {
-                    self.selected = Some(ChatId(chat.into()));
+                    self.selected = Some(chat.clone());
                     self.window_loading = true;
                     self.window_sub = 1;
                     self.window_anchor = Anchor::Unread;
                 }
-                self.prefs.insert(key, value);
+                self.prefs = prefs;
             }
             Delta::Error(e) => {
                 self.error = Some(e);
@@ -347,7 +323,13 @@ impl AppState {
             Delta::StoreSaved => self.error = None,
             _ => {}
         }
-        self.locate_unread();
+
+        self.unread_boundary_unknown = self.unread_divider.is_none()
+            && self
+                .selected
+                .as_ref()
+                .and_then(|id| self.chats.get(id))
+                .is_some_and(|c| c.chat.unread_count > 0);
     }
 }
 

@@ -1,8 +1,8 @@
 use super::*;
 
 const SELECT: &str = "SELECT key,chat_id,server_id,local_id,request_seq,sort_ts,sort_id,
-    sender_id,outgoing,content_type,body_json,reactions_json,reactions_rev,withdrawn,
-    delivery,created_at_local,content_rev FROM message";
+    sender_id,outgoing,body_json,reactions_json,reactions_rev,
+    delivery,created_at_local,content_rev,mentioned,skip_badge,reply_json FROM message";
 
 fn decode(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
     decode_at(r, 0)
@@ -20,14 +20,15 @@ pub(super) fn decode_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Resul
         },
         sender_id: r.get(offset + 7)?,
         outgoing: r.get(offset + 8)?,
-        content_type: r.get(offset + 9)?,
-        body: parse(r, offset + 10)?,
-        reactions: parse(r, offset + 11)?,
-        reactions_rev: r.get(offset + 12)?,
-        withdrawn: r.get(offset + 13)?,
-        delivery: parse(r, offset + 14)?,
-        created_at_local: r.get(offset + 15)?,
-        content_rev: r.get(offset + 16)?,
+        body: parse(r, offset + 9)?,
+        reactions: parse(r, offset + 10)?,
+        reactions_rev: r.get(offset + 11)?,
+        delivery: parse(r, offset + 12)?,
+        created_at_local: r.get(offset + 13)?,
+        content_rev: r.get(offset + 14)?,
+        mentioned: r.get(offset + 15)?,
+        reply: parse(r, offset + 17)?,
+        skip_badge: r.get(offset + 16)?,
     })
 }
 pub(super) fn select_rows(
@@ -73,10 +74,9 @@ fn pending_key(conn: &Connection, seq: u32) -> Result<Option<Key>> {
 }
 pub(super) fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
     conn.execute(
-        "UPDATE message SET server_id=?2, local_id=?3, request_seq=?4, sort_ts=?5, sort_id=?6,
-        sender_id=?7, outgoing=?8, content_type=?9, body_json=?10, reactions_json=?11,
-        reactions_rev=?12, withdrawn=?13, delivery=?14, created_at_local=?15, content_rev=?16
-        WHERE key=?1",
+        "UPDATE message SET server_id=?2,local_id=?3,request_seq=?4,sort_ts=?5,sort_id=?6,
+        sender_id=?7,outgoing=?8,body_json=?9,reactions_json=?10,reactions_rev=?11,
+        delivery=?12,created_at_local=?13,content_rev=?14,mentioned=?15,skip_badge=?16,reply_json=?17 WHERE key=?1",
         params![
             m.key.0,
             m.server_id.as_ref().map(|s| &s.0),
@@ -86,14 +86,12 @@ pub(super) fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
             m.sort.sort_id,
             m.sender_id,
             m.outgoing,
-            m.content_type,
-            m.body.to_string(),
-            m.reactions.to_string(),
+            serde_json::to_string(&m.body)?,
+            serde_json::to_string(&m.reactions)?,
             m.reactions_rev,
-            m.withdrawn,
             serde_json::to_string(&m.delivery)?,
             m.created_at_local,
-            m.content_rev,
+            m.content_rev, m.mentioned, m.skip_badge, serde_json::to_string(&m.reply)?,
         ],
     )?;
     Ok(())
@@ -108,8 +106,8 @@ pub(super) fn insert(
     ensure_chat(conn, chat)?;
     conn.execute(
         "INSERT INTO message(chat_id, local_id, request_seq, sort_ts, sort_id, sender_id,
-        outgoing, content_type, body_json, reactions_json, reactions_rev, withdrawn, delivery,
-        created_at_local) VALUES(?1,?2,?3,?4,?5,'',1,0,'null','null',-9223372036854775808,0,?6,?4)",
+        outgoing, body_json, reactions_json, reactions_rev, delivery,
+        created_at_local) VALUES(?1,?2,?3,?4,?5,'',1,'{\"Text\":{\"text\":\"\",\"spans\":[]}}','[]',-9223372036854775808,?6,?4)",
         params![
             chat.0,
             local.map(|l| &l.0),
@@ -190,8 +188,7 @@ fn link(
         [&id.0],
         |r| r.get::<_, bool>(0),
     )? {
-        target.withdrawn = true;
-        target.body = serde_json::Value::Null;
+        target.body = Content::Withdrawn;
     }
     receipt(conn, &mut target)?;
     save(conn, &target)?;
@@ -241,13 +238,16 @@ fn upsert(
     } else {
         insert(conn, chat, None, None, ts)?
     };
+    let was_withdrawn = row.body.is_withdrawn();
     let first_content = row.content_rev.is_none();
     // Page/live revisions version content independently of reaction-only operations.
     if row.content_rev.is_none_or(|rev| input.reactions_rev > rev) {
         row.body = input.body.clone();
+        row.mentioned = input.mentioned;
+        row.reply = input.reply.clone();
+        row.skip_badge = input.skip_badge;
         row.sender_id = input.sender_id.clone();
         row.outgoing = input.outgoing;
-        row.content_type = input.content_type;
         row.content_rev = Some(input.reactions_rev);
     }
     if row.reactions_rev < input.reactions_rev || (first_content && row.reactions_rev == i64::MIN) {
@@ -263,13 +263,14 @@ fn upsert(
     if row.delivery != Delivery::Read {
         row.delivery = Delivery::Sent;
     }
-    row.withdrawn |= conn.query_row(
-        "SELECT EXISTS(SELECT 1 FROM withdrawal WHERE server_id=?)",
-        [&input.server_id.0],
-        |r| r.get::<_, bool>(0),
-    )?;
-    if row.withdrawn {
-        row.body = serde_json::Value::Null;
+    let withdrawn = was_withdrawn
+        || conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM withdrawal WHERE server_id=?)",
+            [&input.server_id.0],
+            |r| r.get::<_, bool>(0),
+        )?;
+    if withdrawn {
+        row.body = Content::Withdrawn;
     }
     receipt(conn, &mut row)?;
     save(conn, &row)?;
@@ -422,7 +423,7 @@ impl Store {
         chat: &ChatId,
         local_id: LocalId,
         request_seq: u32,
-        body: serde_json::Value,
+        body: Content,
         now_ms: i64,
     ) -> Result<(Key, Changes)> {
         let mut key = Key(0);
@@ -539,10 +540,9 @@ impl Store {
         self.mutate(|tx, c| {
             tx.execute("INSERT OR IGNORE INTO withdrawal VALUES(?)", [&id.0])?;
             if let Some(mut row) = by_server(tx, id)?
-                && !row.withdrawn
+                && !row.body.is_withdrawn()
             {
-                row.withdrawn = true;
-                row.body = serde_json::Value::Null;
+                row.body = Content::Withdrawn;
                 save(tx, &row)?;
                 c.messages_upserted.insert(row.key);
                 c.chats_changed.insert(row.chat_id);
@@ -553,7 +553,7 @@ impl Store {
     pub fn set_reactions(
         &mut self,
         id: &ServerId,
-        reactions: serde_json::Value,
+        reactions: Vec<Reaction>,
         rev: i64,
     ) -> Result<Changes> {
         server_sort(id)?;

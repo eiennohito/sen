@@ -1,6 +1,6 @@
 # Core model: store, worker, projection
 
-Status: implemented through core model phase 3, 2026-10-18. SQLite stores
+Status: implemented through core model phase 3 and R2 typed ownership, 2026-10-18. SQLite stores
 account data; FakeBackend drives offline demos and snapshots through the same
 engine, controller and presenter as the account backend. Behavior is defined
 in [ux-model.md](ux-model.md); engineering constraints are in
@@ -51,19 +51,70 @@ Tables (columns abbreviated):
 
 - `account(own_mid, profile_json, sync_revision, global_revision,
   individual_revision, opened_at)`. One row.
-- `chat(chat_id PK, kind, title, avatar, member_count, muted, left,
+- `chat(chat_id PK, is_group, title, avatar, member_count, muted, left,
   last_key, last_activity, server_unread, last_read_server_id,
   unread_stale, details_at, list_rank)`.
 - `message(key INTEGER PK, chat_id, server_id UNIQUE NULL, local_id UNIQUE
   NULL, request_seq NULL, sort_ts, sort_id, sender_id, outgoing,
-  content_type, body_json, reactions_json, reactions_rev, withdrawn,
-  delivery, delivery_detail, created_at_local, content_rev)`, with an index
+  body_json, reactions_json, reactions_rev, delivery, delivery_detail,
+  created_at_local, content_rev, mentioned, skip_badge)`, with an index
   `(chat_id, sort_ts, sort_id)`.
 - `segment(chat_id, lo_ts, lo_id, hi_ts, hi_id, reaches_start)`. These are the
   contiguous ranges known to have no gaps (see "Gaps").
 - `withdrawal(server_id PK)` remembers unsends received before a message.
-- `contact`, `member(chat_id, mid, …)`, `draft(chat_id, text, cursor,
-  updated)`, `pref(key, value)`, `read_marker(chat_id, server_id, state)`.
+- `contact(mid PK, name, status, is_group, avatar, member_count,
+  original_name, overridden_name, relation, account_type, favorite_time)`.
+- `member(chat_id, mid, is_self, invited)` references the contact identity;
+  member reads use the current contact, so renames also change member names.
+- `draft(chat_id, text, cursor, updated, anchor)`,
+  `preferences(singleton, value)` (one serialized `Prefs`),
+  `read_marker(chat_id, server_id, state)`, `chat_detail(chat_id, wire_json)`.
+
+`ChatInput.is_group` is a boolean and `avatar` is an optional `Asset`, decoded
+when reading SQLite. `Profile` is a typed account identity (MID, display name,
+status, picture path). `Friend` and `Member` belong to the store; the client
+returns these types and retains no contact or member cache. `Prefs` contains
+text size (15 by default), enter-sends (false), typed desktop notification and
+background settings, last chat and the persisted request sequence. Preferences
+cross the engine/controller boundary as a whole struct, never string-keyed values.
+
+### Content
+
+`MessageInput.body` and `StoredMessage.body` are the same store-owned `Content`
+enum. SQLite serializes this enum once into `body_json`, and deserializes it
+on reads. Pending text uses `Text` as well. The variants are:
+
+- `Text { text, spans, reply }` with typed UTF-16/UTF-8 inline emoji spans and
+  an optional server message reference.
+- `Photo { asset, size, album_count, caption }`;
+  `Sticker { pkg, id, ver, asset, text }` (text is the server fallback).
+- `File { name, size, asset }`;
+  `Video { duration, asset, preview, album_count, caption }`;
+  `Voice { duration, asset }`. Durations are milliseconds.
+- `Contact { mid, name }`; `Location { title, lat, lon }`;
+  `System { kind, params, text }` preserves server localization and literal text.
+- `Withdrawn`, `Undecryptable`, `Unknown { content_type }`.
+
+No rendered message, sender display name, outgoing flag, timestamp or reactions
+are duplicated inside content. Withdrawal lives only in `Content::Withdrawn`;
+its tombstone makes it sticky. `Reaction { actor, kind }` is the sole stored and
+transport-decoded reaction representation; kind is a predefined ID or a paid
+reaction asset. Grouping and reaction labels belong to the presenter.
+
+The presenter maps content to today's text and media labels, including decrypt
+failures and unsupported messages. It resolves sender names/avatars from the
+current contact/member projection, and includes that identity in its row-cache
+inputs. Asset discovery, photo viewing and reply lookup use typed fields without
+re-parsing JSON. The store alone computes `unread_anchor`; the controller retains
+the supplied divider for the reading session and never guesses from its window.
+
+Migration `003.sql` advances schema 3 to 4 (the earlier `002.sql` is schema 3).
+Server messages, segments, receipts, withdrawal tombstones and identity/detail
+caches are discarded and fetched again. Local rows without a server ID retain
+their key, delivery state, request sequence and text, converted into `Text`.
+Drafts and preferences survive; the old pref rows become one typed preferences
+record. The account profile is retained as typed fields. There is no legacy
+content reader or compatibility representation after migration.
 
 `key` is the row identity for the life of the row. It does not change when a
 pending send gets its server id. The UI keys every row by `key` and never by
@@ -84,11 +135,11 @@ There is one total order everywhere: `(sort_ts, sort_id)`.
 
 | Input | Rule |
 | --- | --- |
-| Server page (recent, older, newer) | Upsert by `server_id`. Content fields take the newer `reactions_rev`/edit; `withdrawn` is sticky; `delivery` only advances (Sent → Read). Never deletes rows. Extends or merges `segment`s. |
+| Server page (recent, older, newer) | Upsert by `server_id`. Content fields take the newer `reactions_rev`/edit; withdrawal is sticky; `delivery` only advances (Sent → Read). Never deletes rows. Extends or merges `segment`s. |
 | Live message op (25/26/43) | Upsert by `server_id`. Outgoing op 25 with a `request_seq` matching a pending row links to that row (sets `server_id`, `delivery=Sent`). Adjacent to the newest segment when the stream is continuous since the last applied revision; otherwise starts a new segment. |
 | Send result | Link the pending row by `request_seq` → `server_id`. If the echo already created a separate row, merge the two (keep the pending row's `key`, delete the duplicate, emit `Removed{key}`). |
 | Send failure | `delivery = Rejected{reason}` or `Uncertain`. The row stays until resolved. |
-| Unsend op 64/65 | `withdrawn = true`, body cleared, `delivery` untouched. |
+| Unsend op 64/65 | body becomes `Content::Withdrawn`, `delivery` untouched. |
 | Reaction op 139/140 | Replace `reactions_json` if the op's revision is newer. |
 | Receipt op 55 / read ranges | Advance `delivery` to Read for outgoing rows up to the marker. |
 | Read elsewhere op 40 | Advance `chat.last_read_server_id`; recompute unread. |
@@ -202,7 +253,11 @@ rows (`Changes.chats_changed`), and a draft never republishes a message window.
 A live operation applies its delta directly (move the chat up, write the row,
 bump unread). It only schedules `ChatDetails(chat)` when the chat is unknown
 or its metadata op changed. The chat-list pagination cursor belongs to the
-list loader, not to refresh.
+engine list loader. Each backend list request receives that cursor explicitly;
+refreshes and live operations cannot reset an in-progress sweep. Mark-read,
+send, unsend and profile writes all obtain sequences from the engine's persisted
+counter. Echoes use the operation's request sequence to match the stored outbox;
+the client retains no request echo map.
 
 ### Connection state machine
 
@@ -262,6 +317,12 @@ enters `Connection::Fatal`, disables sends and shows “Something went wrong —
 restart”. Normal shutdown sends no fatal delta.
 
 ### Sync supervisor
+
+The SSE thread has only an HTTP transport: it reads the RPC client's shared
+access-token view and requests token refresh through the worker. The RPC client
+alone loads credentials, owns WASM, refreshes/persists tokens and updates that
+view; token values do not travel back through stream events. Standalone sync
+diagnostics construct their own owner outside the desktop engine.
 
 The SSE thread is restarted with backoff on every non-terminal exit. Terminal
 states are only `AuthExpired`, `SessionInvalid` and shutdown. The engine

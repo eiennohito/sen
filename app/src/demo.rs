@@ -23,7 +23,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 .state
                 .rows()
                 .into_iter()
-                .find(|m| m.server_id.is_some() && !m.withdrawn)
+                .find(|m| m.server_id.is_some() && !m.body.is_withdrawn())
             {
                 fake.inject_raw(serde_json::json!({"type":139,"param1":row.server_id.as_ref().unwrap().0,
                     "param2":serde_json::json!({"chatMid":chat.0,"curr":{"predefinedReactionType":2}}).to_string()}));
@@ -78,7 +78,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                     fake.inject(LiveOp {
                         revision: fake.revision(),
                         replay: false,
-                        op: Op::Message(row),
+                        op: Op::Message((row).into()),
                     });
                 }
                 fake.set_page(target, rows);
@@ -100,12 +100,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 fake.inject(LiveOp {
                     revision: id,
                     replay: false,
-                    op: Op::Message(FakeBackend::message(
-                        &chat.0,
-                        id,
-                        &format!("到着 {i}"),
-                        false,
-                    )),
+                    op: Op::Message(
+                        (FakeBackend::message(&chat.0, id, &format!("到着 {i}"), false)).into(),
+                    ),
                 });
             }
         }
@@ -131,16 +128,17 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
         ),
         20..=29 => {
             let mut row = FakeBackend::message(&chat.0, fake.revision(), "", false);
-            row.content_type = 1;
-            row.body["rich"] =
-                serde_json::to_value(line_wasm_poc::client::desktop::rich::RichContent {
+
+            demo_data::rich(
+                &mut row,
+                line_wasm_poc::client::desktop::rich::RichContent {
                     content_type: 1,
                     ..Default::default()
-                })
-                .unwrap();
+                },
+            );
             let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
             asset["failure"] = serde_json::to_value(media_failure((kind - 20) as usize)).unwrap();
-            row.body["image"] = asset;
+            *row.body.image_mut() = Some(serde_json::from_value(asset).unwrap());
             fake.set_page(chat.clone(), vec![row]);
             d.sender.send(Intent::Page {
                 chat,
@@ -211,16 +209,17 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
         .position(|v| *v == class)
         .unwrap();
         let mut row = FakeBackend::message("alice", 900, "", false);
-        row.content_type = 1;
-        row.body["rich"] =
-            serde_json::to_value(line_wasm_poc::client::desktop::rich::RichContent {
+
+        demo_data::rich(
+            &mut row,
+            line_wasm_poc::client::desktop::rich::RichContent {
                 content_type: 1,
                 ..Default::default()
-            })
-            .unwrap();
+            },
+        );
         let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
         asset["failure"] = serde_json::to_value(media_failure(index)).unwrap();
-        row.body["image"] = asset;
+        *row.body.image_mut() = Some(serde_json::from_value(asset).unwrap());
         fake.set_page(ChatId("alice".into()), vec![row]);
         return;
     }
@@ -253,19 +252,19 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
     }
     if scene == "photos" {
         let mut row = FakeBackend::message("alice", 900, "Riverside walk", false);
-        row.content_type = 1;
-        row.body["rich"] =
-            serde_json::to_value(line_wasm_poc::client::desktop::rich::RichContent {
+
+        demo_data::rich(
+            &mut row,
+            line_wasm_poc::client::desktop::rich::RichContent {
                 content_type: 1,
                 ..Default::default()
-            })
-            .unwrap();
-        row.body["image"] = serde_json::to_value(demo_data::image_asset(
+            },
+        );
+        *row.body.image_mut() = Some(demo_data::image_asset(
             fake,
             "photo-landscape",
             demo_data::photo(false),
-        ))
-        .unwrap();
+        ));
         fake.set_page(ChatId("alice".into()), vec![row]);
     }
 }
@@ -320,7 +319,7 @@ fn fixture(
     fake.add_chat(ChatInput {
         id: chat.clone(),
         title: title.into(),
-        kind: if id == "groups" { 1 } else { 0 },
+        is_group: id == "groups",
         member_count: (id == "groups").then_some(25),
         ..Default::default()
     });
@@ -328,7 +327,7 @@ fn fixture(
     fake.inject(LiveOp {
         revision: fake.revision(),
         replay: true,
-        op: Op::Message(rows[0].clone()),
+        op: Op::Message((rows[0].clone()).into()),
     });
     d.capture_draft(ui);
     // A fixture changes the history only; the composer text stays. The draft row

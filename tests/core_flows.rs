@@ -3,14 +3,11 @@ use line_wasm_poc::{
     backend::{FakeBackend, LiveOp, Op},
     controller::AppState,
     engine::{Connection, Delta, Intent, StoreLocation, Timing, Worker},
-    store::{ChatId, Delivery, Key},
+    store::{ChatId, Delivery, Key, Prefs, Reaction, ReactionKind},
 };
 use std::time::{Duration, Instant};
 fn message_text(row: &line_wasm_poc::store::StoredMessage) -> &str {
-    row.body
-        .get("body")
-        .and_then(|body| body.as_str())
-        .unwrap_or_default()
+    row.body.as_text()
 }
 struct App {
     worker: Worker,
@@ -99,11 +96,11 @@ fn m13_send_switch_return_with_stale_page() {
         chat: ChatId("alice".into()),
         kind: line_wasm_poc::store::PageKind::Recent,
     });
-    app.send(Intent::Pref {
-        key: "stale_page_applied".into(),
-        value: true.into(),
-    });
-    app.until(|s| s.prefs.contains_key("stale_page_applied"));
+    app.send(Intent::Prefs(Prefs {
+        text_size: 38,
+        ..Prefs::default()
+    }));
+    app.until(|s| s.prefs.text_size == 38);
     assert_eq!(message_text(&app.state.messages[&key]), "durable send");
 }
 #[test]
@@ -116,7 +113,7 @@ fn m14_closed_chat_incoming_then_open_stale_history() {
     fake.inject(LiveOp {
         revision: 50,
         replay: false,
-        op: Op::Message(FakeBackend::message("alice", 50, "closed arrival", false)),
+        op: Op::Message((FakeBackend::message("alice", 50, "closed arrival", false)).into()),
     });
     app.until(|s| {
         s.chats[&ChatId("alice".into())]
@@ -162,9 +159,9 @@ fn echo_and_send_result_keep_one_identity_in_both_orders() {
             fake.inject(LiveOp {
                 revision: 102,
                 replay: false,
-                op: Op::Message(echo),
+                op: Op::Message((echo).into()),
             });
-            app.until(|s| s.messages[&key].body["sender_name"] == "葵");
+            app.until(|s| s.messages[&key].sender_id == "self");
         }
         assert_eq!(
             app.state
@@ -190,7 +187,7 @@ fn offline_start_shows_cached_chats_and_window() {
         fake.inject(LiveOp {
             revision: 75,
             replay: false,
-            op: Op::Message(FakeBackend::message("alice", 75, "checkpoint", false)),
+            op: Op::Message((FakeBackend::message("alice", 75, "checkpoint", false)).into()),
         });
         app.body_key("checkpoint");
     }
@@ -262,11 +259,11 @@ fn unrelated_fetch_failure_does_not_block_send() {
     // write clears it; no controller reset or manual retry is needed.
     app.state.apply(Delta::Error("store write failed".into()));
     assert!(app.state.can_send());
-    app.send(Intent::Pref {
-        key: "saved".into(),
-        value: true.into(),
-    });
-    app.until(|s| s.prefs.contains_key("saved") && s.error.is_none());
+    app.send(Intent::Prefs(Prefs {
+        text_size: 37,
+        ..Prefs::default()
+    }));
+    app.until(|s| s.prefs.text_size == 37 && s.error.is_none());
     let intent = app.state.submit().unwrap();
     app.send(intent);
     let key = app.body_key("after unrelated failure");
@@ -404,7 +401,12 @@ fn opened_chat_history_and_reads_run_before_missing_details_sweep() {
             )
             .unwrap();
         store.mark_read(&chat, ServerId("1".into())).unwrap();
-        store.set_pref("last_chat", "alice".into()).unwrap();
+        store
+            .set_prefs(&Prefs {
+                last_chat: Some(ChatId("alice".into())),
+                ..Prefs::default()
+            })
+            .unwrap();
     }
     let fake = FakeBackend::canned();
     for i in 0..40 {
@@ -475,11 +477,11 @@ fn first_identity_keeps_local_work_and_sends_pending() {
             updated: 123,
         },
     });
-    app.send(Intent::Pref {
-        key: "text_size".into(),
-        value: 19.into(),
-    });
-    app.until(|s| s.prefs.get("text_size") == Some(&19.into()));
+    app.send(Intent::Prefs(Prefs {
+        text_size: 19,
+        ..Prefs::default()
+    }));
+    app.until(|s| s.prefs.text_size == 19);
     fake.offline(false);
     app.online();
     app.until(|s| {
@@ -494,7 +496,7 @@ fn first_identity_keeps_local_work_and_sends_pending() {
         (draft.text.as_str(), draft.cursor, draft.anchor),
         ("keep draft", 4, 2)
     );
-    assert_eq!(store.get_pref("text_size").unwrap(), Some(19.into()));
+    assert_eq!(store.prefs().unwrap().text_size, 19);
     assert!(store.all_pending().unwrap().is_empty());
     drop(store);
     std::fs::remove_dir_all(root).unwrap();
@@ -505,7 +507,10 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
     use serde_json::json;
     let fake = FakeBackend::canned();
     let mut row = FakeBackend::message("alice", 10, "react here", false);
-    row.reactions = json!([{"fromUserMid":"other","reactionType":{"predefinedReactionType":3}}]);
+    row.reactions = vec![Reaction {
+        actor: "other".into(),
+        kind: ReactionKind::Predefined(3),
+    }];
     fake.set_page(ChatId("alice".into()), vec![row]);
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -526,19 +531,10 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
         fake.inject_raw(json!({"type":139,"param1":"10","param2":payload.to_string()}));
         let revision = fake.revision() - 1;
         app.until(|s| s.messages[&key].reactions_rev >= revision);
-        let entries = app.state.messages[&key].reactions.as_array().unwrap();
+        let entries = app.state.messages[&key].reactions.as_slice();
+        assert_eq!(entries.iter().filter(|e| e.actor == "other").count(), 1);
         assert_eq!(
-            entries
-                .iter()
-                .filter(|e| e["fromUserMid"] == "other")
-                .count(),
-            1
-        );
-        assert_eq!(
-            entries
-                .iter()
-                .filter(|e| e["fromUserMid"] == "self")
-                .count(),
+            entries.iter().filter(|e| e.actor == "self").count(),
             usize::from(curr.as_object().is_some_and(|c| !c.is_empty()))
         );
         assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
@@ -548,21 +544,24 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
         );
     }
     fake.inject_raw(json!({"type":140,"param1":"10","param2":json!({"chatMid":"alice","fromUserMid":"other","curr":{"predefinedReactionType":7}}).to_string()}));
-    app.until(|s| s.messages[&key].reactions[0]["reactionType"]["predefinedReactionType"] == 7);
+    app.until(|s| s.messages[&key].reactions[0].kind == ReactionKind::Predefined(7));
     let calls = fake.page_requests("alice");
     let mut refreshed = fake.page(&ChatId("alice".into()));
-    refreshed[0].reactions = json!([{"fromUserMid":"unknown-before-refresh","reactionType":{"predefinedReactionType":3}}]);
+    refreshed[0].reactions = vec![Reaction {
+        actor: "unknown-before-refresh".into(),
+        kind: ReactionKind::Predefined(3),
+    }];
     fake.set_page(ChatId("alice".into()), refreshed);
     fake.inject_raw(json!({"type":140,"param1":"10","param2":json!({"chatMid":"alice","curr":{"predefinedReactionType":3}}).to_string()}));
     app.until(|_| fake.page_requests("alice") > calls);
-    app.until(|s| s.messages[&key].reactions[0]["fromUserMid"] == "unknown-before-refresh");
+    app.until(|s| s.messages[&key].reactions[0].actor == "unknown-before-refresh");
     assert_eq!(app.notifications, 0);
     // A FIFO user intent fences the refresh publication and checks for alerts.
-    app.send(Intent::Pref {
-        key: "reaction_fence".into(),
-        value: true.into(),
-    });
-    app.until(|s| s.prefs.get("reaction_fence") == Some(&true.into()));
+    app.send(Intent::Prefs(Prefs {
+        text_size: 35,
+        ..Prefs::default()
+    }));
+    app.until(|s| s.prefs.text_size == 35);
     assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
     assert_eq!(
         app.state.chats[&ChatId("alice".into())].chat.unread_count,
@@ -604,25 +603,25 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
         app.state.apply(delta);
     }
     assert_eq!(failures, 1);
-    assert!(!app.state.messages[&key].withdrawn);
+    assert!(!app.state.messages[&key].body.is_withdrawn());
     assert_eq!(message_text(&app.state.messages[&key]), "own confirmed");
     app.send(Intent::Unsend(key));
-    app.until(|s| s.messages[&key].withdrawn);
-    assert!(app.state.messages[&key].body.is_null());
+    app.until(|s| s.messages[&key].body.is_withdrawn());
+    assert!(app.state.messages[&key].body.is_withdrawn());
     fake.inject_raw(serde_json::json!({"type":64,"param1":"alice","param2":"11"}));
-    app.send(Intent::Pref {
-        key: "unsend_fence".into(),
-        value: true.into(),
-    });
-    app.until(|s| s.prefs.contains_key("unsend_fence"));
-    assert!(app.state.messages[&key].withdrawn);
+    app.send(Intent::Prefs(Prefs {
+        text_size: 34,
+        ..Prefs::default()
+    }));
+    app.until(|s| s.prefs.text_size == 34);
+    assert!(app.state.messages[&key].body.is_withdrawn());
     assert_eq!(app.state.messages.len(), 1);
     app.send(Intent::Unsend(key));
-    app.send(Intent::Pref {
-        key: "unsend_again".into(),
-        value: true.into(),
-    });
-    app.until(|s| s.prefs.contains_key("unsend_again"));
+    app.send(Intent::Prefs(Prefs {
+        text_size: 33,
+        ..Prefs::default()
+    }));
+    app.until(|s| s.prefs.text_size == 33);
     assert_eq!(
         fake.calls()
             .iter()
@@ -651,7 +650,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         }
     }
     impl Backend for Blocked {
-        fn contact(&mut self, mid: &str) -> Result<line_wasm_poc::client::desktop::Friend> {
+        fn contact(&mut self, mid: &str) -> Result<line_wasm_poc::store::Friend> {
             self.0.contact(mid)
         }
         fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
@@ -672,11 +671,11 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
             self.0.sign_in(c, d)
         }
-        fn friends(&mut self) -> Result<Vec<line_wasm_poc::client::desktop::Friend>> {
+        fn friends(&mut self) -> Result<Vec<line_wasm_poc::store::Friend>> {
             self.wait();
             self.0.friends()
         }
-        fn members(&mut self, c: &ChatId) -> Result<Vec<line_wasm_poc::client::desktop::Member>> {
+        fn members(&mut self, c: &ChatId) -> Result<Vec<line_wasm_poc::store::Member>> {
             self.wait();
             self.0.members(c)
         }
@@ -704,7 +703,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             self.wait();
             self.0.profile()
         }
-        fn chats(&mut self, n: bool) -> Result<ChatPage> {
+        fn chats(&mut self, n: Option<String>) -> Result<ChatPage> {
             self.wait();
             self.0.chats(n)
         }
@@ -728,9 +727,9 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             self.wait();
             self.0.receipts(c)
         }
-        fn mark_read(&mut self, c: &ChatId, i: &ServerId) -> Result<()> {
+        fn mark_read(&mut self, c: &ChatId, i: &ServerId, seq: u32) -> Result<()> {
             self.wait();
-            self.0.mark_read(c, i)
+            self.0.mark_read(c, i, seq)
         }
         fn stream(
             &mut self,
@@ -743,8 +742,8 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         fn decode(&mut self, r: serde_json::Value) -> Result<LiveOp> {
             self.0.decode(r)
         }
-        fn token(&mut self, t: serde_json::Value) {
-            self.0.token(t)
+        fn refresh_token(&mut self, stop: &AtomicBool) -> Result<()> {
+            self.0.refresh_token(stop)
         }
     }
 
@@ -753,7 +752,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     use sha2::{Digest, Sha256};
     let account = root.join(format!("{:x}", Sha256::digest("self")));
     let mut store = Store::open(&account).unwrap();
-    store.set_account("self", serde_json::json!({})).unwrap();
+    store.set_account("self", Profile::default()).unwrap();
     std::fs::write(root.join("last-mid"), "self").unwrap();
     let chats = (0..150)
         .map(|i| ChatInput {
@@ -770,7 +769,10 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         .apply_page(&chats[0].id, PageKind::Recent, &rows, true)
         .unwrap();
     store
-        .set_pref("last_chat", serde_json::json!("cached-0"))
+        .set_prefs(&Prefs {
+            last_chat: Some(ChatId("cached-0".into())),
+            ..Prefs::default()
+        })
         .unwrap();
     drop(store);
     let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
@@ -816,8 +818,9 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     rpc.recv_timeout(Duration::from_secs(2))
         .expect("profile RPC entered and blocked");
     let mut state = AppState::default();
-    state.members.push(line_wasm_poc::client::desktop::Member {
-        contact: line_wasm_poc::client::desktop::Friend {
+    state.members.push(line_wasm_poc::store::Member {
+        resolved: true,
+        contact: line_wasm_poc::store::Friend {
             profile: Default::default(),
             id: "old".into(),
             name: "Old chat".into(),
@@ -901,14 +904,14 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     assert!(
         matches!(receive(&|d| matches!(d, Delta::Chats { .. })), Delta::Chats { upsert, .. } if upsert.len() == 1 && upsert[0].chat.id == chats[149].id)
     );
-    worker.sender.send(Intent::Pref {
-        key: "fence".into(),
-        value: serde_json::json!(true),
-    });
+    worker.sender.send(Intent::Prefs(Prefs {
+        text_size: 32,
+        ..Prefs::default()
+    }));
     loop {
         let delta = receive(&|_| true);
         assert!(!matches!(delta, Delta::Window { .. }));
-        if matches!(delta, Delta::Pref { .. }) {
+        if matches!(delta, Delta::Prefs(_)) {
             break;
         }
     }
@@ -932,7 +935,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
             &ChatId("alice".into()),
             LocalId("guard".into()),
             1,
-            serde_json::json!({"body": "guard"}),
+            Content::text("guard"),
             1,
         )
         .unwrap();
@@ -947,7 +950,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         calls: Arc<AtomicUsize>,
     }
     impl Backend for BlockedSend {
-        fn contact(&mut self, mid: &str) -> Result<line_wasm_poc::client::desktop::Friend> {
+        fn contact(&mut self, mid: &str) -> Result<line_wasm_poc::store::Friend> {
             self.fake.contact(mid)
         }
         fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
@@ -968,10 +971,10 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
             self.fake.sign_in(c, d)
         }
-        fn friends(&mut self) -> Result<Vec<line_wasm_poc::client::desktop::Friend>> {
+        fn friends(&mut self) -> Result<Vec<line_wasm_poc::store::Friend>> {
             self.fake.friends()
         }
-        fn members(&mut self, c: &ChatId) -> Result<Vec<line_wasm_poc::client::desktop::Member>> {
+        fn members(&mut self, c: &ChatId) -> Result<Vec<line_wasm_poc::store::Member>> {
             self.fake.members(c)
         }
         fn start_assets(&mut self, s: Arc<AtomicBool>, d: Deliver) {
@@ -997,7 +1000,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn profile(&mut self) -> Result<Profile> {
             self.fake.profile()
         }
-        fn chats(&mut self, n: bool) -> Result<ChatPage> {
+        fn chats(&mut self, n: Option<String>) -> Result<ChatPage> {
             self.fake.chats(n)
         }
         fn details(&mut self, c: &ChatId) -> Result<Vec<ChatInput>> {
@@ -1021,8 +1024,8 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn receipts(&mut self, c: &ChatId) -> Result<Vec<Option<ServerId>>> {
             self.fake.receipts(c)
         }
-        fn mark_read(&mut self, c: &ChatId, i: &ServerId) -> Result<()> {
-            self.fake.mark_read(c, i)
+        fn mark_read(&mut self, c: &ChatId, i: &ServerId, seq: u32) -> Result<()> {
+            self.fake.mark_read(c, i, seq)
         }
         fn stream(
             &mut self,
@@ -1035,8 +1038,8 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn decode(&mut self, r: serde_json::Value) -> Result<LiveOp> {
             self.fake.decode(r)
         }
-        fn token(&mut self, t: serde_json::Value) {
-            self.fake.token(t)
+        fn refresh_token(&mut self, stop: &AtomicBool) -> Result<()> {
+            self.fake.refresh_token(stop)
         }
     }
     let fake = FakeBackend::canned();
@@ -1072,11 +1075,11 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
     let seq = app.state.messages[&key].request_seq;
     app.send(Intent::Retry(key));
     app.send(Intent::Discard(key));
-    app.send(Intent::Pref {
-        key: "in_flight_checked".into(),
-        value: true.into(),
-    });
-    app.until(|s| s.prefs.contains_key("in_flight_checked"));
+    app.send(Intent::Prefs(Prefs {
+        text_size: 31,
+        ..Prefs::default()
+    }));
+    app.until(|s| s.prefs.text_size == 31);
     assert_eq!(app.state.messages[&key].request_seq, seq);
     release.send(()).unwrap();
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
@@ -1117,10 +1120,13 @@ fn rename_contact_failure_then_success_updates_the_store_page() {
     assert_eq!(app.state.action_error, "Couldn't rename.");
     profile_action(&mut app, action);
     assert_eq!(app.state.contacts["alice"].name, "Aoi 🌿");
-    assert_eq!(app.state.contacts["alice"].profile["displayName"], "葵");
+    assert_eq!(
+        app.state.contacts["alice"].profile.original_name.as_deref(),
+        Some("葵")
+    );
     assert!(app.state.action_error.is_empty());
     app.send(Intent::Contact("alice".into()));
-    app.until(|s| s.contacts["alice"].profile["displayNameOverridden"] == "Aoi 🌿");
+    app.until(|s| s.contacts["alice"].profile.overridden_name.as_deref() == Some("Aoi 🌿"));
 }
 #[test]
 fn add_friend_failure_then_success_changes_relation_in_place() {
@@ -1129,7 +1135,10 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
     let mut members = fake.clone();
     use line_wasm_poc::backend::Backend;
     let mut rows = members.members(&ChatId("weekend".into())).unwrap();
-    rows[0].contact.profile = serde_json::json!({"relation":2});
+    rows[0].contact.profile = line_wasm_poc::store::ContactProfile {
+        relation: Some(2),
+        ..Default::default()
+    };
     let mid = rows[0].contact.id.clone();
     fake.set_members(rows);
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
@@ -1138,20 +1147,23 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
     app.until(|s| s.contacts.contains_key(&mid));
     // Synthetic contact source prefers the friend record, so provide the observed non-friend snapshot.
     let mut row = app.state.contacts[&mid].clone();
-    row.profile = serde_json::json!({"relation":2});
+    row.profile = line_wasm_poc::store::ContactProfile {
+        relation: Some(2),
+        ..Default::default()
+    };
     fake.set_friends(vec![row]);
     app.send(Intent::Contact(mid.clone()));
-    app.until(|s| s.contacts[&mid].profile["relation"] == 2);
+    app.until(|s| s.contacts[&mid].profile.relation == Some(2));
     let action = ProfileAction::AddFriend {
         mid: mid.clone(),
         chat: "weekend".into(),
     };
     fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
     profile_action(&mut app, action.clone());
-    assert_eq!(app.state.contacts[&mid].profile["relation"], 2);
+    assert_eq!(app.state.contacts[&mid].profile.relation, Some(2));
     assert_eq!(app.state.action_error, "Couldn't add friend.");
     profile_action(&mut app, action);
-    assert_eq!(app.state.contacts[&mid].profile["relation"], 0);
+    assert_eq!(app.state.contacts[&mid].profile.relation, Some(0));
     assert!(app.state.action_error.is_empty());
 }
 #[test]
@@ -1226,7 +1238,10 @@ fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
         let mut source = fake.clone();
         let mut rows = source.friends().unwrap();
         rows[0].name = format!("Changed {kind}");
-        rows[0].profile = serde_json::json!({"relation":0});
+        rows[0].profile = line_wasm_poc::store::ContactProfile {
+            relation: Some(0),
+            ..Default::default()
+        };
         fake.set_friends(rows);
         fake.inject_raw(serde_json::json!({"type":kind,"param1":"alice"}));
         app.until(|s| {
@@ -1240,7 +1255,7 @@ fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
         fake.add_chat(line_wasm_poc::store::ChatInput {
             id: chat.clone(),
             title: format!("Group {kind}"),
-            kind: 1,
+            is_group: true,
             ..Default::default()
         });
         fake.inject_raw(serde_json::json!({"type":kind,"param1":"weekend"}));

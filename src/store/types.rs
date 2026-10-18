@@ -1,7 +1,245 @@
+use crate::client::desktop::assets::Asset;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use std::collections::BTreeSet;
 
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplyReference {
+    pub message_id: String,
+    pub service_code: Option<i64>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InlineEmoji {
+    /// Half-open JavaScript UTF-16 offsets, never inside a surrogate pair.
+    pub start_utf16: usize,
+    pub end_utf16: usize,
+    /// Equivalent UTF-8 boundaries for slicing the unchanged message body.
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub fallback: String,
+    pub product_id: String,
+    pub sticon_id: String,
+    pub version: Option<String>,
+    pub animated: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum Content {
+    Text {
+        text: String,
+        spans: Vec<InlineEmoji>,
+    },
+    Photo {
+        asset: Option<Asset>,
+        size: Option<(u32, u32)>,
+        album_count: Option<u64>,
+        caption: Option<String>,
+    },
+    Sticker {
+        pkg: String,
+        id: String,
+        ver: Option<String>,
+        asset: Option<Asset>,
+        text: Option<String>,
+    },
+    File {
+        name: Option<String>,
+        size: Option<u64>,
+        asset: Option<Asset>,
+    },
+    Video {
+        duration: Option<u64>,
+        asset: Option<Asset>,
+        preview: Option<Asset>,
+        album_count: Option<u64>,
+        caption: Option<String>,
+    },
+    Voice {
+        duration: Option<u64>,
+        asset: Option<Asset>,
+    },
+    Contact {
+        mid: String,
+        name: Option<String>,
+    },
+    Location {
+        title: Option<String>,
+        lat: f64,
+        lon: f64,
+    },
+    System {
+        kind: Option<String>,
+        params: Option<String>,
+        text: Option<String>,
+    },
+    Withdrawn,
+    Undecryptable,
+    Unknown {
+        content_type: i32,
+    },
+}
+impl Default for Content {
+    fn default() -> Self {
+        Self::Text {
+            text: String::new(),
+            spans: vec![],
+        }
+    }
+}
+impl Content {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::Text {
+            text: text.into(),
+            spans: vec![],
+        }
+    }
+    pub fn is_withdrawn(&self) -> bool {
+        matches!(self, Self::Withdrawn)
+    }
+    pub fn as_text(&self) -> &str {
+        if let Self::Text { text, .. } = self {
+            text
+        } else {
+            ""
+        }
+    }
+    pub fn spans(&self) -> &[InlineEmoji] {
+        if let Self::Text { spans, .. } = self {
+            spans
+        } else {
+            &[]
+        }
+    }
+    pub fn image(&self) -> Option<&Asset> {
+        match self {
+            Self::Photo { asset, .. } | Self::Sticker { asset, .. } => asset.as_ref(),
+            Self::Video { preview, .. } => preview.as_ref(),
+            _ => None,
+        }
+    }
+    pub fn attachment(&self) -> Option<&Asset> {
+        match self {
+            Self::File { asset, .. } | Self::Video { asset, .. } | Self::Voice { asset, .. } => {
+                asset.as_ref()
+            }
+            _ => None,
+        }
+    }
+    pub fn image_mut(&mut self) -> &mut Option<Asset> {
+        match self {
+            Self::Photo { asset, .. } | Self::Sticker { asset, .. } => asset,
+            Self::Video { preview, .. } => preview,
+            _ => panic!("content has no image"),
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Reaction {
+    pub actor: String,
+    pub kind: ReactionKind,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ReactionKind {
+    Predefined(u32),
+    Paid(Option<Asset>),
+    Emoji,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct Profile {
+    pub mid: String,
+    pub display_name: String,
+    pub status_message: String,
+    pub picture_path: Option<String>,
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ContactProfile {
+    #[serde(rename = "displayName")]
+    pub original_name: Option<String>,
+    #[serde(rename = "displayNameOverridden")]
+    pub overridden_name: Option<String>,
+    pub relation: Option<i32>,
+    pub invited: bool,
+    #[serde(rename = "type")]
+    pub account_type: i32,
+    #[serde(rename = "favoriteTime", deserialize_with = "optional_number")]
+    pub favorite_time: Option<i64>,
+}
+fn optional_number<'de, D: serde::Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Option<i64>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Number {
+        Int(i64),
+        Text(String),
+    }
+    Ok(Option::<Number>::deserialize(d)?.and_then(|n| match n {
+        Number::Int(n) => Some(n),
+        Number::Text(s) => s.parse().ok(),
+    }))
+}
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Friend {
+    pub profile: ContactProfile,
+    pub id: String,
+    pub name: String,
+    pub status: String,
+    pub group: bool,
+    pub avatar: Option<Asset>,
+    pub member_count: Option<usize>,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct Member {
+    pub contact: Friend,
+    pub is_self: bool,
+    pub resolved: bool,
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Prefs {
+    pub text_size: i32,
+    pub enter_sends: bool,
+    pub desktop: DesktopPrefs,
+    pub last_chat: Option<ChatId>,
+    pub request_seq: u32,
+}
+impl Default for Prefs {
+    fn default() -> Self {
+        Self {
+            text_size: 15,
+            enter_sends: false,
+            desktop: DesktopPrefs::default(),
+            last_chat: None,
+            request_seq: 0,
+        }
+    }
+}
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DesktopPrefs {
+    pub background: bool,
+    pub autostart: bool,
+    pub notifications: bool,
+    pub preview: i32,
+    pub sound: bool,
+    pub mention_exception: bool,
+    pub group_events: bool,
+}
+impl Default for DesktopPrefs {
+    fn default() -> Self {
+        Self {
+            background: false,
+            autostart: false,
+            notifications: false,
+            preview: 1,
+            sound: false,
+            mention_exception: false,
+            group_events: false,
+        }
+    }
+}
 /// Stable chat identity, independent of client transport types.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ChatId(pub String);
@@ -30,7 +268,7 @@ impl Delivery {
         matches!(self, Self::Rejected { .. } | Self::Uncertain)
     }
 }
-/// Opaque decoded server content. Nonpositive created_ms falls back to delivered_ms.
+/// Typed decoded server content. Nonpositive created_ms falls back to delivered_ms.
 #[derive(Clone, Debug)]
 pub struct MessageInput {
     pub server_id: ServerId,
@@ -39,10 +277,12 @@ pub struct MessageInput {
     pub delivered_ms: Option<i64>,
     pub sender_id: String,
     pub outgoing: bool,
-    pub content_type: i32,
+    pub mentioned: bool,
+    pub reply: Option<Box<ReplyReference>>,
+    pub skip_badge: bool,
     pub request_seq: Option<u32>,
-    pub body: Value,
-    pub reactions: Value,
+    pub body: Content,
+    pub reactions: Vec<Reaction>,
     pub reactions_rev: i64,
 }
 /// Single total ordering used by pages, windows, previews and segments.
@@ -51,7 +291,7 @@ pub struct Cursor {
     pub sort_ts: i64,
     pub sort_id: String,
 }
-/// Stored row; key is immutable, withdrawal sticky, and JSON content opaque.
+/// Stored row; key is immutable, withdrawal sticky, and content decoded at the store boundary.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct StoredMessage {
     pub key: Key,
@@ -62,23 +302,24 @@ pub struct StoredMessage {
     pub sort: Cursor,
     pub sender_id: String,
     pub outgoing: bool,
-    pub content_type: i32,
-    pub body: Value,
-    pub reactions: Value,
+    pub body: Content,
+    pub reactions: Vec<Reaction>,
     pub reactions_rev: i64,
     /// Last page/live revision used for body fields; reaction-only ops do not advance it.
     pub content_rev: Option<i64>,
-    pub withdrawn: bool,
     pub delivery: Delivery,
     pub created_at_local: i64,
+    pub mentioned: bool,
+    pub reply: Option<Box<ReplyReference>>,
+    pub skip_badge: bool,
 }
 /// Server chat metadata; last-message hints never replace a stored preview.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatInput {
     pub id: ChatId,
-    pub kind: i32,
+    pub is_group: bool,
     pub title: String,
-    pub avatar: Option<String>,
+    pub avatar: Option<Asset>,
     pub member_count: Option<u32>,
     pub muted: bool,
     pub left: bool,
@@ -140,7 +381,7 @@ pub struct ChatListItem {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Account {
     pub own_mid: String,
-    pub profile_json: Value,
+    pub profile: Profile,
     pub sync_revision: i64,
     pub global_revision: i64,
     pub individual_revision: i64,
@@ -163,7 +404,7 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("database schema {0} is newer than supported version 1")]
+    #[error("database schema {0} is newer than supported version 5")]
     NewerSchema(i64),
     #[error("invalid store operation: {0}")]
     Invalid(String),
@@ -172,7 +413,7 @@ pub(super) type Result<T> = std::result::Result<T, StoreError>;
 
 #[derive(Clone, Debug)]
 pub enum Operation {
-    Message(MessageInput),
+    Message(Box<MessageInput>),
     Receipt {
         chat: ChatId,
         up_to: ServerId,
@@ -185,7 +426,7 @@ pub enum Operation {
     Reaction {
         id: ServerId,
         actor: String,
-        curr: serde_json::Value,
+        curr: Option<ReactionKind>,
     },
     Recent(ChatId),
     Checkpoint,

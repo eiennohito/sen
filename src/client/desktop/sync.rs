@@ -28,7 +28,6 @@ pub enum Event {
         next_revision: Option<String>,
         complete: mpsc::SyncSender<bool>,
     },
-    Token(Value),
 }
 #[derive(Default)]
 struct Decoder {
@@ -117,12 +116,33 @@ pub fn receive_from(
     wasm_path: &Path,
     revision: u64,
     stop: &Arc<AtomicBool>,
-    mut deliver: impl FnMut(Event) -> bool,
+    deliver: impl FnMut(Event) -> bool,
 ) -> Result<()> {
     set_request_cancel(stop.clone());
     let mut state = crate::credentials::load(state_path)?;
     let mut api = Api::new(&fs::read(wasm_path)?)?;
-    // A separate agent keeps the long-lived stream out of the RPC pool.
+    receive_with_auth(
+        revision,
+        stop,
+        |renew| {
+            if renew {
+                refresh(&mut api, &mut state, state_path, stop)?;
+            }
+            Ok(access(&state)?.to_owned())
+        },
+        deliver,
+    )
+}
+
+/// The stream has its own HTTP connection and borrows authorization from the RPC owner.
+/// Neither credentials nor a WASM runtime are loaded on the stream thread.
+pub fn receive_with_auth(
+    revision: u64,
+    stop: &Arc<AtomicBool>,
+    mut authorize: impl FnMut(bool) -> Result<String>,
+    mut deliver: impl FnMut(Event) -> bool,
+) -> Result<()> {
+    set_request_cancel(stop.clone());
     let transport = http::Transport::new()?;
     let mut revisions = Revisions { local: revision };
     let mut refreshed_once = false;
@@ -130,7 +150,7 @@ pub fn receive_from(
     while !stop.load(Ordering::Relaxed) {
         let result = stream(
             &transport,
-            access(&state)?,
+            &authorize(false)?,
             revisions.local,
             stop,
             PING_TIMEOUT,
@@ -163,12 +183,18 @@ pub fn receive_from(
                 deliver(Event::State(SyncState::AuthExpired));
                 return Ok(());
             }
-            match refresh(&mut api, &mut state, state_path, stop, &mut deliver) {
-                Ok(()) => {
+            match authorize(true) {
+                Ok(_) => {
                     refreshed_once = true;
                     continue;
                 }
-                Err(error) if expired_refresh(&error) => {
+                Err(error)
+                    if expired_refresh(&error)
+                        || matches!(
+                            error.downcast_ref::<crate::client::Error>(),
+                            Some(crate::client::Error::Auth)
+                        ) =>
+                {
                     deliver(Event::State(SyncState::AuthExpired));
                     return Ok(());
                 }
@@ -215,7 +241,6 @@ pub(super) fn refresh(
     state: &mut Value,
     state_path: &Path,
     stop: &AtomicBool,
-    deliver: &mut impl FnMut(Event) -> bool,
 ) -> Result<()> {
     let token = state["token_v3_issue_result"]["refreshToken"]
         .as_str()
@@ -240,7 +265,6 @@ pub(super) fn refresh(
         return Ok(());
     }
     save_state(state_path, state)?;
-    deliver(Event::Token(state["token_v3_issue_result"].clone()));
     Ok(())
 }
 

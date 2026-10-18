@@ -6,14 +6,24 @@ fn sql_limit(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-const CHAT_SELECT: &str = "SELECT chat_id,kind,title,avatar,member_count,muted,left,last_key,
+const CHAT_SELECT: &str = "SELECT chat_id,is_group,title,avatar,member_count,muted,left,last_key,
     last_activity,server_unread,unread_stale,last_read_server_id,list_rank FROM chat";
 fn decode_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatRecord> {
     Ok(ChatInput {
         id: ChatId(r.get(0)?),
-        kind: r.get(1)?,
+        is_group: r.get(1)?,
         title: r.get(2)?,
-        avatar: r.get(3)?,
+        avatar: r
+            .get::<_, Option<String>>(3)?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    3,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
         member_count: r.get(4)?,
         muted: r.get(5)?,
         left: r.get(6)?,
@@ -274,11 +284,11 @@ impl Store {
         query: &str,
     ) -> Result<Vec<ChatListItem>> {
         let mut stmt = self.conn.prepare(
-            "SELECT c.chat_id,c.kind,c.title,c.avatar,c.member_count,c.muted,c.left,c.last_key,
+            "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,c.muted,c.left,c.last_key,
              c.last_activity,c.server_unread,c.unread_stale,c.last_read_server_id,c.list_rank,
              m.key,m.chat_id,m.server_id,m.local_id,m.request_seq,m.sort_ts,m.sort_id,
-             m.sender_id,m.outgoing,m.content_type,m.body_json,m.reactions_json,m.reactions_rev,
-             m.withdrawn,m.delivery,m.created_at_local,m.content_rev,
+             m.sender_id,m.outgoing,m.body_json,m.reactions_json,m.reactions_rev,
+             m.delivery,m.created_at_local,m.content_rev,m.mentioned,m.skip_badge,m.reply_json,
              d.text,d.cursor,d.anchor,d.updated,
              (SELECT count(*) FROM message f WHERE f.chat_id=c.chat_id AND f.server_id IS NULL
               AND (f.delivery='\"Uncertain\"' OR json_type(f.delivery,'$.Rejected') IS NOT NULL)),
@@ -288,7 +298,7 @@ impl Store {
                  ORDER BY sort_ts DESC,sort_id DESC LIMIT 1)
              LEFT JOIN draft d ON d.chat_id=c.chat_id
              WHERE c.removed=0 AND (?3 IS NULL OR c.chat_id=?3)
-             AND (?4='' OR c.title LIKE ?5 OR json_extract(m.body_json,'$.body') LIKE ?5)
+             AND (?4='' OR c.title LIKE ?5 OR json_extract(m.body_json,'$.Text.text') LIKE ?5)
              ORDER BY activity DESC,c.list_rank,c.chat_id LIMIT ?1 OFFSET ?2",
         )?;
         Ok(stmt
@@ -309,18 +319,18 @@ impl Store {
                             None
                         },
                         draft: r
-                            .get::<_, Option<String>>(30)?
+                            .get::<_, Option<String>>(31)?
                             .map(|text| -> rusqlite::Result<Draft> {
                                 Ok(Draft {
                                     text,
-                                    cursor: r.get(31)?,
-                                    anchor: r.get(32)?,
-                                    updated: r.get(33)?,
+                                    cursor: r.get(32)?,
+                                    anchor: r.get(33)?,
+                                    updated: r.get(34)?,
                                 })
                             })
                             .transpose()?,
-                        failed_count: r.get(34)?,
-                        activity_ms: r.get(35)?,
+                        failed_count: r.get(35)?,
+                        activity_ms: r.get(36)?,
                     })
                 },
             )?
@@ -364,19 +374,19 @@ impl Store {
                     (input.last_message_id.clone(), input.last_message_ms)
                 };
                 tx.execute(
-                    "INSERT INTO chat(chat_id, kind, title, avatar, member_count, muted, left, last_key,
+                    "INSERT INTO chat(chat_id, is_group, title, avatar, member_count, muted, left, last_key,
                     last_activity, server_unread, unread_stale, last_read_server_id, list_rank)
                     VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(chat_id) DO UPDATE
-                    SET removed=0, kind=excluded.kind, title=excluded.title, avatar=excluded.avatar,
+                    SET removed=0, is_group=excluded.is_group, title=excluded.title, avatar=excluded.avatar,
                     member_count=excluded.member_count, muted=excluded.muted, left=excluded.left,
                     last_key=excluded.last_key, last_activity=excluded.last_activity,
                     server_unread=excluded.server_unread, unread_stale=excluded.unread_stale,
                     last_read_server_id=excluded.last_read_server_id, list_rank=excluded.list_rank",
                     params![
                         input.id.0,
-                        input.kind,
+                        input.is_group,
                         input.title,
-                        input.avatar,
+                        input.avatar.as_ref().map(serde_json::to_string).transpose()?,
                         input.member_count,
                         input.muted,
                         input.left,
@@ -518,20 +528,23 @@ impl Store {
             Ok(())
         })
     }
-    pub fn get_pref(&self, key: &str) -> Result<Option<Value>> {
-        let value = self
+    pub fn prefs(&self) -> Result<Prefs> {
+        let text: String = self
             .conn
-            .query_row("SELECT value FROM pref WHERE key=?", [key], |r| {
-                r.get::<_, String>(0)
-            })
-            .optional()?;
-        Ok(value.map(|s| serde_json::from_str(&s)).transpose()?)
+            .query_row("SELECT value FROM preferences", [], |r| r.get(0))?;
+        Ok(serde_json::from_str(&text)?)
     }
-    pub fn set_pref(&mut self, key: &str, value: Value) -> Result<Changes> {
+    /// Settings changed before account validation must follow local drafts/outbox work.
+    pub fn set_settings(&mut self, prefs: &Prefs) -> Result<Changes> {
+        let changes = self.set_prefs(prefs)?;
+        self.settings_changed = true;
+        Ok(changes)
+    }
+    pub fn set_prefs(&mut self, prefs: &Prefs) -> Result<Changes> {
         self.mutate(|tx, _| {
             tx.execute(
-                "INSERT INTO pref VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-                params![key, value.to_string(),],
+                "UPDATE preferences SET value=?",
+                [serde_json::to_string(prefs)?],
             )?;
             Ok(())
         })
@@ -555,18 +568,18 @@ impl Store {
             )?;
         Ok(Account {
             own_mid,
-            profile_json: serde_json::from_str(&profile)?,
+            profile: serde_json::from_str(&profile)?,
             sync_revision,
             global_revision,
             individual_revision,
             opened_at,
         })
     }
-    pub fn set_account(&mut self, own_mid: &str, profile_json: Value) -> Result<Changes> {
+    pub fn set_account(&mut self, own_mid: &str, profile: Profile) -> Result<Changes> {
         self.mutate(|tx, _| {
             tx.execute(
                 "UPDATE account SET own_mid=?,profile_json=?",
-                params![own_mid, profile_json.to_string(),],
+                params![own_mid, serde_json::to_string(&profile)?,],
             )?;
             Ok(())
         })
@@ -589,60 +602,128 @@ impl Store {
     }
 }
 
+const CONTACT_COLUMNS: &str = "mid,name,status,is_group,avatar,member_count,original_name,overridden_name,relation,account_type,favorite_time";
+fn decode_contact(r: &rusqlite::Row<'_>) -> rusqlite::Result<Friend> {
+    Ok(Friend {
+        id: r.get(0)?,
+        name: r.get(1)?,
+        status: r.get(2)?,
+        group: r.get(3)?,
+        avatar: r
+            .get::<_, Option<String>>(4)?
+            .map(|s| serde_json::from_str(&s))
+            .transpose()
+            .map_err(|e| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    4,
+                    rusqlite::types::Type::Text,
+                    Box::new(e),
+                )
+            })?,
+        member_count: r.get(5)?,
+        profile: ContactProfile {
+            original_name: r.get(6)?,
+            overridden_name: r.get(7)?,
+            relation: r.get(8)?,
+            account_type: r.get(9)?,
+            favorite_time: r.get(10)?,
+            invited: false,
+        },
+    })
+}
+fn save_contact(tx: &Connection, row: &Friend, replace: bool) -> Result<()> {
+    tx.execute(
+        &format!(
+            "INSERT {} INTO contact({CONTACT_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            if replace { "OR REPLACE" } else { "OR IGNORE" }
+        ),
+        params![
+            row.id,
+            row.name,
+            row.status,
+            row.group,
+            row.avatar.as_ref().map(serde_json::to_string).transpose()?,
+            row.member_count,
+            row.profile.original_name,
+            row.profile.overridden_name,
+            row.profile.relation,
+            row.profile.account_type,
+            row.profile.favorite_time
+        ],
+    )?;
+    Ok(())
+}
 impl Store {
-    pub fn save_contacts(&mut self, rows: &[(String, Value)]) -> Result<Changes> {
-        self.mutate(|tx,_| {
-            for (id,profile) in rows {
-                tx.execute("INSERT INTO contact VALUES(?,?) ON CONFLICT(mid) DO UPDATE SET profile_json=excluded.profile_json",params![id,profile.to_string()])?;
+    pub fn save_contacts(&mut self, rows: &[Friend]) -> Result<Changes> {
+        self.mutate(|tx, _| {
+            for row in rows {
+                save_contact(tx, row, true)?;
             }
             Ok(())
         })
     }
-    pub fn contacts(&self) -> Result<Vec<Value>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT profile_json FROM contact ORDER BY mid")?;
-        let rows = stmt
-            .query_map([], |r| r.get::<_, String>(0))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        rows.into_iter()
-            .map(|s| Ok(serde_json::from_str(&s)?))
-            .collect()
+    pub fn contacts(&self) -> Result<Vec<Friend>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {CONTACT_COLUMNS} FROM contact ORDER BY mid"
+        ))?;
+        Ok(stmt
+            .query_map([], decode_contact)?
+            .collect::<std::result::Result<Vec<_>, _>>()?)
     }
-    pub fn save_members(&mut self, chat: &ChatId, rows: &[(String, Value)]) -> Result<Changes> {
+    pub fn save_members(&mut self, chat: &ChatId, rows: &[Member]) -> Result<Changes> {
         self.mutate(|tx, _| {
             ensure_chat(tx, chat)?;
             tx.execute("DELETE FROM member WHERE chat_id=?", [&chat.0])?;
             for row in rows {
+                if row.resolved {
+                    save_contact(tx, &row.contact, false)?;
+                } else if !tx.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM contact WHERE mid=?)",
+                    [&row.contact.id],
+                    |r| r.get::<_, bool>(0),
+                )? {
+                    continue;
+                }
                 tx.execute(
-                    "INSERT INTO member VALUES(?,?,?)",
-                    params![chat.0, row.0, row.1.to_string()],
+                    "INSERT INTO member VALUES(?,?,?,?)",
+                    params![
+                        chat.0,
+                        row.contact.id,
+                        row.is_self,
+                        row.contact.profile.invited
+                    ],
                 )?;
             }
             Ok(())
         })
     }
-    pub fn members(&self, chat: &ChatId) -> Result<Vec<Value>> {
+    pub fn members(&self, chat: &ChatId) -> Result<Vec<Member>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT profile_json FROM member WHERE chat_id=? ORDER BY rowid")?;
+            .prepare("SELECT mid,is_self,invited FROM member WHERE chat_id=? ORDER BY rowid")?;
         let rows = stmt
-            .query_map([&chat.0], |r| r.get::<_, String>(0))?
+            .query_map([&chat.0], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, bool>(1)?,
+                    r.get::<_, bool>(2)?,
+                ))
+            })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         rows.into_iter()
-            .map(|s| Ok(serde_json::from_str(&s)?))
-            .collect()
-    }
-}
-
-impl Store {
-    pub fn prefs(&self) -> Result<Vec<(String, Value)>> {
-        let mut stmt = self.conn.prepare("SELECT key,value FROM pref")?;
-        let rows = stmt
-            .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        rows.into_iter()
-            .map(|(k, v)| Ok((k, serde_json::from_str(&v)?)))
+            .map(|(id, is_self, invited)| {
+                let mut contact = self.conn.query_row(
+                    &format!("SELECT {CONTACT_COLUMNS} FROM contact WHERE mid=?"),
+                    [id],
+                    decode_contact,
+                )?;
+                contact.profile.invited = invited;
+                Ok(Member {
+                    contact,
+                    is_self,
+                    resolved: true,
+                })
+            })
             .collect()
     }
 }

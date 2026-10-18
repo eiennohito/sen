@@ -14,12 +14,13 @@ pub struct Presenter {
     members: Rc<VecModel<MemberRow>>,
     member_keys: Vec<String>,
     rendered_chats: std::collections::BTreeMap<ChatId, (ChatInputs, ChatRow)>,
-    rendered: std::collections::BTreeMap<Key, (StoredMessage, MessageRow)>,
+    rendered: std::collections::BTreeMap<Key, (StoredMessage, Option<Friend>, MessageRow)>,
 }
 // Asset pixels are patched in place; these are the non-asset row inputs.
 #[derive(PartialEq)]
 struct ChatInputs {
     chat: ChatInput,
+    title: String,
     preview: Option<StoredMessage>,
     activity: i64,
     failed: u32,
@@ -62,76 +63,60 @@ impl Presenter {
         ui.set_friends(ModelRc::new(self.friends.clone()));
         ui.set_members(ModelRc::new(self.members.clone()));
     }
-    fn row(&mut self, m: &StoredMessage) -> MessageRow {
-        if let Some((stored, row)) = self.rendered.get(&m.key)
+    fn row(&mut self, m: &StoredMessage, state: &AppState) -> MessageRow {
+        let sender = state
+            .contacts
+            .get(&m.sender_id)
+            .or_else(|| state.friends.iter().find(|f| f.id == m.sender_id))
+            .or_else(|| {
+                state
+                    .members
+                    .iter()
+                    .find(|f| f.contact.id == m.sender_id)
+                    .map(|m| &m.contact)
+            })
+            .cloned();
+        if let Some((stored, identity, row)) = self.rendered.get(&m.key)
             && stored == m
+            && identity == &sender
         {
             return row.clone();
         }
-        let raw =
-            serde_json::from_value::<line_wasm_poc::client::desktop::Message>(m.body.clone()).ok();
-        let mut row = if let Some(raw) = raw {
-            message_row(account::MessageView {
-                id: m.key.0.to_string(),
-                sender_id: raw.sender_id,
-                sender_name: raw.sender_name,
-                sender_key: raw.sender_avatar.map(|a| a.key()).unwrap_or_default(),
-                sticker: raw.rich.content_type == 7,
-                photo: raw.rich.content_type == 1,
-                body: raw.body,
-                timestamp: m.sort.sort_ts,
-                delivered_time: raw.delivered_time,
-                outgoing: m.outgoing,
-                image_key: raw.image.map(|a| a.key()).unwrap_or_default(),
-                reactions: if m
-                    .reactions
-                    .as_array()
-                    .is_some_and(|a| a.iter().any(|v| v.get("label").is_some()))
-                {
-                    serde_json::from_value(m.reactions.clone()).unwrap_or_default()
-                } else {
-                    line_wasm_poc::client::desktop::reactions(&m.reactions)
-                }
-                .into_iter()
-                .map(|r| account::ReactionView {
-                    label: format!("{} {}", r.label, r.count),
-                    image_key: r.asset.map(|a| a.key()).unwrap_or_default(),
-                })
-                .collect(),
-                emoji: raw
-                    .rich
-                    .emoji
-                    .iter()
-                    .map(|span| account::EmojiView {
-                        span: span.clone(),
-                        image_key: line_wasm_poc::client::desktop::assets::Asset::inline_emoji(
-                            span,
-                        )
-                        .map(|a| a.key())
-                        .unwrap_or_default(),
-                    })
-                    .collect(),
-                decryption_failed: raw.decryption_failed,
-                rich: raw.rich,
-                skip_badge: raw.skip_badge,
-            })
-        } else {
-            let mut rich = line_wasm_poc::client::desktop::rich::RichContent {
-                content_type: m.content_type as i64,
-                ..Default::default()
-            };
-            rich.withdrawn = m.withdrawn;
-            message_row(account::MessageView {
-                id: m.key.0.to_string(),
-                body: m.body["body"].as_str().unwrap_or_default().into(),
-                outgoing: m.outgoing,
-                timestamp: m.sort.sort_ts,
-                sender_id: m.sender_id.clone(),
-                rich,
-                ..Default::default()
-            })
-        };
-        if m.withdrawn {
+        let mut view = content_view(&m.body);
+        view.rich.reply = m.reply.as_deref().cloned();
+        view.id = m.key.0.to_string();
+        view.sender_id = m.sender_id.clone();
+        view.sender_name = sender.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| {
+            if m.sender_id.is_empty() {
+                "Unknown sender".into()
+            } else {
+                format!(
+                    "Member · {}",
+                    m.sender_id
+                        .chars()
+                        .rev()
+                        .take(6)
+                        .collect::<String>()
+                        .chars()
+                        .rev()
+                        .collect::<String>()
+                )
+            }
+        });
+        view.sender_key = sender
+            .as_ref()
+            .and_then(|s| s.avatar.as_ref())
+            .map(|a| a.key())
+            .unwrap_or_default();
+        view.timestamp = m.sort.sort_ts;
+        view.delivered_time = m.sort.sort_ts;
+        view.outgoing = m.outgoing;
+        view.skip_badge = m.skip_badge;
+        if !m.body.is_withdrawn() {
+            view.reactions = reaction_views(&m.reactions);
+        }
+        let mut row = message_row(view);
+        if m.body.is_withdrawn() {
             row.kind = MessageKind::Withdrawn;
             row.body = "Message unsent".into();
             row.image_key = "".into();
@@ -144,7 +129,7 @@ impl Presenter {
             Delivery::Uncertain => "Unconfirmed",
         }
         .into();
-        row.can_unsend = m.outgoing && m.server_id.is_some() && !m.withdrawn;
+        row.can_unsend = m.outgoing && m.server_id.is_some() && !m.body.is_withdrawn();
         row.recoverable = matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain);
         row.delivery_detail = match &m.delivery {
             Delivery::Rejected { reason } => reason.to_string(),
@@ -193,7 +178,8 @@ impl Presenter {
             }
         }
         links::decorate_message(&mut row, "Contact");
-        self.rendered.insert(m.key, (m.clone(), row.clone()));
+        self.rendered
+            .insert(m.key, (m.clone(), sender, row.clone()));
         row
     }
     pub fn present(&mut self, ui: &AppWindow, state: &AppState, query: &str, category: i32) {
@@ -257,12 +243,7 @@ impl Presenter {
             grouped.into_iter().map(|r| (r.id.to_string(), r)).collect(),
         );
         let mut ordered_members = state.members.iter().collect::<Vec<_>>();
-        ordered_members.sort_by_key(|m| {
-            (
-                m.contact.profile["invited"].as_bool().unwrap_or(false),
-                !m.is_self,
-            )
-        });
+        ordered_members.sort_by_key(|m| (m.contact.profile.invited, !m.is_self));
         let members = ordered_members
             .into_iter()
             .filter(|m| {
@@ -281,8 +262,8 @@ impl Presenter {
                     .friends
                     .iter()
                     .any(|f| f.id == m.contact.id && !f.group)
-                    || m.contact.profile["relation"] == 0,
-                invited: m.contact.profile["invited"].as_bool().unwrap_or(false),
+                    || m.contact.profile.relation == Some(0),
+                invited: m.contact.profile.invited,
                 avatar_key: m
                     .contact
                     .avatar
@@ -310,7 +291,7 @@ impl Presenter {
             state
                 .members
                 .iter()
-                .filter(|m| m.contact.profile["invited"] == true)
+                .filter(|m| m.contact.profile.invited)
                 .count() as i32,
         );
         g.set_detail_busy(state.action.is_some());
@@ -343,7 +324,7 @@ impl Presenter {
             };
             g.set_detail_page(kind);
             let own = id == "self"
-                || state.profile["mid"].as_str() == Some(id)
+                || state.profile.mid == *id
                 || state
                     .members
                     .iter()
@@ -361,7 +342,7 @@ impl Presenter {
                 });
             let c = state.chats.get(&ChatId(id.into())).map(|c| &c.chat);
             let name = if own {
-                state.profile["displayName"].as_str().unwrap_or("You")
+                state.profile.display_name.as_str()
             } else if kind != 0 {
                 c.map(|c| c.title.as_str())
                     .or_else(|| f.map(|f| f.name.as_str()))
@@ -372,12 +353,12 @@ impl Presenter {
             let room_title = state
                 .members
                 .iter()
-                .filter(|m| !m.is_self && m.contact.profile["invited"] != true)
+                .filter(|m| !m.is_self && !m.contact.profile.invited)
                 .map(|m| m.contact.name.as_str())
                 .collect::<Vec<_>>()
                 .join(", ");
             let name = if kind != 0
-                && (id.starts_with('r') || c.is_some_and(|c| c.kind == 2))
+                && (id.starts_with('r') || c.is_some_and(|c| c.id.0.starts_with('r')))
                 && !room_title.is_empty()
             {
                 room_title.as_str()
@@ -385,7 +366,7 @@ impl Presenter {
                 name
             };
             let status = if own {
-                state.profile["statusMessage"].as_str().unwrap_or("")
+                state.profile.status_message.as_str()
             } else {
                 f.map(|f| f.status.as_str()).unwrap_or("")
             };
@@ -393,11 +374,11 @@ impl Presenter {
                 && kind == 0
                 && f.is_some_and(|f| f.name != "Unknown member")
                 && f.is_some_and(|f| {
-                    f.profile["relation"] == 0
-                        || (f.profile["relation"].is_null()
+                    f.profile.relation == Some(0)
+                        || (f.profile.relation.is_none()
                             && state.friends.iter().any(|r| r.id == id && !r.group))
                 });
-            let official = f.is_some_and(|f| f.profile["type"].as_i64().is_some_and(|t| t != 0));
+            let official = f.is_some_and(|f| f.profile.account_type != 0);
             let friend = friend && !official;
             ui.set_profile_id(id.into());
             ui.set_profile_name(name.into());
@@ -417,19 +398,13 @@ impl Presenter {
             ui.set_profile_group(kind != 0);
             g.set_profile_original(
                 f.and_then(|f| {
-                    let original = f.profile["displayName"].as_str()?;
+                    let original = f.profile.original_name.as_deref()?;
                     (original != name).then_some(original)
                 })
                 .unwrap_or("")
                 .into(),
             );
-            g.set_profile_favourite(f.is_some_and(|f| {
-                f.profile["favoriteTime"]
-                    .as_i64()
-                    .or_else(|| f.profile["favoriteTime"].as_str()?.parse().ok())
-                    .unwrap_or(0)
-                    > 0
-            }));
+            g.set_profile_favourite(f.is_some_and(|f| f.profile.favorite_time.unwrap_or(0) > 0));
             g.set_profile_notice(
                 if !friend
                     && state
@@ -446,14 +421,14 @@ impl Presenter {
             g.set_profile_name_runs(rich_content::runs(name, &[]));
             g.set_profile_status_runs(rich_content::runs(status, &[]));
             let avatar = if own {
-                state.profile["picturePath"]
-                    .as_str()
+                state
+                    .profile
+                    .picture_path
+                    .as_deref()
                     .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar)
             } else {
-                f.and_then(|f| f.avatar.clone()).or_else(|| {
-                    c.and_then(|c| c.avatar.as_ref())
-                        .and_then(|a| serde_json::from_str(a).ok())
-                })
+                f.and_then(|f| f.avatar.clone())
+                    .or_else(|| c.and_then(|c| c.avatar.clone()))
             };
             ui.set_profile_avatar(
                 avatar
@@ -469,7 +444,7 @@ impl Presenter {
             );
             g.set_group_muted(c.is_some_and(|c| c.muted));
             g.set_group_left(c.is_some_and(|c| c.left));
-            g.set_group_room(id.starts_with('r') || c.is_some_and(|c| c.kind == 2));
+            g.set_group_room(id.starts_with('r') || c.is_some_and(|c| c.id.0.starts_with('r')));
             g.set_group_writable(
                 state
                     .group_info
@@ -481,14 +456,16 @@ impl Presenter {
         for (index, id) in state.chat_order.iter().enumerate() {
             let item = &state.chats[id];
             let c = &item.chat;
-            if !c.title.to_lowercase().contains(query)
-                || (category == 1 && c.kind != 0)
-                || (category == 2 && c.kind == 0)
+            let title = chat_title(c, state);
+            if !title.to_lowercase().contains(query)
+                || (category == 1 && c.is_group)
+                || (category == 2 && !c.is_group)
             {
                 continue;
             }
             let inputs = ChatInputs {
                 chat: c.clone(),
+                title: title.to_owned(),
                 preview: item.preview.clone(),
                 activity: item.activity_ms,
                 failed: item.failed_count,
@@ -506,8 +483,8 @@ impl Presenter {
             let mut row = ChatRow {
                 id: id.0.clone().into(),
                 index: index as i32,
-                title: c.title.clone().into(),
-                initial: name_initial(&c.title),
+                title: title.into(),
+                initial: name_initial(title),
                 unread: c.unread_count as i32,
                 failed: item.failed_count > 0,
                 draft: item.draft.as_ref().is_some_and(|d| !d.text.is_empty()),
@@ -519,21 +496,19 @@ impl Presenter {
                     .into(),
                 unread_unknown: c.unread_stale || state.connection != Connection::Online,
                 muted: c.muted,
-                group: c.kind != 0,
+                group: c.is_group,
                 member_count: c.member_count.unwrap_or(0) as i32,
                 time: list_time(item.activity_ms).into(),
                 ..Default::default()
             };
             if let Some(m) = &item.preview {
-                let message = self.row(m);
+                let message = self.row(m, state);
                 preview::set(&mut row, &message, ui.get_text_size());
             } else if item.activity_ms == 0 {
                 row.time = "New".into();
                 row.preview = "No messages yet".into();
             }
-            if let Some(asset) = c.avatar.as_ref().and_then(|v| {
-                serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(v).ok()
-            }) {
+            if let Some(asset) = c.avatar.as_ref() {
                 row.avatar_key = asset.key().into();
                 if let Some(image) = self.images.get(row.avatar_key.as_str()) {
                     row.avatar = image.clone();
@@ -557,9 +532,9 @@ impl Presenter {
         let mut messages = rows
             .iter()
             .map(|m| {
-                let mut row = self.row(m);
+                let mut row = self.row(m, state);
                 if let Some(target) = state.reply_targets.get(&ServerId(row.reply_id.to_string())) {
-                    let quoted = self.row(target);
+                    let quoted = self.row(target, state);
                     let name = if quoted.outgoing {
                         "You"
                     } else {
@@ -576,7 +551,7 @@ impl Presenter {
             .selected
             .as_ref()
             .and_then(|id| state.chats.get(id))
-            .is_some_and(|c| c.chat.kind != 0);
+            .is_some_and(|c| c.chat.is_group);
         if !group {
             for row in &mut messages {
                 row.sender_name = "".into();
@@ -623,15 +598,9 @@ impl Presenter {
             }
             .into(),
         );
-        ui.global::<State>().set_account_initial(name_initial(
-            state.profile["displayName"].as_str().unwrap_or("LINE"),
-        ));
-        ui.set_account_name(
-            state.profile["displayName"]
-                .as_str()
-                .unwrap_or("LINE")
-                .into(),
-        );
+        ui.global::<State>()
+            .set_account_initial(name_initial(state.profile.display_name.as_str()));
+        ui.set_account_name(state.profile.display_name.as_str().into());
         ui.global::<State>().set_connection(match state.connection {
             Connection::Local => ConnectionState::Local,
             Connection::Connecting { .. } => ConnectionState::Connecting,
@@ -673,26 +642,22 @@ impl Presenter {
                 .unwrap_or(-1),
         );
         if let Some(c) = state.selected.as_ref().and_then(|id| state.chats.get(id)) {
-            ui.set_chat_title(c.chat.title.clone().into());
+            ui.set_chat_title(chat_title(&c.chat, state).into());
             ui.global::<State>().set_chat_id(c.chat.id.0.clone().into());
             ui.global::<State>()
-                .set_chat_initial(name_initial(&c.chat.title));
+                .set_chat_initial(name_initial(chat_title(&c.chat, state)));
             let avatar = c
                 .chat
                 .avatar
                 .as_ref()
-                .and_then(|value| {
-                    serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(value)
-                        .ok()
-                })
                 .and_then(|asset| self.images.get(&asset.key()))
                 .cloned()
                 .unwrap_or_default();
             ui.global::<State>().set_chat_avatar(avatar);
-            ui.set_chat_group(c.chat.kind != 0);
+            ui.set_chat_group(c.chat.is_group);
             ui.set_member_count(c.chat.member_count.unwrap_or(0) as i32);
             ui.set_chat_subtitle(
-                if c.chat.kind != 0 {
+                if c.chat.is_group {
                     format!("{} members", c.chat.member_count.unwrap_or(0))
                 } else {
                     String::new()
@@ -740,7 +705,7 @@ impl Presenter {
     pub fn patch_asset(&mut self, ui: &AppWindow, state: &AppState, key: &str) {
         let image = self.images.get(key);
         let failure = self.failures.get(key);
-        for (_, row) in self.rendered.values_mut() {
+        for (_, _, row) in self.rendered.values_mut() {
             patch_message_asset(row, key, image, failure);
         }
         for (i, id) in self.message_keys.iter().enumerate() {
@@ -750,7 +715,7 @@ impl Presenter {
             if !self
                 .rendered
                 .get(key_id)
-                .is_some_and(|(_, row)| uses_asset(row, key))
+                .is_some_and(|(_, _, row)| uses_asset(row, key))
             {
                 continue;
             }
@@ -796,10 +761,6 @@ impl Presenter {
                 .as_ref()
                 .and_then(|id| state.chats.get(id))
                 .and_then(|item| item.chat.avatar.as_ref())
-                .and_then(|value| {
-                    serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(value)
-                        .ok()
-                })
                 .is_some_and(|asset| asset.key() == key)
             {
                 ui.global::<State>().set_chat_avatar(image.clone());
@@ -826,20 +787,17 @@ impl Presenter {
             }
             let other_avatar = match state.detail_page() {
                 Some(line_wasm_poc::controller::DetailPage::Profile(id))
-                    if id == "self" || state.profile["mid"].as_str() == Some(id) =>
+                    if id == "self" || state.profile.mid == *id =>
                 {
-                    state.profile["picturePath"]
-                        .as_str()
+                    state
+                        .profile
+                        .picture_path
+                        .as_deref()
                         .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar)
                 }
-                Some(line_wasm_poc::controller::DetailPage::GroupInfo(id)) => state
-                    .chats
-                    .get(id)
-                    .and_then(|c| c.chat.avatar.as_ref())
-                    .and_then(|a| {
-                        serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(a)
-                            .ok()
-                    }),
+                Some(line_wasm_poc::controller::DetailPage::GroupInfo(id)) => {
+                    state.chats.get(id).and_then(|c| c.chat.avatar.clone())
+                }
                 _ => None,
             };
             if other_avatar.is_some_and(|a| a.key() == key) {
@@ -970,4 +928,149 @@ fn patch_runs(
             }
         }
     }
+}
+
+/// All content labels belong to the presentation layer.
+pub(crate) fn content_view(content: &Content) -> account::MessageView {
+    use line_wasm_poc::client::desktop::rich::RichContent;
+    let mut view = account::MessageView::default();
+    let mut rich = RichContent::default();
+    view.body = match content {
+        Content::Text { text, spans } => {
+            rich.emoji = spans.clone();
+            text.clone()
+        }
+        Content::Photo {
+            album_count,
+            caption,
+            ..
+        } => {
+            view.photo = true;
+            rich.content_type = 1;
+            rich.album_count = *album_count;
+            rich.caption = caption.clone();
+            "Photo".into()
+        }
+        Content::Sticker { text, .. } => {
+            view.sticker = true;
+            rich.content_type = 7;
+            text.clone().unwrap_or_else(|| "Sticker".into())
+        }
+        Content::File { name, size, .. } => {
+            rich.content_type = 14;
+            rich.file_name = name.clone();
+            rich.file_size = *size;
+            name.clone().unwrap_or_else(|| "File".into())
+        }
+        Content::Video {
+            duration,
+            album_count,
+            caption,
+            ..
+        } => {
+            rich.content_type = 2;
+            rich.duration_ms = *duration;
+            rich.album_count = *album_count;
+            rich.caption = caption.clone();
+            "Video".into()
+        }
+        Content::Voice { duration, .. } => {
+            rich.content_type = 3;
+            rich.duration_ms = *duration;
+            "Voice message".into()
+        }
+        Content::Contact { name, .. } => {
+            rich.content_type = 13;
+            rich.contact_name = name.clone();
+            name.clone().unwrap_or_else(|| "Contact".into())
+        }
+        Content::Location { .. } => {
+            rich.content_type = 15;
+            "Location".into()
+        }
+        Content::System { kind, params, text } => {
+            rich.content_type = 18;
+            rich.system_key = kind.clone();
+            rich.system_args = params.clone();
+            rich.system_text = text.clone();
+            text.clone().unwrap_or_else(|| {
+                "Unsupported message · this content cannot be displayed yet".into()
+            })
+        }
+        Content::Withdrawn => {
+            rich.withdrawn = true;
+            "Message unsent".into()
+        }
+        Content::Undecryptable => {
+            view.decryption_failed = true;
+            "Unable to decrypt this message with the saved keys".into()
+        }
+        Content::Unknown { content_type } => {
+            rich.content_type = i64::from(*content_type);
+            "Unsupported message · this content cannot be displayed yet".into()
+        }
+    };
+    view.image_key = content.image().map(|a| a.key()).unwrap_or_default();
+    view.emoji = content
+        .spans()
+        .iter()
+        .map(|span| account::EmojiView {
+            span: span.clone(),
+            image_key: line_wasm_poc::client::desktop::assets::Asset::inline_emoji(span)
+                .map(|a| a.key())
+                .unwrap_or_default(),
+        })
+        .collect();
+    view.rich = rich;
+    view
+}
+fn reaction_views(reactions: &[Reaction]) -> Vec<account::ReactionView> {
+    let mut groups: Vec<(String, String, usize)> = vec![];
+    for reaction in reactions {
+        let (label, key) = match &reaction.kind {
+            ReactionKind::Predefined(id) => (
+                match id {
+                    2 => "👍",
+                    3 => "❤️",
+                    4 => "😆",
+                    5 => "😮",
+                    6 => "😢",
+                    7 => "😰",
+                    _ => "Reaction",
+                }
+                .to_owned(),
+                String::new(),
+            ),
+            ReactionKind::Emoji => ("Emoji".into(), String::new()),
+            ReactionKind::Paid(asset) => (
+                "Emoji".into(),
+                asset.as_ref().map(|a| a.key()).unwrap_or_default(),
+            ),
+        };
+        if let Some(group) = groups.iter_mut().find(|g| g.0 == label && g.1 == key) {
+            group.2 += 1;
+        } else {
+            groups.push((label, key, 1));
+        }
+    }
+    groups
+        .into_iter()
+        .take(6)
+        .map(|(label, image_key, count)| account::ReactionView {
+            label: format!("{label} {count}"),
+            image_key,
+        })
+        .collect()
+}
+
+pub(crate) fn chat_title<'a>(chat: &'a ChatInput, state: &'a AppState) -> &'a str {
+    if !chat.title.trim().is_empty() {
+        return &chat.title;
+    }
+    state
+        .contacts
+        .get(&chat.id.0)
+        .map(|c| c.name.as_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Conversation")
 }

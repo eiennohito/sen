@@ -17,16 +17,13 @@ pub enum ProfileAction {
     Mute { chat: ChatId, disabled: bool },
     Leave { chat: ChatId },
 }
-#[derive(Clone, Debug)]
-pub struct Profile {
-    pub mid: String,
-    pub data: Value,
-}
+pub use crate::store::Profile;
 #[derive(Clone, Debug)]
 pub struct ChatPage {
     pub chats: Vec<ChatInput>,
     pub previews: Vec<MessageInput>,
     pub more: bool,
+    pub cursor: Option<String>,
 }
 #[derive(Clone, Debug)]
 pub struct Page {
@@ -68,7 +65,9 @@ pub enum StreamEvent {
     },
     Operation(LiveOp),
     Raw(Value),
-    Token(Value),
+    RefreshToken {
+        reply: std::sync::mpsc::SyncSender<Result<()>>,
+    },
     Connection(Result<()>),
     Exited,
     Connecting(u32),
@@ -81,8 +80,8 @@ pub type Deliver = Arc<dyn Fn(StreamEvent) -> bool + Send + Sync>;
 /// Each stream invocation runs on its own thread. Returning is supervised by the engine.
 pub trait Backend: Send {
     fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()>;
-    fn friends(&mut self) -> Result<Vec<crate::client::desktop::Friend>>;
-    fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::client::desktop::Member>>;
+    fn friends(&mut self) -> Result<Vec<crate::store::Friend>>;
+    fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>>;
     /// Publish AssetRequests before returning. Its handles enqueue independently
     /// of RPCs, and asset completions use this delivery channel directly.
     fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver);
@@ -96,18 +95,18 @@ pub trait Backend: Send {
         asset: &crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>>;
-    fn contact(&mut self, mid: &str) -> Result<crate::client::desktop::Friend>;
+    fn contact(&mut self, mid: &str) -> Result<crate::store::Friend>;
     fn notice(&mut self, mid: &str) -> Result<Value>;
     fn full_chat(&mut self, chat: &ChatId) -> Result<Value>;
     fn profile_action(&mut self, action: &ProfileAction, full_chat: Value, seq: u32) -> Result<()>;
     fn profile(&mut self) -> Result<Profile>;
-    fn chats(&mut self, next: bool) -> Result<ChatPage>;
+    fn chats(&mut self, cursor: Option<String>) -> Result<ChatPage>;
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>>;
     fn messages(&mut self, chat: &ChatId, kind: &PageKind) -> Result<Page>;
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput>;
     fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()>;
     fn receipts(&mut self, chat: &ChatId) -> Result<Vec<Option<ServerId>>>;
-    fn mark_read(&mut self, chat: &ChatId, id: &ServerId) -> Result<()>;
+    fn mark_read(&mut self, chat: &ChatId, id: &ServerId, seq: u32) -> Result<()>;
     fn stream(
         &mut self,
         revision: i64,
@@ -115,7 +114,7 @@ pub trait Backend: Send {
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>>;
     fn decode(&mut self, raw: Value) -> Result<LiveOp>;
-    fn token(&mut self, token: Value);
+    fn refresh_token(&mut self, stop: &AtomicBool) -> Result<()>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,8 +133,9 @@ pub enum FakeRpc {
 struct FakeState {
     calls: Vec<FakeRpc>,
     failures: Vec<(FakeRpc, Error)>,
-    friends: Option<Vec<crate::client::desktop::Friend>>,
-    members: Option<Vec<crate::client::desktop::Member>>,
+    friends: Option<Vec<crate::store::Friend>>,
+    contacts: std::collections::BTreeMap<String, Friend>,
+    members: Option<Vec<crate::store::Member>>,
     offline: bool,
     fail_send: bool,
     fail_friends: bool,
@@ -171,7 +171,7 @@ impl FakeBackend {
             .map(|(i, (id, title))| ChatInput {
                 id: ChatId(id.into()),
                 title: title.into(),
-                kind: i as i32,
+                is_group: i != 0,
                 member_count: (i == 1).then_some(3),
                 last_message_id: Some(ServerId(if i == 0 { "10" } else { "2" }.into())),
                 last_message_ms: Some(1792300000000 + if i == 0 { 10 } else { 2 }),
@@ -210,10 +210,13 @@ impl FakeBackend {
             delivered_ms: None,
             sender_id: if outgoing { "self" } else { "alice" }.into(),
             outgoing,
-            content_type: 0,
+
+            reply: None,
+            mentioned: false,
+            skip_badge: false,
             request_seq: None,
-            body: json!({"id":id.to_string(),"body":text,"sender_id":"alice","sender_name":"葵","timestamp_ms":1792300000000i64+id,"outgoing":outgoing,"image":null,"reactions":[],"encrypted":false,"decryption_failed":false,"rich":crate::client::desktop::rich::RichContent::default()}),
-            reactions: json!([]),
+            body: Content::text(text),
+            reactions: vec![],
             reactions_rev: id,
         }
     }
@@ -246,18 +249,22 @@ impl FakeBackend {
         }
         Ok(())
     }
-    pub fn set_friends(&self, mut rows: Vec<crate::client::desktop::Friend>) {
+    pub fn set_contact(&self, contact: Friend) {
+        self.0
+            .lock()
+            .unwrap()
+            .contacts
+            .insert(contact.id.clone(), contact);
+    }
+    pub fn set_friends(&self, mut rows: Vec<crate::store::Friend>) {
         for row in &mut rows {
-            if !row.group && row.profile["relation"].is_null() {
-                if row.profile.is_null() {
-                    row.profile = json!({});
-                }
-                row.profile["relation"] = 0.into();
+            if !row.group && row.profile.relation.is_none() {
+                row.profile.relation = Some(0);
             }
         }
         self.0.lock().unwrap().friends = Some(rows);
     }
-    pub fn set_members(&self, rows: Vec<crate::client::desktop::Member>) {
+    pub fn set_members(&self, rows: Vec<crate::store::Member>) {
         self.0.lock().unwrap().members = Some(rows);
     }
     pub fn page(&self, chat: &ChatId) -> Vec<MessageInput> {
@@ -326,18 +333,21 @@ impl FakeBackend {
     }
     pub fn official_image(chat: &str, id: i64) -> MessageInput {
         let mut row = Self::message(chat, id, "", false);
-        row.content_type = 1;
-        row.body["rich"]["content_type"] = 1.into();
-        row.body["image"] = serde_json::to_value(
-            crate::client::desktop::assets::Asset::photo(&json!({
-                "id":id.to_string(), "contentMetadata":{
-                    "PREVIEW_URL":"https://manager.line-scdn.net/synthetic/clearpreview",
-                    "DOWNLOAD_URL":"https://manager.line-scdn.net/synthetic/original"
-                }
-            }))
-            .unwrap(),
-        )
-        .unwrap();
+
+        row.body = Content::Photo {
+            asset: Some(
+                crate::client::desktop::assets::Asset::photo(&json!({
+                    "id":id.to_string(), "contentMetadata":{
+                        "PREVIEW_URL":"https://manager.line-scdn.net/synthetic/clearpreview",
+                        "DOWNLOAD_URL":"https://manager.line-scdn.net/synthetic/original"
+                    }
+                }))
+                .unwrap(),
+            ),
+            size: None,
+            album_count: None,
+            caption: None,
+        };
         row
     }
     pub fn uncertain_send(&self) {
@@ -409,7 +419,7 @@ impl Backend for FakeBackend {
         Err(Error::Rejected(RejectReason::SyntheticSignIn))
     }
 
-    fn friends(&mut self) -> Result<Vec<crate::client::desktop::Friend>> {
+    fn friends(&mut self) -> Result<Vec<crate::store::Friend>> {
         self.online()?;
         {
             let mut s = self.0.lock().unwrap();
@@ -427,18 +437,21 @@ impl Backend for FakeBackend {
             .unwrap()
             .chats
             .iter()
-            .map(|c| crate::client::desktop::Friend {
-                profile: json!({"relation":0}),
+            .map(|c| crate::store::Friend {
+                profile: ContactProfile {
+                    relation: Some(0),
+                    ..Default::default()
+                },
                 id: c.id.0.clone(),
                 name: c.title.clone(),
                 status: String::new(),
-                group: c.kind != 0,
-                avatar: c.avatar.as_ref().map(|a| serde_json::from_str(a).unwrap()),
+                group: c.is_group,
+                avatar: c.avatar.clone(),
                 member_count: c.member_count.map(|n| n as usize),
             })
             .collect())
     }
-    fn members(&mut self, _chat: &ChatId) -> Result<Vec<crate::client::desktop::Member>> {
+    fn members(&mut self, _chat: &ChatId) -> Result<Vec<crate::store::Member>> {
         self.online()?;
         if let Some(rows) = &self.0.lock().unwrap().members {
             return Ok(rows.clone());
@@ -446,7 +459,8 @@ impl Backend for FakeBackend {
         Ok(self
             .friends()?
             .into_iter()
-            .map(|contact| crate::client::desktop::Member {
+            .map(|contact| crate::store::Member {
+                resolved: true,
                 contact,
                 is_self: false,
             })
@@ -556,18 +570,45 @@ impl Backend for FakeBackend {
             })),
         }))
     }
-    fn contact(&mut self, mid: &str) -> Result<crate::client::desktop::Friend> {
+    fn contact(&mut self, mid: &str) -> Result<crate::store::Friend> {
         self.rpc(FakeRpc::Contact(mid.into()))?;
-        self.friends()?
+        if let Some(contact) = self.0.lock().unwrap().contacts.get(mid).cloned() {
+            return Ok(contact);
+        }
+        let state = self.0.lock().unwrap();
+        state
+            .friends
+            .as_ref()
             .into_iter()
-            .chain(
-                self.members(&ChatId("weekend".into()))?
-                    .into_iter()
-                    .map(|m| m.contact),
-            )
+            .flatten()
             .find(|f| f.id == mid)
+            .cloned()
+            .or_else(|| {
+                state
+                    .members
+                    .as_ref()
+                    .into_iter()
+                    .flatten()
+                    .find(|m| m.contact.id == mid)
+                    .map(|m| m.contact.clone())
+            })
+            .or_else(|| {
+                state.chats.iter().find(|c| c.id.0 == mid).map(|c| Friend {
+                    profile: ContactProfile {
+                        relation: Some(0),
+                        ..Default::default()
+                    },
+                    id: mid.into(),
+                    name: c.title.clone(),
+                    avatar: c.avatar.clone(),
+                    group: c.is_group,
+                    member_count: c.member_count.map(|n| n as usize),
+                    ..Default::default()
+                })
+            })
             .ok_or(Error::Decode)
     }
+
     fn notice(&mut self, _mid: &str) -> Result<Value> {
         self.online()?;
         Ok(json!({"notice":{"noticeAntiFraudGeneral":{}}}))
@@ -584,22 +625,25 @@ impl Backend for FakeBackend {
             ProfileAction::Rename { mid, name } | ProfileAction::AddFriend { mid, chat: name } => {
                 let mut f = self.contact(mid)?;
                 if matches!(action, ProfileAction::Rename { .. }) {
-                    let original = f.profile["displayName"]
-                        .as_str()
-                        .unwrap_or(&f.name)
-                        .to_owned();
-                    if f.profile.is_null() {
-                        f.profile = json!({});
-                    }
-                    f.profile["relation"] = 0.into();
-                    f.profile["displayName"] = original.into();
-                    f.profile["displayNameOverridden"] = name.clone().into();
+                    let original = f
+                        .profile
+                        .original_name
+                        .clone()
+                        .unwrap_or_else(|| f.name.clone());
+                    f.profile.relation = Some(0);
+                    f.profile.original_name = Some(original);
+                    f.profile.overridden_name = Some(name.clone());
                     f.name = name.clone();
                 } else {
-                    f.profile["relation"] = 0.into();
+                    f.profile.relation = Some(0);
                 }
                 let mut rows = self.friends()?;
                 rows.retain(|r| r.id != *mid);
+                self.0
+                    .lock()
+                    .unwrap()
+                    .contacts
+                    .insert(f.id.clone(), f.clone());
                 rows.push(f);
                 self.0.lock().unwrap().friends = Some(rows);
             }
@@ -634,10 +678,11 @@ impl Backend for FakeBackend {
         self.rpc(FakeRpc::Profile)?;
         Ok(Profile {
             mid: "self".into(),
-            data: json!({"displayName":"Offline preview"}),
+            display_name: "Offline preview".into(),
+            ..Default::default()
         })
     }
-    fn chats(&mut self, _next: bool) -> Result<ChatPage> {
+    fn chats(&mut self, _cursor: Option<String>) -> Result<ChatPage> {
         self.rpc(FakeRpc::Chats)?;
         let s = self.0.lock().unwrap();
         Ok(ChatPage {
@@ -648,6 +693,7 @@ impl Backend for FakeBackend {
                 .filter_map(|rows| rows.last().cloned())
                 .collect(),
             more: false,
+            cursor: None,
         })
     }
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>> {
@@ -665,9 +711,9 @@ impl Backend for FakeBackend {
             let c = ChatInput {
                 id: chat.clone(),
                 title: f.name,
-                kind: if f.group { 1 } else { 0 },
+                is_group: f.group,
                 member_count: f.member_count.map(|n| n as u32),
-                avatar: f.avatar.map(|a| serde_json::to_string(&a).unwrap()),
+                avatar: f.avatar,
                 ..Default::default()
             };
             s.chats.push(c.clone());
@@ -724,11 +770,14 @@ impl Backend for FakeBackend {
             d(StreamEvent::Operation(LiveOp {
                 revision,
                 replay: false,
-                op: Op::Message({
-                    let mut echo = row.clone();
-                    echo.request_seq = None;
-                    echo
-                }),
+                op: Op::Message(
+                    ({
+                        let mut echo = row.clone();
+                        echo.request_seq = None;
+                        echo
+                    })
+                    .into(),
+                ),
             }));
         }
         Ok(row)
@@ -742,7 +791,7 @@ impl Backend for FakeBackend {
             .flatten()
             .filter(|m| &m.server_id == id)
         {
-            row.body["rich"]["withdrawn"] = true.into();
+            row.body = Content::Withdrawn;
         }
         Ok(())
     }
@@ -758,7 +807,7 @@ impl Backend for FakeBackend {
             .map(|id| vec![Some(id)])
             .unwrap_or_default())
     }
-    fn mark_read(&mut self, chat: &ChatId, _id: &ServerId) -> Result<()> {
+    fn mark_read(&mut self, chat: &ChatId, _id: &ServerId, _seq: u32) -> Result<()> {
         self.rpc(FakeRpc::Read(chat.clone()))
     }
     fn stream(
@@ -793,7 +842,9 @@ impl Backend for FakeBackend {
             },
         })
     }
-    fn token(&mut self, _token: Value) {}
+    fn refresh_token(&mut self, _stop: &AtomicBool) -> Result<()> {
+        Ok(())
+    }
 }
 
 pub struct LineBackend {
@@ -833,19 +884,22 @@ fn message_input(chat: &ChatId, m: crate::client::desktop::Message, rev: i64) ->
         delivered_ms: Some(m.delivered_time),
         sender_id: m.sender_id.clone(),
         outgoing: m.outgoing,
-        content_type: m.rich.content_type as i32,
+
+        reply: m.reply.map(Box::new),
+        mentioned: m.mentioned,
+        skip_badge: m.skip_badge,
         request_seq: m.request_seq,
-        reactions: m.reaction_entries.clone(),
-        body: serde_json::to_value(m).unwrap(),
+        reactions: m.reactions,
+        body: m.content,
         reactions_rev: rev,
     }
 }
 fn chat_input(c: crate::client::desktop::Chat) -> ChatInput {
     ChatInput {
         id: ChatId(c.id),
-        kind: if c.group { 1 } else { 0 },
+        is_group: c.group,
         title: c.title,
-        avatar: c.avatar.map(|a| serde_json::to_string(&a).unwrap()),
+        avatar: c.avatar,
         member_count: c.member_count.map(|n| n as u32),
         muted: c.muted.unwrap_or(false),
         left: false,
@@ -886,10 +940,10 @@ impl Backend for LineBackend {
         Ok(())
     }
 
-    fn friends(&mut self) -> Result<Vec<crate::client::desktop::Friend>> {
+    fn friends(&mut self) -> Result<Vec<crate::store::Friend>> {
         self.client.friends().map_err(rpc)
     }
-    fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::client::desktop::Member>> {
+    fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>> {
         self.client.members(&chat.0).map(|(m, _)| m).map_err(rpc)
     }
     fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver) {
@@ -957,7 +1011,7 @@ impl Backend for LineBackend {
             .enqueue(asset.clone(), None, purpose);
         Ok(None)
     }
-    fn contact(&mut self, mid: &str) -> Result<crate::client::desktop::Friend> {
+    fn contact(&mut self, mid: &str) -> Result<crate::store::Friend> {
         self.client.contact(mid).map_err(rpc)
     }
     fn notice(&mut self, mid: &str) -> Result<Value> {
@@ -979,13 +1033,10 @@ impl Backend for LineBackend {
     }
     fn profile(&mut self) -> Result<Profile> {
         let data = self.client.online_profile().map_err(rpc)?;
-        Ok(Profile {
-            mid: data["mid"].as_str().ok_or(Error::Decode)?.into(),
-            data,
-        })
+        serde_json::from_value(data).map_err(|_| Error::Decode)
     }
-    fn chats(&mut self, next: bool) -> Result<ChatPage> {
-        let rows = self.client.chats(next).map_err(rpc)?;
+    fn chats(&mut self, cursor: Option<String>) -> Result<ChatPage> {
+        let (rows, more, cursor) = self.client.chats(cursor.as_deref()).map_err(rpc)?;
         let previews = rows
             .iter()
             .filter_map(|c| {
@@ -997,7 +1048,8 @@ impl Backend for LineBackend {
         Ok(ChatPage {
             chats: rows.into_iter().map(chat_input).collect(),
             previews,
-            more: self.client.more_chats,
+            more,
+            cursor,
         })
     }
 
@@ -1073,8 +1125,8 @@ impl Backend for LineBackend {
             .map(|r| (!r.open_end).then_some(ServerId(r.end)))
             .collect())
     }
-    fn mark_read(&mut self, chat: &ChatId, id: &ServerId) -> Result<()> {
-        self.client.mark_read(&chat.0, &id.0).map_err(rpc)
+    fn mark_read(&mut self, chat: &ChatId, id: &ServerId, seq: u32) -> Result<()> {
+        self.client.mark_read(&chat.0, &id.0, seq).map_err(rpc)
     }
     fn stream(
         &mut self,
@@ -1083,35 +1135,58 @@ impl Backend for LineBackend {
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>> {
         let replay_through = self.client.latest_revision().map_err(rpc)?;
-        let state = self.state.clone();
-        let wasm = self.wasm.clone();
+        let access = self.client.stream_access();
         Ok(Box::new(move || {
             use crate::client::desktop::sync::{self, Event, SyncState};
-            let _ = sync::receive_from(&state, &wasm, revision as u64, &stop, |e| {
-                deliver(match e {
-                    Event::Operation(mut v) => {
-                        let rev = v["revision"]
-                            .as_i64()
-                            .or_else(|| v["revision"].as_str()?.parse().ok());
-                        v["replay"] = rev.is_some_and(|r| r <= replay_through).into();
-                        StreamEvent::Raw(v)
+            let refresh_deliver = deliver.clone();
+            let _ = sync::receive_with_auth(
+                revision as u64,
+                &stop,
+                |renew| {
+                    if renew {
+                        let (reply, rx) = std::sync::mpsc::sync_channel(1);
+                        if !refresh_deliver(StreamEvent::RefreshToken { reply }) {
+                            return Err(Error::Auth.into());
+                        }
+                        loop {
+                            match rx.recv_timeout(Duration::from_millis(100)) {
+                                Ok(result) => {
+                                    result?;
+                                    break;
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+                                    if !stop.load(Ordering::Relaxed) => {}
+                                Err(_) => return Err(Error::Auth.into()),
+                            }
+                        }
                     }
-                    Event::Token(v) => StreamEvent::Token(v),
-                    Event::State(s) => match s {
-                        SyncState::Connected => StreamEvent::Connection(Ok(())),
-                        SyncState::AuthExpired => StreamEvent::Connection(Err(Error::Auth)),
-                        SyncState::Reconnecting { attempt } => StreamEvent::Connecting(attempt),
-                    },
-                    Event::Failure { attempt, error } => StreamEvent::Retry { attempt, error },
-                    Event::Resync {
-                        next_revision,
-                        complete,
-                    } => StreamEvent::Resync {
-                        revision: next_revision.and_then(|s| s.parse().ok()),
-                        complete,
-                    },
-                })
-            });
+                    Ok(access.read().unwrap().clone())
+                },
+                |e| {
+                    deliver(match e {
+                        Event::Operation(mut v) => {
+                            let rev = v["revision"]
+                                .as_i64()
+                                .or_else(|| v["revision"].as_str()?.parse().ok());
+                            v["replay"] = rev.is_some_and(|r| r <= replay_through).into();
+                            StreamEvent::Raw(v)
+                        }
+                        Event::State(s) => match s {
+                            SyncState::Connected => StreamEvent::Connection(Ok(())),
+                            SyncState::AuthExpired => StreamEvent::Connection(Err(Error::Auth)),
+                            SyncState::Reconnecting { attempt } => StreamEvent::Connecting(attempt),
+                        },
+                        Event::Failure { attempt, error } => StreamEvent::Retry { attempt, error },
+                        Event::Resync {
+                            next_revision,
+                            complete,
+                        } => StreamEvent::Resync {
+                            revision: next_revision.and_then(|s| s.parse().ok()),
+                            complete,
+                        },
+                    })
+                },
+            );
         }))
     }
     fn decode(&mut self, raw: Value) -> Result<LiveOp> {
@@ -1129,7 +1204,7 @@ impl Backend for LineBackend {
                     .or_else(|| raw["reqSeq"].as_str()?.parse().ok())
                     .map(|n| n as u32)
                     .or(m.request_seq);
-                Op::Message(message_input(&ChatId(c), m, revision))
+                Op::Message((message_input(&ChatId(c), m, revision)).into())
             }
             Some(55) => Op::Receipt {
                 chat: chat(),
@@ -1149,8 +1224,8 @@ impl Backend for LineBackend {
             op,
         })
     }
-    fn token(&mut self, token: Value) {
-        self.client.replace_token(token);
+    fn refresh_token(&mut self, stop: &AtomicBool) -> Result<()> {
+        self.client.refresh_token(stop).map_err(rpc)
     }
 }
 
@@ -1182,7 +1257,7 @@ fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
         Some(actor) => Ok(Op::Reaction {
             id: ServerId(raw["param1"].as_str().ok_or(Error::Decode)?.into()),
             actor: actor.into(),
-            curr: data["curr"].clone(),
+            curr: crate::client::desktop::reaction_kind(&data["curr"]),
         }),
         None => Ok(Op::Recent(chat)),
     }

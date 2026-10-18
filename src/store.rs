@@ -15,6 +15,7 @@ pub struct Store {
     conn: Connection,
     writes: u64,
     changes: Changes,
+    settings_changed: bool,
 }
 impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
@@ -30,7 +31,7 @@ impl Store {
     }
     fn initialize(mut conn: Connection) -> Result<Self> {
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 3 {
+        if version > 5 {
             return Err(StoreError::NewerSchema(version));
         }
         conn.execute_batch(
@@ -53,6 +54,18 @@ impl Store {
             tx.pragma_update(None, "user_version", 3)?;
             tx.commit()?;
         }
+        if version < 4 {
+            let tx = conn.transaction()?;
+            tx.execute_batch(include_str!("store/003.sql"))?;
+            tx.pragma_update(None, "user_version", 4)?;
+            tx.commit()?;
+        }
+        if version < 5 {
+            let tx = conn.transaction()?;
+            tx.execute_batch(include_str!("store/004.sql"))?;
+            tx.pragma_update(None, "user_version", 5)?;
+            tx.commit()?;
+        }
         conn.execute_batch("CREATE INDEX IF NOT EXISTS message_pending_chat ON message(chat_id,delivery) WHERE server_id IS NULL;
             CREATE INDEX IF NOT EXISTS message_server_order ON message(chat_id,sort_id) WHERE server_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS message_incoming_order ON message(chat_id,sort_id) WHERE outgoing=0 AND server_id IS NOT NULL;")?;
@@ -60,26 +73,28 @@ impl Store {
             conn,
             writes: 0,
             changes: Changes::default(),
+            settings_changed: false,
         })
     }
     /// Carry only work created before the first account identity was known.
     pub fn carry_local_to(&self, target: &mut Store) -> Result<Vec<Key>> {
-        let mut seq = target
-            .get_pref("request_seq")?
-            .and_then(|v| v.as_u64())
-            .unwrap_or(0)
-            .max(
-                self.get_pref("request_seq")?
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0),
-            ) as u32;
-        let tx = target.conn.savepoint()?;
-        for (key, value) in self.prefs()? {
-            tx.execute(
-                "INSERT OR REPLACE INTO pref VALUES(?,?)",
-                params![key, value.to_string()],
-            )?;
+        let source = self.prefs()?;
+        let mut prefs = target.prefs()?;
+        let mut seq = prefs.request_seq.max(source.request_seq);
+        prefs.request_seq = seq;
+        if self.settings_changed {
+            prefs.text_size = source.text_size;
+            prefs.enter_sends = source.enter_sends;
+            prefs.desktop = source.desktop;
         }
+        if source.last_chat.is_some() {
+            prefs.last_chat = source.last_chat;
+        }
+        let tx = target.conn.savepoint()?;
+        tx.execute(
+            "UPDATE preferences SET value=?",
+            [serde_json::to_string(&prefs)?],
+        )?;
         let mut drafts = self.conn.prepare("SELECT chat_id FROM draft")?;
         for chat in drafts.query_map([], |r| r.get::<_, String>(0))? {
             let chat = ChatId(chat?);
@@ -106,8 +121,8 @@ impl Store {
             }
         }
         tx.execute(
-            "INSERT OR REPLACE INTO pref VALUES('request_seq',?)",
-            [seq.to_string()],
+            "UPDATE preferences SET value=json_set(value,'$.request_seq',?)",
+            [seq],
         )?;
         tx.commit()?;
         Ok(keys)
@@ -208,13 +223,15 @@ impl Store {
                 Op::Withdraw(id) => self.withdraw(id)?,
                 Op::Reaction { id, actor, curr } => {
                     if let Some(row) = messages::by_server(&self.conn, id)? {
-                        let mut entries = row.reactions.as_array().cloned().unwrap_or_default();
-                        entries.retain(|entry| entry["fromUserMid"].as_str() != Some(actor));
-                        if curr.as_object().is_some_and(|v| !v.is_empty()) {
-                            entries
-                                .push(serde_json::json!({"fromUserMid":actor,"reactionType":curr}));
+                        let mut entries = row.reactions;
+                        entries.retain(|entry| entry.actor != *actor);
+                        if let Some(kind) = curr {
+                            entries.push(Reaction {
+                                actor: actor.clone(),
+                                kind: kind.clone(),
+                            });
                         }
-                        self.set_reactions(id, entries.into(), live.revision)?
+                        self.set_reactions(id, entries, live.revision)?
                     } else {
                         Changes::default()
                     }
@@ -225,7 +242,7 @@ impl Store {
                 && fresh
                 && !m.outgoing
                 && !live.replay
-                && m.body["skip_badge"].as_bool() != Some(true)
+                && !m.skip_badge
             {
                 let marker: Option<String> = self.conn.query_row(
                     "SELECT last_read_server_id FROM chat WHERE chat_id=?",

@@ -24,26 +24,7 @@ pub struct RichContent {
     pub withdrawn: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ReplyReference {
-    pub message_id: String,
-    pub service_code: Option<i64>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct InlineEmoji {
-    /// Half-open JavaScript UTF-16 offsets, never inside a surrogate pair.
-    pub start_utf16: usize,
-    pub end_utf16: usize,
-    /// Equivalent UTF-8 boundaries for slicing the unchanged message body.
-    pub start_byte: usize,
-    pub end_byte: usize,
-    pub fallback: String,
-    pub product_id: String,
-    pub sticon_id: String,
-    pub version: Option<String>,
-    pub animated: bool,
-}
+use crate::store::{InlineEmoji, ReplyReference};
 
 fn number(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str()?.parse().ok())

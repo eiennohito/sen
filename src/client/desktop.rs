@@ -15,7 +15,6 @@ use assets::{Asset, ImageCache};
 pub struct Chat {
     pub id: String,
     pub title: String,
-    pub preview: String,
     pub preview_message: Option<Message>,
     pub timestamp_ms: i64,
     pub avatar: Option<Asset>,
@@ -24,34 +23,17 @@ pub struct Chat {
     pub last_read_message: Option<String>,
     pub last_message_id: Option<String>,
     pub member_count: Option<usize>,
-    pub outgoing_preview: bool,
     pub group: bool,
 }
 
-/// Read-only friend/group identity, independent of the loaded conversation list.
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Friend {
-    #[serde(default)]
-    pub profile: Value,
-    pub id: String,
-    pub name: String,
-    pub status: String,
-    pub group: bool,
-    pub avatar: Option<Asset>,
-    pub member_count: Option<usize>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Member {
-    pub contact: Friend,
-    pub is_self: bool,
-}
+use crate::store::{Content, Friend, Member, Reaction, ReactionKind};
 
 fn member_identity(id: &str, contact: &Value, my_mid: &str) -> Member {
     Member {
         is_self: id == my_mid,
+        resolved: contact_name(contact).is_some(),
         contact: Friend {
-            profile: contact.clone(),
+            profile: serde_json::from_value(contact.clone()).unwrap_or_default(),
             id: id.into(),
             name: contact_name(contact).unwrap_or("Unknown member").into(),
             status: contact["statusMessage"].as_str().unwrap_or_default().into(),
@@ -62,45 +44,19 @@ fn member_identity(id: &str, contact: &Value, my_mid: &str) -> Member {
     }
 }
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
-pub struct Reaction {
-    pub label: String,
-    pub count: usize,
-    pub asset: Option<Asset>,
-}
-
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone)]
 pub struct Message {
     pub id: String,
-    #[serde(default)]
     pub sender_id: String,
-    #[serde(default)]
-    pub sender_name: String,
-    #[serde(default)]
-    pub sender_avatar: Option<Asset>,
-    pub body: String,
+    pub content: Content,
     pub timestamp_ms: i64,
-    #[serde(default)]
     pub delivered_time: i64,
     pub outgoing: bool,
-    pub image: Option<Asset>,
     pub reactions: Vec<Reaction>,
-    #[serde(default)]
-    pub reaction_entries: Value,
-    pub encrypted: bool,
-    pub decryption_failed: bool,
-    #[serde(default)]
-    pub rich: rich::RichContent,
-    #[serde(default)]
     pub request_seq: Option<u32>,
-    #[serde(default)]
-    pub attachment: Option<Asset>,
-    #[serde(default)]
     pub mentioned: bool,
-    #[serde(default)]
+    pub reply: Option<crate::store::ReplyReference>,
     pub skip_badge: bool,
-    #[serde(default)]
-    pub metadata_version: u8,
 }
 
 #[derive(Debug)]
@@ -142,19 +98,11 @@ pub struct Client {
     cache_root: PathBuf,
     wasm: Vec<u8>,
     state: Value,
+    stream_access: Arc<std::sync::RwLock<String>>,
     my_mid: String,
-    pub account_name: String,
-    pub more_chats: bool,
-    contacts: HashMap<String, Value>,
-    members: HashMap<String, Vec<String>>,
-    invitees: HashMap<String, Vec<String>>,
-    member_contacts: HashMap<String, Value>,
-    chat_cursor: Option<String>,
     obs_access: Option<String>,
     sequence: u64,
-    request_seq: u32,
     cache: Arc<std::sync::Mutex<ImageCache>>,
-    requests: HashMap<u32, Value>,
 }
 
 impl Client {
@@ -183,7 +131,6 @@ impl Client {
             .or_else(|| state["mid"].as_str())
             .unwrap_or_default()
             .to_owned();
-        let profile = json!({"mid":my_mid});
         let cache = ImageCache::new(
             cache_root,
             if my_mid.is_empty() { "local" } else { &my_mid },
@@ -194,23 +141,14 @@ impl Client {
             session_path: state_path.into(),
             cache_root: cache_root.into(),
             wasm,
+            stream_access: Arc::new(std::sync::RwLock::new(
+                access(&state).unwrap_or_default().into(),
+            )),
             state,
             my_mid: my_mid.clone(),
-            account_name: profile["displayName"]
-                .as_str()
-                .unwrap_or("Signed in")
-                .into(),
-            more_chats: false,
-            contacts: HashMap::from([(my_mid.clone(), profile.clone())]),
-            members: HashMap::new(),
-            invitees: HashMap::new(),
-            member_contacts: HashMap::new(),
-            chat_cursor: None,
             obs_access: None,
             sequence,
-            request_seq: (sequence % 1_000_000_000) as u32,
             cache: Arc::new(std::sync::Mutex::new(cache)),
-            requests: HashMap::new(),
         })
     }
 
@@ -238,19 +176,7 @@ impl Client {
                 let cancel = REQUEST_CANCEL
                     .with(|slot| slot.borrow().clone())
                     .unwrap_or_default();
-                match sync::refresh(
-                    &mut self.api,
-                    &mut self.state,
-                    &self.session_path,
-                    &cancel,
-                    &mut |_| true,
-                ) {
-                    Ok(()) => {}
-                    Err(error) if sync::expired_refresh(&error) => {
-                        return Err(crate::client::Error::Auth.into());
-                    }
-                    Err(error) => return Err(error),
-                }
+                self.refresh_token(&cancel)?;
                 self.api.profile(access(&self.state)?)?
             }
             Err(error) => return Err(error),
@@ -266,10 +192,9 @@ impl Client {
                 mid,
             )?));
         }
+        *self.stream_access.write().unwrap() = access(&self.state)?.into();
         self.state["profile"] = profile.clone();
-        self.contacts.insert(self.my_mid.clone(), profile.clone());
         save_state(&self.session_path, &self.state)?;
-        self.account_name = profile["displayName"].as_str().unwrap_or_default().into();
         Ok(profile)
     }
     pub fn latest_revision(&mut self) -> Result<i64> {
@@ -278,12 +203,8 @@ impl Client {
             .or_else(|| v.as_str()?.parse().ok())
             .context("missing operation revision")
     }
-    pub fn mark_read(&mut self, chat: &str, message: &str) -> Result<()> {
-        self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
-        self.talk(
-            "sendChatChecked",
-            json!([self.request_seq, chat, message, 0]),
-        )?;
+    pub fn mark_read(&mut self, chat: &str, message: &str, seq: u32) -> Result<()> {
+        self.talk("sendChatChecked", json!([seq, chat, message, 0]))?;
         Ok(())
     }
     pub fn read_ranges(&mut self, chat: &str) -> Result<Vec<ReadRange>> {
@@ -308,9 +229,20 @@ impl Client {
         .to_owned();
         Some((chat, self.message(raw)))
     }
-    pub fn replace_token(&mut self, token: Value) {
-        self.state["token_v3_issue_result"] = token;
+    pub fn stream_access(&self) -> Arc<std::sync::RwLock<String>> {
+        self.stream_access.clone()
+    }
+    pub fn refresh_token(&mut self, stop: &std::sync::atomic::AtomicBool) -> Result<()> {
+        sync::refresh(&mut self.api, &mut self.state, &self.session_path, stop).map_err(|e| {
+            if sync::expired_refresh(&e) {
+                crate::client::Error::Auth.into()
+            } else {
+                e
+            }
+        })?;
+        *self.stream_access.write().unwrap() = access(&self.state)?.into();
         self.obs_access = None;
+        Ok(())
     }
 
     /// Reset only the poisoned WASM store, preserving validated public-key data.
@@ -321,13 +253,10 @@ impl Client {
         Ok(())
     }
 
-    pub fn chats(&mut self, next_page: bool) -> Result<Vec<Chat>> {
-        if !next_page {
-            self.chat_cursor = None;
-        }
+    pub fn chats(&mut self, cursor: Option<&str>) -> Result<(Vec<Chat>, bool, Option<String>)> {
         let mut request = json!({"activeOnly":true,"unreadOnly":false,
             "messageBoxCountLimit":50,"withUnreadCount":true,"lastMessagesPerMessageBoxCount":1});
-        if let Some(cursor) = &self.chat_cursor {
+        if let Some(cursor) = cursor {
             request["minChatId"] = json!(cursor);
         }
         let response = self.talk("getMessageBoxes", json!([request, 0]))?;
@@ -340,9 +269,7 @@ impl Client {
             .and_then(|c| c["id"].as_str())
             .map(str::to_owned);
         let chats = self.build_chats(boxes, &HashMap::new())?;
-        self.more_chats = more_chats;
-        self.chat_cursor = chat_cursor;
-        Ok(chats)
+        Ok((chats, more_chats, chat_cursor))
     }
     pub fn chat_detail(&mut self, id: &str) -> Result<Vec<Chat>> {
         let mut group_info = HashMap::new();
@@ -351,15 +278,13 @@ impl Client {
                 "getContactsV2",
                 json!([{"targetUserMids":[id],"neededContactCalendarEvents":[]},0]),
             )?;
-            self.contacts
-                .insert(id.into(), response["contacts"][id]["contact"].clone());
+            group_info.insert(id.into(), response["contacts"][id]["contact"].clone());
         } else {
             let response = self.talk(
                 "getChats",
                 json!([{"chatMids":[id],"withMembers":true,"withInvitees":false},0]),
             )?;
             for chat in response["chats"].as_array().context("missing chats")? {
-                self.remember_members(chat);
                 group_info.insert(id.into(), chat.clone());
             }
         }
@@ -373,7 +298,7 @@ impl Client {
         let mut chats = Vec::new();
         for entry in boxes.iter().take(50) {
             let id = required(entry, "id")?.to_owned();
-            let info = self.contacts.get(&id).or_else(|| group_info.get(&id));
+            let info = group_info.get(&id);
             let title = info
                 .and_then(|v| {
                     v["displayNameOverridden"]
@@ -382,7 +307,7 @@ impl Client {
                         .or_else(|| v["displayName"].as_str())
                         .or_else(|| v["chatName"].as_str())
                 })
-                .unwrap_or("Conversation")
+                .unwrap_or_default()
                 .to_owned();
             let avatar = info
                 .and_then(|v| v["picturePath"].as_str())
@@ -402,10 +327,6 @@ impl Client {
             let timestamp_ms = last.map(message_timestamp).unwrap_or(0);
             let member_count = info.and_then(|chat| rich::group_member_count(chat, &self.my_mid));
             let preview_message = last.map(|m| self.message(m));
-            let preview = preview_message
-                .as_ref()
-                .map(|m| m.body.clone())
-                .unwrap_or_default();
             chats.push(Chat {
                 group: !is_user(&id),
                 member_count,
@@ -417,12 +338,9 @@ impl Client {
                 last_message_id: last.and_then(|m| m["id"].as_str().map(str::to_owned)),
                 id,
                 title,
-                preview,
                 preview_message,
                 timestamp_ms,
                 avatar,
-                outgoing_preview: last
-                    .is_some_and(|m| m["from"].as_str() == Some(self.my_mid.as_str())),
             });
         }
         Ok(chats)
@@ -431,9 +349,9 @@ impl Client {
     pub fn contact(&mut self, mid: &str) -> Result<Friend> {
         let response = self.talk("getContactsV2", json!([{"targetUserMids":[mid]}, 2]))?;
         let contact = &response["contacts"][mid]["contact"];
-        ensure!(contact.is_object(), "missing contact");
-        self.contacts.insert(mid.into(), contact.clone());
-        Ok(member_identity(mid, contact, &self.my_mid).contact)
+        let member = member_identity(mid, contact, &self.my_mid);
+        ensure!(member.resolved, "unresolved contact");
+        Ok(member.contact)
     }
     pub fn profile_notice(&mut self, mid: &str) -> Result<Value> {
         self.api.call(
@@ -462,7 +380,6 @@ impl Client {
             .and_then(|c| c.first())
             .cloned()
             .context("missing chat")?;
-        self.remember_members(&full);
         Ok(full)
     }
     pub fn mute_chat(&mut self, mid: &str, disabled: bool, seq: u32) -> Result<()> {
@@ -500,7 +417,7 @@ impl Client {
                 let contact = contacts.get(id).context("missing contact")?;
                 let contact = &contact["contact"];
                 friends.push(Friend {
-                    profile: contact.clone(),
+                    profile: serde_json::from_value(contact.clone()).unwrap_or_default(),
                     id: id.into(),
                     name: contact_name(contact).unwrap_or("Unnamed friend").into(),
                     status: contact["statusMessage"].as_str().unwrap_or_default().into(),
@@ -508,7 +425,6 @@ impl Client {
                     member_count: None,
                     avatar: contact["picturePath"].as_str().and_then(Asset::avatar),
                 });
-                self.contacts.insert(id.into(), contact.clone());
             }
         }
         let response = self.talk(
@@ -529,7 +445,6 @@ impl Client {
             )?;
             let chats = response["chats"].as_array().context("missing groups")?;
             for chat in chats {
-                self.remember_members(chat);
                 friends.push(Friend {
                     profile: Default::default(),
                     id: required(chat, "chatMid")?.into(),
@@ -548,74 +463,30 @@ impl Client {
         Ok(friends)
     }
 
-    fn remember_members(&mut self, chat: &Value) {
-        if let Some(id) = chat["chatMid"].as_str()
-            && let Some(members) = rich::member_mids(chat, &self.my_mid)
-        {
-            if self.members.len() >= 128
-                && !self.members.contains_key(id)
-                && let Some(old) = self.members.keys().next().cloned()
-            {
-                self.members.remove(&old);
-                self.invitees.remove(&old);
-            }
-            self.invitees.insert(
-                id.into(),
-                chat.pointer("/extra/groupExtra/inviteeMids")
-                    .and_then(Value::as_object)
-                    .map(|m| m.keys().cloned().collect())
-                    .unwrap_or_default(),
-            );
-            self.members.insert(id.into(), members);
-        }
-    }
-
     pub fn members(&mut self, chat: &str) -> Result<(Vec<Member>, bool)> {
         ensure!(!is_user(chat), "not a group or room");
-        if !self.members.contains_key(chat) {
-            let response = self.talk(
-                "getChats",
-                json!([{
-                "chatMids":[chat],"withMembers":true,"withInvitees":true
-            },0]),
-            )?;
-            for info in response["chats"].as_array().context("missing groups")? {
-                self.remember_members(info);
+        let full = self.full_chat(chat)?;
+        let mut ids = rich::member_mids(&full, &self.my_mid).context("missing members")?;
+        let invited: Vec<String> = full
+            .pointer("/extra/groupExtra/inviteeMids")
+            .and_then(Value::as_object)
+            .map(|m| m.keys().cloned().collect())
+            .unwrap_or_default();
+        for id in &invited {
+            if !ids.contains(id) {
+                ids.push(id.clone());
             }
         }
-        let invited = self.invitees.get(chat).cloned().unwrap_or_default();
-        let mut ids = self.members.get(chat).context("missing members")?.clone();
-        ids.extend(
-            invited
-                .iter()
-                .filter(|id| !ids.contains(id))
-                .cloned()
-                .collect::<Vec<_>>(),
-        );
-        let unknown: Vec<_> = ids
-            .iter()
-            .filter(|id| {
-                !self.contacts.contains_key(*id) && !self.member_contacts.contains_key(*id)
-            })
-            .cloned()
-            .collect();
+        let mut contacts = HashMap::new();
         let mut failed = false;
-        for chunk in unknown.chunks(100) {
+        for chunk in ids.chunks(100) {
             match self.talk(
                 "getContactsV2",
-                json!([{
-                "targetUserMids":chunk,"neededContactCalendarEvents":[]
-            },0]),
+                json!([{"targetUserMids":chunk,"neededContactCalendarEvents":[]},0]),
             ) {
                 Ok(response) if response["contacts"].is_object() => {
                     for id in chunk {
-                        let contact = response["contacts"][id]["contact"].clone();
-                        if self.member_contacts.len() >= 4096
-                            && let Some(old) = self.member_contacts.keys().next().cloned()
-                        {
-                            self.member_contacts.remove(&old);
-                        }
-                        self.member_contacts.insert(id.clone(), contact);
+                        contacts.insert(id.clone(), response["contacts"][id]["contact"].clone());
                     }
                 }
                 _ => failed = true,
@@ -624,20 +495,9 @@ impl Client {
         Ok((
             ids.iter()
                 .map(|id| {
-                    let mut member = member_identity(
-                        id,
-                        self.contacts
-                            .get(id)
-                            .or_else(|| self.member_contacts.get(id))
-                            .unwrap_or(&Value::Null),
-                        &self.my_mid,
-                    );
-                    if invited.contains(id) {
-                        if member.contact.profile.is_null() {
-                            member.contact.profile = json!({});
-                        }
-                        member.contact.profile["invited"] = true.into();
-                    }
+                    let mut member =
+                        member_identity(id, contacts.get(id).unwrap_or(&Value::Null), &self.my_mid);
+                    member.contact.profile.invited = invited.contains(id);
                     member
                 })
                 .collect(),
@@ -665,80 +525,15 @@ impl Client {
         let raw = data.as_array().context("missing older messages")?;
         let reached_beginning = raw.len() < 50;
         let messages: Vec<_> = raw.iter().take(50).map(|m| self.message(m)).collect();
-        let mut messages = normalize_older(before, messages);
-        self.resolve_senders(chat, &mut messages);
+        let messages = normalize_older(before, messages);
         Ok((messages, reached_beginning))
     }
     pub fn refresh_messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
         let data = self.talk("getRecentMessagesV2", json!([chat_mid, 50]))?;
         let messages = data.as_array().context("missing recent messages")?;
         let mut messages: Vec<_> = messages.iter().take(50).map(|m| self.message(m)).collect();
-        self.resolve_senders(chat_mid, &mut messages);
         sort_messages(&mut messages);
         Ok(messages)
-    }
-
-    fn resolve_senders(&mut self, chat_mid: &str, messages: &mut [Message]) {
-        if is_user(chat_mid) {
-            return;
-        }
-        let mut users: Vec<_> = messages
-            .iter()
-            .filter(|m| {
-                !m.outgoing
-                    && is_user(&m.sender_id)
-                    && !self.contacts.contains_key(&m.sender_id)
-                    && !self
-                        .member_contacts
-                        .get(&m.sender_id)
-                        .is_some_and(|c| contact_name(c).is_some())
-            })
-            .map(|m| m.sender_id.clone())
-            .collect();
-        users.sort();
-        users.dedup();
-        // Sender lookup is bounded to this page and must never hide otherwise
-        // readable history on a contact/transport failure.
-        if !users.is_empty()
-            && let Ok(response) = self.talk(
-                "getContactsV2",
-                json!([{"targetUserMids":users,"neededContactCalendarEvents":[]},0]),
-            )
-            && let Some(contacts) = response["contacts"].as_object()
-        {
-            for (mid, contact) in contacts {
-                self.contacts
-                    .insert(mid.clone(), contact["contact"].clone());
-            }
-        }
-        for message in messages.iter_mut().filter(|m| !m.outgoing) {
-            if let Some(contact) = self
-                .contacts
-                .get(&message.sender_id)
-                .or_else(|| self.member_contacts.get(&message.sender_id))
-                .filter(|contact| contact_name(contact).is_some())
-            {
-                message.sender_name = contact_name(contact).unwrap_or("Unknown member").to_owned();
-                message.sender_avatar = contact["picturePath"].as_str().and_then(Asset::avatar);
-            } else if message.sender_name.is_empty() {
-                message.sender_name = if message.sender_id.is_empty() {
-                    "Unknown sender".into()
-                } else {
-                    format!(
-                        "Member · {}",
-                        message
-                            .sender_id
-                            .chars()
-                            .rev()
-                            .take(6)
-                            .collect::<String>()
-                            .chars()
-                            .rev()
-                            .collect::<String>()
-                    )
-                };
-            }
-        }
     }
 
     fn message(&mut self, raw: &Value) -> Message {
@@ -763,75 +558,93 @@ impl Client {
                 }
             }
         }
-        let content = data["contentType"].as_u64().unwrap_or(0);
         let meta = &data["contentMetadata"];
-        let body = if failed {
-            "Unable to decrypt this message with the saved keys".into()
+        let details = rich::parse(&data);
+        let content = if details.withdrawn {
+            Content::Withdrawn
+        } else if failed {
+            Content::Undecryptable
         } else {
-            match content {
-                0 => data["text"].as_str().unwrap_or("").to_owned(),
-                1 => "Photo".into(),
-                2 => "Video".into(),
-                3 => "Voice message".into(),
-                7 => meta["STKTXT"].as_str().unwrap_or("Sticker").to_owned(),
-                13 => meta["displayName"].as_str().unwrap_or("Contact").to_owned(),
-                14 => meta["FILE_NAME"].as_str().unwrap_or("File").to_owned(),
-                15 => "Location".into(),
-                _ => "Unsupported message · this content cannot be displayed yet".into(),
+            match data["contentType"].as_i64().unwrap_or(0) {
+                0 => Content::Text {
+                    text: data["text"].as_str().unwrap_or_default().into(),
+                    spans: details.emoji,
+                },
+                1 => Content::Photo {
+                    asset: Asset::photo(&data),
+                    size: None,
+                    album_count: details.album_count,
+                    caption: details.caption,
+                },
+                2 => Content::Video {
+                    duration: details.duration_ms,
+                    asset: Asset::attachment(&data),
+                    preview: Asset::photo(&data),
+                    album_count: details.album_count,
+                    caption: details.caption,
+                },
+                3 => Content::Voice {
+                    duration: details.duration_ms,
+                    asset: Asset::attachment(&data),
+                },
+                7 => Content::Sticker {
+                    pkg: meta["STKPKGID"].as_str().unwrap_or_default().into(),
+                    id: meta["STKID"].as_str().unwrap_or_default().into(),
+                    ver: meta["STKVER"].as_str().map(str::to_owned),
+                    asset: Asset::sticker(meta),
+                    text: meta["STKTXT"].as_str().map(str::to_owned),
+                },
+                13 => Content::Contact {
+                    mid: meta["mid"].as_str().unwrap_or_default().into(),
+                    name: details.contact_name,
+                },
+                14 => Content::File {
+                    name: details.file_name,
+                    size: details.file_size,
+                    asset: Asset::attachment(&data),
+                },
+                15 => Content::Location {
+                    title: data["location"]["title"].as_str().map(str::to_owned),
+                    lat: data["location"]["latitude"].as_f64().unwrap_or_default(),
+                    lon: data["location"]["longitude"].as_f64().unwrap_or_default(),
+                },
+                18 => Content::System {
+                    kind: details.system_key,
+                    params: details.system_args,
+                    text: details.system_text,
+                },
+                content_type => Content::Unknown {
+                    content_type: content_type as i32,
+                },
             }
         };
-        let image = if failed {
-            None
-        } else {
-            match content {
-                1 | 2 => Asset::photo(&data),
-                7 => Asset::sticker(meta),
-                _ => None,
-            }
-        };
-        let mut message = Message {
-            sender_id: data["from"].as_str().unwrap_or_default().to_owned(),
-            sender_name: String::new(),
-            sender_avatar: None,
+        Message {
             id: data["id"]
                 .as_str()
                 .filter(|id| !id.is_empty())
                 .map(str::to_owned)
                 .unwrap_or_else(|| format!("unavailable-{fingerprint}")),
-            body,
+            sender_id: data["from"].as_str().unwrap_or_default().into(),
             timestamp_ms: message_timestamp(&data),
             delivered_time: data["deliveredTime"]
                 .as_i64()
                 .or_else(|| data["deliveredTime"].as_str()?.parse().ok())
                 .unwrap_or_else(|| message_timestamp(&data)),
             outgoing: data["from"].as_str() == Some(&self.my_mid),
-            image,
-            reactions: reactions(&data["reactions"]),
-            reaction_entries: data["reactions"].clone(),
-            encrypted,
-            decryption_failed: failed,
-            request_seq: self
-                .requests
-                .iter()
-                .find(|(_, v)| v["chunks"] == raw["chunks"] && v["to"] == raw["to"])
-                .map(|(s, _)| *s),
-            mentioned: mentioned(&data["contentMetadata"], &self.my_mid),
-            skip_badge: data["contentMetadata"]["SKIP_BADGE_COUNT"].as_str() == Some("true"),
-            metadata_version: 2,
-            attachment: if failed {
-                None
+            content,
+            reactions: if details.withdrawn {
+                vec![]
             } else {
-                Asset::attachment(&data)
+                reactions(&data["reactions"])
             },
-            rich: rich::parse(&data),
-        };
-        if message.rich.withdrawn {
-            message.body.clear();
-            message.image = None;
-            message.reactions.clear();
-            message.rich.content_type = 18;
+            request_seq: data["reqSeq"]
+                .as_u64()
+                .or_else(|| data["requestSeq"].as_u64())
+                .map(|n| n as u32),
+            mentioned: mentioned(meta, &self.my_mid),
+            reply: details.reply,
+            skip_badge: meta["SKIP_BADGE_COUNT"].as_str() == Some("true"),
         }
-        message
     }
 
     pub fn image(&mut self, asset: &Asset) -> Result<Arc<assets::Pixels>> {
@@ -894,16 +707,28 @@ impl Client {
             .into_iter()
             .find(|m| m.id == message)
             .ok_or(assets::Failure::Http(404))?;
-        ensure!(!item.rich.withdrawn, assets::Failure::Http(404));
         ensure!(
-            item.rich
-                .file_size
-                .is_none_or(|size| size <= 16 * 1024 * 1024),
+            !matches!(item.content, Content::Withdrawn),
+            assets::Failure::Http(404)
+        );
+        ensure!(
+            match &item.content {
+                Content::File { size, .. } => *size,
+                _ => None,
+            }
+            .is_none_or(|size| size <= 16 * 1024 * 1024),
             assets::Failure::TooLarge
         );
-        let asset = item.attachment.ok_or(assets::Failure::UnsupportedHost)?;
+        let asset = item
+            .content
+            .attachment()
+            .cloned()
+            .ok_or(assets::Failure::UnsupportedHost)?;
         Ok((
-            item.rich.file_name.unwrap_or_else(|| "attachment".into()),
+            match item.content {
+                Content::File { name, .. } => name.unwrap_or_else(|| "attachment".into()),
+                _ => "attachment".into(),
+            },
             asset,
         ))
     }
@@ -911,10 +736,6 @@ impl Client {
     pub fn unsend(&mut self, id: &str, seq: u32) -> Result<()> {
         self.talk("unsendMessage", json!([seq, id]))?;
         Ok(())
-    }
-    pub fn send_text(&mut self, to: &str, text: &str) -> Result<Message> {
-        self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
-        self.send_text_with_request(to, text, self.request_seq)
     }
     /// The desktop persists this request identity before calling the network.
     pub fn send_text_with_request(
@@ -938,7 +759,6 @@ impl Client {
                 return Err(error);
             }
         };
-        self.requests.insert(request_seq, message.clone());
         // Never automatically retry this RPC: a timeout can mean it was sent.
         let result = self.talk("sendMessage", json!([request_seq, message]))?;
         Ok(self.message(&result))
@@ -1140,44 +960,29 @@ fn pack_chunks(bytes: &[u8], version: u64, sender: u64, receiver: u64) -> Result
     Ok(result)
 }
 
-pub fn reactions(value: &Value) -> Vec<Reaction> {
-    let mut groups: Vec<Reaction> = Vec::new();
-    for item in value.as_array().into_iter().flatten() {
-        let kind = &item["reactionType"];
-        let (label, asset) = if let Some(id) = kind["predefinedReactionType"].as_u64() {
-            (
-                match id {
-                    2 => "👍",
-                    3 => "❤️",
-                    4 => "😆",
-                    5 => "😮",
-                    6 => "😢",
-                    7 => "😰",
-                    _ => "Reaction",
-                }
-                .to_owned(),
-                None,
-            )
-        } else {
-            (
-                "Emoji".into(),
-                Asset::paid_reaction(&kind["paidReactionType"]),
-            )
-        };
-        if let Some(group) = groups.iter_mut().find(|g| {
-            g.label == label && g.asset.as_ref().map(Asset::key) == asset.as_ref().map(Asset::key)
-        }) {
-            group.count += 1;
-        } else {
-            groups.push(Reaction {
-                label,
-                count: 1,
-                asset,
-            });
-        }
+pub fn reaction_kind(value: &Value) -> Option<ReactionKind> {
+    if let Some(id) = value["predefinedReactionType"].as_u64() {
+        Some(ReactionKind::Predefined(id as u32))
+    } else if value["paidReactionType"].is_object() {
+        Some(ReactionKind::Paid(Asset::paid_reaction(
+            &value["paidReactionType"],
+        )))
+    } else if value.as_object().is_some_and(|v| !v.is_empty()) {
+        Some(ReactionKind::Emoji)
+    } else {
+        None
     }
-    groups.truncate(6);
-    groups
+}
+pub fn reactions(value: &Value) -> Vec<Reaction> {
+    value
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|v| Reaction {
+            actor: v["fromUserMid"].as_str().unwrap_or_default().into(),
+            kind: reaction_kind(&v["reactionType"]).unwrap_or(ReactionKind::Emoji),
+        })
+        .collect()
 }
 
 #[cfg(test)]

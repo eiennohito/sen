@@ -385,23 +385,18 @@ For iteration, build with `cargo build --profile fast --offline -p line-desktop
 --features ui-debug`, then launch with `tools/run-ui-debug.py --profile fast
 --port PORT -- --demo`. Each `check-*-mcp.py` also accepts `--launch --profile
 fast --port PORT` to start and stop its own wrapper, with optional `--demo-size
-1400x900`. Search checks pass their text size and colour scheme to that wrapper.
+1400x900`. 
 Without `--launch`, checks still connect to the supplied port. The launcher and
 checks default to `release`; use that profile for final MCP validation.
-`tools/check-search-mcp.py --port PORT --artifacts DIR --text-size 15
---color-scheme light` counts clear graphics, checks clipping and continuous
-fill/strokes, and exercises hover, clear, focus and long-query caret behavior
-in both destinations. Run fresh wrappers with matching `--demo-text-size` and
-`--demo-color-scheme light|dark`, at `--demo-size 980x720` and `360x520`, for
-text sizes 15 and 24. It saves full screenshots and enlarged field/icon crops
-with a 64-element bound for each editor subtree and a 700-element window
-bound. The separate `check-ui-mcp.py` window bound was increased from 500 to
-700 for the merged shell (main already reached 502 elements). Search checks
-also cover forward/reverse Tab with empty and non-empty queries while Offline.
+`tools/check-ui-mcp.py --focus --port PORT` covers search clearing and
+forward/reverse Tab with empty and non-empty queries, including Offline.
+The consolidated checks use fresh instances per group; run `--layers`, `--focus`,
+`--friends` and `--scenarios` again with `--wide`. The retired standalone browser,
+composer, members, search and preview scripts are no longer validation entry points.
 The color-scheme override only applies to demo previews; normal windows keep
 the system scheme. `--demo-dark` is an alias
 for `--demo-color-scheme dark`; both use the same palette override.
-Run `tools/check-composer-mcp.py --port PORT` against fresh wrapper instances
+Run `tools/check-ui-mcp.py --port PORT` against fresh wrapper instances
 at both the default `--demo` size (conversation sheet) and
 `--demo --demo-size 1400x900` (non-modal panel). `--snapshot-profile` opens a
 profile in offline headless snapshots. `--snapshot-scene` selects `chats`,

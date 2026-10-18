@@ -51,22 +51,14 @@ fn client(transport: http::Transport) -> (Client, PathBuf) {
             channel_tick: 0,
         },
         wasm: vec![],
+        stream_access: Arc::new(std::sync::RwLock::new("synthetic".into())),
         state: json!({"token_v3_issue_result":{"accessToken":"synthetic"}}),
         my_mid: "uself".into(),
-        account_name: "Self".into(),
-        more_chats: false,
-        contacts: HashMap::from([("uself".into(), json!({"displayName":"Self"}))]),
-        members: HashMap::new(),
-        invitees: HashMap::new(),
-        member_contacts: HashMap::new(),
-        chat_cursor: None,
         obs_access: None,
         sequence: 0,
-        request_seq: 0,
         cache: Arc::new(std::sync::Mutex::new(
             ImageCache::new(&root, "uself").unwrap(),
         )),
-        requests: HashMap::new(),
         session_path: root.join("session.json"),
         cache_root: root.clone(),
     };
@@ -79,7 +71,7 @@ fn chats(ids: Vec<String>) -> (&'static str, Reply) {
         Box::new(move |args| {
             assert_eq!(
                 args,
-                json!([{"chatMids":["group"],"withMembers":true,"withInvitees":true},0])
+                json!([{"chatMids":["group"],"withMembers":true,"withInvitees":true},1])
             );
             (200, json!({"chats":[{"chatMid":"group","memberMids":ids}]}))
         }),
@@ -112,12 +104,12 @@ fn contacts(count: usize, absent: &'static str) -> (&'static str, Reply) {
 }
 
 #[test]
-fn batches_at_100_reuses_contacts_and_members_on_reopen() {
+fn batches_members_at_100() {
     let (transport, worker) = server(vec![
         chats((0..201).map(|i| format!("u{i:04}")).collect()),
         contacts(100, ""),
         contacts(100, ""),
-        contacts(1, ""),
+        contacts(2, ""),
     ]);
     let (mut client, root) = client(transport);
     let (members, failed) = client.members("group").unwrap();
@@ -131,39 +123,25 @@ fn batches_at_100_reuses_contacts_and_members_on_reopen() {
             .all(|m| m.contact.avatar.is_some())
     );
     worker.join().unwrap();
-    let (reopened, failed) = client.members("group").unwrap();
-    assert!(!failed);
-    assert_eq!(reopened.len(), members.len());
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn failures_are_not_cached_retry_resolves_and_absence_is_cached_without_poisoning_senders() {
-    let fail = || {
+fn failed_member_lookup_can_be_retried_without_hiding_members() {
+    let ids = vec!["uknown".into(), "uabsent".into(), "ufailed".into()];
+    let (transport, worker) = server(vec![
+        chats(ids.clone()),
         (
             "getContactsV2",
             Box::new(|_: Value| (503u16, Value::Null)) as Reply,
-        )
-    };
-    let (transport, worker) = server(vec![
-        chats(vec!["uknown".into(), "uabsent".into(), "ufailed".into()]),
-        fail(),
-        fail(),
-        contacts(3, "uabsent"),
-        contacts(1, "uabsent"),
+        ),
+        chats(ids),
+        contacts(4, "uabsent"),
     ]);
     let (mut client, root) = client(transport);
     let (members, failed) = client.members("group").unwrap();
     assert!(failed);
     assert_eq!(members.len(), 4);
-    assert!(client.member_contacts.is_empty());
-    let sender = |id: &str| {
-        serde_json::from_value::<Message>(json!({"id":"1","sender_id":id,"body":"Hello","timestamp_ms":1,"outgoing":false,"image":null,"reactions":[],"encrypted":false,"decryption_failed":false})).unwrap()
-    };
-    let mut history = vec![sender("ufailed")];
-    client.resolve_senders("group", &mut history);
-    assert_eq!(history[0].sender_name, "Member · failed");
-    assert!(client.member_contacts.is_empty());
     let (members, failed) = client.members("group").unwrap();
     assert!(!failed);
     assert_eq!(
@@ -175,37 +153,13 @@ fn failures_are_not_cached_retry_resolves_and_absence_is_cached_without_poisonin
             .name,
         "ufailed"
     );
-    assert!(client.member_contacts["uabsent"].is_null());
-    let (reopened, failed) = client.members("group").unwrap();
-    assert!(!failed);
     assert_eq!(
-        reopened
+        members
             .iter()
             .filter(|m| m.contact.name == "Unknown member")
             .count(),
         1
     );
-    let mut history = vec![sender("uabsent")];
-    client.resolve_senders("group", &mut history);
-    assert_eq!(history[0].sender_name, "Member · absent");
-    worker.join().unwrap();
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn member_cache_eviction_preserves_primary_contacts() {
-    let (transport, worker) = server(vec![contacts(1, "")]);
-    let (mut client, root) = client(transport);
-    client
-        .contacts
-        .insert("ufriend".into(), json!({"displayName":"Friend"}));
-    client.member_contacts = (0..4096)
-        .map(|i| (format!("uold{i}"), Value::Null))
-        .collect();
-    client.members.insert("group".into(), vec!["unew".into()]);
-    assert!(!client.members("group").unwrap().1);
-    assert_eq!(client.member_contacts.len(), 4096);
-    assert_eq!(client.contacts["ufriend"]["displayName"], "Friend");
     worker.join().unwrap();
     fs::remove_dir_all(root).unwrap();
 }

@@ -4,7 +4,7 @@ pub struct ReactionView {
     pub image_key: String,
 }
 pub struct EmojiView {
-    pub span: line_wasm_poc::client::desktop::rich::InlineEmoji,
+    pub span: line_wasm_poc::store::InlineEmoji,
     pub image_key: String,
 }
 #[derive(Default)]

@@ -603,9 +603,7 @@ impl Desktop {
             .chats
             .values()
             .filter_map(|c| c.chat.avatar.as_ref())
-            .filter_map(|s| {
-                serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(s).ok()
-            })
+            .cloned()
             .chain(self.state.friends.iter().filter_map(|f| f.avatar.clone()))
             .chain(
                 self.state
@@ -614,8 +612,10 @@ impl Desktop {
                     .filter_map(|f| f.avatar.clone()),
             )
             .chain(
-                self.state.profile["picturePath"]
-                    .as_str()
+                self.state
+                    .profile
+                    .picture_path
+                    .as_deref()
                     .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar),
             )
             .chain(
@@ -655,25 +655,14 @@ impl Desktop {
             .values()
             .chain(self.state.chats.values().filter_map(|c| c.preview.as_ref()))
         {
-            use line_wasm_poc::client::desktop::{assets::Asset, rich::InlineEmoji};
-            // Asset discovery needs only these fields, not another complete
-            // deserialization of each message body on every presentation.
-            let media = ["image", "sender_avatar"].into_iter().filter_map(|field| {
-                m.body
-                    .get(field)
-                    .filter(|value| !value.is_null())
-                    .and_then(|value| serde_json::from_value::<Asset>(value.clone()).ok())
+            use line_wasm_poc::client::desktop::assets::Asset;
+            let media = m.body.image().cloned();
+            let emoji = m.body.spans().iter().filter_map(Asset::inline_emoji);
+            let reactions = m.reactions.iter().filter_map(|r| match &r.kind {
+                ReactionKind::Paid(asset) => asset.clone(),
+                _ => None,
             });
-            let emoji = m.body["rich"]["emoji"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|value| serde_json::from_value::<InlineEmoji>(value.clone()).ok())
-                .filter_map(|span| Asset::inline_emoji(&span));
-            let reactions = line_wasm_poc::client::desktop::reactions(&m.reactions)
-                .into_iter()
-                .filter_map(|r| r.asset);
-            for asset in media.chain(emoji).chain(reactions) {
+            for asset in media.into_iter().chain(emoji).chain(reactions) {
                 if self.requested_assets.insert(asset.key()) {
                     self.sender.send(Intent::Asset(asset));
                 }
@@ -726,11 +715,7 @@ impl Desktop {
             .state
             .rows()
             .iter()
-            .filter_map(|m| {
-                serde_json::from_value::<line_wasm_poc::client::desktop::Message>(m.body.clone())
-                    .ok()
-            })
-            .filter_map(|m| m.image)
+            .filter_map(|m| m.body.image().cloned())
             .find(|a| a.key() == key)
             .and_then(|a| a.original());
         if let Some(asset) = asset {
@@ -738,14 +723,8 @@ impl Desktop {
                 .state
                 .rows()
                 .iter()
-                .filter_map(|m| {
-                    serde_json::from_value::<line_wasm_poc::client::desktop::Message>(
-                        m.body.clone(),
-                    )
-                    .ok()
-                })
-                .filter(|m| m.rich.content_type == 1)
-                .filter_map(|m| m.image)
+                .filter(|m| matches!(m.body, Content::Photo { .. }))
+                .filter_map(|m| m.body.image().cloned())
                 .map(|a| a.key())
                 .collect::<Vec<_>>();
             let index = photos.iter().position(|k| k == key);
@@ -962,19 +941,21 @@ impl Desktop {
                     );
                 }
             }
-            Delta::Pref { key, value } => match key.as_str() {
-                "text_size" => ui.set_text_size(value.as_i64().unwrap() as i32),
-                "enter_sends" => ui.set_enter_sends(value.as_bool().unwrap()),
-                "desktop" => {
-                    let s = ui.global::<State>();
-                    s.set_background_mode(value["background"].as_bool().unwrap_or(false));
-                    s.set_autostart(value["autostart"].as_bool().unwrap_or(false));
-                    s.set_notifications_enabled(value["notifications"].as_bool().unwrap_or(false));
-                    s.set_notification_preview(value["preview"].as_i64().unwrap_or(1) as i32);
-                    s.set_notification_sound(value["sound"].as_bool().unwrap_or(false));
+            Delta::Prefs(prefs) => {
+                if !ui.get_demo() {
+                    ui.set_text_size(prefs.text_size);
+                    ui.set_enter_sends(prefs.enter_sends);
                 }
-                _ => {}
-            },
+                let s = ui.global::<State>();
+                let p = &prefs.desktop;
+                s.set_background_mode(p.background);
+                s.set_autostart(p.autostart);
+                s.set_notifications_enabled(p.notifications);
+                s.set_notification_preview(p.preview);
+                s.set_notification_sound(p.sound);
+                s.set_notification_mention_exception(p.mention_exception);
+                s.set_notification_group_events(p.group_events);
+            }
             _ => {}
         }
         let window = matches!(d,Delta::Window {sub,..} if sub==self.state.window_sub);
@@ -1212,7 +1193,7 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
         }
         if action == "append" {
             let m = &d.state.messages[&Key(id.parse().unwrap())];
-            d.state.composer = format!("{}\n{}", ui.get_draft(), m.body["body"].as_str().unwrap());
+            d.state.composer = format!("{}\n{}", ui.get_draft(), m.body.as_text());
             ui.set_draft(d.state.composer.clone().into());
             d.capture_draft(&ui);
             ui.invoke_restore_editor(d.state.composer.len() as i32, d.state.composer.len() as i32);
@@ -1245,15 +1226,20 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
             n.service.withdraw_notifications();
         }
         let s = ui.global::<State>();
-        d.sender.send(Intent::Pref {key:"desktop".into(),value:serde_json::json!({"background":s.get_background_mode(),"autostart":s.get_autostart(),"notifications":s.get_notifications_enabled(),"preview":s.get_notification_preview(),"sound":s.get_notification_sound(),"mention_exception":s.get_notification_mention_exception(),"group_events":s.get_notification_group_events()})});
-        d.sender.send(Intent::Pref {
-            key: "text_size".into(),
-            value: ui.get_text_size().into(),
-        });
-        d.sender.send(Intent::Pref {
-            key: "enter_sends".into(),
-            value: ui.get_enter_sends().into(),
-        });
+        d.sender.send(Intent::Prefs(Prefs {
+            text_size: ui.get_text_size(),
+            enter_sends: ui.get_enter_sends(),
+            desktop: DesktopPrefs {
+                background: s.get_background_mode(),
+                autostart: s.get_autostart(),
+                notifications: s.get_notifications_enabled(),
+                preview: s.get_notification_preview(),
+                sound: s.get_notification_sound(),
+                mention_exception: s.get_notification_mention_exception(),
+                group_events: s.get_notification_group_events(),
+            },
+            ..d.state.prefs.clone()
+        }));
     });
     callback!(on_browse, |ui, d, section| {
         d.state.panel = if section == 1 {
@@ -1301,7 +1287,7 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
             || d.state
                 .chats
                 .get(&ChatId(id.clone()))
-                .is_some_and(|c| c.chat.kind != 0);
+                .is_some_and(|c| c.chat.is_group);
         if group {
             let chat = ChatId(id);
             if d.state.selected.as_ref() != Some(&chat) {
@@ -1422,12 +1408,8 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
             .state
             .rows()
             .iter()
-            .filter_map(|m| {
-                serde_json::from_value::<line_wasm_poc::client::desktop::Message>(m.body.clone())
-                    .ok()
-            })
-            .filter(|m| m.rich.content_type == 1)
-            .filter_map(|m| m.image)
+            .filter(|m| matches!(m.body, Content::Photo { .. }))
+            .filter_map(|m| m.body.image().cloned())
             .map(|a| a.key())
             .collect::<Vec<_>>();
         if let Some(i) = photos
@@ -1444,16 +1426,18 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
     });
     global_callback!(on_save_file, |ui, d, id| {
         let m = &d.state.messages[&Key(id.parse().unwrap())];
-        let raw: line_wasm_poc::client::desktop::Message =
-            serde_json::from_value(m.body.clone()).unwrap();
-        if let Some(asset) = raw.attachment {
+        if let Content::File {
+            asset: Some(asset),
+            name,
+            ..
+        } = &m.body
+        {
+            let asset = asset.clone();
+            let name = name.clone().unwrap_or_else(|| "attachment".into());
             ui.global::<State>().set_file_save_id(id.clone());
             ui.global::<State>().set_file_save_status("".into());
             ui.global::<State>().set_file_saving(true);
-            d.sender.send(Intent::File {
-                asset,
-                name: raw.rich.file_name.unwrap_or_else(|| "attachment".into()),
-            });
+            d.sender.send(Intent::File { asset, name });
         }
     });
     global_callback!(on_save_photo, |ui, d| {

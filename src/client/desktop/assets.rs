@@ -12,7 +12,7 @@ pub use failure::Failure;
 mod fetchers;
 pub use fetchers::{Completion, Failures, Fetchers, Payload, Priority, Purpose};
 
-#[derive(Clone, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Asset {
     url: String,
     pub(super) private: bool,
@@ -115,7 +115,7 @@ impl Asset {
         })
     }
 
-    pub fn inline_emoji(span: &rich::InlineEmoji) -> Option<Self> {
+    pub fn inline_emoji(span: &crate::store::InlineEmoji) -> Option<Self> {
         Self::paid_reaction(&json!({"productId":span.product_id,"emojiId":span.sticon_id}))
     }
 

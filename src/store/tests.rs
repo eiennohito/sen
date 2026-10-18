@@ -1,5 +1,5 @@
 use super::*;
-use serde_json::json;
+
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn chat() -> ChatId {
@@ -16,10 +16,12 @@ fn input(n: u64) -> MessageInput {
         delivered_ms: None,
         sender_id: "sender".into(),
         outgoing: false,
-        content_type: 0,
+        reply: None,
+        mentioned: false,
+        skip_badge: false,
         request_seq: None,
-        body: json!({"text":n}),
-        reactions: json!([]),
+        body: Content::text(n.to_string()),
+        reactions: vec![],
         reactions_rev: 0,
     }
 }
@@ -45,7 +47,7 @@ fn pending(s: &mut Store, seq: u32) -> Key {
         &chat(),
         LocalId(format!("local-{seq}")),
         seq,
-        json!("pending"),
+        Content::text("pending"),
         100,
     )
     .unwrap()
@@ -110,7 +112,7 @@ fn echo_and_result_orders_preserve_key_and_merge_duplicate() {
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].key, key);
             assert_eq!(rows[0].sort.sort_ts, 101);
-            assert_eq!(rows[0].body, json!({"text":101}));
+            assert_eq!(rows[0].body, Content::text("101"));
             assert_eq!(rows[0].local_id, Some(LocalId("local-1".into())));
         }
     }
@@ -121,16 +123,14 @@ fn withdrawal_tombstone_and_sticky_body() {
     s.withdraw(&id(1)).unwrap();
     page(&mut s, &[1], true);
     let original = all(&s)[0].clone();
-    assert!(original.withdrawn);
-    assert!(original.body.is_null());
+    assert!(original.body.is_withdrawn());
     let mut updated = input(1);
     updated.reactions_rev = 5;
-    updated.body = json!("edited");
+    updated.body = Content::text("edited");
     s.apply_live(&chat(), &updated, true, None).unwrap();
     let row = &all(&s)[0];
     assert_eq!(row.key, original.key);
-    assert!(row.withdrawn);
-    assert!(row.body.is_null());
+    assert!(row.body.is_withdrawn());
     assert_eq!(row.delivery, Delivery::Sent);
 }
 #[test]
@@ -138,20 +138,20 @@ fn reaction_and_content_revisions_only_advance() {
     let mut s = store();
     let mut m = input(1);
     m.reactions_rev = 2;
-    m.reactions = json!(["new"]);
+    m.reactions = reaction("new");
     s.apply_live(&chat(), &m, false, None).unwrap();
-    s.set_reactions(&id(1), json!(["old"]), 1).unwrap();
+    s.set_reactions(&id(1), reaction("old"), 1).unwrap();
     page(&mut s, &[1], true);
-    assert_eq!(all(&s)[0].reactions, json!(["new"]));
+    assert_eq!(all(&s)[0].reactions, reaction("new"));
     assert_eq!(all(&s)[0].body, m.body);
     m.reactions_rev = 3;
-    m.body = json!("edit");
-    m.reactions = json!(["latest"]);
+    m.body = Content::text("edit");
+    m.reactions = reaction("latest");
     s.apply_page(&chat(), PageKind::Recent, &[m], false)
         .unwrap();
-    assert_eq!(all(&s)[0].body, json!("edit"));
-    s.set_reactions(&id(1), json!(["op"]), 4).unwrap();
-    assert_eq!(all(&s)[0].reactions, json!(["op"]));
+    assert_eq!(all(&s)[0].body, Content::text("edit"));
+    s.set_reactions(&id(1), reaction("op"), 4).unwrap();
+    assert_eq!(all(&s)[0].reactions, reaction("op"));
 }
 #[test]
 fn receipt_never_regresses_and_applies_to_later_pages() {
@@ -427,10 +427,14 @@ fn unread_read_markers_drafts_preferences_and_account() {
     assert_eq!(s.load_draft(&chat()).unwrap(), Some(d));
     s.clear_draft(&chat()).unwrap();
     assert!(s.load_draft(&chat()).unwrap().is_none());
-    s.set_pref("scroll", json!(123)).unwrap();
-    assert_eq!(s.get_pref("scroll").unwrap(), Some(json!(123)));
-    assert_eq!(s.get_pref("missing").unwrap(), None);
-    s.set_account("own", json!({"name":"Me"})).unwrap();
+    s.set_account(
+        "own",
+        Profile {
+            display_name: "Me".into(),
+            ..Default::default()
+        },
+    )
+    .unwrap();
     s.set_sync_revision(10).unwrap();
     s.set_sync_revision(5).unwrap();
     assert_eq!(s.account().unwrap().own_mid, "own");
@@ -463,7 +467,14 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
         key = pending(&mut s, 1);
         s.mark_failed(key, Delivery::Uncertain).unwrap();
         s.withdraw(&id(9)).unwrap();
-        s.set_account("own", json!({"name":"Me"})).unwrap();
+        s.set_account(
+            "own",
+            Profile {
+                display_name: "Me".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         s.set_sync_revision(42).unwrap();
         s.save_draft(
             &chat(),
@@ -475,7 +486,6 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
             },
         )
         .unwrap();
-        s.set_pref("anchor", json!(key.0)).unwrap();
         s.set_unread(&chat(), 3, true).unwrap();
         assert_eq!(
             s.conn
@@ -506,7 +516,6 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
     assert_eq!(s.sync_revision().unwrap(), 42);
     assert_eq!(s.account().unwrap().own_mid, "own");
     assert_eq!(s.load_draft(&chat()).unwrap().unwrap().text, "draft");
-    assert_eq!(s.get_pref("anchor").unwrap(), Some(json!(key.0)));
     assert!(
         s.window(&chat(), Anchor::Latest, 10, 0)
             .unwrap()
@@ -518,7 +527,8 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
             .iter()
             .find(|r| r.server_id == Some(id(9)))
             .unwrap()
-            .withdrawn
+            .body
+            .is_withdrawn()
     );
 }
 #[test]
@@ -526,11 +536,11 @@ fn newer_schema_is_refused_without_migration() {
     let dir = TempDir::new();
     {
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 4).unwrap();
+        s.conn.pragma_update(None, "user_version", 6).unwrap();
     }
     assert!(matches!(
         Store::open(&dir.0),
-        Err(StoreError::NewerSchema(4))
+        Err(StoreError::NewerSchema(6))
     ));
 }
 
@@ -550,16 +560,16 @@ fn cross_chat_sequence_cannot_steal_pending_row() {
 fn reaction_operation_does_not_suppress_body_revision() {
     let mut s = store();
     page(&mut s, &[1], true);
-    s.set_reactions(&id(1), json!(["new"]), 10).unwrap();
+    s.set_reactions(&id(1), reaction("new"), 10).unwrap();
     let mut m = input(1);
-    m.body = json!("edited");
+    m.body = Content::text("edited");
     m.reactions_rev = 5;
-    m.reactions = json!(["stale"]);
+    m.reactions = reaction("stale");
     s.apply_page(&chat(), PageKind::Recent, &[m], false)
         .unwrap();
     let row = &all(&s)[0];
-    assert_eq!(row.body, json!("edited"));
-    assert_eq!(row.reactions, json!(["new"]));
+    assert_eq!(row.body, Content::text("edited"));
+    assert_eq!(row.reactions, reaction("new"));
     assert_eq!(row.reactions_rev, 10);
     assert_eq!(row.content_rev, Some(5));
 }
@@ -567,8 +577,14 @@ fn reaction_operation_does_not_suppress_body_revision() {
 fn pending_between_confirmed_rows_does_not_hide_gap() {
     let mut s = store();
     page(&mut s, &[10], true);
-    s.insert_pending(&chat(), LocalId("between".into()), 1, json!("pending"), 20)
-        .unwrap();
+    s.insert_pending(
+        &chat(),
+        LocalId("between".into()),
+        1,
+        Content::text("pending"),
+        20,
+    )
+    .unwrap();
     s.apply_live(&chat(), &input(30), false, None).unwrap();
     let w = s.window(&chat(), Anchor::Latest, 10, 0).unwrap();
     assert_eq!(
@@ -584,14 +600,20 @@ fn signed_revision_first_content_and_duplicate_requests() {
     let mut s = store();
     let key = pending(&mut s, 1);
     assert!(
-        s.insert_pending(&chat(), LocalId("different".into()), 1, json!("other"), 5)
-            .is_err()
+        s.insert_pending(
+            &chat(),
+            LocalId("different".into()),
+            1,
+            Content::text("other"),
+            5
+        )
+        .is_err()
     );
     assert_eq!(all(&s).len(), 1);
     s.link_sent(1, id(1), 1).unwrap();
     let mut m = input(1);
     m.reactions_rev = i64::MIN;
-    m.reactions = json!(["first"]);
+    m.reactions = reaction("first");
     s.apply_page(&chat(), PageKind::Recent, &[m.clone()], true)
         .unwrap();
     let row = s.message(key).unwrap();
@@ -604,14 +626,14 @@ fn reactions_before_echo_survive_equal_or_older_content() {
     let mut s = store();
     let key = pending(&mut s, 1);
     s.link_sent(1, id(1), 1).unwrap();
-    s.set_reactions(&id(1), json!(["newer"]), 10).unwrap();
+    s.set_reactions(&id(1), reaction("newer"), 10).unwrap();
     let mut m = input(1);
     m.reactions_rev = 5;
     s.apply_page(&chat(), PageKind::Recent, &[m.clone()], true)
         .unwrap();
     let row = s.message(key).unwrap();
     assert_eq!(row.body, m.body);
-    assert_eq!(row.reactions, json!(["newer"]));
+    assert_eq!(row.reactions, reaction("newer"));
     assert_eq!(row.reactions_rev, 10);
 }
 #[test]
@@ -664,18 +686,42 @@ fn linked_send_extends_only_a_continuous_head() {
 #[test]
 fn member_cache_preserves_backend_order_and_contact_names() {
     let mut s = store();
-    let rows = vec![
-        ("self".into(), json!({"contact":{"name":"You"}})),
-        ("alice".into(), json!({"contact":{"name":"葵"}})),
-        ("member-2".into(), json!({"contact":{"name":"蓮"}})),
+    let rows: Vec<(String, Member)> = [
+        ("self", "You"),
+        ("alice", "葵"),
+        ("member-2", "蓮"),
+        ("member-10", "Weekend walker 10"),
+    ]
+    .into_iter()
+    .map(|(id, name)| {
         (
-            "member-10".into(),
-            json!({"contact":{"name":"Weekend walker 10"}}),
-        ),
-    ];
-    s.save_members(&chat(), &rows).unwrap();
+            id.into(),
+            Member {
+                resolved: true,
+                is_self: id == "self",
+                contact: Friend {
+                    id: id.into(),
+                    name: name.into(),
+                    ..Default::default()
+                },
+            },
+        )
+    })
+    .collect::<Vec<_>>();
+    s.save_members(
+        &chat(),
+        &rows.iter().map(|(_, row)| row.clone()).collect::<Vec<_>>(),
+    )
+    .unwrap();
     assert_eq!(
         s.members(&chat()).unwrap(),
         rows.into_iter().map(|(_, row)| row).collect::<Vec<_>>()
     );
+}
+
+fn reaction(actor: &str) -> Vec<Reaction> {
+    vec![Reaction {
+        actor: actor.into(),
+        kind: ReactionKind::Predefined(2),
+    }]
 }

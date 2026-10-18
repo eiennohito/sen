@@ -48,9 +48,9 @@ impl Notifications {
                 muted,
                 ..Default::default()
             },
-            if m.body["mentioned"].as_bool() == Some(true) {
+            if m.mentioned {
                 EventKind::Mention
-            } else if m.content_type >= 1000 {
+            } else if matches!(m.body, Content::System { .. }) {
                 EventKind::GroupEvent
             } else {
                 EventKind::Message
@@ -60,13 +60,9 @@ impl Notifications {
             let title = state
                 .chats
                 .get(&m.chat_id)
-                .map(|c| c.chat.title.as_str())
+                .map(|c| presenter::chat_title(&c.chat, state))
                 .unwrap_or("LINE");
-            let text = policy::redact(
-                prefs.preview,
-                title,
-                m.body["body"].as_str().unwrap_or("New message"),
-            );
+            let text = policy::redact(prefs.preview, title, &presenter::content_view(&m.body).body);
             self.service.notify(attention::Notice {
                 chat: m.chat_id.0.clone(),
                 summary: text.summary,
