@@ -774,6 +774,7 @@ impl View {
                         FriendRow {
                             header: false,
                             id: friend.id.into(),
+                            initial: name_initial(&friend.name),
                             name: friend.name.into(),
                             status: friend.status.into(),
                             group: friend.group,
@@ -1003,8 +1004,7 @@ impl View {
                         self.rows[index].preview = single_line(&chat.preview).into();
                         self.rows[index].activity = order_key(chat.timestamp).into();
                         self.rows[index].time = list_time(chat.timestamp).into();
-                        self.rows[index].initial =
-                            chat.title.chars().next().unwrap_or('·').to_string().into();
+                        self.rows[index].initial = name_initial(&chat.title);
                         if self.rows[index].avatar_key != chat.avatar_key {
                             self.rows[index].avatar_key = chat.avatar_key.into();
                             self.rows[index].avatar = Default::default();
@@ -1020,7 +1020,7 @@ impl View {
                             outgoing_preview: chat.outgoing_preview,
                             muted: chat.muted.unwrap_or(false),
                             title: single_line(&chat.title).into(),
-                            initial: chat.title.chars().next().unwrap_or('·').to_string().into(),
+                            initial: name_initial(&chat.title),
                             preview: single_line(&chat.preview).into(),
                             activity: order_key(chat.timestamp).into(),
                             time: list_time(chat.timestamp).into(),

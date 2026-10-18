@@ -1,5 +1,9 @@
 use crate::*;
 
+pub(crate) fn name_initial(name: &str) -> slint::SharedString {
+    name.chars().next().unwrap_or('·').to_string().into()
+}
+
 pub(crate) fn chat_subtitle(row: &ChatRow) -> String {
     if row.group && row.member_count > 0 {
         format!("{} members", row.member_count)

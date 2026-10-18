@@ -54,7 +54,7 @@ properties = call("get_window_properties", windowHandle=window)
 root = properties["rootElementHandle"]
 
 def tree():
-    result = call("get_element_tree", elementHandle=root, maxElements=500)
+    result = call("get_element_tree", elementHandle=root, maxElements=700)
     assert not result.get("truncated"), "UI tree exceeded test bound"
     return result["elements"]
 
@@ -84,7 +84,14 @@ call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
 demo_marker = element("Synthetic interaction scenarios", "Text")
 assert any(part.get("id", "").endswith("::demo-marker") for part in demo_marker.get("typeNamesAndIds", [])), "refusing a window without the compiled demo-only marker"
 call("click_element", elementHandle=element("Close demo scenarios", "Button")["handle"])
-composer = element("Message draft", "TextInput")["handle"]
+deadline = time.monotonic() + 5
+while True:
+    try:
+        composer = element("Message draft", "TextInput")["handle"]
+        break
+    except StopIteration:
+        assert time.monotonic() < deadline, "composer did not appear within 5 seconds"
+        time.sleep(0.05)
 search = element("Find a conversation", "TextInput")["handle"]
 draft = "日本語の下書き\nDraft with emoji 🐈"
 call("click_element", elementHandle=element("葵", "Button")["handle"])
@@ -264,9 +271,9 @@ if args.friends:
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     assert call("get_element_properties", elementHandle=friend_search).get("accessibleValue") == "葵", "section switch lost friend query"
     call("set_element_value", elementHandle=friend_search, value="")
-    call("click_element", elementHandle=element("Groups ▾", "Button")["handle"])
+    call("click_element", elementHandle=element("Groups", "Button")["handle"])
     assert not any(item.get("accessibleLabel", "").startswith("Open profile:") and "Weekend plans" in item.get("accessibleLabel", "") for item in tree()), "collapsed groups remained visible"
-    call("click_element", elementHandle=element("Groups ▸", "Button")["handle"])
+    call("click_element", elementHandle=element("Groups", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 新しい友だち 🌸", "Button")["handle"])
     call("click_element", elementHandle=element("Open chat", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "") == "", "new friend inherited another draft"
@@ -409,6 +416,8 @@ if args.layers:
     assert close_settings.get("absolutePosition", {}).get("x", 0) > 0, "wide Settings did not form a centered dialog"
     element("Enter sends", "Checkbox")
     assert call("get_element_properties", elementHandle=close_settings["handle"]).get("accessibleDescription") == "Focused", "Settings did not focus its close control"
+    call("dispatch_key_event", windowHandle=window, text="\t")
+    assert element("Settings section", "TabList").get("accessibleDescription") == "Focused", "Settings navigation did not describe focus"
     for _ in range(12):
         call("dispatch_key_event", windowHandle=window, text="\t")
     assert call("get_element_properties", elementHandle=composer).get("accessibleDescription") != "Focused message draft", "Settings let Tab escape to the draft"
@@ -598,6 +607,7 @@ if args.rich:
         assert any(expected in label for label in labels), f"missing rich metadata: {expected}"
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
     time.sleep(0.05)
+    demo_scenario("Offline")
     reply = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Jump to replied message")
     def emoji_body():
         return next(item for item in rich_tree() if item.get("accessibleRole") == "Text" and "日😀[笑]本🌸" in item.get("accessibleLabel", ""))
@@ -605,6 +615,26 @@ if args.rich:
     call("click_element", elementHandle=reply["handle"])
     time.sleep(0.05)
     rich_element("Return to message", "Button")
+    latest = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest"))
+    return_pill = rich_element("Return to message", "Button")
+    assert abs(latest["absolutePosition"]["y"] - return_pill["absolutePosition"]["y"]) <= 1, "history pills stacked vertically"
+    assert latest["absolutePosition"]["x"] + latest["size"]["width"] <= return_pill["absolutePosition"]["x"], "history pills overlap"
+    strip = rich_element("Connection needs attention", "Banner")
+    history = rich_element("Message history", "List")
+    editor = rich_element("Message draft", "TextInput")
+    assert strip["absolutePosition"]["y"] == history["absolutePosition"]["y"], "strip left the history top"
+    for pill in (latest, return_pill):
+        assert strip["absolutePosition"]["y"] + strip["size"]["height"] <= pill["absolutePosition"]["y"], "strip covered a history pill"
+        assert pill["absolutePosition"]["y"] + pill["size"]["height"] <= editor["absolutePosition"]["y"], "history pill covered the composer"
+    call("click_element", elementHandle=composer)
+    for _ in range(3):
+        call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
+        call("dispatch_key_event", windowHandle=window, text="\t")
+        call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
+    assert rich_element("Message history", "List").get("accessibleDescription") == "Focused history", "reverse Tab skipped a history pill"
+    for _ in range(3):
+        call("dispatch_key_event", windowHandle=window, text="\t")
+    assert call("get_element_properties", elementHandle=composer).get("accessibleDescription") == "Focused message draft", "history/Latest/Return/composer Tab order changed"
     call("click_element", elementHandle=rich_element("Return to message", "Button")["handle"])
     time.sleep(0.05)
     assert abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return lost the reading anchor"

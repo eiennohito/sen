@@ -71,7 +71,8 @@ Priorities, in order. A lower priority never overrides a higher one.
 ```
 
 - **Rail**: fixed, icon-first destinations Chats, Friends, and (when
-  implemented) Add friend at the top; Settings and account at the bottom.
+  implemented) Add friend at the top; Settings at the bottom, including
+  account information in About.
   The current destination is *selected*, never *disabled*. Unavailable
   destinations are omitted, not shown as apology pages.
 - **Browser pane**: one destination at a time. Each destination keeps its own
@@ -338,8 +339,8 @@ not configurable in v1.
 
 - Focus order: rail → browser search → list (one Tab stop; arrows move
   within) → conversation header actions → visible connection recovery actions →
-  history (one Tab stop) → latest
-  control → composer → Send.
+  history (one Tab stop) → Latest → Return to message (when visible) →
+  composer → Send.
 - F6 enters the visible recovery strip; F6 or Tab after its last action moves
   to history, or the browser list in narrow browser layout. Shift+Tab before
   its first action returns to the conversation header/browser search. In narrow

@@ -4,6 +4,35 @@ import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { FeedbackRect } from "connection-notice.slint";
 import { Pane } from "scrollpane.slint";
+import { IconButton } from "icon-button.slint";
+
+component SettingsSections inherits FocusScope {
+    in-out property <int> current;
+    in property <bool> narrow;
+    property <length> row-height: max(36px, Tokens.small * 1.5 + 16px);
+    preferred-height: (root.narrow ? 3 : 5) * root.row-height;
+    accessible-role: tab-list; accessible-label: "Settings section";
+    accessible-description: self.has-focus ? "Focused" : "";
+    key-pressed(event) => {
+        if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.current = max(0, root.current - 1); return accept; }
+        if event.text == Key.DownArrow || event.text == Key.RightArrow { root.current = min(4, root.current + 1); return accept; }
+        if event.text == Key.Home { root.current = 0; return accept; }
+        if event.text == Key.End { root.current = 4; return accept; }
+        reject
+    }
+    for section[i] in ["Chats", "Notifications", "Background", "Shortcuts", "About"]: Rectangle {
+        x: root.narrow ? mod(i, 2) * (root.width + 8px) / 2 : 0px;
+        y: (root.narrow ? floor(i / 2) : i) * root.row-height;
+        width: root.narrow ? (root.width - 8px) / 2 : root.width; height: root.row-height - 4px;
+        border-radius: 6px; background: root.current == i ? Tokens.selection : touch.has-hover ? Tokens.surface : transparent;
+        border-width: root.has-focus && root.current == i ? 2px : 0px; border-color: Tokens.accent;
+        accessible-role: tab; accessible-label: section;
+        accessible-item-selectable: true; accessible-item-selected: root.current == i;
+        accessible-action-default => { root.current = i; root.focus(); }
+        Text { x: 8px; width: parent.width - 16px; height: parent.height; text: section; font-size: Tokens.small; color: root.current == i ? Tokens.selection-foreground : Tokens.foreground; vertical-alignment: center; }
+        touch := TouchArea { mouse-cursor: pointer; clicked => { root.current = i; root.focus(); } }
+    }
+}
 
 export component Layers inherits Rectangle {
     out property <FeedbackRect> profile-bounds: { x: profile.absolute-position.x, y: profile.absolute-position.y, width: profile.visible ? profile.width : 0px, height: profile.height };
@@ -101,11 +130,11 @@ export component Layers inherits Rectangle {
         TouchArea {}
     }
 
-    Rectangle {
+    settings-dialog := Rectangle {
         x: State.narrow ? 0px : (parent.width - self.width) / 2;
         y: State.narrow ? 0px : (parent.height - self.height) / 2;
         width: State.narrow ? parent.width : min(560px, parent.width - 48px);
-        height: State.narrow ? parent.height : min(640px, parent.height - 48px);
+        height: min(parent.height - (State.narrow ? 0px : 48px), settings-title.height + 56px + (State.narrow ? settings-section.preferred-height + 12px + settings-content.preferred-height : max(settings-section.preferred-height, settings-content.preferred-height)));
         visible: State.settings-open && !State.auth-open && !State.viewer-open;
         background: Tokens.background; border-width: 1px; border-color: Tokens.border;
         FocusScope {
@@ -113,72 +142,80 @@ export component Layers inherits Rectangle {
                 if event.text == Key.Escape { State.close-settings(); return accept; }
                 if event.text == Key.Tab {
                     if event.modifiers.shift && settings-close.has-focus { if root.settings-section == 0 { enter-sends.focus(); } else if root.settings-section == 1 { notification-test.focus(); } else if root.settings-section == 2 { autostart-control.focus(); } else { settings-section.focus(); } return accept; }
-                    if !event.modifiers.shift && ((root.settings-section == 0 && enter-sends.has-focus) || (root.settings-section > 2 && settings-section.has-focus) || (root.settings-section == 2 && autostart-control.has-focus) || (root.settings-section == 1 && notification-test.has-focus)) { settings-close.focus(); return accept; }
+                    if !event.modifiers.shift && ((root.settings-section == 0 && enter-sends.has-focus) || (root.settings-section > 2 && settings-section.has-focus) || (root.settings-section == 2 && autostart-control.has-focus) || (root.settings-section == 1 && notification-test.has-focus)) { settings-close.focus-button(); return accept; }
                 }
                 reject
             }
             VerticalLayout {
                 padding: 20px; spacing: 16px;
-                settings-close := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Close settings"; clicked => { State.close-settings(); } }
-                Text { text: "Settings"; font-size: Tokens.heading; font-weight: 700; }
-                settings-section := ComboBox {
-                    accessible-label: "Settings section";
-                    model: ["Chats", "Notifications", "Background", "Shortcuts", "About"];
-                    current-index: root.settings-section;
-                    selected(value) => { root.settings-section = value == "Chats" ? 0 : value == "Notifications" ? 1 : value == "Background" ? 2 : value == "Shortcuts" ? 3 : 4; }
+                settings-title := HorizontalLayout {
+                    height: max(settings-heading.preferred-height, settings-close.height);
+                    settings-heading := Text { text: "Settings"; font-size: Tokens.heading; font-weight: 700; vertical-alignment: center; }
+                    settings-close := IconButton { label: "Close settings"; focus-description: "Focused"; icon: @image-url("../assets/icons/close.svg"); activated => { State.close-settings(); } }
                 }
-                ScrollView {
-                    horizontal-scrollbar-policy: always-off;
-                    vertical-stretch: 1; min-height: 120px;
-                    VerticalLayout {
-                        padding-right: 12px; spacing: 16px; alignment: start;
-                        VerticalLayout { visible: root.settings-section == 0; height: self.visible ? self.preferred-height : 0px;
-                            spacing: 12px;
-                            Text { text: "Message text size"; }
-                            text-size := ComboBox {
-                                accessible-label: "Message text size";
-                                model: ["Small", "Default", "Large", "Extra large"];
-                                current-index: State.text-size <= 13 ? 0 : State.text-size <= 15 ? 1 : State.text-size <= 18 ? 2 : 3;
-                                selected(value) => { State.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; State.settings-changed(); }
+                Rectangle {
+                    settings-section := SettingsSections {
+                        x: 0px; y: 0px;
+                        current <=> root.settings-section; narrow: State.narrow;
+                        width: State.narrow ? parent.width : max(132px, Tokens.small * 7.5);
+                        height: self.preferred-height;
+                    }
+                    ScrollView {
+                        x: State.narrow ? 0px : settings-section.width + 16px;
+                        y: State.narrow ? settings-section.height + 12px : 0px;
+                        width: parent.width - self.x; height: parent.height - self.y;
+                        horizontal-scrollbar-policy: always-off;
+                        content-width: self.width;
+                        settings-content := VerticalLayout {
+                            padding-right: 12px; spacing: 0px; alignment: start;
+                            VerticalLayout { visible: root.settings-section == 0; height: self.visible ? self.preferred-height : 0px;
+                                spacing: 12px;
+                                Text { text: "Message text size"; }
+                                text-size := ComboBox {
+                                    accessible-label: "Message text size";
+                                    model: ["Small", "Default", "Large", "Extra large"];
+                                    current-index: State.text-size <= 13 ? 0 : State.text-size <= 15 ? 1 : State.text-size <= 18 ? 2 : 3;
+                                    selected(value) => { State.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; State.settings-changed(); }
+                                }
+                                if State.storage-error != "": Text { text: State.storage-error; wrap: word-wrap; color: Tokens.danger; }
+                                if State.storage-error != "": Button { text: "Retry saving preferences"; clicked => { State.retry-storage(); } }
+                                enter-sends := CheckBox { accessible-description: self.has-focus ? "Focused" : ""; text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
                             }
-                            if State.storage-error != "": Text { text: State.storage-error; wrap: word-wrap; color: Tokens.danger; }
-                            if State.storage-error != "": Button { text: "Retry saving preferences"; clicked => { State.retry-storage(); } }
-                            enter-sends := CheckBox { accessible-description: self.has-focus ? "Focused" : ""; text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
-                        }
-                        VerticalLayout { visible: root.settings-section == 1; height: self.visible ? self.preferred-height : 0px;
-                            spacing: 12px;
-                            CheckBox { text: "Desktop notifications"; checked <=> State.notifications-enabled; toggled => { State.settings-changed(); } }
-                            if State.notifications-paused: Text { text: "Notifications are paused from the tray."; wrap: word-wrap; color: Tokens.secondary; }
-                            Text { text: "Preview"; }
-                            ComboBox {
-                                accessible-label: "Notification preview";
-                                model: ["Name and text", "Name only", "New message only"];
-                                current-index: State.notification-preview;
-                                selected(value) => { State.notification-preview = value == "Name and text" ? 0 : value == "Name only" ? 1 : 2; State.settings-changed(); }
+                            VerticalLayout { visible: root.settings-section == 1; height: self.visible ? self.preferred-height : 0px;
+                                spacing: 12px;
+                                CheckBox { text: "Desktop notifications"; checked <=> State.notifications-enabled; toggled => { State.settings-changed(); } }
+                                if State.notifications-paused: Text { text: "Notifications are paused from the tray."; wrap: word-wrap; color: Tokens.secondary; }
+                                Text { text: "Preview"; }
+                                ComboBox {
+                                    accessible-label: "Notification preview";
+                                    model: ["Name and text", "Name only", "New message only"];
+                                    current-index: State.notification-preview;
+                                    selected(value) => { State.notification-preview = value == "Name and text" ? 0 : value == "Name only" ? 1 : 2; State.settings-changed(); }
+                                }
+                                CheckBox { text: "Notification sound"; checked <=> State.notification-sound; toggled => { State.settings-changed(); } }
+                                CheckBox { text: "Mentions in muted chats"; checked <=> State.notification-mention-exception; toggled => { State.settings-changed(); } }
+                                CheckBox { text: "Group events"; checked <=> State.notification-group-events; toggled => { State.settings-changed(); } }
+                                notification-test := Button { text: "Send test notification"; clicked => { State.test-notification(); } }
+                                if !State.notification-available: Text { text: "Notification service not available"; color: Tokens.secondary; wrap: word-wrap; }
+                                if State.notification-status != "": Text { text: State.notification-status; wrap: word-wrap; }
                             }
-                            CheckBox { text: "Notification sound"; checked <=> State.notification-sound; toggled => { State.settings-changed(); } }
-                            CheckBox { text: "Mentions in muted chats"; checked <=> State.notification-mention-exception; toggled => { State.settings-changed(); } }
-                            CheckBox { text: "Group events"; checked <=> State.notification-group-events; toggled => { State.settings-changed(); } }
-                            notification-test := Button { text: "Send test notification"; clicked => { State.test-notification(); } }
-                            if !State.notification-available: Text { text: "Notification service not available"; color: Tokens.secondary; wrap: word-wrap; }
-                            if State.notification-status != "": Text { text: State.notification-status; wrap: word-wrap; }
-                        }
-                        VerticalLayout {
-                            visible: root.settings-section == 2; height: self.visible ? self.preferred-height : 0px;
-                            spacing: 12px;
-                            CheckBox { text: "Keep running in background"; checked <=> State.background-mode; toggled => { State.settings-changed(); } }
-                            Text { text: "Closing LINE hides it to the desktop tray. Notifications and sync continue until you choose Quit."; wrap: word-wrap; color: Tokens.secondary; }
-                            if State.background-status != "": Text { text: State.background-status; wrap: word-wrap; color: Tokens.danger; }
-                            autostart-control := CheckBox { text: "Start LINE at login"; checked <=> State.autostart; toggled => { State.settings-changed(); } }
-                            if State.autostart-status != "": Text { text: State.autostart-status; wrap: word-wrap; color: Tokens.secondary; }
-                        }
-                        if root.settings-section == 3: Text { text: "Ctrl+Enter  Send\nEnter  Newline, or Send with Enter sends\nShift+Enter  Always newline\nEscape  Close layer or clear search\nCtrl+F  Search\nCtrl+1  Friends\nCtrl+2  Chats\nAlt+↑ / Alt+↓  Previous / next chat\nAlt+←  Back\nF6  Connection actions\nCtrl+Q  Quit"; wrap: word-wrap; }
-                        if root.settings-section == 4: VerticalLayout {
-                            spacing: 12px;
-                            Text { text: "LINE"; font-size: Tokens.heading; }
-                            Text { text: State.account-name; wrap: word-wrap; }
-                            Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
-                            if State.desktop-warning != "": Text { text: State.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
+                            VerticalLayout {
+                                visible: root.settings-section == 2; height: self.visible ? self.preferred-height : 0px;
+                                spacing: 12px;
+                                CheckBox { text: "Keep running in background"; checked <=> State.background-mode; toggled => { State.settings-changed(); } }
+                                Text { text: "Closing LINE hides it to the desktop tray. Notifications and sync continue until you choose Quit."; wrap: word-wrap; color: Tokens.secondary; }
+                                if State.background-status != "": Text { text: State.background-status; wrap: word-wrap; color: Tokens.danger; }
+                                autostart-control := CheckBox { text: "Start LINE at login"; checked <=> State.autostart; toggled => { State.settings-changed(); } }
+                                if State.autostart-status != "": Text { text: State.autostart-status; wrap: word-wrap; color: Tokens.secondary; }
+                            }
+                            if root.settings-section == 3: Text { text: "Ctrl+Enter  Send\nEnter  Newline, or Send with Enter sends\nShift+Enter  Always newline\nEscape  Close layer or clear search\nCtrl+F  Search\nCtrl+1  Friends\nCtrl+2  Chats\nAlt+↑ / Alt+↓  Previous / next chat\nAlt+←  Back\nF6  Connection actions\nCtrl+Q  Quit"; wrap: word-wrap; }
+                            if root.settings-section == 4: VerticalLayout {
+                                spacing: 12px;
+                                Text { text: "LINE"; font-size: Tokens.heading; }
+                                Text { text: State.account-name; wrap: word-wrap; }
+                                Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
+                                if State.desktop-warning != "": Text { text: State.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
+                            }
                         }
                     }
                 }
@@ -295,7 +332,7 @@ export component Layers inherits Rectangle {
     public function fit-photo() { State.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
     public function original-photo() { State.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
     public function focus-profile() { profile-close.focus(); }
-    public function focus-settings() { root.settings-section = 0; settings-close.focus(); }
+    public function focus-settings() { root.settings-section = 0; settings-close.focus-button(); }
     public function focus-auth() { if State.auth-busy { auth-back.focus(); } else { auth-start.focus(); } }
     public function focus-viewer() { viewer-close.focus(); }
     public function reset-viewer() { root.fit-photo(); State.viewer-save-status = ""; }

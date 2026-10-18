@@ -1,0 +1,70 @@
+import { LineEdit, Palette } from "std-widgets.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { IconButton } from "icon-button.slint";
+
+export component SearchField inherits Rectangle {
+    in-out property <string> text;
+    in property <string> placeholder-text;
+    in property <string> label;
+    in property <bool> enabled: true;
+    out property <bool> has-focus: input.has-focus;
+    callback edited(string);
+    callback key-pressed(KeyEvent) -> EventResult;
+    callback clear();
+    // Fluent 1.18.1: clip its 16px clear slot and 12px padding, not its text viewport.
+    property <length> native-clear-width: 16px;
+    property <length> native-trailing-padding: 12px;
+    property <bool> dark: Palette.background == #1C1C1C;
+    property <brush> field-background: !root.enabled ? (root.dark ? #FFFFFF0A : #F9F9F94D) : input.has-focus ? (root.dark ? #1E1E1EB3 : #FFFFFF) : Palette.control-background;
+    property <brush> field-border: root.dark ? @linear-gradient(180deg, #FFFFFF14 99.98%, #FFFFFF8A 100%, #FFFFFF8A 100%) : @linear-gradient(180deg, #0000000F 99.99%, #00000073 100%, #00000073 100%);
+    forward-focus: input;
+    height: max(40px, Tokens.base * 1.4 + 8px);
+    min-width: 160px;
+    TouchArea { enabled: root.enabled; clicked => { input.focus(); } }
+    editor-clip := Rectangle {
+        x: 0px; y: 0px;
+        width: root.width - (clear-button.visible ? clear-button.width + 8px : root.native-trailing-padding);
+        height: root.height; clip: true;
+        input := LineEdit {
+            x: 0px; y: 0px;
+            width: parent.width + root.native-trailing-padding + (root.text != "" && self.has-focus && root.enabled ? root.native-clear-width : 0px);
+            height: root.height; enabled: root.enabled;
+            text <=> root.text; placeholder-text: root.placeholder-text; font-size: Tokens.base;
+            accessible-label: root.label; accessible-description: self.has-focus ? "Focused search" : "";
+            edited(value) => { root.edited(value); }
+            key-pressed(event) => {
+                if !State.ime-active && event.text == Key.Tab && !event.modifiers.shift && root.text != "" { clear-button.focus-button(); return accept; }
+                root.key-pressed(event)
+            }
+        }
+    }
+    // Complete the native frame with the same brushes, composited once over the same parent.
+    Rectangle {
+        x: editor-clip.width; width: root.width - self.x; height: root.height; clip: true;
+        Rectangle {
+            x: -parent.x; width: root.width; height: root.height;
+            background: root.field-background;
+            border-radius: 4px; border-width: 1px; border-color: root.field-border;
+            Rectangle {
+                x: parent.border-radius; y: parent.height - self.height;
+                width: parent.width - 2 * parent.border-radius; height: 2px; border-radius: 1px;
+                background: input.has-focus && root.enabled ? Palette.accent-background : transparent;
+            }
+        }
+    }
+    clear-button := IconButton {
+        x: editor-clip.width + 4px; y: (root.height - self.height) / 2;
+        visible: root.text != ""; enabled: root.enabled && self.visible;
+        width: 32px; height: 32px;
+        label: "Clear search"; focus-description: "Focused"; icon: @image-url("../assets/icons/close.svg");
+        activated => { root.clear(); input.focus(); }
+        key-pressed(event) => {
+            if !State.ime-active && event.text == Key.Tab {
+                if event.modifiers.shift { input.focus(); return accept; }
+                return root.key-pressed(event);
+            }
+            reject
+        }
+    }
+}

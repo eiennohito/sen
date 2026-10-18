@@ -41,13 +41,7 @@ impl View {
         let mut rows: Vec<_> = self
             .friends
             .iter()
-            .filter(|row| {
-                (if row.group {
-                    ui.get_groups_expanded()
-                } else {
-                    ui.get_friends_expanded()
-                }) && row.name.to_lowercase().contains(&query)
-            })
+            .filter(|row| row.name.to_lowercase().contains(&query))
             .cloned()
             .collect();
         rows.sort_by(|a, b| {
@@ -58,6 +52,9 @@ impl View {
         });
         let mut section_rows = Vec::with_capacity(rows.len() + 2);
         for group in [false, true] {
+            if !rows.iter().any(|row| row.group == group) {
+                continue;
+            }
             section_rows.push(FriendRow {
                 id: if group {
                     "section-groups"
@@ -70,7 +67,13 @@ impl View {
                 header: true,
                 ..Default::default()
             });
-            section_rows.extend(rows.iter().filter(|row| row.group == group).cloned());
+            if if group {
+                ui.get_groups_expanded()
+            } else {
+                ui.get_friends_expanded()
+            } {
+                section_rows.extend(rows.iter().filter(|row| row.group == group).cloned());
+            }
         }
         rows = section_rows;
         let restored = anchor
@@ -123,7 +126,7 @@ impl View {
                 time: "New".into(),
                 preview: "No messages yet".into(),
                 group: friend.group,
-                initial: friend.name.chars().next().unwrap_or('·').to_string().into(),
+                initial: friend.initial,
                 avatar: friend.avatar,
                 avatar_key: friend.avatar_key,
                 ..Default::default()

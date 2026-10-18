@@ -5,6 +5,7 @@ import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { IconButton } from "icon-button.slint";
 import { FeedbackRect } from "connection-notice.slint";
 import { Pane } from "scrollpane.slint";
+import { SearchField } from "search-field.slint";
 
 export component Chats inherits Rectangle {
     public function scroll(delta: length) { chat-list.scroll(delta); }
@@ -43,10 +44,11 @@ export component Chats inherits Rectangle {
                     if !State.demo: IconButton { label: "Refresh conversations"; icon: @image-url("../assets/icons/refresh.svg"); enabled: State.connected && !State.loading-chats; activated => { State.refresh(); } }
                 }
                 HorizontalLayout {
-                    search := LineEdit {
+                    search := SearchField {
                         text <=> State.query;
                         placeholder-text: "Find a conversation";
-                        accessible-label: "Find a conversation";
+                        label: "Find a conversation";
+                        clear => { State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; State.focus-search(); }
                         edited(query) => {
                             if query != "" && !State.searching { State.search-list-y = State.list-y; State.searching = true; }
                             State.search-changed(query);
@@ -65,7 +67,6 @@ export component Chats inherits Rectangle {
                             reject
                         }
                     }
-                    Button { text: "Clear"; enabled: State.query != ""; clicked => { State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; State.focus-search(); } }
                 }
                 HorizontalLayout {
                     spacing: 4px;
@@ -81,6 +82,7 @@ export component Chats inherits Rectangle {
                 if State.chats.length == 0: Text { text: State.query == "" ? "No conversations loaded" : "No match among loaded conversations"; wrap: word-wrap; }
                 list-focus := FocusScope {
                     accessible-role: list; accessible-label: "Conversations";
+                    accessible-description: self.has-focus ? "Focused conversations" : "";
                     key-pressed(event) => {
                         if State.browser-key(event) == accept { return accept; }
                         if State.ime-active { return reject; }

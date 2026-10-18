@@ -8,11 +8,38 @@ import { Message } from "message.slint";
 import { FeedbackRect } from "connection-notice.slint";
 import { Composer } from "composer.slint";
 
+component HistoryPill inherits Rectangle {
+    in property <string> text;
+    in property <string> label: root.text;
+    in property <bool> enabled;
+    callback activated();
+    callback traversed(bool);
+    public function focus-pill() { focus.focus(); }
+    preferred-width: root.visible ? label.preferred-width + 16px : 0px; preferred-height: root.visible ? max(32px, label.preferred-height + 12px) : 0px;
+    border-radius: self.height / 2; background: touch.has-hover ? Tokens.selection : Tokens.background;
+    border-width: focus.has-focus ? 2px : 1px; border-color: focus.has-focus ? Tokens.accent : Tokens.border;
+    label := Text { x: 8px; width: parent.width - 16px; height: parent.height; text: root.text; font-size: Tokens.small; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; overflow: elide; accessible-role: none; }
+    focus := FocusScope {
+        enabled: root.enabled; accessible-role: button; accessible-label: root.label;
+        accessible-action-default => { root.activated(); }
+        key-pressed(event) => {
+            if State.ime-active { return reject; }
+            if State.browser-key(event) == accept { return accept; }
+            if event.text == Key.Tab { root.traversed(event.modifiers.shift); return accept; }
+            if event.text == Key.Return || event.text == " " { root.activated(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.activated(); } }
+}
+
 export component Conversation inherits Rectangle {
     out property <FeedbackRect> older-retry-bounds: { x: older-retry.absolute-position.x, y: older-retry.absolute-position.y, width: root.visible && State.older-failed && State.has-chat ? older-retry.width : 0px, height: older-retry.height };
     out property <FeedbackRect> header-bounds: { x: header.absolute-position.x, y: header.absolute-position.y, width: root.visible ? header.width : 0px, height: header.height };
     out property <FeedbackRect> feedback-bounds: history-feedback.visible ? { x: history-feedback.absolute-position.x, y: history-feedback.absolute-position.y, width: history-feedback.width, height: history-feedback.height } : { x: 0px, y: 0px, width: 0px, height: 0px };
     out property <FeedbackRect> composer-bounds: { x: composer-surface.absolute-position.x, y: composer-surface.absolute-position.y, width: root.visible ? composer-surface.width : 0px, height: composer-surface.height };
+    property <bool> latest-visible: !State.following && State.has-chat;
+    property <string> latest-label: State.history-needs-refresh ? "Latest · updates available" : State.new-count > 0 ? "Latest · " + State.new-count + " new" : "Latest";
 
           visible: !State.narrow || State.show-conversation;
           VerticalLayout {
@@ -49,7 +76,7 @@ export component Conversation inherits Rectangle {
                     if State.ime-active { return reject; }
                     if State.browser-key(event) == accept { return accept; }
                     if State.recovery-kind != "" { return reject; }
-                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-failed { State.focus-sign-in-opener(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if !State.following && State.has-chat { latest-button.focus(); } else { State.focus-composer(); } } return accept; }
+                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-failed { State.focus-sign-in-opener(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
                     if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.PageUp { history.scroll(history.visible-height * 0.9); history.scrolled(); return accept; }
@@ -82,7 +109,26 @@ export component Conversation inherits Rectangle {
                     for message in State.messages: Message { message: message; }
                 }
             }
-              Rectangle { visible: history-focus.has-focus; border-width: 2px; border-color: Tokens.accent; background: transparent; }
+              HorizontalLayout {
+                x: max(8px, (parent.width - self.width) / 2); y: max(0px, parent.height - self.height - 8px);
+                width: min(parent.width - 16px, latest-button.preferred-width + return-button.preferred-width + (root.latest-visible && State.return-visible ? 8px : 0px));
+                height: max(latest-button.preferred-height, return-button.preferred-height); spacing: root.latest-visible && State.return-visible ? 8px : 0px;
+                latest-button := HistoryPill {
+                    visible: root.latest-visible; enabled: self.visible;
+                    width: self.visible ? min(self.preferred-width, parent.width - (State.return-visible ? return-button.width + 8px : 0px)) : 0px;
+                    label: root.latest-label;
+                    text: State.return-visible && !State.history-needs-refresh && State.new-count > 0 ? "Latest · " + State.new-count : root.latest-label;
+                    activated => { State.latest(); State.focus-history(); }
+                    traversed(back) => { if back { history-focus.focus(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } }
+                }
+                return-button := HistoryPill {
+                    visible: State.return-visible; enabled: self.visible;
+                    width: self.visible ? min(self.preferred-width, parent.width - (root.latest-visible ? min(latest-button.preferred-width, parent.width * 0.4) + 8px : 0px)) : 0px;
+                    text: "Return to message";
+                    activated => { State.return-to-message(); State.focus-history(); }
+                    traversed(back) => { if !back { State.focus-composer(); } else if root.latest-visible { latest-button.focus-pill(); } else { history-focus.focus(); } }
+                }
+              }
               if State.demo && State.last-opened-link != "": Text {
                 y: parent.height - self.preferred-height; text: "Preview opened: " + State.last-opened-link;
                 accessible-label: "Recorded link activation"; accessible-value: State.last-opened-link;
@@ -100,20 +146,7 @@ export component Conversation inherits Rectangle {
                 }
               }
             }
-            latest-button := FocusScope {
-                visible: !State.following && State.has-chat; enabled: self.visible;
-                height: self.visible ? latest-action.preferred-height : 0px;
-                forward-focus: latest-action;
-                key-pressed(event) => {
-                    if State.ime-active { return reject; }
-                    if State.browser-key(event) == accept { return accept; }
-                    if event.text == Key.Tab { if event.modifiers.shift { history-focus.focus(); } else { State.focus-composer(); } return accept; }
-                    reject
-                }
-                latest-action := Button { text: State.history-needs-refresh ? "Latest · updates available" : State.new-count > 0 ? "Latest · " + State.new-count + " new" : "Latest"; clicked => { State.latest(); } }
-            }
             if State.history-budget-warning: Text { text: "Large message retained; some previews may be unavailable"; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
-            if State.return-visible: Button { text: "Return to message"; clicked => { State.return-to-message(); } }
             if State.jump-error != "": Text { text: State.jump-error; color: Tokens.secondary; font-size: Tokens.small; }
 composer-surface := Composer { }
             if State.storage-error != "": HorizontalLayout {
@@ -127,7 +160,7 @@ composer-surface := Composer { }
     public function restore-editor(anchor: int, caret: int) { composer-surface.restore-editor(anchor, caret); }
     public function focus-editor() { composer-surface.focus-editor(); }
     public function focus-history() { history-focus.focus(); }
-    public function focus-reading-before-editor() { if !State.following && State.has-chat { latest-button.focus(); } else { history-focus.focus(); } }
+    public function focus-reading-before-editor() { if State.return-visible { return-button.focus-pill(); } else if root.latest-visible { latest-button.focus-pill(); } else { history-focus.focus(); } }
     public function scroll(delta: length) { history.scroll(delta); history.scrolled(); }
     public function jump(y: length) { history.jump(y); }
     changed width => { State.history-width = history.width; }

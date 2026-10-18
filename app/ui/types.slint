@@ -2,7 +2,7 @@ export struct RichRun { text: string, break-before: bool, url: string, link-star
 export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
 export struct LinkRow { label: string, url: string }
 export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, draft: bool, draft-preview: string, failed: bool, muted: bool, outgoing-preview: bool, group: bool, index: int, title: string, preview: string, initial: string, activity: string, time: string, avatar: image, avatar-key: string }
-export struct FriendRow { header: bool, id: string, name: string, status: string, group: bool, avatar: image, avatar-key: string }
+export struct FriendRow { header: bool, id: string, name: string, initial: string, status: string, group: bool, avatar: image, avatar-key: string }
 export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
     skip-badge: bool, has-inline-emoji: bool, rich-fallback: bool,

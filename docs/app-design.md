@@ -36,9 +36,23 @@ Wayland/X11 feature flags if a smaller platform-specific build is needed.
 [Backend docs](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/),
 [feature definitions](https://docs.rs/slint/1.18.1/slint/docs/cargo_features/index.html).
 
-Search uses Slint's standard `LineEdit`. The composer wraps Slint's native
-multiline `TextInput` in the shared `Pane`: standard `TextEdit` does not expose
-the byte-offset selection APIs needed for per-chat caret/selection restoration.
+Search keeps Slint's standard `LineEdit`, including native caret scrolling,
+context menu (Undo/Redo/Cut/Copy/Paste/Select All), and IME handling. Fluent
+1.18.1 cannot disable its native clear icon. The editor is wider than its
+clip by the native 12 px padding plus the focused 16 px clear slot, keeping
+the text viewport fixed and the native icon entirely outside the clip.
+The clipped editor retains the left frame. The wrapper completes the trailing
+frame with the same Fluent fill, gradient border and 2 px focus underline,
+using the original brush alpha over the same parent exactly once. No opaque
+cover or extra background sits under the editor. The private focused/disabled
+brushes and border gradient mirror the pinned Fluent style; dark detection
+uses its resolved background, including when the system scheme is unknown.
+The app-owned clear button has a 32 px target, a 4 px gap from the viewport,
+and the shared hover/pressed feedback. It remains accessible whenever a query
+is present. Recheck this frame and its geometry when upgrading Slint.
+The composer wraps Slint's native multiline `TextInput` in the shared `Pane`:
+standard `TextEdit` does not expose the byte-offset selection APIs needed for
+per-chat caret/selection restoration.
 This retains native text editing and IME handling rather than drawing an editor.
 Physical Fcitx behavior is still unverified. Unicode font emoji remain
 monochrome in the software-renderer captures; LINE image-emoji assets retain
@@ -333,12 +347,32 @@ Enter inserting a line. `--scenarios` also exercises simulated pointer scrolling
 selection/clipboard, a delayed arrival burst, media completion, and failure
 recovery. Additional flags cover reading, layers, rich content and paged history;
 focused browser/composer scripts test their keyboard and draft invariants.
+`tools/check-search-mcp.py --port PORT --artifacts DIR --text-size 15
+--color-scheme light` counts clear graphics, checks clipping and continuous
+fill/strokes, and exercises hover, clear, focus and long-query caret behavior
+in both destinations. Run fresh wrappers with matching `--demo-text-size` and
+`--demo-color-scheme light|dark`, at `--demo-size 980x720` and `360x520`, for
+text sizes 15 and 24. It saves full screenshots and enlarged field/icon crops
+with a 64-element bound for each editor subtree and a 700-element window
+bound. The separate `check-ui-mcp.py` window bound was increased from 500 to
+700 for the merged shell (main already reached 502 elements). Search checks
+also cover forward/reverse Tab with empty and non-empty queries while Offline.
+The color-scheme override only applies to demo previews; normal windows keep
+the system scheme. `--demo-dark` is an alias
+for `--demo-color-scheme dark`; both use the same palette override.
 Run `tools/check-composer-mcp.py --port PORT` against fresh wrapper instances
 at both the default `--demo` size (conversation sheet) and
 `--demo --demo-size 1400x900` (non-modal panel). `--snapshot-profile` opens a
-profile in offline headless snapshots. In the UI, `State.modal-open` includes
-the conversation sheet; `State.window-modal-open` covers only the other modal
-layers.
+profile in offline headless snapshots. `--snapshot-scene` selects `chats`,
+`chats-query`, `friends`, `friends-query`, `friends-empty-group`, `settings`,
+`composer`, `composer-reason`, `latest`, or `return` for shell layout captures.
+The `chats-query-offline` and `return-offline` variants add the connection
+strip to the query and both-pill captures. Combine scenes with
+`--snapshot-size`, `--snapshot-text-size`, and `--demo-color-scheme`. In the UI,
+`State.modal-open` includes the conversation sheet; `State.window-modal-open`
+covers only the other modal layers. The `chats-long-query` and
+`friends-long-query` scenes type a 66-character query with native caret
+scrolling; their `-blurred` variants move focus to the results list.
 The earlier native Wayland check ran at scale factor 1.5. This
 does not replace testing preedit and candidate windows with the real IME.
 

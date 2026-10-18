@@ -413,13 +413,14 @@ struct Options {
     demo_friends: bool,
     demo_notify: bool,
     demo_size: Option<(u32, u32)>,
-    demo_dark: bool,
+    demo_dark: Option<bool>,
     debug_background: bool,
     snapshot: Option<String>,
     snapshot_case: Option<String>,
     snapshot_size: (u32, u32),
     snapshot_text_size: i32,
     snapshot_profile: bool,
+    snapshot_scene: String,
     check: bool,
     explicit_paths: bool,
     locations: desktop_integration::Locations,
@@ -443,13 +444,14 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
         demo_friends: false,
         demo_notify: false,
         demo_size: None,
-        demo_dark: false,
+        demo_dark: None,
         debug_background: false,
         snapshot: None,
         snapshot_case: None,
         snapshot_size: (980, 720),
         snapshot_text_size: 15,
         snapshot_profile: false,
+        snapshot_scene: String::new(),
         check: false,
     };
     let mut args = std::env::args().skip(1);
@@ -510,16 +512,50 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
             }
             "--demo-dark" => {
                 out.demo = true;
-                out.demo_dark = true;
+                out.demo_dark = Some(true);
+            }
+            "--demo-color-scheme" => {
+                out.demo_dark = Some(match args.next().as_deref() {
+                    Some("light") => false,
+                    Some("dark") => true,
+                    _ => return Err("demo color scheme must be light or dark".into()),
+                });
+                out.demo = true;
             }
             "--snapshot-text-size" | "--demo-text-size" => {
-                if arg == "--demo-text-size" {
-                    out.demo = true;
-                }
                 out.snapshot_text_size = args.next().ok_or("missing text size")?.parse()?;
                 if !(12..=24).contains(&out.snapshot_text_size) {
                     return Err("text size must be 12–24".into());
                 }
+                if arg == "--demo-text-size" {
+                    out.demo = true;
+                }
+            }
+            "--snapshot-scene" => {
+                out.snapshot_scene = args.next().ok_or("missing snapshot scene")?;
+                if ![
+                    "chats",
+                    "chats-query",
+                    "chats-query-offline",
+                    "friends",
+                    "friends-query",
+                    "friends-empty-group",
+                    "chats-long-query",
+                    "chats-long-query-blurred",
+                    "friends-long-query",
+                    "friends-long-query-blurred",
+                    "settings",
+                    "composer",
+                    "composer-reason",
+                    "latest",
+                    "return",
+                    "return-offline",
+                ]
+                .contains(&out.snapshot_scene.as_str())
+                {
+                    return Err("unknown snapshot scene".into());
+                }
+                out.demo = true;
             }
             "--snapshot-profile" => {
                 out.snapshot_profile = true;
@@ -535,7 +571,7 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups | --demo-friends] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile] [--snapshot-case long-url|mixed|cjk|emoji]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT and --demo-text-size 12..24 set offline preview geometry; --demo-dark selects the dark palette.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
+                    "Usage: line-desktop [--demo | --demo-rich | --demo-photos | --demo-groups | --demo-friends | --demo-notify] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile] [--snapshot-case long-url|mixed|cjk|emoji] [--snapshot-scene SCENE]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT and --demo-text-size 12..24 set offline preview geometry.\n--demo-color-scheme light|dark selects an offline preview theme; --demo-dark is an alias for dark.\n--debug-background disables desktop integration for automation. --build-info reports the build capabilities. --help (-h) shows this help.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
                 );
                 std::process::exit(0);
             }
@@ -672,6 +708,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = Rc::new(RefCell::new(None));
     if options.demo {
         ui.set_demo(true);
+        if let Some(dark) = options.demo_dark {
+            ui.invoke_preview_dark(dark);
+        }
+        ui.set_text_size(options.snapshot_text_size);
         ui.set_account_name("Offline preview".into());
         for (index, chat) in demo::examples().into_iter().enumerate() {
             let mut view = state.borrow_mut();
@@ -703,6 +743,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 .map(|(i, row)| FriendRow {
                     id: i.to_string().into(),
                     name: row.title.clone(),
+                    initial: name_initial(&row.title),
                     status: "こんにちは 🌿\nSynthetic profile".into(),
                     group: i == 1,
                     avatar: row.avatar.clone(),
@@ -712,6 +753,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             view.friends.push(FriendRow {
                 id: "new-friend".into(),
                 name: "新しい友だち 🌸".into(),
+                initial: name_initial("新しい友だち 🌸"),
                 status: "まだ会話のない友だち".into(),
                 ..Default::default()
             });
@@ -1013,15 +1055,95 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ui.invoke_show_history(0., false);
     }
     state.borrow().send_availability(&ui);
-    if options.demo_dark {
-        ui.invoke_preview_dark(true);
-    }
     if let (Some(window), Some(path)) = (snapshot, options.snapshot) {
         ui.show()?;
         ui.set_text_size(options.snapshot_text_size);
         ui.set_show_conversation(!options.demo_friends);
         if options.snapshot_profile {
             state.borrow_mut().open_profile(&ui, "0");
+        }
+        if options.snapshot_scene.ends_with("-offline") {
+            state.borrow_mut().update(
+                &ui,
+                account::Update::Sync(line_wasm_poc::client::desktop::sync::SyncState::Offline),
+            );
+        }
+        match options.snapshot_scene.as_str() {
+            "chats" => ui.set_show_conversation(false),
+            "chats-query" | "chats-query-offline" => {
+                ui.set_show_conversation(false);
+                snapshot::render(&window, options.snapshot_size)?;
+                ui.set_query("Weekend".into());
+                ui.global::<State>().invoke_search_changed("Weekend".into());
+                ui.invoke_focus_chat_list();
+            }
+            "friends-query" => {
+                state.borrow_mut().browse(&ui, 1);
+                ui.set_friend_query("新しい".into());
+                state.borrow_mut().filter_friends(&ui);
+                ui.invoke_focus_friend_list();
+            }
+            "chats-long-query"
+            | "chats-long-query-blurred"
+            | "friends-long-query"
+            | "friends-long-query-blurred" => {
+                ui.window().set_size(slint::LogicalSize::new(
+                    options.snapshot_size.0 as f32,
+                    options.snapshot_size.1 as f32,
+                ));
+                let friends = options.snapshot_scene.starts_with("friends");
+                if friends {
+                    state.borrow_mut().browse(&ui, 1);
+                    ui.invoke_focus_friend_search();
+                } else {
+                    ui.set_show_conversation(false);
+                    ui.invoke_focus_search();
+                }
+                let query = "012345678901234567890123456789012345678901234567890123456789TAIL66";
+                ui.window()
+                    .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                        text: query.into(),
+                    });
+                ui.window()
+                    .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                        text: query.into(),
+                    });
+                if options.snapshot_scene.ends_with("blurred") {
+                    if friends {
+                        ui.invoke_focus_friend_list();
+                    } else {
+                        ui.invoke_focus_chat_list();
+                    }
+                }
+            }
+            "friends" | "friends-empty-group" => {
+                state.borrow_mut().browse(&ui, 1);
+                if options.snapshot_scene == "friends-empty-group" {
+                    state.borrow_mut().friends.retain(|row| !row.group);
+                    state.borrow_mut().filter_friends(&ui);
+                }
+            }
+            "settings" => {
+                ui.set_settings_open(true);
+                ui.invoke_focus_settings_close();
+            }
+            "composer" => ui.set_send_reason("".into()),
+            "composer-reason" => {
+                ui.set_send_reason("Offline preview — messages are not sent".into())
+            }
+            "latest" | "return" | "return-offline" => {
+                ui.set_new_count(if options.snapshot_scene.starts_with("return") {
+                    3
+                } else {
+                    0
+                });
+                ui.set_following(false);
+                ui.set_history_y(0.);
+                ui.set_send_reason("".into());
+                ui.global::<State>()
+                    .set_return_visible(options.snapshot_scene.starts_with("return"));
+            }
+            _ => {}
         }
         snapshot::save(&window, &path, options.snapshot_size)?;
         ui.hide()?;

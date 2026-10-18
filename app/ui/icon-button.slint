@@ -1,10 +1,14 @@
 import { Tokens } from "tokens.slint";
 export component IconButton inherits Rectangle {
+    out property <bool> has-focus: focus.has-focus;
     in property <image> icon;
     in property <string> label;
+    in property <string> focus-description;
     in property <bool> enabled: true;
     in property <bool> selected;
     callback activated();
+    callback key-pressed(KeyEvent) -> EventResult;
+    key-pressed(event) => { reject }
     width: 40px; height: 40px;
     border-radius: 8px;
     background: touch.pressed ? Tokens.selection : touch.has-hover ? Tokens.alternate-background : transparent;
@@ -12,10 +16,10 @@ export component IconButton inherits Rectangle {
     Image { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; width: 24px; height: 24px; source: root.icon; colorize: root.selected ? Tokens.accent : Tokens.foreground; }
     focus := FocusScope {
         enabled: root.enabled;
-        accessible-role: button; accessible-label: root.label;
+        accessible-role: button; accessible-label: root.label; accessible-description: self.has-focus ? root.focus-description : "";
         accessible-action-default => { if root.enabled { root.activated(); } }
         Rectangle { width: 100%; height: 100%; background: transparent; border-radius: 8px; border-color: Tokens.accent; border-width: focus.has-focus ? 2px : 0px; }
-        key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.activated(); return accept; } reject }
+        key-pressed(event) => { if root.key-pressed(event) == accept { return accept; } if event.text == Key.Return || event.text == " " { root.activated(); return accept; } reject }
     }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
     public function focus-button() { focus.focus(); }

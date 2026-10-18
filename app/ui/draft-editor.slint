@@ -5,6 +5,7 @@ import { Pane } from "scrollpane.slint";
 // Thin native TextInput wrapper: keep native IME, selection and clipboard
 // behavior while exposing the pinned Slint byte-offset selection API.
 export component DraftEditor inherits Rectangle {
+    min-height: Tokens.base * 2.8 + 8px;
     forward-focus: input;
     out property <int> caret: input.cursor-position-byte-offset;
     out property <int> anchor: input.anchor-position-byte-offset;
@@ -23,6 +24,12 @@ export component DraftEditor inherits Rectangle {
     background: Tokens.background;
     border-width: input.has-focus ? 2px : 1px;
     border-color: input.has-focus ? Tokens.accent : Tokens.border;
+    Text {
+        x: 4px; y: 4px; width: parent.width - 24px;
+        visible: State.draft == "" && !State.ime-active;
+        text: "Message"; font-size: Tokens.base; color: Tokens.secondary;
+        accessible-role: none;
+    }
     editor-pane := Pane {
         x: 4px; y: 4px; width: parent.width - 8px; height: parent.height - 8px;
         offset <=> State.editor-y;
@@ -33,6 +40,7 @@ export component DraftEditor inherits Rectangle {
             text <=> State.draft;
             enabled: State.has-chat;
             accessible-label: "Message draft";
+            accessible-placeholder-text: "Message";
             accessible-description: self.has-focus ? "Focused message draft" : "Message draft";
             single-line: false; wrap: word-wrap;
             font-size: Tokens.base; color: Tokens.foreground;

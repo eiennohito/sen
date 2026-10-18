@@ -6,7 +6,9 @@ import { Pane } from "scrollpane.slint";
 import { DraftEditor } from "draft-editor.slint";
 
 export component Composer inherits Rectangle {
-    height: min(State.conversation-height / 3, max(132px, draft-measure.preferred-height + 78px));
+    property <length> footer-height: max(36px, max(send-caption.visible ? send-caption.preferred-height : 0px, send-button.preferred-height));
+    property <length> editor-minimum-height: Tokens.base * 2.8 + 8px + root.footer-height + 32px;
+    height: max(root.editor-minimum-height, min(State.conversation-height / 3, draft-measure.preferred-height + root.footer-height + 40px));
     vertical-stretch: 0;
 draft-measure := Text {
         visible: false; text: State.draft + "\n";
@@ -20,8 +22,8 @@ draft-measure := Text {
                     padding: 12px; spacing: 8px;
                     composer := DraftEditor { }
                     HorizontalLayout {
-                        height: max(36px, max(send-caption.visible ? send-caption.preferred-height : 0px, send-button.preferred-height)); spacing: 8px; alignment: end;
-                        send-caption := Text { visible: State.send-reason != ""; max-width: self.visible ? parent.width : 0px; height: self.visible ? self.preferred-height : 0px; horizontal-stretch: self.visible ? 1 : 0; text: State.send-reason; color: Tokens.secondary; font-size: Tokens.time; wrap: word-wrap; vertical-alignment: center; }
+                        height: root.footer-height; spacing: 8px; alignment: end;
+                        send-caption := Text { visible: State.send-reason != ""; max-width: self.visible ? max(0px, root.width - 112px) : 0px; height: self.visible ? self.preferred-height : 0px; horizontal-stretch: self.visible ? 1 : 0; text: State.send-reason; color: Tokens.secondary; font-size: Tokens.time; wrap: word-wrap; vertical-alignment: center; }
                         send-button := Button { text: "Send"; enabled: State.can-send; width: 80px; horizontal-stretch: 0; clicked => { State.send(); State.focus-composer(); } }
                     }
                 }

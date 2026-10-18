@@ -37,24 +37,21 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| S4 | Rail "Account" button opens Settings on the Chats section; it is a duplicate of the Settings button in both wide rail and narrow bar. | `app/ui/rail.slint:26` | Open About, or remove the button. |
 | S5 | Chat-row hover is invisible: hover colour equals the pane background. | `app/ui/chats.slint:83` vs `app/ui/app.slint:172` | Distinct hover role. |
-| S6 | Settings dialog: Close button above the title, a ComboBox as section navigation, roughly 80 % empty space at 560×640. | `app/ui/layers.slint:93` | Title first, sections as a left list or tabs, size to content, Close at the bottom or as the title-row icon. |
-| S8 | History focus ring: a 2 px accent border around the entire history pane on any click into empty history space, after closing the viewer, after Resend or Cancel. It conveys nothing. | `app/ui/conversation.slint:68`, `app/ui/scrollpane.slint:15`, `app/src/composer.rs:185`, `app/ui/app.slint:90` | Remove the pane ring. Focus rings mean "you are typing here" (composer) and "this message is selected" (bubble), nothing else. |
 | S9 | Bubble focus border uses the same accent ring as the composer. | `app/ui/message.slint:62` | Style as a selection highlight, not a focus ring. |
-| S10 | Composer is a blank bordered box with no placeholder and a 132 px minimum height; at 360×520 with 24 px text the reason caption wraps to two lines and the field is one line tall. | `app/ui/composer.slint:9`, `app/ui/draft-editor.slint` | Placeholder "Message", minimum of two lines, caption only when there is a reason. |
-| S11 | "Latest" and "Return to message" are full-width standard buttons between history and composer that change the history height when they appear. | `app/ui/conversation.slint:85`, `:98` | Floating pill over the history bottom edge. |
-| S12 | Friends header rows use text glyphs "▾/▸" (also inside accessible labels); both headers render even when a section is empty. | `app/ui/friends.slint:73`, `app/src/browser.rs:58` | Icon, and omit empty sections. |
-| S13 | Friend avatar fallback shows the elided full name ("新…") instead of an initial. | `app/ui/friends.slint:76` | Use the initial like chat rows do. |
-| S14 | Narrow bottom bar has four slots for three destinations (see S4). | `app/ui/rail.slint:40` | Follows S4. |
 | S15 | Resizing from 740–1059 px to below 740 px with focus in the browser hides the shell, but the profile-sheet focus redirect does not fire, so focus can sit in a hidden control. Unverified: MCP cannot resize. `tools/check-ui-mcp.py --layers` still hard-codes the strip height (116) and rail+browser width (342). | `app/ui/app.slint` (`changed profile-sheet`), `tools/check-ui-mcp.py` | Redirect focus whenever covered content changes; read widths from the UI tree in the script. |
 | S16 | Connection strip follow-ups: at 360×520 text 24 the status elides to "Sessio…" beside its actions; Retry and Sign in again have faint borders in dark mode; narrow Friends centres keyboard-selected rows on the full list height, ignoring the strip inset; the demo "List load failure" scenario inherits the previous scenario's connection state. | `app/ui/connection-notice.slint`, `app/ui/friends.slint:15`, `app/src/demo.rs` | Shorter visible status at narrow sizes; stronger action affordance in dark; use the visible height in Friends; reset demo state per scenario. |
+| S17 | Latest/Return pills overlay the history bottom, but read exposure (`visible-height`) does not subtract the pill area, so rows under the pills count as seen. | `app/ui/conversation.slint`, `app/ui/scrollpane.slint` | Subtract the pill band from the exposure height while pills show. |
+| S18 | At 360×520 with 24 px text, friend rows overflow into each other (status text overlaps the next row). | `app/ui/friends.slint` | Row height from text metrics. |
+| S19 | At 360×520 the content-sized Settings dialog leaves the composer visible beneath it; reads as a broken sheet. | `app/ui/layers.slint` | Full-window sheet below 740 px, content-sized above. |
+| S20 | Shift+Tab from Navigation hits an unlabelled focus stop before Retry connection (pre-existing on `ca2ce40`). | `app/ui/chats.slint`, `app/ui/rail.slint` | Find the stop; label or skip it; extend the MCP reverse-Tab assertion. |
 
 ## M — Messages
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
 | M9 | Unread badge on the selected chat row is accent on selection (blue on blue). | `app/ui/chats.slint:98` | Invert on selected rows. |
+| M10 | Return to message restores the anchor ~85–100 px low if the Offline strip appears between the reply jump and Return: `jump_to_message`/`return_to_anchor` capture `screen_y` without the pane's cover inset. | `app/src/paging.rs`, `app/ui/scrollpane.slint` | Capture and restore relative to the visible top (inset-aware); MCP case with Offline between jump and Return. |
 
 ## C — Composer, input, feedback
 
@@ -62,7 +59,6 @@ P, then the UI groups in any order. V closes the loop.
 | --- | --- | --- | --- |
 | C3 | Implementation vocabulary in production strings: "Unread boundary unavailable", "Large message retained; some previews may be unavailable", "Preview unavailable · Refresh to retry", "No conversations loaded", "Reconnecting… (attempt N)". | `app/ui/conversation.slint:24`, `:97`; `app/ui/message.slint:149`; `app/ui/chats.slint:61`; `app/src/view.rs:539` | Rewrite per model §9.2. |
 | C4 | Three error strings tell the user to "Use Refresh"; the Refresh buttons are leftovers from before live sync and are the only image-retry path. The refresh icon is drawn with the arrowheads on the wrong ends. | `app/src/view.rs:765`, `:1036`; `app/ui/chats.slint:23`; `app/assets/icons/refresh.svg` | Remove manual Refresh once T2 and T4 give assets their own retry; fix or replace the icon if any refresh control survives. |
-| C5 | Search "Clear" is an always-visible standard button next to the field. | `app/ui/chats.slint:48`, `app/ui/friends.slint:46` | Clear icon inside the field, shown only with a query. |
 
 ## V — Verification debt
 
@@ -94,3 +90,11 @@ P, then the UI groups in any order. V closes the loop.
 | C2 | List failures stay in the list footer with a Retry that re-issues exactly the failed request; wording matches the button. |
 | M1–M4, M6–M8 | URLs render once, inline and activatable, in a measured rich flow: line breaks are computed once over the whole body with UAX #14 plus URL delimiters inside links, characters break only inside a run wider than the bubble, the 2048-run cap falls back to the selectable body, and widths come from a public 64× Text measurement with a bounded LRU cache. A click only focuses; the quote block is the jump target; failed rows keep mark and time beside the bubble with compact actions; attachments read name, size, action; outgoing bubbles have their own palette role (selection contrast 5.8–8.6:1). First frame and text-size change are faster than before; resize is 2.5–3.5× slower but under 10 ms. Cross-run drag selection is a documented deviation. |
 | M5 | Not reproduced on `ded2def` (headless, live, text-size switch); no fix claimed. |
+| S4, S14 | The duplicate rail Account button is gone; wide rail and narrow bar have exactly three destinations. |
+| S6 | Settings has a title row with a close icon, sections as a tab list, content-sized, with scoped focus descriptions. Colours copied from Fluent rather than palette roles (minor). |
+| S8 | The history pane focus ring is removed; rings remain only on the composer and the selected bubble. |
+| S10 | Composer shows a "Message" placeholder, is at least two lines tall, and the reason caption appears only with a reason. |
+| S11 | Latest and Return are side-by-side floating pills over the history bottom edge; the history height no longer changes. Focus order Latest → Return → composer, reversed on Shift+Tab. |
+| S12 | Friends headers use chevron icons (no glyphs in labels) and empty sections are omitted. |
+| S13 | Friend avatars fall back to the first grapheme. |
+| C5 | Search Clear is an icon inside the field, shown only with a query; Tab from Clear follows the same narrow-offline rule into the connection strip. `SearchField.enabled` is unused (minor). |

@@ -21,11 +21,10 @@ pub fn install() -> Result<Rc<MinimalSoftwareWindow>, Box<dyn std::error::Error>
     Ok(window)
 }
 
-pub fn save(
+pub fn render(
     window: &MinimalSoftwareWindow,
-    path: &str,
     (width, height): (u32, u32),
-) -> Result<(), Box<dyn std::error::Error>> {
+) -> Result<SharedPixelBuffer<Rgb8Pixel>, Box<dyn std::error::Error>> {
     window.set_size(PhysicalSize::new(width, height));
     let mut pixels = SharedPixelBuffer::<Rgb8Pixel>::new(width, height);
     // Let one-shot scroll/layout restoration settle just as it does on the
@@ -41,6 +40,15 @@ pub fn save(
     if !drawn {
         return Err("snapshot did not render".into());
     }
+    Ok(pixels)
+}
+
+pub fn save(
+    window: &MinimalSoftwareWindow,
+    path: &str,
+    (width, height): (u32, u32),
+) -> Result<(), Box<dyn std::error::Error>> {
+    let pixels = render(window, (width, height))?;
     let mut file = File::create(path)?;
     write!(file, "P6\n{width} {height}\n255\n")?;
     file.write_all(pixels.as_bytes())?;

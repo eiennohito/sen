@@ -588,7 +588,12 @@ fn controller_scenario(stop: usize) {
     assert_eq!(ui.get_friends().row_count(), 5);
     ui.set_friend_query("葵".into());
     view.filter_friends(&ui);
-    assert_eq!(ui.get_friends().row_count(), 3);
+    assert_eq!(ui.get_friends().row_count(), 2);
+    assert_eq!(ui.get_friends().row_data(0).unwrap().id, "section-friends");
+    assert_eq!(ui.get_friends().row_data(1).unwrap().initial, "葵");
+    ui.set_friend_query("no match".into());
+    view.filter_friends(&ui);
+    assert_eq!(ui.get_friends().row_count(), 0);
     view.open_profile(&ui, &current);
     assert!(ui.get_profile_open());
     assert_eq!(ui.get_profile_status(), "こんにちは\n日本語");
