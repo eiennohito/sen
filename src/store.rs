@@ -14,6 +14,7 @@ pub use types::*;
 pub struct Store {
     conn: Connection,
     writes: u64,
+    changes: Changes,
 }
 impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
@@ -46,7 +47,14 @@ impl Store {
             tx.execute_batch("ALTER TABLE draft ADD COLUMN anchor INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=2;")?;
             tx.commit()?;
         }
-        Ok(Self { conn, writes: 0 })
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS message_pending_chat ON message(chat_id,delivery) WHERE server_id IS NULL;
+            CREATE INDEX IF NOT EXISTS message_server_order ON message(chat_id,sort_id) WHERE server_id IS NOT NULL;
+            CREATE INDEX IF NOT EXISTS message_incoming_order ON message(chat_id,sort_id) WHERE outgoing=0 AND server_id IS NOT NULL;")?;
+        Ok(Self {
+            conn,
+            writes: 0,
+            changes: Changes::default(),
+        })
     }
     /// Carry only work created before the first account identity was known.
     pub fn carry_local_to(&self, target: &mut Store) -> Result<Vec<Key>> {
@@ -101,6 +109,9 @@ impl Store {
     pub fn writes(&self) -> u64 {
         self.writes
     }
+    pub fn take_changes(&mut self) -> Changes {
+        std::mem::take(&mut self.changes)
+    }
     fn mutate(
         &mut self,
         f: impl FnOnce(&Connection, &mut Changes) -> Result<()>,
@@ -110,6 +121,18 @@ impl Store {
         f(&tx, &mut changes)?;
         tx.commit()?;
         self.writes += 1;
+        self.changes
+            .chats_changed
+            .extend(changes.chats_changed.iter().cloned());
+        self.changes
+            .chats_removed
+            .extend(changes.chats_removed.iter().cloned());
+        self.changes
+            .messages_upserted
+            .extend(changes.messages_upserted.iter().copied());
+        self.changes
+            .messages_removed
+            .extend(changes.messages_removed.iter().copied());
         Ok(changes)
     }
 }

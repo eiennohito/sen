@@ -1,4 +1,4 @@
-//! One worker, one store writer, and one ordered stream of UI deltas.
+//! A store thread schedules work; a network thread owns the backend.
 use crate::{backend::*, store::*};
 use serde_json::Value;
 use std::{
@@ -57,6 +57,10 @@ pub struct WindowSub {
 }
 #[derive(Clone)]
 pub enum Intent {
+    SearchChats {
+        sub: u64,
+        query: String,
+    },
     ChatList {
         sub: u64,
         limit: usize,
@@ -183,6 +187,7 @@ enum Refresh {
 #[derive(Default)]
 struct Lanes {
     users: VecDeque<Intent>,
+    completed: VecDeque<Completion>,
     live: VecDeque<StreamEvent>,
     refresh: BTreeSet<Refresh>,
     stopped: bool,
@@ -229,6 +234,9 @@ impl Inbox {
         self.wake.notify_all();
     }
 }
+type Completion = Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>;
+type NetJob = Box<dyn FnOnce(&mut dyn Backend) -> Completion + Send>;
+
 pub enum StoreLocation {
     Memory,
     Directory(PathBuf),
@@ -267,22 +275,25 @@ impl Worker {
         }
     }
     pub fn start(backend: impl Backend + 'static, location: StoreLocation) -> Self {
-        Self::start_with(move || Ok((backend, location)))
+        Self::start_with_timing(location, move || Ok(backend), Timing::default())
     }
+    /// Open the store before initializing credentials, WASM, or asset caches.
     pub fn start_with<B: Backend + 'static>(
-        open: impl FnOnce() -> anyhow::Result<(B, StoreLocation)> + Send + 'static,
+        location: StoreLocation,
+        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
     ) -> Self {
-        Self::start_with_timing(open, Timing::default())
+        Self::start_with_timing(location, open, Timing::default())
     }
     pub fn start_timed(
         backend: impl Backend + 'static,
         location: StoreLocation,
         timing: Timing,
     ) -> Self {
-        Self::start_with_timing(move || Ok((backend, location)), timing)
+        Self::start_with_timing(location, move || Ok(backend), timing)
     }
     pub fn start_with_timing<B: Backend + 'static>(
-        open: impl FnOnce() -> anyhow::Result<(B, StoreLocation)> + Send + 'static,
+        location: StoreLocation,
+        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
         timing: Timing,
     ) -> Self {
         let inbox = Arc::new(Inbox::default());
@@ -298,15 +309,18 @@ impl Worker {
         let join = thread::spawn(move || {
             let fatal = tx.clone();
             let worker_inbox = inbox.clone();
-            let outcome =
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> anyhow::Result<()> {
-                    let (backend, location) = open()?;
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
+                || -> anyhow::Result<()> {
                     use sha2::{Digest, Sha256};
                     let mut account_root = None;
+                    let mut store_mid = None;
                     let store = match location {
                         StoreLocation::Memory => Store::open_in_memory(),
                         StoreLocation::Directory(p) => Store::open(&p),
                         StoreLocation::Account { root, mid } => {
+                            let mid =
+                                mid.or_else(|| std::fs::read_to_string(root.join("last-mid")).ok());
+                            store_mid = mid.clone();
                             let store = if let Some(mid) = mid {
                                 Store::open(&root.join(format!("{:x}", Sha256::digest(mid))))
                             } else {
@@ -319,9 +333,60 @@ impl Worker {
                     match store {
                         Ok(store) => {
                             let mut e = Engine {
-                                backend: Box::new(backend),
+                                net: {
+                                    let (jobs, rx) = mpsc::channel::<NetJob>();
+                                    let inbox = inbox.clone();
+                                    let fatal = tx.clone();
+                                    let net_cancel = worker_cancel.clone();
+                                    thread::Builder::new().name("line-net".into()).spawn(
+                                        move || {
+                                            let outcome = std::panic::catch_unwind(
+                                                std::panic::AssertUnwindSafe(
+                                                    || -> anyhow::Result<()> {
+                                                        let Ok(first) = rx.recv() else {
+                                                            return Ok(());
+                                                        };
+                                                        crate::client::desktop::set_cancellation_token(net_cancel);
+                                                        let mut backend = open()?;
+                                                        let mut job = first;
+                                                        loop {
+                                                            let completed = job(&mut backend);
+                                                            let mut q = inbox.lanes.lock().unwrap();
+                                                            if q.stopped {
+                                                                break;
+                                                            }
+                                                            q.completed.push_back(completed);
+                                                            inbox.wake.notify_all();
+                                                            drop(q);
+                                                            match rx.recv() {
+                                                                Ok(next) => job = next,
+                                                                Err(_) => break,
+                                                            }
+                                                        }
+                                                        Ok(())
+                                                    },
+                                                ),
+                                            );
+                                            if !matches!(outcome, Ok(Ok(()))) {
+                                                fatal.send(Delta::Fatal);
+                                            }
+                                        },
+                                    )?;
+                                    jobs
+                                },
+                                net_pending: 0,
+                                generation: 0,
+                                in_flight: BTreeSet::new(),
+                                media: None,
+                                waiting_assets: VecDeque::new(),
+                                waiting_retries: Vec::new(),
+                                active_refresh: None,
+                                force_list: true,
+                                force_window: false,
+                                search: String::new(),
                                 store,
                                 account_root,
+                                store_mid,
                                 inbox,
                                 tx,
                                 connection: Connection::Local,
@@ -345,7 +410,8 @@ impl Worker {
                         Err(e) => return Err(e.into()),
                     }
                     Ok(())
-                }));
+                },
+            ));
             worker_inbox.lanes.lock().unwrap().stopped = true;
             worker_inbox.wake.notify_all();
             if !matches!(outcome, Ok(Ok(()))) {
@@ -379,9 +445,23 @@ struct Engine {
     retry_after: std::collections::BTreeMap<Refresh, Instant>,
     continuous: bool,
     list_sweep: Vec<ChatInput>,
-    backend: Box<dyn Backend>,
+    net: mpsc::Sender<NetJob>,
+    net_pending: usize,
+    generation: u64,
+    in_flight: BTreeSet<Key>,
+    media: Option<AssetRequests>,
+    waiting_assets: VecDeque<(
+        crate::client::desktop::assets::Asset,
+        crate::client::desktop::assets::Purpose,
+    )>,
+    waiting_retries: Vec<String>,
+    active_refresh: Option<Refresh>,
+    force_list: bool,
+    force_window: bool,
+    search: String,
     store: Store,
     account_root: Option<PathBuf>,
+    store_mid: Option<String>,
     inbox: Arc<Inbox>,
     tx: DeltaSender,
     connection: Connection,
@@ -395,6 +475,58 @@ struct Engine {
 }
 type Result<T> = std::result::Result<T, StoreError>;
 impl Engine {
+    fn rpc<T: Send + 'static>(
+        &mut self,
+        run: impl FnOnce(&mut dyn Backend) -> T + Send + 'static,
+        apply: impl FnOnce(&mut Engine, T) -> Result<()> + Send + 'static,
+    ) {
+        self.rpc_completion(run, move |engine, result, current| {
+            if current {
+                apply(engine, result)
+            } else {
+                Ok(())
+            }
+        });
+    }
+    // The FIFO network queue completes mutations before sign-in can swap stores.
+    fn rpc_completion<T: Send + 'static>(
+        &mut self,
+        run: impl FnOnce(&mut dyn Backend) -> T + Send + 'static,
+        apply: impl FnOnce(&mut Engine, T, bool) -> Result<()> + Send + 'static,
+    ) {
+        self.net_pending += 1;
+        let cancel = self.assets_stop.clone();
+        let generation = self.generation;
+        let _ = self.net.send(Box::new(move |backend| {
+            crate::client::desktop::set_cancellation_token(cancel);
+            let result = run(backend);
+            Box::new(move |engine| {
+                engine.net_pending -= 1;
+                let current = generation == engine.generation;
+                apply(engine, result, current)
+            })
+        }));
+    }
+    fn start_assets(&mut self) {
+        let inbox = self.inbox.clone();
+        let tx = self.tx.clone();
+        let stop = self.assets_stop.clone();
+        self.rpc(
+            move |backend| {
+                backend.start_assets(
+                    stop,
+                    Arc::new(move |event| {
+                        if let StreamEvent::Asset(c) = event {
+                            return tx.send(asset_delta(c));
+                        }
+                        inbox.live(event)
+                    }),
+                )
+            },
+            |_, ()| Ok(()),
+        );
+    }
+
     fn emit(&self, d: Delta) {
         let _ = self.tx.send(d);
     }
@@ -439,7 +571,6 @@ impl Engine {
         }
     }
     fn run(&mut self) -> Result<()> {
-        crate::client::desktop::set_cancellation_token(self.assets_stop.clone());
         self.seq = self
             .store
             .get_pref("request_seq")?
@@ -472,9 +603,7 @@ impl Engine {
                 after: 80,
             })?;
         }
-        let inbox = self.inbox.clone();
-        self.backend
-            .start_assets(self.assets_stop.clone(), Arc::new(move |e| inbox.live(e)));
+        self.start_assets();
         self.online()?;
         loop {
             enum Work {
@@ -482,6 +611,7 @@ impl Engine {
                 Live(StreamEvent),
                 Refresh(Refresh),
                 Reconnect,
+                Completed(Completion),
             }
             let work = {
                 let mut q = self.inbox.lanes.lock().unwrap();
@@ -493,7 +623,11 @@ impl Engine {
                         self.inbox.wake.notify_all();
                         break Work::Live(e);
                     }
-                    if self.connection == Connection::Online
+                    if let Some(done) = q.completed.pop_front() {
+                        break Work::Completed(done);
+                    }
+                    if self.net_pending == 0
+                        && self.connection == Connection::Online
                         && let Some(r) = q
                             .refresh
                             .iter()
@@ -507,8 +641,9 @@ impl Engine {
                         self.retry_after.remove(&r);
                         break Work::Refresh(r);
                     }
-                    if matches!(self.connection,Connection::Offline {retry_at,..} if Instant::now()>=retry_at)
-                        || self.reconnect_at.is_some_and(|at| Instant::now() >= at)
+                    if self.net_pending == 0
+                        && (matches!(self.connection,Connection::Offline {retry_at,..} if Instant::now()>=retry_at)
+                            || self.reconnect_at.is_some_and(|at| Instant::now() >= at))
                     {
                         break Work::Reconnect;
                     }
@@ -521,14 +656,19 @@ impl Engine {
                 Work::User(i) => self.intent(i),
                 Work::Live(e) => self.live(e),
                 Work::Refresh(r) => {
-                    let result = self.refresh(r.clone());
-                    if r != Refresh::Stream && !self.retry_after.contains_key(&r) {
-                        self.retry_attempts.remove(&r);
-                    }
-                    result
+                    self.active_refresh = Some(r.clone());
+                    self.refresh(r)
                 }
                 Work::Reconnect => self.online(),
+                Work::Completed(done) => done(self),
             };
+            if self.net_pending == 0
+                && let Some(r) = self.active_refresh.take()
+                && r != Refresh::Stream
+                && !self.retry_after.contains_key(&r)
+            {
+                self.retry_attempts.remove(&r);
+            }
             match result {
                 Err(error) => self.emit(Delta::Error(error.to_string())),
                 Ok(()) if self.store.writes() != writes => self.emit(Delta::StoreSaved),
@@ -549,7 +689,7 @@ impl Engine {
                 self.inbox.wake.notify_all();
             }
             j.thread().unpark();
-            let _ = j.join();
+            drop(j);
         }
     }
     fn start_stream(&mut self) -> Result<()> {
@@ -558,35 +698,41 @@ impl Engine {
         let inbox = self.inbox.clone();
         let deliver_stop = stop.clone();
         let deliver: Deliver = Arc::new(move |e| inbox.live_with_cancel(e, Some(&deliver_stop)));
-        let run =
-            match self
-                .backend
-                .stream(self.store.sync_revision()?, stop.clone(), deliver.clone())
-            {
-                Ok(run) => run,
-                Err(e) => {
-                    self.rpc_failed(Refresh::Stream, e);
-                    return Ok(());
-                }
-            };
-        let stream_stop = stop.clone();
-        let j = thread::Builder::new()
-            .name("line-sync".into())
-            .spawn(move || {
-                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
-                if !stream_stop.load(Ordering::Relaxed) {
-                    deliver(StreamEvent::Exited);
-                }
-            })
-            .map_err(StoreError::Io)?;
-        self.stream = Some((stop, j));
-        self.inbox
-            .lanes
-            .lock()
-            .unwrap()
-            .refresh
-            .remove(&Refresh::Stream);
-        self.retry_after.remove(&Refresh::Stream);
+        let revision = self.store.sync_revision()?;
+        let net_stop = stop.clone();
+        let net_deliver = deliver.clone();
+        self.rpc(
+            move |backend| backend.stream(revision, net_stop, net_deliver),
+            move |engine, result| {
+                let run = match result {
+                    Ok(run) => run,
+                    Err(e) => {
+                        engine.rpc_failed(Refresh::Stream, e);
+                        return Ok(());
+                    }
+                };
+                let stream_stop = stop.clone();
+                let j = thread::Builder::new()
+                    .name("line-sync".into())
+                    .spawn(move || {
+                        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
+                        if !stream_stop.load(Ordering::Relaxed) {
+                            deliver(StreamEvent::Exited);
+                        }
+                    })
+                    .map_err(StoreError::Io)?;
+                engine.stream = Some((stop, j));
+                engine
+                    .inbox
+                    .lanes
+                    .lock()
+                    .unwrap()
+                    .refresh
+                    .remove(&Refresh::Stream);
+                engine.retry_after.remove(&Refresh::Stream);
+                Ok(())
+            },
+        );
         Ok(())
     }
     fn online(&mut self) -> Result<()> {
@@ -595,79 +741,101 @@ impl Engine {
         self.connection(Connection::Connecting {
             attempt: self.attempt,
         });
-        match self.backend.profile() {
-            Ok(p) => {
-                let account = self.store.account()?;
-                if !account.own_mid.is_empty() && account.own_mid != p.mid {
-                    self.connection(Connection::SessionInvalid);
-                    return Ok(());
-                }
-                if account.own_mid.is_empty()
-                    && let Some(root) = &self.account_root
-                {
-                    use sha2::{Digest, Sha256};
-                    let mut target =
-                        Store::open(&root.join(format!("{:x}", Sha256::digest(&p.mid))))?;
-                    for row in target.all_pending()? {
-                        if row.delivery == Delivery::Pending {
-                            target.mark_failed(row.key, Delivery::Uncertain)?;
+        self.rpc(
+            move |backend| backend.profile(),
+            move |engine, result| {
+                match result {
+                    Ok(p) => {
+                        let account = engine.store.account()?;
+                        let own_mid = if account.own_mid.is_empty() {
+                            engine.store_mid.as_deref().unwrap_or_default()
+                        } else {
+                            &account.own_mid
+                        };
+                        if !own_mid.is_empty() && own_mid != p.mid {
+                            engine.connection(Connection::SessionInvalid);
+                            return Ok(());
                         }
+                        if account.own_mid.is_empty()
+                            && engine.store_mid.as_deref() != Some(p.mid.as_str())
+                            && let Some(root) = &engine.account_root
+                        {
+                            use sha2::{Digest, Sha256};
+                            let mut target =
+                                Store::open(&root.join(format!("{:x}", Sha256::digest(&p.mid))))?;
+                            for row in target.all_pending()? {
+                                if row.delivery == Delivery::Pending {
+                                    target.mark_failed(row.key, Delivery::Uncertain)?;
+                                }
+                            }
+                            let keys = engine.store.carry_local_to(&mut target)?;
+                            engine.store = target;
+                            engine.store_mid = Some(p.mid.clone());
+                            engine
+                                .inbox
+                                .lanes
+                                .lock()
+                                .unwrap()
+                                .refresh
+                                .retain(|r| !matches!(r, Refresh::Send(_)));
+                            for key in keys {
+                                engine.inbox.refresh(Refresh::Send(key));
+                            }
+                            for (key, value) in engine.store.prefs()? {
+                                engine.emit(Delta::Pref { key, value });
+                            }
+                            if engine.window.is_none()
+                                && let Some(chat) = engine.store.get_pref("last_chat")?
+                            {
+                                engine.open(WindowSub {
+                                    sub: 1,
+                                    chat: ChatId(
+                                        chat.as_str()
+                                            .ok_or_else(|| {
+                                                StoreError::Invalid(
+                                                    "last_chat must be a string".into(),
+                                                )
+                                            })?
+                                            .into(),
+                                    ),
+                                    anchor: Anchor::Unread,
+                                    before: 80,
+                                    after: 80,
+                                })?;
+                            }
+                        }
+                        engine.store.set_account(&p.mid, p.data.clone())?;
+                        if let Some(root) = &engine.account_root {
+                            std::fs::create_dir_all(root)?;
+                            std::fs::write(root.join("last-mid.tmp"), &p.mid)?;
+                            std::fs::rename(root.join("last-mid.tmp"), root.join("last-mid"))?;
+                        }
+                        engine.seq = engine
+                            .store
+                            .get_pref("request_seq")?
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0) as u32;
+                        engine.emit(Delta::Profile(p.data));
+                        engine.connection(Connection::Online);
+                        engine.inbox.refresh(Refresh::ChatList);
+                        for chat in engine.store.pending_reads()? {
+                            engine.inbox.refresh(Refresh::Read(chat));
+                        }
+                        if let Some(w) = &engine.window {
+                            engine.inbox.refresh(Refresh::Recent(w.chat.clone()));
+                            engine.inbox.refresh(Refresh::Receipts(w.chat.clone()));
+                        }
+                        engine.start_stream()?;
                     }
-                    let keys = self.store.carry_local_to(&mut target)?;
-                    self.store = target;
-                    self.inbox
-                        .lanes
-                        .lock()
-                        .unwrap()
-                        .refresh
-                        .retain(|r| !matches!(r, Refresh::Send(_)));
-                    for key in keys {
-                        self.inbox.refresh(Refresh::Send(key));
+                    Err(e) => {
+                        engine.reconnect_at =
+                            Some(Instant::now() + engine.timing.delay(engine.attempt));
+                        engine.error(e);
                     }
-                    for (key, value) in self.store.prefs()? {
-                        self.emit(Delta::Pref { key, value });
-                    }
-                    if self.window.is_none()
-                        && let Some(chat) = self.store.get_pref("last_chat")?
-                    {
-                        self.open(WindowSub {
-                            sub: 1,
-                            chat: ChatId(
-                                chat.as_str()
-                                    .ok_or_else(|| {
-                                        StoreError::Invalid("last_chat must be a string".into())
-                                    })?
-                                    .into(),
-                            ),
-                            anchor: Anchor::Unread,
-                            before: 80,
-                            after: 80,
-                        })?;
-                    }
-                }
-                self.store.set_account(&p.mid, p.data.clone())?;
-                self.seq = self
-                    .store
-                    .get_pref("request_seq")?
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(0) as u32;
-                self.emit(Delta::Profile(p.data));
-                self.connection(Connection::Online);
-                self.inbox.refresh(Refresh::ChatList);
-                for chat in self.store.pending_reads()? {
-                    self.inbox.refresh(Refresh::Read(chat));
-                }
-                if let Some(w) = &self.window {
-                    self.inbox.refresh(Refresh::Recent(w.chat.clone()));
-                    self.inbox.refresh(Refresh::Receipts(w.chat.clone()));
-                }
-                self.start_stream()?;
-            }
-            Err(e) => {
-                self.reconnect_at = Some(Instant::now() + self.timing.delay(self.attempt));
-                self.error(e);
-            }
-        };
+                };
+                Ok(())
+            },
+        );
         Ok(())
     }
     fn next_seq(&mut self) -> Result<u32> {
@@ -693,6 +861,7 @@ impl Engine {
         }
         self.inbox.refresh(Refresh::Recent(w.chat.clone()));
         self.window = Some(w);
+        self.force_window = true;
         self.publish()
     }
     // Friends always reach the UI in store order, so a refresh does not reshuffle rows.
@@ -709,52 +878,61 @@ impl Engine {
     fn intent(&mut self, i: Intent) -> Result<()> {
         match i {
             Intent::SignIn => {
+                if self.connection == Connection::SigningIn {
+                    return Ok(());
+                }
+                self.generation += 1;
                 self.stop_stream();
                 self.inbox.pair_cancel.store(false, Ordering::Relaxed);
                 self.connection(Connection::SigningIn);
                 let tx = self.tx.clone();
-                let result = self.backend.sign_in(
-                    self.inbox.pair_cancel.clone(),
-                    Arc::new(move |e| {
-                        let _ = tx.send(Delta::Pair(e));
-                    }),
-                );
-                crate::client::desktop::set_cancellation_token(self.assets_stop.clone());
-                match result {
-                    Ok(()) => {
-                        {
-                            let mut lanes = self.inbox.lanes.lock().unwrap();
-                            lanes.live.clear();
-                            lanes.refresh.clear();
-                        }
-                        self.inbox.wake.notify_all();
-                        self.list_sweep.clear();
-                        self.retry_after.clear();
-                        for row in self.store.all_pending()? {
-                            if row.delivery == Delivery::Pending {
-                                self.store.mark_failed(row.key, Delivery::Uncertain)?;
+                let cancel = self.inbox.pair_cancel.clone();
+                self.rpc(
+                    move |backend| {
+                        backend.sign_in(
+                            cancel,
+                            Arc::new(move |e| {
+                                tx.send(Delta::Pair(e));
+                            }),
+                        )
+                    },
+                    move |engine, result| {
+                        match result {
+                            Ok(()) => {
+                                engine.generation += 1;
+                                {
+                                    let mut lanes = engine.inbox.lanes.lock().unwrap();
+                                    lanes.live.clear();
+                                    lanes.refresh.clear();
+                                }
+                                engine.inbox.wake.notify_all();
+                                engine.list_sweep.clear();
+                                engine.retry_after.clear();
+                                for row in engine.store.all_pending()? {
+                                    if row.delivery == Delivery::Pending {
+                                        engine.store.mark_failed(row.key, Delivery::Uncertain)?;
+                                    }
+                                }
+                                engine.store = Store::open_in_memory()?;
+                                engine.store_mid = None;
+                                engine.window = None;
+                                engine.chat_keys.clear();
+                                engine.message_keys.clear();
+                                engine.emit(Delta::Reset);
+                                engine.start_assets();
+                                engine.online()?;
+                                engine.publish()?;
+                            }
+                            Err(_) => {
+                                engine.connection(Connection::AuthExpired);
+                                engine.emit(Delta::PairFailed {
+                                    cancelled: engine.inbox.pair_cancel.load(Ordering::Relaxed),
+                                });
                             }
                         }
-                        self.store = Store::open_in_memory()?;
-                        self.window = None;
-                        self.chat_keys.clear();
-                        self.message_keys.clear();
-                        self.emit(Delta::Reset);
-                        let inbox = self.inbox.clone();
-                        self.backend.start_assets(
-                            self.assets_stop.clone(),
-                            Arc::new(move |e| inbox.live(e)),
-                        );
-                        self.online()?;
-                        self.publish()?;
-                    }
-                    Err(_) => {
-                        self.connection(Connection::AuthExpired);
-                        self.emit(Delta::PairFailed {
-                            cancelled: self.inbox.pair_cancel.load(Ordering::Relaxed),
-                        });
-                    }
-                }
+                        Ok(())
+                    },
+                );
             }
             Intent::Friends => {
                 self.emit_friends()?;
@@ -783,9 +961,23 @@ impl Engine {
                 asset,
                 crate::client::desktop::assets::Purpose::File { request: 0, name },
             )?,
-            Intent::RetryAsset(key) => self.backend.retry_asset(&key),
+            Intent::RetryAsset(key) => {
+                if let Some(media) = &self.media {
+                    (media.retry)(key);
+                } else {
+                    self.waiting_retries.push(key);
+                }
+            }
+            Intent::SearchChats { sub, query } => {
+                self.list = Some((sub, 100));
+                self.search = query;
+                self.force_list = true;
+                self.publish()?;
+            }
             Intent::ChatList { sub, limit } => {
                 self.list = Some((sub, limit));
+                self.search.clear();
+                self.force_list = true;
                 self.publish()?;
             }
             Intent::Window(w) => self.open(w)?,
@@ -793,16 +985,12 @@ impl Engine {
                 if let Some((_, limit)) = &mut self.list {
                     *limit += 50;
                 }
-                if self.connection == Connection::Online {
-                    self.load_chats(true)?;
-                } else {
-                    self.inbox.refresh(Refresh::MoreChats);
-                }
+                self.force_list = true;
+                self.publish()?;
+                self.inbox.refresh(Refresh::MoreChats);
             }
             Intent::Page { chat, kind } => {
-                if self.connection == Connection::Online {
-                    self.page(chat, kind)?;
-                } else {
+                if !self.store.stored_page(&chat, &kind)? {
                     self.defer_page(chat, kind);
                 }
             }
@@ -821,14 +1009,18 @@ impl Engine {
                     chat: chat.clone(),
                     text,
                 });
-                if self.connection == Connection::Online {
-                    self.send(key)?;
-                } else {
-                    self.inbox.refresh(Refresh::Send(key));
-                }
+                self.inbox.refresh(Refresh::Send(key));
             }
             Intent::Resend(key) => {
                 let old = self.store.message(key)?;
+                if self.in_flight.contains(&key)
+                    || !matches!(
+                        old.delivery,
+                        Delivery::Rejected { .. } | Delivery::Uncertain
+                    )
+                {
+                    return Ok(());
+                }
                 let seq = self.next_seq()?;
                 let (new, _) = self.store.insert_pending(
                     &old.chat_id,
@@ -839,46 +1031,55 @@ impl Engine {
                 )?;
                 self.store.discard(key)?;
                 self.publish()?;
-                if self.connection == Connection::Online {
-                    self.send(new)?;
-                } else {
-                    self.inbox.refresh(Refresh::Send(new));
-                }
+                self.inbox.refresh(Refresh::Send(new));
             }
             Intent::Retry(key) => {
+                if self.in_flight.contains(&key) || !self.store.message(key)?.delivery.is_failed() {
+                    return Ok(());
+                }
                 let seq = self.next_seq()?;
                 self.store.retry(key, seq)?;
                 self.publish()?;
-                if self.connection == Connection::Online {
-                    self.send(key)?;
-                } else {
-                    self.inbox.refresh(Refresh::Send(key));
-                }
+                self.inbox.refresh(Refresh::Send(key));
             }
             Intent::Discard(key) => {
+                if self.in_flight.contains(&key) || !self.store.message(key)?.delivery.is_failed() {
+                    return Ok(());
+                }
+                self.store.discard(key)?;
                 self.inbox
                     .lanes
                     .lock()
                     .unwrap()
                     .refresh
                     .remove(&Refresh::Send(key));
-                self.store.discard(key)?;
                 self.publish()?;
             }
             Intent::Unsend(key) => {
+                if self.connection == Connection::SigningIn {
+                    self.emit(Delta::UnsendFailed(key));
+                    return Ok(());
+                }
                 let row = self.store.message(key)?;
                 if row.outgoing
                     && !row.withdrawn
                     && let Some(id) = row.server_id
                 {
                     let seq = self.next_seq()?;
-                    match self.backend.unsend(&id, seq) {
-                        Ok(()) => {
-                            self.store.withdraw(&id)?;
-                            self.publish()?;
-                        }
-                        Err(_) => self.emit(Delta::UnsendFailed(key)),
-                    }
+                    let net_id = id.clone();
+                    self.rpc_completion(
+                        move |backend| backend.unsend(&net_id, seq),
+                        move |engine, result, _current| {
+                            match result {
+                                Ok(()) => {
+                                    engine.store.withdraw(&id)?;
+                                    engine.publish()?;
+                                }
+                                Err(_) => engine.emit(Delta::UnsendFailed(key)),
+                            };
+                            Ok(())
+                        },
+                    );
                 }
             }
             Intent::Copy(key) => {
@@ -890,7 +1091,10 @@ impl Engine {
             }
             Intent::Draft { chat, draft } => {
                 self.store.save_draft(&chat, &draft)?;
-                self.publish()?;
+                let window = self.window.take();
+                let result = self.publish();
+                self.window = window;
+                result?;
             }
             Intent::Pref { key, value } => {
                 self.store.set_pref(&key, value.clone())?;
@@ -913,94 +1117,127 @@ impl Engine {
         let seq = m
             .request_seq
             .ok_or_else(|| StoreError::Invalid("send sequence missing".into()))?;
-        match self.backend.send(&m.chat_id, text, seq) {
-            Ok(row) => {
-                // Apply queued live operations before the result, preserving an echo-first RPC.
-                loop {
-                    let event = self.inbox.lanes.lock().unwrap().live.pop_front();
-                    self.inbox.wake.notify_all();
-                    match event {
-                        Some(e) => self.live(e)?,
-                        None => break,
+        let chat = m.chat_id.clone();
+        let text = text.to_owned();
+        self.in_flight.insert(key);
+        self.rpc_completion(
+            move |backend| backend.send(&chat, &text, seq),
+            move |engine, result, current| {
+                engine.in_flight.remove(&key);
+                match result {
+                    Ok(row) => {
+                        // Apply queued live operations before the result, preserving an echo-first RPC.
+                        if current {
+                            loop {
+                                let event = engine.inbox.lanes.lock().unwrap().live.pop_front();
+                                engine.inbox.wake.notify_all();
+                                match event {
+                                    Some(e) => engine.live(e)?,
+                                    None => break,
+                                }
+                            }
+                        }
+                        engine.store.link_sent(seq, row.server_id, row.created_ms)?;
                     }
-                }
-                self.store.link_sent(seq, row.server_id, row.created_ms)?;
-            }
-            Err(e) => {
-                let delivery = match &e {
-                    Error::Rejected(reason) => Delivery::Rejected {
-                        reason: reason.clone(),
-                    },
-                    _ => Delivery::Uncertain,
+                    Err(e) => {
+                        let delivery = match &e {
+                            Error::Rejected(reason) => Delivery::Rejected {
+                                reason: reason.clone(),
+                            },
+                            _ => Delivery::Uncertain,
+                        };
+                        engine.store.mark_failed(key, delivery)?;
+                        if current && !matches!(e, Error::Rejected(_)) {
+                            engine.error(e);
+                        }
+                    }
                 };
-                self.store.mark_failed(key, delivery)?;
-                if !matches!(e, Error::Rejected(_)) {
-                    self.error(e);
-                }
-            }
-        };
-        self.publish()
+                engine.publish()
+            },
+        );
+        Ok(())
     }
     fn load_chats(&mut self, next: bool) -> Result<()> {
-        match self.backend.chats(next) {
-            Ok(page) => {
-                if !next {
-                    self.list_sweep.clear();
-                }
-                self.list_sweep.extend(page.chats.clone());
-                self.store.upsert_chats(&self.list_sweep, !page.more)?;
-                for m in page.previews {
-                    self.store.apply_live(&m.chat_id, &m, false, None)?;
-                }
-                for c in &page.chats {
-                    if c.title.is_empty() || (c.kind != 0 && c.member_count.is_none()) {
-                        self.inbox.refresh(Refresh::Details(c.id.clone()));
+        self.rpc(
+            move |backend| backend.chats(next),
+            move |engine, result| {
+                match result {
+                    Ok(page) => {
+                        if !next {
+                            engine.list_sweep.clear();
+                        }
+                        engine.list_sweep.extend(page.chats.clone());
+                        engine.store.upsert_chats(&engine.list_sweep, !page.more)?;
+                        for m in page.previews {
+                            engine.store.apply_live(&m.chat_id, &m, false, None)?;
+                        }
+                        for c in &page.chats {
+                            if c.title.is_empty() || (c.kind != 0 && c.member_count.is_none()) {
+                                engine.inbox.refresh(Refresh::Details(c.id.clone()));
+                            }
+                        }
+                        if page.more {
+                            engine.inbox.refresh(Refresh::MoreChats);
+                        }
+                        engine.emit(Delta::MoreChats(page.more));
+                        engine.publish()?;
                     }
-                }
-                if page.more {
-                    self.inbox.refresh(Refresh::MoreChats);
-                }
-                self.emit(Delta::MoreChats(page.more));
-                self.publish()?;
-            }
-            Err(e) => {
-                self.rpc_failed(
-                    if next {
-                        Refresh::MoreChats
-                    } else {
-                        Refresh::ChatList
-                    },
-                    e,
-                );
-            }
-        };
+                    Err(e) => {
+                        engine.rpc_failed(
+                            if next {
+                                Refresh::MoreChats
+                            } else {
+                                Refresh::ChatList
+                            },
+                            e,
+                        );
+                    }
+                };
+                Ok(())
+            },
+        );
         Ok(())
     }
     fn page(&mut self, chat: ChatId, kind: PageKind) -> Result<()> {
-        match self.backend.messages(&chat, &kind) {
-            Ok(page) => {
-                let recent = matches!(page.kind, PageKind::Recent);
-                self.store
-                    .apply_page(&chat, page.kind, &page.rows, page.reaches_start)?;
-                if recent {
-                    // Page RPCs have no revision; a quiet refresh covers operations
-                    // already processed, including an actorless reaction operation.
-                    let revision = self.store.sync_revision()?;
-                    for row in &page.rows {
-                        self.store.set_reactions(
-                            &row.server_id,
-                            row.reactions.clone(),
-                            revision,
+        if self.store.stored_page(&chat, &kind)? {
+            return Ok(());
+        }
+        let net_chat = chat.clone();
+        let net_kind = kind.clone();
+        self.rpc(
+            move |backend| backend.messages(&net_chat, &net_kind),
+            move |engine, result| {
+                match result {
+                    Ok(page) => {
+                        let recent = matches!(page.kind, PageKind::Recent);
+                        engine.store.apply_page(
+                            &chat,
+                            page.kind,
+                            &page.rows,
+                            page.reaches_start,
                         )?;
+                        if recent {
+                            // Page RPCs have no revision; a quiet refresh covers operations
+                            // already processed, including an actorless reaction operation.
+                            let revision = engine.store.sync_revision()?;
+                            for row in &page.rows {
+                                engine.store.set_reactions(
+                                    &row.server_id,
+                                    row.reactions.clone(),
+                                    revision,
+                                )?;
+                            }
+                        }
+                        engine.inbox.refresh(Refresh::Receipts(chat.clone()));
+                        engine.publish()?;
                     }
-                }
-                self.inbox.refresh(Refresh::Receipts(chat.clone()));
-                self.publish()?;
-            }
-            Err(e) => {
-                self.rpc_failed(Self::page_refresh(chat, kind), e);
-            }
-        };
+                    Err(e) => {
+                        engine.rpc_failed(Self::page_refresh(chat, kind), e);
+                    }
+                };
+                Ok(())
+            },
+        );
         Ok(())
     }
     fn defer_page(&self, chat: ChatId, kind: PageKind) {
@@ -1021,81 +1258,131 @@ impl Engine {
         self.inbox.refresh(r);
     }
     fn refresh(&mut self, r: Refresh) -> Result<()> {
+        if self.connection == Connection::SigningIn {
+            return Ok(());
+        }
         match r {
             Refresh::Stream => self.start_stream()?,
             Refresh::Send(key) => self.send(key)?,
-            Refresh::Friends => match self.backend.friends() {
-                Ok(rows) => {
-                    self.store.save_contacts(
-                        &rows
-                            .iter()
-                            .map(|r| (r.id.clone(), serde_json::to_value(r).unwrap()))
-                            .collect::<Vec<_>>(),
-                    )?;
-                    self.emit_friends()?;
-                }
-                Err(e) => self.rpc_failed(Refresh::Friends, e),
-            },
-            Refresh::Members(chat) => match self.backend.members(&chat) {
-                Ok(rows) => {
-                    self.store.save_members(
-                        &chat,
-                        &rows
-                            .iter()
-                            .map(|r| (r.contact.id.clone(), serde_json::to_value(r).unwrap()))
-                            .collect::<Vec<_>>(),
-                    )?;
-                    self.emit(Delta::Members { chat, rows });
-                }
-                Err(e) => self.rpc_failed(Refresh::Members(chat), e),
-            },
+            Refresh::Friends => {
+                self.rpc(
+                    move |backend| backend.friends(),
+                    move |engine, result| {
+                        match result {
+                            Ok(rows) => {
+                                engine.store.save_contacts(
+                                    &rows
+                                        .iter()
+                                        .map(|r| (r.id.clone(), serde_json::to_value(r).unwrap()))
+                                        .collect::<Vec<_>>(),
+                                )?;
+                                engine.emit_friends()?;
+                            }
+                            Err(e) => engine.rpc_failed(Refresh::Friends, e),
+                        };
+                        Ok(())
+                    },
+                );
+            }
+            Refresh::Members(chat) => {
+                let net_chat = chat.clone();
+                self.rpc(
+                    move |backend| backend.members(&net_chat),
+                    move |engine, result| {
+                        match result {
+                            Ok(rows) => {
+                                engine.store.save_members(
+                                    &chat,
+                                    &rows
+                                        .iter()
+                                        .map(|r| {
+                                            (r.contact.id.clone(), serde_json::to_value(r).unwrap())
+                                        })
+                                        .collect::<Vec<_>>(),
+                                )?;
+                                engine.emit(Delta::Members { chat, rows });
+                            }
+                            Err(e) => engine.rpc_failed(Refresh::Members(chat), e),
+                        };
+                        Ok(())
+                    },
+                );
+            }
             Refresh::ChatList => self.load_chats(false)?,
             Refresh::MoreChats => self.load_chats(true)?,
             Refresh::Older(chat, before) => self.page(chat, PageKind::Older { before })?,
             Refresh::Newer(chat, after) => self.page(chat, PageKind::Newer { after })?,
-            Refresh::Receipts(chat) => match self.backend.receipts(&chat) {
-                Ok(ids) => {
-                    for id in ids {
-                        let id = match id {
-                            Some(id) => Some(id),
-                            None => self
-                                .store
-                                .newest_confirmed(&chat)?
-                                .and_then(|m| m.server_id),
+            Refresh::Receipts(chat) => {
+                let net_chat = chat.clone();
+                self.rpc(
+                    move |backend| backend.receipts(&net_chat),
+                    move |engine, result| {
+                        match result {
+                            Ok(ids) => {
+                                for id in ids {
+                                    let id = match id {
+                                        Some(id) => Some(id),
+                                        None => engine
+                                            .store
+                                            .newest_confirmed(&chat)?
+                                            .and_then(|m| m.server_id),
+                                    };
+                                    if let Some(id) = id {
+                                        engine.store.advance_read_receipt(&chat, id)?;
+                                    }
+                                }
+                                engine.publish()?;
+                            }
+                            Err(e) => {
+                                engine.rpc_failed(Refresh::Receipts(chat), e);
+                            }
                         };
-                        if let Some(id) = id {
-                            self.store.advance_read_receipt(&chat, id)?;
-                        }
-                    }
-                    self.publish()?;
-                }
-                Err(e) => {
-                    self.rpc_failed(Refresh::Receipts(chat), e);
-                }
-            },
+                        Ok(())
+                    },
+                );
+            }
             Refresh::Recent(chat) => self.page(chat, PageKind::Recent)?,
-            Refresh::Details(chat) => match self.backend.details(&chat) {
-                Ok(rows) => {
-                    self.store.upsert_details(&rows)?;
-                    self.publish()?;
-                }
-                Err(e) => {
-                    self.rpc_failed(Refresh::Details(chat), e);
-                }
-            },
+            Refresh::Details(chat) => {
+                let net_chat = chat.clone();
+                self.rpc(
+                    move |backend| backend.details(&net_chat),
+                    move |engine, result| {
+                        match result {
+                            Ok(rows) => {
+                                engine.store.upsert_details(&rows)?;
+                                engine.publish()?;
+                            }
+                            Err(e) => {
+                                engine.rpc_failed(Refresh::Details(chat), e);
+                            }
+                        };
+                        Ok(())
+                    },
+                );
+            }
             Refresh::Read(chat) => {
                 let id = self
                     .store
                     .chat(&chat)?
                     .and_then(|c| c.last_read_server_id)
                     .ok_or_else(|| StoreError::Invalid("read marker missing".into()))?;
-                match self.backend.mark_read(&chat, &id) {
-                    Ok(()) => {
-                        self.store.confirm_read(&chat, &id)?;
-                    }
-                    Err(e) => {
-                        self.rpc_failed(Refresh::Read(chat), e);
-                    }
+                {
+                    let net_chat = chat.clone();
+                    let net_id = id.clone();
+                    self.rpc(
+                        move |backend| backend.mark_read(&net_chat, &net_id),
+                        move |engine, result| {
+                            match result {
+                                Ok(()) => {
+                                    engine.store.confirm_read(&chat, &id)?;
+                                }
+                                Err(e) => {
+                                    engine.rpc_failed(Refresh::Read(chat), e);
+                                }
+                            };
+                            Ok(())
+                        },
+                    );
                 }
             }
         };
@@ -1106,42 +1393,54 @@ impl Engine {
         asset: crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<()> {
-        match self.backend.media(&asset, purpose.clone()) {
-            Ok(Some(payload)) => self.asset_result(crate::client::desktop::assets::Completion {
-                key: asset.key(),
-                purpose,
-                result: Ok(payload),
-            }),
-            Ok(None) => {}
-            Err(e) => self.error(e),
-        };
+        if let Some(media) = &self.media {
+            (media.request)(asset, purpose);
+        } else {
+            self.waiting_assets.push_back((asset, purpose));
+        }
         Ok(())
     }
-    fn asset_result(&self, c: crate::client::desktop::assets::Completion) {
-        use crate::client::desktop::assets::{Payload, Purpose};
-        match c.result {
-            Ok(Payload::Image(pixels)) => self.emit(Delta::Asset { key: c.key, pixels }),
-            Ok(Payload::File(bytes)) => {
-                if let Purpose::File { name, .. } = c.purpose {
-                    self.emit(Delta::File { name, bytes });
-                }
-            }
-            Err(failure) => self.emit(Delta::MediaFailed {
-                key: c.key,
-                failure,
-            }),
-        }
-    }
     fn live(&mut self, e: StreamEvent) -> Result<()> {
+        if self.connection == Connection::SigningIn {
+            match e {
+                StreamEvent::Connection(_)
+                | StreamEvent::Connecting(_)
+                | StreamEvent::Retry { .. }
+                | StreamEvent::Exited
+                | StreamEvent::Raw(_)
+                | StreamEvent::Token(_) => return Ok(()),
+                StreamEvent::Authorize { reply, .. } => {
+                    let _ = reply.send(Err(crate::client::desktop::assets::Failure::Network));
+                    return Ok(());
+                }
+                StreamEvent::Resync { complete, .. } => {
+                    let _ = complete.send(false);
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
         match e {
             StreamEvent::Resync { revision, complete } => {
-                let result = self.resync(revision);
-                let _ = complete.send(result.as_ref().copied().unwrap_or(false));
-                result?;
+                self.resync(revision, complete)?;
             }
-            StreamEvent::Asset(c) => self.asset_result(c),
+            StreamEvent::AssetRequests(media) => {
+                for (asset, purpose) in self.waiting_assets.drain(..) {
+                    (media.request)(asset, purpose);
+                }
+                for key in self.waiting_retries.drain(..) {
+                    (media.retry)(key);
+                }
+                self.media = Some(media);
+            }
+            StreamEvent::Asset(c) => self.emit(asset_delta(c)),
             StreamEvent::Authorize { asset, reply } => {
-                let _ = reply.send(self.backend.authorize(&asset));
+                self.rpc(
+                    move |backend| {
+                        let _ = reply.send(backend.authorize(&asset));
+                    },
+                    |_, ()| Ok(()),
+                );
             }
             StreamEvent::Operation(op) => {
                 if op.revision > self.store.sync_revision()? {
@@ -1167,11 +1466,19 @@ impl Engine {
                     self.publish()?;
                 }
             }
-            StreamEvent::Raw(raw) => match self.backend.decode(raw) {
-                Ok(op) => self.live(StreamEvent::Operation(op))?,
-                Err(e) => self.error(e),
-            },
-            StreamEvent::Token(v) => self.backend.token(v),
+            StreamEvent::Raw(raw) => {
+                self.rpc(
+                    move |backend| backend.decode(raw),
+                    move |engine, result| {
+                        match result {
+                            Ok(op) => engine.live(StreamEvent::Operation(op))?,
+                            Err(e) => engine.error(e),
+                        };
+                        Ok(())
+                    },
+                );
+            }
+            StreamEvent::Token(v) => self.rpc(move |backend| backend.token(v), |_, ()| Ok(())),
             StreamEvent::Retry { attempt, error } => {
                 self.attempt = self.attempt.max(attempt);
                 self.error(error);
@@ -1211,47 +1518,92 @@ impl Engine {
         };
         Ok(())
     }
-    fn resync(&mut self, revision: Option<i64>) -> Result<bool> {
-        if let Some(w) = &self.window {
-            let chat = w.chat.clone();
-            match self.backend.messages(&chat, &PageKind::Recent) {
-                Ok(page) => {
-                    self.store
-                        .apply_page(&chat, page.kind, &page.rows, page.reaches_start)?;
+    fn resync(&mut self, revision: Option<i64>, complete: mpsc::SyncSender<bool>) -> Result<()> {
+        let chat = self.window.as_ref().map(|w| w.chat.clone());
+        self.rpc(
+            move |backend| {
+                chat.map(|chat| {
+                    let result = backend.messages(&chat, &PageKind::Recent);
+                    (chat, result)
+                })
+            },
+            move |engine, result| {
+                if let Some((chat, result)) = result {
+                    match result {
+                        Ok(page) => {
+                            engine.store.apply_page(
+                                &chat,
+                                page.kind,
+                                &page.rows,
+                                page.reaches_start,
+                            )?;
+                        }
+                        Err(e) => {
+                            engine.rpc_failed(Refresh::Recent(chat), e);
+                            let _ = complete.send(false);
+                            return Ok(());
+                        }
+                    }
                 }
-                Err(e) => {
-                    self.rpc_failed(Refresh::Recent(chat), e);
-                    return Ok(false);
+                engine.inbox.refresh(Refresh::ChatList);
+                for c in engine.store.chat_list(usize::MAX, 0)? {
+                    if engine.window.as_ref().is_none_or(|w| w.chat != c.chat.id) {
+                        engine.inbox.refresh(Refresh::Recent(c.chat.id));
+                    }
                 }
-            }
-        }
-        self.inbox.refresh(Refresh::ChatList);
-        for c in self.store.chat_list(usize::MAX, 0)? {
-            if self.window.as_ref().is_none_or(|w| w.chat != c.chat.id) {
-                self.inbox.refresh(Refresh::Recent(c.chat.id));
-            }
-        }
-        if let Some(revision) = revision {
-            self.store.set_sync_revision(revision)?;
-        }
-        self.continuous = true;
-        self.publish()?;
-        Ok(true)
+                if let Some(revision) = revision {
+                    engine.store.set_sync_revision(revision)?;
+                }
+                engine.continuous = true;
+                engine.publish()?;
+                let _ = complete.send(true);
+                Ok(())
+            },
+        );
+        Ok(())
     }
     fn publish(&mut self) -> Result<()> {
-        if let Some((sub, limit)) = self.list {
-            let mut rows = self.store.chat_list(limit, 0)?;
+        let changes = self.store.take_changes();
+        if let Some((sub, limit)) = self.list
+            && (self.force_list
+                || !changes.chats_changed.is_empty()
+                || !changes.chats_removed.is_empty())
+        {
+            let all = if self.search.is_empty() {
+                self.store.chat_list(limit, 0)?
+            } else {
+                self.store.search_chats(&self.search)?
+            };
+            let mut rows = all
+                .iter()
+                .filter(|row| {
+                    self.force_list
+                        || changes.chats_changed.contains(&row.chat.id)
+                        || !self.chat_keys.contains(&row.chat.id)
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            // Selected chats can fall outside the loaded list. Their metadata
+            // (especially drafts) still needs a row delta without expanding order.
+            for id in &changes.chats_changed {
+                if !all.iter().any(|row| &row.chat.id == id)
+                    && let Some(row) = self.store.chat_item(id)?
+                {
+                    rows.push(row);
+                }
+            }
             if self.connection != Connection::Online {
                 for c in &mut rows {
                     c.chat.unread_stale = true;
                 }
             }
-            let keys = rows
+            let keys = all
                 .iter()
                 .map(|r| r.chat.id.clone())
                 .collect::<BTreeSet<_>>();
             let remove = self.chat_keys.difference(&keys).cloned().collect();
-            let order = rows.iter().map(|r| r.chat.id.clone()).collect();
+            let order = all.iter().map(|r| r.chat.id.clone()).collect();
+            self.force_list = false;
             self.chat_keys = keys;
             self.emit(Delta::Chats {
                 sub,
@@ -1260,7 +1612,12 @@ impl Engine {
                 order,
             });
         }
-        if let Some(w) = &self.window {
+        if let Some(w) = &self.window
+            && (self.force_window
+                || changes.chats_changed.contains(&w.chat)
+                || !changes.messages_removed.is_disjoint(&self.message_keys))
+        {
+            self.force_window = false;
             let window = self.store.window(&w.chat, w.anchor, w.before, w.after)?;
             let keys = window.rows.iter().map(|r| r.key).collect::<BTreeSet<_>>();
             let remove = self.message_keys.difference(&keys).copied().collect();
@@ -1285,6 +1642,23 @@ impl Engine {
             });
         };
         Ok(())
+    }
+}
+fn asset_delta(c: crate::client::desktop::assets::Completion) -> Delta {
+    use crate::client::desktop::assets::{Payload, Purpose};
+    match c.result {
+        Ok(Payload::Image(pixels)) => Delta::Asset { key: c.key, pixels },
+        Ok(Payload::File(bytes)) => Delta::File {
+            name: match c.purpose {
+                Purpose::File { name, .. } => name,
+                _ => String::new(),
+            },
+            bytes,
+        },
+        Err(failure) => Delta::MediaFailed {
+            key: c.key,
+            failure,
+        },
     }
 }
 pub fn now_ms() -> i64 {

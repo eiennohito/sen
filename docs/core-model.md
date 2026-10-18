@@ -161,8 +161,16 @@ hits, without age expiry; decoded images have a 24 MiB budget.
 
 ### Scheduler
 
-The worker has one `Inbox` (a `Mutex` plus `Condvar`) with three lanes, served
-in this order:
+The worker uses two threads. The store thread owns SQLite and serves cached
+subscriptions and user intents without waiting for RPCs. It alone schedules
+network jobs and applies their completion events, preserving the existing merge
+rules. The net thread owns the Backend (including initialization, profile,
+sign-in/QR wait, sends, unsend, pages, contacts, receipts and authorization) and
+only executes jobs handed to it. `online()` schedules a job; it never blocks the
+store loop. Sends remain FIFO per chat while the store continues serving intents.
+
+The store thread has one `Inbox` (a `Mutex` plus `Condvar`) with three lanes,
+served in this order:
 
 1. **User intents**: open chat, send, older/newer, mark read, retry, discard,
    friends, members, sign-in. FIFO and unbounded, because the UI produces them
@@ -178,6 +186,18 @@ Refresh intents are internal and have no UI. Freshness is the app's job: it
 refreshes on open, on reconnect and when the store knows it is behind. No
 surface gets a Refresh or Reload control. The only user-initiated retries are on things the user did: a failed send (Retry,
 Discard) and an explicitly opened original or file that failed to download.
+
+Job completions return to the store thread after queued user intents and live
+operations. Refresh work is dispatched when the net thread is available, so the
+refresh set retains coalescing and priority while an RPC is running. Asset queue
+handles are independent of the Backend: cached and fetched asset completions go
+straight from fetchers to the UI delta channel; authorization remains a net job.
+
+Older-history window shifts read stored rows first. A page request becomes a
+background refresh and is skipped when a stored segment covers the cursor.
+MoreChats raises the local limit and publishes immediately; search queries the
+whole store by title or preview using LIKE. Mutations publish only changed chat
+rows (`Changes.chats_changed`), and a draft never republishes a message window.
 
 A live operation applies its delta directly (move the chat up, write the row,
 bump unread). It only schedules `ChatDetails(chat)` when the chat is unknown
@@ -204,9 +224,11 @@ the banner and the enabled actions from it with a pure function.
 
 Startup is two-phase:
 
-- **Local open** needs no network: credentials, store, WASM. It immediately
-  publishes the chat list, the account name, the last open chat and that chat's
-  window, with unread counts marked stale (ux-model §150–155).
+- **Local open** opens the store using the non-secret `last-mid` file beside the
+  account store directories. It publishes the chat list, account name and last
+  chat window before backend initialization (keyring/sealed session, WASM load
+  and SHA-256, ImageCache prune). Unread counts are marked stale
+  (ux-model §150–155). A validated profile atomically updates `last-mid`.
 - **Online open** validates the profile, then resumes sync from the stored
   revision. A MID mismatch moves to `SessionInvalid` and leaves the store
   untouched.

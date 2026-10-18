@@ -35,7 +35,18 @@ pub enum PairEvent {
     Scanned,
 }
 pub type PairDeliver = Arc<dyn Fn(PairEvent) + Send + Sync>;
+/// Asset queue handles are independent of the backend's RPC owner.
+#[derive(Clone)]
+pub struct AssetRequests {
+    pub request: Arc<
+        dyn Fn(crate::client::desktop::assets::Asset, crate::client::desktop::assets::Purpose)
+            + Send
+            + Sync,
+    >,
+    pub retry: Arc<dyn Fn(String) + Send + Sync>,
+}
 pub enum StreamEvent {
+    AssetRequests(AssetRequests),
     Asset(crate::client::desktop::assets::Completion),
     Authorize {
         asset: crate::client::desktop::assets::Asset,
@@ -64,6 +75,8 @@ pub trait Backend: Send {
     fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()>;
     fn friends(&mut self) -> Result<Vec<crate::client::desktop::Friend>>;
     fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::client::desktop::Member>>;
+    /// Publish AssetRequests before returning. Its handles enqueue independently
+    /// of RPCs, and asset completions use this delivery channel directly.
     fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver);
     fn authorize(
         &mut self,
@@ -417,7 +430,31 @@ impl Backend for FakeBackend {
             .collect())
     }
     fn start_assets(&mut self, _stop: Arc<AtomicBool>, deliver: Deliver) {
-        self.0.lock().unwrap().assets = Some(deliver);
+        self.0.lock().unwrap().assets = Some(deliver.clone());
+        let fake = self.clone();
+        let retry = self.clone();
+        let output = deliver.clone();
+        deliver(StreamEvent::AssetRequests(AssetRequests {
+            request: Arc::new(move |asset, purpose| {
+                let mut fake = fake.clone();
+                let output = output.clone();
+                std::thread::spawn(move || {
+                    if let Ok(Some(payload)) = fake.media(&asset, purpose.clone()) {
+                        output(StreamEvent::Asset(
+                            crate::client::desktop::assets::Completion {
+                                key: asset.key(),
+                                purpose,
+                                result: Ok(payload),
+                            },
+                        ));
+                    }
+                });
+            }),
+            retry: Arc::new(move |key| {
+                let mut fake = retry.clone();
+                fake.retry_asset(&key);
+            }),
+        }));
     }
     fn authorize(
         &mut self,
@@ -664,7 +701,7 @@ impl Backend for FakeBackend {
 
 pub struct LineBackend {
     cache: std::path::PathBuf,
-    fetchers: Option<crate::client::desktop::assets::Fetchers>,
+    fetchers: Option<Arc<crate::client::desktop::assets::Fetchers>>,
     client: crate::client::desktop::Client,
     state: std::path::PathBuf,
     wasm: std::path::PathBuf,
@@ -760,7 +797,7 @@ impl Backend for LineBackend {
     }
     fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver) {
         let auth = deliver.clone();
-        self.fetchers = Some(self.client.asset_fetchers(
+        self.fetchers = Some(Arc::new(self.client.asset_fetchers(
             stop,
             Arc::new(Default::default()),
             Default::default(),
@@ -783,10 +820,23 @@ impl Backend for LineBackend {
                     }
                 }
             },
-            move |completion, _| {
-                deliver(StreamEvent::Asset(completion));
+            {
+                let deliver = deliver.clone();
+                move |completion, _| {
+                    deliver(StreamEvent::Asset(completion));
+                }
             },
-        ));
+        )));
+        let requests = self.fetchers.as_ref().unwrap().clone();
+        let retry = requests.clone();
+        deliver(StreamEvent::AssetRequests(AssetRequests {
+            request: Arc::new(move |asset, purpose| {
+                requests.enqueue(asset, None, purpose);
+            }),
+            retry: Arc::new(move |key| {
+                retry.retry(&key);
+            }),
+        }));
     }
     fn authorize(
         &mut self,

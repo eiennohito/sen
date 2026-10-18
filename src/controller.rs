@@ -23,6 +23,7 @@ pub struct AppState {
     pub chat_order: Vec<ChatId>,
     pub chat_sub: u64,
     pub window_sub: u64,
+    pub window_loading: bool,
     pub window_anchor: Anchor,
     pub selected: Option<ChatId>,
     pub messages: BTreeMap<Key, StoredMessage>,
@@ -49,6 +50,7 @@ impl Default for AppState {
             chat_order: vec![],
             chat_sub: 1,
             window_sub: 0,
+            window_loading: false,
             window_anchor: Anchor::Latest,
             selected: None,
             messages: BTreeMap::new(),
@@ -89,6 +91,8 @@ impl AppState {
         self.window_sub += 1;
         self.window_anchor = Anchor::Unread;
         self.selected = Some(chat.clone());
+        self.window_loading = true;
+        self.members.clear();
         self.messages.clear();
         self.reply_targets.clear();
         self.gaps.clear();
@@ -103,6 +107,13 @@ impl AppState {
             before: 80,
             after: 80,
         })
+    }
+    pub fn search_chats(&mut self, query: String) -> Intent {
+        self.chat_sub += 1;
+        Intent::SearchChats {
+            sub: self.chat_sub,
+            query,
+        }
     }
     pub fn subscribe_window(&mut self, anchor: Anchor, before: usize, after: usize) -> Intent {
         self.window_sub += 1;
@@ -189,6 +200,7 @@ impl AppState {
                 replies,
                 unread_anchor,
             } if sub == self.window_sub => {
+                self.window_loading = false;
                 for key in remove {
                     self.messages.remove(&key);
                 }
@@ -218,6 +230,7 @@ impl AppState {
                     && let Some(chat) = value.as_str()
                 {
                     self.selected = Some(ChatId(chat.into()));
+                    self.window_loading = true;
                     self.window_sub = 1;
                     self.window_anchor = Anchor::Unread;
                 }

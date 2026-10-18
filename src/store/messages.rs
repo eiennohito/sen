@@ -5,26 +5,29 @@ const SELECT: &str = "SELECT key,chat_id,server_id,local_id,request_seq,sort_ts,
     delivery,created_at_local,content_rev FROM message";
 
 fn decode(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
+    decode_at(r, 0)
+}
+pub(super) fn decode_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Result<StoredMessage> {
     Ok(StoredMessage {
-        key: Key(r.get(0)?),
-        chat_id: ChatId(r.get(1)?),
-        server_id: r.get::<_, Option<String>>(2)?.map(ServerId),
-        local_id: r.get::<_, Option<String>>(3)?.map(LocalId),
-        request_seq: r.get(4)?,
+        key: Key(r.get(offset)?),
+        chat_id: ChatId(r.get(offset + 1)?),
+        server_id: r.get::<_, Option<String>>(offset + 2)?.map(ServerId),
+        local_id: r.get::<_, Option<String>>(offset + 3)?.map(LocalId),
+        request_seq: r.get(offset + 4)?,
         sort: Cursor {
-            sort_ts: r.get(5)?,
-            sort_id: r.get(6)?,
+            sort_ts: r.get(offset + 5)?,
+            sort_id: r.get(offset + 6)?,
         },
-        sender_id: r.get(7)?,
-        outgoing: r.get(8)?,
-        content_type: r.get(9)?,
-        body: parse(r, 10)?,
-        reactions: parse(r, 11)?,
-        reactions_rev: r.get(12)?,
-        withdrawn: r.get(13)?,
-        delivery: parse(r, 14)?,
-        created_at_local: r.get(15)?,
-        content_rev: r.get(16)?,
+        sender_id: r.get(offset + 7)?,
+        outgoing: r.get(offset + 8)?,
+        content_type: r.get(offset + 9)?,
+        body: parse(r, offset + 10)?,
+        reactions: parse(r, offset + 11)?,
+        reactions_rev: r.get(offset + 12)?,
+        withdrawn: r.get(offset + 13)?,
+        delivery: parse(r, offset + 14)?,
+        created_at_local: r.get(offset + 15)?,
+        content_rev: r.get(offset + 16)?,
     })
 }
 pub(super) fn select_rows(
@@ -36,9 +39,6 @@ pub(super) fn select_rows(
     Ok(stmt
         .query_map(args, decode)?
         .collect::<std::result::Result<Vec<_>, _>>()?)
-}
-pub(super) fn rows(conn: &Connection, chat: &ChatId) -> Result<Vec<StoredMessage>> {
-    select_rows(conn, "WHERE chat_id=? ORDER BY sort_ts,sort_id", [&chat.0])
 }
 fn parse<T: serde::de::DeserializeOwned>(
     r: &rusqlite::Row<'_>,
@@ -496,6 +496,14 @@ impl Store {
                     "confirmed row cannot fail or retry".into(),
                 ));
             }
+            if seq.is_some()
+                && !matches!(
+                    row.delivery,
+                    Delivery::Rejected { .. } | Delivery::Uncertain
+                )
+            {
+                return Err(StoreError::Invalid("only failed rows can retry".into()));
+            }
             row.delivery = delivery;
             if seq.is_some() {
                 row.request_seq = seq;
@@ -509,9 +517,14 @@ impl Store {
     pub fn discard(&mut self, key: Key) -> Result<Changes> {
         self.mutate(|tx, c| {
             let row = by_key(tx, key)?;
-            if row.server_id.is_some() {
+            if row.server_id.is_some()
+                || !matches!(
+                    row.delivery,
+                    Delivery::Rejected { .. } | Delivery::Uncertain
+                )
+            {
                 return Err(StoreError::Invalid(
-                    "confirmed row cannot be discarded".into(),
+                    "only failed rows can be discarded".into(),
                 ));
             }
             tx.execute("DELETE FROM message WHERE key=?", [key.0])?;
@@ -577,13 +590,21 @@ impl Store {
                     marker.0,
                 ],
             )?;
-            for mut row in rows(tx, chat)? {
-                let prev = row.delivery.clone();
-                receipt(tx, &mut row)?;
-                if prev != row.delivery {
-                    save(tx, &row)?;
-                    c.messages_upserted.insert(row.key);
-                }
+            let mut stmt = tx.prepare(
+                "UPDATE message SET delivery=?3
+                WHERE chat_id=?1 AND server_id IS NOT NULL AND sort_id<=?2
+                AND outgoing=1 AND delivery<>?3 RETURNING key",
+            )?;
+            let keys = stmt.query_map(
+                params![
+                    chat.0,
+                    server_sort(&marker)?,
+                    serde_json::to_string(&Delivery::Read)?
+                ],
+                |r| Ok(Key(r.get(0)?)),
+            )?;
+            for key in keys {
+                c.messages_upserted.insert(key?);
             }
             c.chats_changed.insert(chat.clone());
             Ok(())
