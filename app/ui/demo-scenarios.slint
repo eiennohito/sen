@@ -59,6 +59,8 @@ export component DemoScenarios inherits Rectangle {
                                     Button { text: "Media"; accessible-label: "Media failures"; clicked => { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } }
                                     Button { text: "Rejected"; accessible-label: "Rejected send"; clicked => { root.run(10); } }
                                 }
+                                Button { text: "Fail next send"; accessible-label: "Fail next send"; clicked => { root.run(30); } }
+                                Button { text: "Reject next send"; accessible-label: "Reject next send"; clicked => { root.run(31); } }
                                 Button { text: "Send state"; accessible-label: "Uncertain send"; clicked => { root.run(3); } }
                                 Button { text: "Paged history"; clicked => { root.run(11); } }
                                 if State.paging-demo: Text { text: "History window " + State.messages.length + " · retained " + State.history-retained + " · pages " + State.history-pages; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }

@@ -193,3 +193,376 @@ fn exact_echo_alias_keeps_later_read_state() {
     assert_eq!(rows[0].id, "local");
     assert_eq!(rows[0].delivery, "Read");
 }
+
+#[test]
+fn demo_composer_transport_and_history() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let (ui, mut view) = synthetic_ui();
+        ui.set_connected(true);
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = account::start_demo(view.demo_send_failure.clone(), move |event| {
+            tx.send(event).unwrap();
+        });
+        view.commands = Some(worker.commands.clone());
+        let state = Rc::new(RefCell::new(view));
+        let weak = ui.as_weak();
+        let send_state = state.clone();
+        ui.on_send(move || {
+            send_state.borrow_mut().submit(&weak.unwrap());
+        });
+        ui.show().unwrap();
+        ui.set_draft("送信テスト · local only".into());
+        state.borrow().send_availability(&ui);
+        assert!(ui.get_can_send());
+        ui.global::<State>().invoke_send();
+        assert!(ui.get_draft().is_empty());
+        assert!(state.borrow().saved.drafts["0"].is_empty());
+        let local_id = state.borrow().saved.outbox[0].local_id.clone();
+        assert_eq!(state.borrow().saved.outbox[0].status, "Pending…");
+        assert!(ui.get_following());
+        let receive = || rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+        state.borrow_mut().update(&ui, receive());
+        assert_eq!(state.borrow().saved.outbox[0].status, "Sent");
+        state.borrow_mut().update(&ui, receive());
+        assert!(state.borrow().saved.outbox.is_empty());
+        assert_eq!(
+            state
+                .borrow()
+                .messages
+                .iter()
+                .filter(|row| row.body == "送信テスト · local only")
+                .count(),
+            1
+        );
+        let rows = state
+            .borrow()
+            .with_outbox("0", state.borrow().messages.clone());
+        assert_eq!(rows.last().unwrap().id, local_id);
+        assert_eq!(rows.last().unwrap().delivery, "Sent");
+        assert_eq!(state.borrow().rows[0].preview, "送信テスト · local only");
+
+        for (outcome, delivery) in [(1, "Unconfirmed"), (2, "Not sent")] {
+            state
+                .borrow()
+                .demo_send_failure
+                .store(outcome, std::sync::atomic::Ordering::Relaxed);
+            ui.set_draft("帰りにコーヒーを買うね".into());
+            ui.global::<State>().invoke_send();
+            assert!(ui.get_draft().is_empty());
+            let id = state.borrow().saved.outbox.last().unwrap().local_id.clone();
+            ui.set_draft("A newer draft".into());
+            state.borrow_mut().update(&ui, receive());
+            assert_eq!(
+                state
+                    .borrow()
+                    .with_outbox("0", Vec::new())
+                    .last()
+                    .unwrap()
+                    .delivery,
+                delivery
+            );
+            assert!(ui.get_connected());
+            assert!(!ui.get_connection_failed());
+            assert_eq!(ui.get_draft(), "A newer draft");
+            if outcome == 1 {
+                state.borrow_mut().retry_outgoing(&ui, &id, false);
+                assert_eq!(ui.get_recovery_kind(), "resend");
+                state.borrow_mut().resolve_recovery(&ui, "cancel");
+                assert!(rx.try_recv().is_err());
+                assert_eq!(state.borrow().saved.outbox.len(), 1);
+                state.borrow_mut().retry_outgoing(&ui, &id, false);
+                state.borrow_mut().resolve_recovery(&ui, "resend");
+            } else {
+                state.borrow_mut().retry_outgoing(&ui, &id, false);
+                assert!(ui.get_recovery_kind().is_empty());
+            }
+            state.borrow_mut().update(&ui, receive());
+            state.borrow_mut().update(&ui, receive());
+            assert_eq!(ui.get_draft(), "A newer draft");
+            assert!(
+                state
+                    .borrow()
+                    .saved
+                    .outbox
+                    .iter()
+                    .all(|item| item.status != "Pending…")
+            );
+        }
+        assert_eq!(
+            state
+                .borrow()
+                .messages
+                .iter()
+                .filter(|row| row.body == "帰りにコーヒーを買うね")
+                .count(),
+            2
+        );
+        snapshot::render(&window, (980, 720)).unwrap();
+        state.borrow_mut().select(&ui, 1);
+        state.borrow_mut().select(&ui, 0);
+        assert_eq!(
+            state
+                .borrow()
+                .messages
+                .iter()
+                .filter(|row| row.body == "送信テスト · local only")
+                .count(),
+            1
+        );
+        assert_eq!(ui.get_draft(), "A newer draft");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn demo_fixtures_open_latest_with_relative_dates() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        fix_snapshot_clock();
+        let (ui, mut view) = synthetic_ui();
+        ui.show().unwrap();
+        snapshot::render(&window, (360, 520)).unwrap();
+        assert!(ui.get_following());
+        assert!(ui.get_history_y() < 0.);
+        let mut rows = view.messages.clone();
+        group_messages(&mut rows);
+        let labels: Vec<_> = rows
+            .iter()
+            .filter(|row| !row.day_label.is_empty())
+            .map(|row| row.day_label.as_str())
+            .collect();
+        assert_eq!(
+            labels,
+            ["2025/10/18", "Thursday 10/15", "Yesterday", "Today"]
+        );
+        assert!(
+            rows.iter()
+                .all(|row| row.sort_key.parse::<i64>().unwrap() > 0)
+        );
+        view.select(&ui, 1);
+        snapshot::render(&window, (360, 520)).unwrap();
+        assert!(ui.get_following());
+        assert!(ui.get_history_y() < 0.);
+        assert_eq!(
+            list_time(view.messages.last().unwrap().sort_key.parse().unwrap()),
+            "11:06"
+        );
+        view.select(&ui, 2);
+        assert_eq!(
+            list_time(view.messages[0].sort_key.parse().unwrap()),
+            "2025/10/18"
+        );
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn demo_early_clock_fixtures_and_send_order() {
+    std::thread::spawn(|| {
+        use chrono::TimeZone;
+        let window = snapshot::install().unwrap();
+        for (hour, minute, second) in [(0, 0, 1), (0, 5, 0), (9, 0, 0), (14, 0, 0)] {
+            let now = chrono::Local
+                .with_ymd_and_hms(2026, 10, 18, hour, minute, second)
+                .unwrap()
+                .timestamp_millis();
+            set_test_clock(now);
+            let (ui, view) = synthetic_ui();
+            ui.set_demo(true);
+            ui.set_connected(true);
+            let (tx, rx) = std::sync::mpsc::channel();
+            let worker = account::start_demo(view.demo_send_failure.clone(), move |event| {
+                tx.send(event).unwrap();
+            });
+            let state = Rc::new(RefCell::new(view));
+            state.borrow_mut().commands = Some(worker.commands.clone());
+            let check = |rows: &[MessageRow]| {
+                assert!(!rows.is_empty());
+                assert!(
+                    rows.iter()
+                        .all(|row| row.sort_key.parse::<i64>().unwrap() <= now)
+                );
+            };
+            for chat in demo::examples() {
+                check(&chat.messages);
+                assert!(
+                    chat.messages
+                        .windows(2)
+                        .all(|pair| pair[0].sort_key < pair[1].sort_key)
+                );
+            }
+            let mut today_rows: Vec<_> = demo::examples()
+                .remove(0)
+                .messages
+                .into_iter()
+                .filter(|row| day_label(row.sort_key.parse().unwrap(), now) == "Today")
+                .collect();
+            assert!(!today_rows.is_empty());
+            if hour == 14 {
+                group_messages(&mut today_rows);
+                let times: std::collections::HashSet<_> =
+                    today_rows.iter().map(|row| row.clock.as_str()).collect();
+                assert_eq!(times.len(), today_rows.len());
+                assert!(today_rows.windows(2).any(|pair| {
+                    !pair[0].outgoing
+                        && !pair[1].outgoing
+                        && pair[1].sort_key.parse::<i64>().unwrap()
+                            - pair[0].sort_key.parse::<i64>().unwrap()
+                            == 5 * 60_000
+                        && pair[1].group_start
+                }));
+            }
+            check(&demo::rich_fixture());
+            check(&demo::paged_rows(0..1000));
+            for kind in [
+                0, 5, 6, 7, 8, 12, 14, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29,
+            ] {
+                demo::scenario(&state, &ui, kind);
+                check(&state.borrow().messages);
+            }
+            for kind in [5, 7, 8, 12] {
+                demo::scenario(&state, &ui, kind);
+                ui.set_draft("ORDER PROBE".into());
+                assert!(state.borrow_mut().submit(&ui));
+                assert!(ui.get_draft().is_empty());
+                let local_id = state.borrow().saved.outbox.last().unwrap().local_id.clone();
+                let pending = state
+                    .borrow()
+                    .with_outbox("0", state.borrow().messages.clone());
+                assert_eq!(pending.last().unwrap().id, local_id);
+                for _ in 0..2 {
+                    state.borrow_mut().update(
+                        &ui,
+                        rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap(),
+                    );
+                }
+                assert_eq!(state.borrow().messages.last().unwrap().body, "ORDER PROBE");
+                assert_eq!(state.borrow().rows[0].preview, "ORDER PROBE");
+                assert_eq!(state.borrow().rows[0].activity, order_key(now));
+                let confirmed = state
+                    .borrow()
+                    .with_outbox("0", state.borrow().messages.clone());
+                assert_eq!(confirmed.last().unwrap().id, local_id);
+                assert_eq!(confirmed.last().unwrap().delivery, "Sent");
+                assert_eq!(
+                    day_label(confirmed.last().unwrap().sort_key.parse().unwrap(), now),
+                    "Today"
+                );
+            }
+            ui.show().unwrap();
+            snapshot::render(&window, (360, 520)).unwrap();
+            ui.hide().unwrap();
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn demo_refused_prepared_send_does_not_arm_failure() {
+    std::thread::spawn(|| {
+        let _window = snapshot::install().unwrap();
+        let (ui, view) = synthetic_ui();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let worker = account::start_demo(view.demo_send_failure.clone(), move |event| {
+            tx.send(event).unwrap();
+        });
+        let state = Rc::new(RefCell::new(view));
+        state.borrow_mut().commands = Some(worker.commands.clone());
+        for kind in [3, 10] {
+            ui.set_connected(false);
+            ui.set_draft("Preserve this draft".into());
+            demo::scenario(&state, &ui, kind);
+            assert_eq!(
+                state
+                    .borrow()
+                    .demo_send_failure
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                0
+            );
+            assert!(state.borrow().saved.outbox.is_empty());
+            assert_eq!(ui.get_draft(), "Preserve this draft");
+            assert!(rx.try_recv().is_err());
+            ui.set_connected(true);
+            assert!(state.borrow_mut().submit(&ui));
+            let event = rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap();
+            assert!(matches!(event, account::Update::Sent { .. }));
+            state.borrow_mut().update(&ui, event);
+            state.borrow_mut().update(
+                &ui,
+                rx.recv_timeout(std::time::Duration::from_secs(3)).unwrap(),
+            );
+            assert!(state.borrow().saved.outbox.is_empty());
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn demo_group_scenario_opens_at_latest() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let (ui, view) = synthetic_ui();
+        let state = Rc::new(RefCell::new(view));
+        ui.set_text_size(24);
+        ui.set_show_conversation(true);
+        ui.show().unwrap();
+        snapshot::render(&window, (360, 520)).unwrap();
+        ui.invoke_show_history(0., false);
+        ui.window().request_redraw();
+        snapshot::render(&window, (360, 520)).unwrap();
+        assert!(!ui.get_following());
+        demo::scenario(&state, &ui, 7);
+        snapshot::render(&window, (360, 520)).unwrap();
+        assert!(ui.get_following());
+        let extent = ui.global::<State>().get_history_extent();
+        assert!(extent > 0.);
+        assert!((ui.get_history_y() + extent).abs() < 0.5);
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn demo_midnight_gap_uses_valid_local_time() {
+    use chrono::{FixedOffset, LocalResult, NaiveDate, NaiveDateTime, TimeZone, Timelike};
+    #[derive(Clone)]
+    struct MidnightGap;
+    impl TimeZone for MidnightGap {
+        type Offset = FixedOffset;
+        fn from_offset(_: &Self::Offset) -> Self {
+            Self
+        }
+        fn offset_from_local_date(&self, _: &NaiveDate) -> LocalResult<Self::Offset> {
+            LocalResult::Single(FixedOffset::east_opt(0).unwrap())
+        }
+        fn offset_from_local_datetime(&self, time: &NaiveDateTime) -> LocalResult<Self::Offset> {
+            if time.hour() == 0 {
+                LocalResult::None
+            } else {
+                self.offset_from_local_date(&time.date())
+            }
+        }
+        fn offset_from_utc_date(&self, _: &NaiveDate) -> Self::Offset {
+            FixedOffset::east_opt(0).unwrap()
+        }
+        fn offset_from_utc_datetime(&self, time: &NaiveDateTime) -> Self::Offset {
+            self.offset_from_utc_date(&time.date())
+        }
+    }
+    let now = MidnightGap.with_ymd_and_hms(2026, 10, 18, 1, 5, 0).unwrap();
+    let start = MidnightGap
+        .with_ymd_and_hms(2026, 10, 18, 1, 0, 0)
+        .unwrap()
+        .timestamp_millis();
+    for clock in ["09:18", "10:36", "10:41", "12:11"] {
+        let timestamp = demo::fixture_time_at(clock, now);
+        assert!(timestamp >= start && timestamp < now.timestamp_millis());
+    }
+    let past = demo::fixture_time_at("2026/10/17 00:30", now);
+    assert_eq!(past, now.timestamp_millis() - 86_400_000);
+}

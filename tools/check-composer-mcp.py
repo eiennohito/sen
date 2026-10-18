@@ -65,10 +65,36 @@ def set_draft(text):
 
 def demo_scenario(label):
     key('\uf70f')  # F12
-    click(label)
+    close = element('Close demo scenarios', 'Button')
+    position = {'x': close['absolutePosition']['x'] + close['size']['width'] / 2,
+                'y': close['absolutePosition']['y'] + close['size']['height'] + 60}
+    for delta in (0, 10000, *([-320] * 12)):
+        if delta:
+            call('dispatch_pointer_scroll', windowHandle=window, position=position, deltaY=delta)
+        try:
+            action = element(label, 'Button')
+            break
+        except StopIteration:
+            pass
+    else:
+        raise AssertionError('demo scenario was not reachable: ' + label)
+    call('click_element', elementHandle=action['handle'])
 
 
-# This marker refuses an authenticated window. No test clicks Send.
+def wait_for(check):
+    deadline = time.monotonic() + 5
+    while not check():
+        assert time.monotonic() < deadline, 'demo send did not settle'
+        time.sleep(.05)
+
+
+def message_count(text):
+    return sum(item.get('accessibleValue') == text for item in tree()
+               if item.get('accessibleRole') == 'TextInput'
+               and any(base.get('id', '').endswith('::body') for base in item.get('typeNamesAndIds', [])))
+
+
+# This marker refuses an authenticated window. Sends use the local demo transport.
 # Run once at the default demo size and once with --demo-size 1400x900.
 key('\uf70f')  # F12
 element('Synthetic interaction scenarios', 'Text')
@@ -89,7 +115,8 @@ key('\n')
 key('\x11', 'Release')
 element('Close profile', 'Button')
 if editors:
-    assert value() == 'Profile shortcut draft', 'Ctrl+Enter with a panel inserted a newline while Send was disabled'
+    assert value() == '', 'Ctrl+Enter beside the profile panel did not send'
+    wait_for(lambda: message_count('Profile shortcut draft') == 1)
 else:
     assert not any(item.get('accessibleLabel') == 'Message history' for item in tree()), 'sheet exposed the covered history'
 if editors:
@@ -98,7 +125,7 @@ else:
     click('Search friends and groups', 'TextInput')
     key('\x1b')
 assert not any(item.get('accessibleLabel') == 'Close profile' for item in tree()), 'Escape from browser did not close the sheet/profile'
-assert value() == 'Profile shortcut draft', 'Ctrl+Enter with a sheet changed the draft'
+assert value() == ('' if editors else 'Profile shortcut draft'), 'profile Ctrl+Enter changed the wrong draft'
 assert element('Search friends and groups', 'TextInput').get('accessibleValue') == '葵', 'Escape cleared the browser query before closing the sheet'
 click('Friends')
 click('Open profile: 葵')
@@ -156,8 +183,13 @@ call('click_element', elementHandle=preference['handle'])
 key('\x1b')
 click('Message draft', 'TextInput')
 before = value()
-key('\n')  # Offline disabled Send consumes Enter without editing.
-assert value() == before
+key('\n')  # Enter sends uses the same local transport.
+assert value() == ''
+set_draft(before)
+click('Message draft', 'TextInput')
+key('\x11', 'Press')
+key('\uf72b')  # Restore the caret after the submitted draft was cleared.
+key('\x11', 'Release')
 key('\x10', 'Press')
 key('\n')
 key('\x10', 'Release')
@@ -181,8 +213,9 @@ click('Append')
 assert value().startswith('Keep this newer draft\n')
 click('Edit')
 click('Replace')
-assert value() == 'Synthetic submission · no network request'
+assert value() == '駅に着いたら連絡してね。See you soon! 🐈'
 click('Retry')
+wait_for(lambda: not any(item.get('accessibleLabel') == 'Sending' for item in tree()))
 element('Sent', 'Image')
 set_draft('Preserve while uncertain')
 demo_scenario('Uncertain send')
@@ -201,4 +234,62 @@ call('click_element', elementHandle=buttons[-1]['handle'])
 element('Unconfirmed', 'Image')  # Original remains eligible for its late echo.
 assert value() == 'Preserve while uncertain'
 assert not any(item.get('accessibleLabel') == 'Sign in again' for item in tree())
-print('PASS: profile ' + profile_kind + ' Ctrl+Enter/Escape/destination/Alt+Down, S6 MCP per-chat Japanese/emoji caret-selection, unchanged-chat guard, multiline, Escape, persisted-in-session Enter sends, Shift+Enter, distinct rejection/uncertainty marks, Retry, Edit Replace/Append/Cancel, duplicate confirmation and draft preservation; physical IME remains P—')
+# Finish the previous resend before switching chats while its models reconcile.
+wait_for(lambda: not any(item.get('accessibleLabel') == 'Sending' for item in tree()))
+time.sleep(.05)
+# Real editor input, Send, and a one-shot transport failure with confirmed Resend.
+click('Notes to self')
+set_draft('')
+click('Message draft', 'TextInput')
+key('Demo composer send 日本語')
+click('Send')
+assert value() == '', 'Send did not clear the draft'
+wait_for(lambda: message_count('Demo composer send 日本語') == 1)
+wait_for(lambda: not any(item.get('accessibleLabel') == 'Sending' for item in tree()))
+element('Sent', 'Image')
+demo_scenario('Fail next send')
+click('Message draft', 'TextInput')
+key('Resend this demo message')
+key('\x11', 'Press')
+key('\n')
+key('\x11', 'Release')
+assert value() == '', 'failed submission did not clear the draft'
+assert message_count('Resend this demo message') == 1
+element('Sending', 'Image')
+wait_for(lambda: any(item.get('accessibleLabel') == 'Unconfirmed' for item in tree()))
+set_draft('Draft after failure')
+click('Resend')
+element('Send again?', 'Text')
+click('Cancel')
+assert message_count('Resend this demo message') == 1, 'Cancel resubmitted the message'
+assert value() == 'Draft after failure'
+click('Resend')
+buttons = [item for item in tree() if item.get('accessibleLabel') == 'Resend' and item.get('accessibleRole') == 'Button']
+call('click_element', elementHandle=buttons[-1]['handle'])
+wait_for(lambda: message_count('Resend this demo message') == 2)
+wait_for(lambda: not any(item.get('accessibleLabel') == 'Sending' for item in tree()))
+element('Sent', 'Image')
+element('Unconfirmed', 'Image')
+assert value() == 'Draft after failure', 'Resend changed the newer draft'
+demo_scenario('Reject next send')
+set_draft('')
+click('Message draft', 'TextInput')
+key('Retry this rejected message')
+click('Send')
+assert value() == ''
+wait_for(lambda: any(item.get('accessibleLabel') == 'Not sent' for item in tree()))
+assert message_count('Retry this rejected message') == 1
+set_draft('Draft after failure')
+click('Retry')
+wait_for(lambda: not any(item.get('accessibleLabel') in ('Sending', 'Not sent') for item in tree()))
+assert message_count('Retry this rejected message') == 1, 'Retry duplicated the rejected row'
+assert value() == 'Draft after failure'
+element('Sent', 'Image')
+demo_scenario('Offline')
+assert not element('Send', 'Button').get('accessibleEnabled', False)
+click('Message draft', 'TextInput')
+key('\x11', 'Press')
+key('\n')
+key('\x11', 'Release')
+assert value() == 'Draft after failure', 'offline Ctrl+Enter consumed the draft'
+print('PASS: profile ' + profile_kind + ' Ctrl+Enter/Escape/destination/Alt+Down, real demo Send/Ctrl+Enter/history append/draft clearing/failure/Resend/Cancel, S6 MCP per-chat Japanese/emoji caret-selection, unchanged-chat guard, multiline, Escape, persisted-in-session Enter sends, Shift+Enter, distinct rejection/uncertainty marks, Retry, Edit Replace/Append/Cancel, duplicate confirmation and draft preservation; physical IME remains P—')

@@ -92,8 +92,17 @@ Use `--demo` for an offline synthetic preview. Press **F12** in the shell to ope
 scenario controls out of the conversation list and reading surface. Escape or
 Close restores the previous focus; selecting a scenario closes the dialog before
 running it. Normal account windows have no scenario shortcut. Paging diagnostics
-remain in the dialog while the paged-history fixture is active. The ordinary
-Send button remains disabled in demo mode.
+remain in the dialog while the paged-history fixture is active. Send and
+Ctrl+Enter use the ordinary composer and outbox with a local demo transport:
+no network, crypto, or account access. **Reject next send** exercises typed
+rejection and Retry. **Fail next send** makes the next submission uncertain so
+Resend and Cancel can be exercised; later sends succeed. Demo drafts and outbox
+live only in memory. Today’s fixture clock slots span the last 2h54m
+before now, preserving minute gaps. When less of today has elapsed, that span
+compresses into the time since the first valid local minute (at 00:05, normally
+00:00–00:04:58). At exact midnight they share midnight. A midnight DST gap starts
+the day at its first valid local minute. Past-day fixtures keep their clock times;
+headless snapshots fix the clock to 2026-10-18 at 14:00 local time.
 
 Install the built executable, original app icon, and desktop launcher for the
 current user (the launcher uses XDG defaults; `--dev-paths` explicitly selects
@@ -127,6 +136,8 @@ It checks layout and text rendering, not desktop input methods or window behavio
 Snapshots always use synthetic conversations, even without `--demo`.
 `--demo --snapshot FILE` starts with the demo dialog closed; scenario selectors
 such as `--demo-photos`, `--demo-groups` and `--demo-rich` still apply.
+`--snapshot-scene conversation` starts at the oldest date divider for inspection;
+`--snapshot-scene failed-send` shows an uncertain outgoing message at the bottom.
 
 If opening the saved account fails, use **Retry** to reconnect with the saved
 session or **Sign in again** to open phone-based QR/PIN sign-in inside the app.

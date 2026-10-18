@@ -89,12 +89,28 @@ def scenario_action(label):
     return action
 
 def demo_scenario(label):
+    global scenario_bounds
+    started = datetime.datetime.now()
     call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
     if label == "Load media":
         call("click_element", elementHandle=scenario_action("Media failures")["handle"])
     call("click_element", elementHandle=scenario_action(label)["handle"])
+    scenario_bounds = (started, datetime.datetime.now())
 
-# Refuse to operate on a real account. This script never clicks Send.
+
+def fixture_times(clock):
+    hour, minute = map(int, clock.split(":"))
+    age = (12 * 60 + 12 - hour * 60 - minute) * 60000
+    start, end = scenario_bounds
+    labels = set()
+    for offset in range(-1, int((end - start).total_seconds()) + 3):
+        now = start + datetime.timedelta(seconds=offset)
+        elapsed = (now - now.replace(hour=0, minute=0, second=0, microsecond=0)).total_seconds() * 1000
+        timestamp = now - datetime.timedelta(milliseconds=age * min(elapsed, 174 * 60000) / (174 * 60000))
+        labels.add(timestamp.strftime("%Y/%m/%d %H:%M"))
+    return labels
+
+# Refuse to operate on a real account. Sends remain local to the demo transport.
 call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
 demo_marker = element("Synthetic interaction scenarios", "Text")
 assert any(part.get("id", "").endswith("::demo-marker") for part in demo_marker.get("typeNamesAndIds", [])), "refusing a window without the compiled demo-only marker"
@@ -120,7 +136,7 @@ call("set_element_value", elementHandle=search, value="Weekend")
 chat_rows = [item for item in tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith(("葵, ", "Weekend plans, ", "Notes to self, "))]
 assert len(chat_rows) == 1 and chat_rows[0]["accessibleLabel"].startswith("Weekend plans, "), "search did not filter chats"
 call("set_element_value", elementHandle=search, value="")
-assert not element("Send", "Button").get("accessibleEnabled", False), "offline Send became enabled"
+assert element("Send", "Button").get("accessibleEnabled", False), "demo transport did not enable Send"
 call("click_element", elementHandle=composer)
 call("dispatch_key_event", windowHandle=window, text="\n")
 value = call("get_element_properties", elementHandle=composer)
@@ -129,7 +145,11 @@ before_shortcut = value.get("accessibleValue")
 call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Press")
 call("dispatch_key_event", windowHandle=window, text="\n")
 call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Release")
-assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before_shortcut, "disabled Ctrl+Enter changed the draft"
+assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "") == "", "Ctrl+Enter did not clear the submitted draft"
+time.sleep(.2)
+assert any(item.get("accessibleValue") == before_shortcut for item in tree()), "submitted draft did not appear in history"
+element("Sent", "Image")
+call("set_element_value", elementHandle=composer, value=before_shortcut)
 if args.scenarios:
     def key(text, event_type="PressAndRelease"):
         call("dispatch_key_event", windowHandle=window, text=text, eventType=event_type)
@@ -193,7 +213,7 @@ if args.layout_photos:
     demo_scenario("Photo preview")
     time.sleep(0.05)
     preview = next(item for item in tree() if item.get("accessibleLabel") == "Photo preview" and item.get("accessibleRole") == "Image")
-    timestamp = next(item for item in tree() if item.get("accessibleRole") == "Text" and item.get("accessibleLabel", "").startswith("2026/10/15 12:05"))
+    timestamp = next(item for item in tree() if item.get("accessibleRole") == "Text" and item.get("accessibleLabel", "") in fixture_times("12:05"))
     assert preview["size"]["height"] == 180, "photo exceeded reserved preview height"
     assert timestamp["absolutePosition"]["x"] >= preview["absolutePosition"]["x"] + preview["size"]["width"], "timestamp overlapped the photo instead of sitting beside it"
     assert timestamp["size"]["height"] <= 32, "timestamp exceeded a single line at the supported time type scale"
@@ -212,11 +232,12 @@ if args.layout_photos:
     demo_scenario("Sticker preview")
     time.sleep(0.05)
     element("[sticker]", "Text")
-    before_sticker_time = element("2026/10/15 12:09", "Text")["absolutePosition"]
+    sticker_time = next(item['accessibleLabel'] for item in tree() if item.get('accessibleRole') == 'Text' and item.get('accessibleLabel') in fixture_times('12:09'))
+    before_sticker_time = element(sticker_time, "Text")["absolutePosition"]
     time.sleep(1.1)
     element("Message image", "Image")
     assert not any(item.get("accessibleLabel") == "[sticker]" or item.get("accessibleValue") == "[sticker]" for item in tree()), "loaded sticker retained its fallback label"
-    assert element("2026/10/15 12:09", "Text")["absolutePosition"] == before_sticker_time, "sticker completion moved its timestamp"
+    assert element(sticker_time, "Text")["absolutePosition"] == before_sticker_time, "sticker completion moved its timestamp"
     print("PASS: sticker fallback disappears after loading without moving the timestamp")
     demo_scenario("Group preview")
     time.sleep(0.05)
@@ -246,21 +267,22 @@ if args.layout_photos:
     assert labels.count("Sender: 葵") == 2 and labels.count("Sender: 蓮") == 1, "sender names were missing or repeated within a group"
     sender_avatars = [item for item in unique_group.values() if item.get("accessibleRole") == "Image" and item.get("accessibleLabel") in ("葵 avatar", "蓮 avatar")]
     assert len(sender_avatars) == 3 and all(item["size"] == {"width": 32.0, "height": 32.0} for item in sender_avatars), "sender avatar grouping or bounds failed"
-    def day_label(year, month, day):
-        date = datetime.date(year, month, day)
+    def day_label(date):
+        year, month, day = date.year, date.month, date.day
         age = (datetime.date.today() - date).days
         return "Today" if age == 0 else "Yesterday" if age == 1 else date.strftime("%A") + f" {month}/{day}" if 2 <= age <= 6 else f"{year}/{month}/{day}"
-    assert labels.count(day_label(2026, 10, 15)) == 1 and labels.count(day_label(2026, 10, 16)) == 1, "calendar dates were repeated or omitted"
+    assert labels.count(day_label(datetime.date.today() - datetime.timedelta(days=1))) == 1 and labels.count(day_label(datetime.date.today())) == 1, "calendar dates were repeated or omitted"
     times = set()
     for visible_group in (history_rows(grouped), history_rows(scrolled_group)):
         message_bodies = [item for item in visible_group if item.get("accessibleRole") == "TextInput" and any(base.get("id", "").endswith("::body") for base in item.get("typeNamesAndIds", []))]
         for meta in visible_group:
             label = meta.get("accessibleLabel", "")
-            if not (label.startswith("2026/") and " " in label):
+            if not (len(label) == 16 and label[4] == "/" and label[10] == " "):
                 continue
             times.add(label)
             assert any(meta["absolutePosition"]["x"] >= body["absolutePosition"]["x"] + body["size"]["width"] and abs(meta["absolutePosition"]["y"] - body["absolutePosition"]["y"]) <= body["size"]["height"] + 12 for body in message_bodies), "group time added a footer row"
-    assert sorted(times) == ["2026/10/15 09:18", "2026/10/15 09:20", "2026/10/15 09:21", "2026/10/15 09:27", "2026/10/16 09:18"], "five-minute/sender/day grouping showed the wrong timestamps"
+    yesterday_times = {(datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y/%m/%d") + " " + clock for clock in ("09:18", "09:20", "09:21", "09:27")}
+    assert len(times) == 5 and yesterday_times <= times and times - yesterday_times <= fixture_times("09:18"), "five-minute/sender/day grouping showed the wrong timestamps"
     print("PASS: sender avatars/names, five-minute grouping, day boundaries, and compact time/status beside bubbles")
 
 if args.friends:
@@ -710,7 +732,7 @@ if args.screenshot:
     result = rpc("tools/call", {"name": "take_screenshot", "arguments": {"windowHandle": window}})
     image = next(item for item in result["content"] if item["type"] == "image")
     args.screenshot.write_bytes(base64.b64decode(image["data"]))
-print(f"PASS: MCP draft retention, chat selection, filtering, disabled offline Send, and multiline input; scale {properties.get('scaleFactor')}")
+print(f"PASS: MCP draft retention, chat selection, filtering, local demo Ctrl+Enter send, and multiline input; scale {properties.get('scaleFactor')}")
 
 if args.paging:
     import re

@@ -231,7 +231,27 @@ except StopIteration:
             pass
     else:
         raise AssertionError("Offline scenario was not reachable") from None
+panel_handles = call("find_elements_by_id", windowHandle=window, elementsId="DemoScenarios::scenario-panel")["elementHandles"]
+assert len(panel_handles) == 1, "demo dialog was not unique"
+panel = call("get_element_properties", elementHandle=panel_handles[0])
+close = element("Close demo scenarios")
+position = {"x": close["absolutePosition"]["x"] + close["size"]["width"] / 2,
+            "y": close["absolutePosition"]["y"] + close["size"]["height"] + 60}
+top = position["y"]
+bottom = panel["absolutePosition"].get("y", 0) + panel["size"]["height"] - 32
+# Accessibility can expose a clipped button whose centre cannot be clicked.
+for _ in range(4):
+    offline = element("Offline")
+    y, height = offline["absolutePosition"]["y"], offline["size"]["height"]
+    if top <= y and y + height <= bottom:
+        break
+    delta = bottom - y - height if y + height > bottom else top - y
+    call("dispatch_pointer_scroll", windowHandle=window, position=position, deltaY=delta)
+else:
+    raise AssertionError("Offline scenario remained clipped")
 call("click_element", elementHandle=offline["handle"])
+assert not any(row.get("accessibleLabel") == "Close demo scenarios" for row in tree()), "Offline click left the scenario dialog open"
+element("Retry connection")
 narrow = call("get_element_properties", elementHandle=root)["size"]["width"] < 740
 
 

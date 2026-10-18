@@ -1,5 +1,37 @@
 use crate::*;
 
+thread_local! {
+    static FIXED_NOW: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+}
+
+pub(crate) fn now_millis() -> i64 {
+    FIXED_NOW.with(|now| {
+        now.get()
+            .unwrap_or_else(|| chrono::Local::now().timestamp_millis())
+    })
+}
+
+pub(crate) fn fixed_now() -> Option<i64> {
+    FIXED_NOW.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+pub(crate) fn set_test_clock(now: i64) {
+    FIXED_NOW.with(|clock| clock.set(Some(now)));
+}
+
+pub(crate) fn fix_snapshot_clock() {
+    use chrono::TimeZone;
+    FIXED_NOW.with(|now| {
+        now.set(Some(
+            chrono::Local
+                .with_ymd_and_hms(2026, 10, 18, 14, 0, 0)
+                .unwrap()
+                .timestamp_millis(),
+        ))
+    });
+}
+
 pub(crate) fn name_initial(name: &str) -> slint::SharedString {
     name.chars().next().unwrap_or('·').to_string().into()
 }
@@ -41,7 +73,7 @@ pub(crate) fn group_messages(messages: &mut [MessageRow]) {
             row.id.to_string()
         };
         row.day_label = if previous.as_ref().is_none_or(|p| p.3 != date) {
-            day_label(timestamp, chrono::Local::now().timestamp_millis()).into()
+            day_label(timestamp, now_millis()).into()
         } else {
             "".into()
         };
@@ -73,7 +105,7 @@ pub(crate) fn display_time(timestamp: i64) -> String {
         .unwrap_or_default()
 }
 pub(crate) fn list_time(timestamp: i64) -> String {
-    relative_time(timestamp, chrono::Local::now().timestamp_millis())
+    relative_time(timestamp, now_millis())
 }
 /// Format a list timestamp using calendar boundaries in the desktop timezone.
 pub(crate) fn relative_time(timestamp: i64, now: i64) -> String {

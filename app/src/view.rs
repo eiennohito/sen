@@ -35,6 +35,7 @@ pub(crate) struct View {
     pub(crate) list_retry: std::cell::Cell<account::ListRequest>,
     pub(crate) commands: Option<account::CommandSender>,
     pub(crate) demo: bool,
+    pub(crate) demo_send_failure: std::sync::Arc<std::sync::atomic::AtomicU8>,
     pub(crate) saved: storage::Saved,
     pub(crate) storage: Option<storage::Storage>,
     pub(crate) deferred: Vec<account::Update>,
@@ -70,12 +71,11 @@ impl View {
         self.filter(ui);
     }
     pub(crate) fn send_availability(&self, ui: &AppWindow) {
-        let reason = if self.demo {
-            "Offline preview · sending is unavailable"
-        } else if self
-            .storage
-            .as_ref()
-            .is_none_or(|storage| !storage.healthy())
+        let reason = if (!self.demo
+            && self
+                .storage
+                .as_ref()
+                .is_none_or(|storage| !storage.healthy()))
             || !ui.get_storage_error().is_empty()
         {
             "Sending requires working draft storage"
@@ -1572,15 +1572,15 @@ impl View {
             ui.invoke_close_sign_in();
         }
     }
-    pub(crate) fn submit(&mut self, ui: &AppWindow) {
+    pub(crate) fn submit(&mut self, ui: &AppWindow) -> bool {
         self.send_availability(ui);
         if !ui.get_can_send() {
-            return;
+            return false;
         }
         let Some(request_seq) = self.allocate_request_seq() else {
             ui.set_storage_error("Couldn’t prepare this message. Try again.".into());
             self.send_availability(ui);
-            return;
+            return false;
         };
         self.serial += 1;
         let local_id = format!(
@@ -1592,7 +1592,7 @@ impl View {
         self.saved.outbox.push(storage::Outgoing {
             local_id: local_id.clone(),
             request_seq: Some(request_seq),
-            timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            timestamp_ms: now_millis(),
             chat: self.current.clone(),
             text: text.clone(),
             status: "Pending…".into(),
@@ -1602,16 +1602,17 @@ impl View {
         self.capture(ui);
         // Commit the unresolved operation before any network request, so a crash
         // cannot turn a possibly delivered message into an ordinary draft.
-        if !self
-            .storage
-            .as_ref()
-            .is_some_and(|s| s.flush(self.saved.clone()))
+        if !self.demo
+            && !self
+                .storage
+                .as_ref()
+                .is_some_and(|s| s.flush(self.saved.clone()))
         {
             self.saved.outbox.pop();
             ui.set_draft(text.into());
             ui.set_storage_error("Could not save the pending message. Nothing was submitted; preserve the draft and retry after fixing local storage.".into());
             self.send_availability(ui);
-            return;
+            return false;
         }
         let command = account::Command::Send {
             id: self.current.clone(),
@@ -1620,17 +1621,17 @@ impl View {
             local_id,
             request_seq,
         };
-        if self
+        let accepted = self
             .commands
             .as_ref()
-            .is_none_or(|tx| tx.try_send(command).is_err())
-            && let Some(item) = self.saved.outbox.last_mut()
-        {
+            .is_some_and(|tx| tx.try_send(command).is_ok());
+        if !accepted && let Some(item) = self.saved.outbox.last_mut() {
             item.status = "Not submitted · Try again when connected.".into();
         }
         self.refresh_preview(ui, &self.current.clone(), &self.messages.clone());
         self.render(ui);
         ui.invoke_latest();
         self.persist(ui);
+        accepted
     }
 }

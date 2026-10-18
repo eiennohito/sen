@@ -354,6 +354,22 @@ Enter inserting a line. `--scenarios` also exercises simulated pointer scrolling
 selection/clipboard, a delayed arrival burst, media completion, and failure
 recovery. Additional flags cover reading, layers, rich content and paged history;
 focused browser/composer scripts test their keyboard and draft invariants.
+Demo sends use the account command queue and production composer, outbox, and
+history reconciliation, with local Sent/Incoming or failure answers from a worker.
+Only demo storage is in memory. F12 **Fail next send** arms one uncertain result;
+Rejected and Uncertain send scenarios submit a prepared message through that same
+path while preserving the existing draft. First-open fixtures follow latest;
+reading, rich-content and photo-inspection scenarios deliberately start at the top.
+Today’s fixture clock slots span the last 2h54m before now, preserving minute
+gaps and a same-sender five-minute grouping boundary. If less of today has elapsed,
+compress that span into the time since the first valid local minute. At 00:05,
+normally the Today rows span 00:00–00:04:58; at exact midnight they share midnight.
+A missing midnight resolves to the first valid local minute, or now if none is
+available; unavailable past-day local times fall back to the same day offset
+from now. Past-day fixtures otherwise keep their calendar dates and clock times.
+Sends use the same clock as fixtures. The injectable clock is test-only; there
+is no demo clock CLI option. Headless snapshots fix now to 2026-10-18 14:00 local
+time, including list times and date dividers.
 `tools/check-search-mcp.py --port PORT --artifacts DIR --text-size 15
 --color-scheme light` counts clear graphics, checks clipping and continuous
 fill/strokes, and exercises hover, clear, focus and long-query caret behavior
@@ -373,6 +389,8 @@ at both the default `--demo` size (conversation sheet) and
 profile in offline headless snapshots. `--snapshot-scene` selects `chats`,
 `chats-query`, `friends`, `friends-query`, `friends-empty-group`, `settings`,
 `composer`, `composer-reason`, `latest`, or `return` for shell layout captures.
+`conversation` starts at the first date divider; `failed-send` shows an uncertain
+outgoing item at latest.
 The `chats-query-offline` and `return-offline` variants add the connection
 strip to the query and both-pill captures. Combine scenes with
 `--snapshot-size`, `--snapshot-text-size`, and `--demo-color-scheme`. In the UI,

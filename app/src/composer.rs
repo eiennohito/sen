@@ -125,7 +125,7 @@ impl View {
                 chrono::Utc::now().timestamp_micros(),
                 self.serial
             );
-            retry.timestamp_ms = chrono::Utc::now().timestamp_millis();
+            retry.timestamp_ms = now_millis();
             retry.status = "Pending…".into();
             retry.request_seq = Some(request_seq);
             self.saved.outbox.push(retry);
@@ -160,10 +160,7 @@ impl View {
             local_id: item.local_id.clone(),
             request_seq,
         };
-        if self.demo {
-            self.saved.outbox[index].status = "Sent".into();
-            self.saved.outbox[index].server_id = format!("demo-confirmed-{request_seq}");
-        } else if self
+        if self
             .commands
             .as_ref()
             .is_none_or(|tx| tx.try_send(command).is_err())

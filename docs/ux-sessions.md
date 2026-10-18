@@ -61,9 +61,6 @@ P, then the UI groups in any order. V closes the loop.
 
 | ID | Problem | Fix |
 | --- | --- | --- |
-| V2 | Demo mode never enables Send; CMP7 is marked verified by MCP, which is impossible. | A demo transport that accepts sends locally, so the real composer path is exercised. |
-| V3 | Demo scenarios open scrolled to the top (`show_history(0, false)`); first-open-at-bottom has only synthetic coverage. | Fixture that opens like a real chat. |
-| V4 | Demo fixtures: 1970/1/1 date divider, three-line "Synthetic profile" rows, "Synthetic submission" bubbles. The time formatter and the two-line row are not exercised. | Realistic fixtures with current timestamps. |
 | V5 | No physical verification at all (Fcitx, scrollbar drag, 100/150/200 % scale, dark theme, notifications, tray, single-instance raise) and no account verification. | A person at the desktop, then assign the device slot. |
 | V6 | `ux-acceptance.md` rows marked `yes` over the problems above: VIS3, FB1, FB3, WIN4, IN5, MSG5, RD3 (live), CMP7 (M), OS9, OUT2 (fixed slot), SH8. | Reset those rows when their fix lands; do not pre-emptively edit the history. |
 
@@ -97,3 +94,6 @@ P, then the UI groups in any order. V closes the loop.
 | C5 | Search Clear is an icon inside the field, shown only with a query; Tab from Clear follows the same narrow-offline rule into the connection strip. `SearchField.enabled` is unused (minor). |
 | T4 | Media failures keep a typed class end to end (timeout, network, 403, 404/unsupported host, 5xx, rejected path, too large, decode, cancelled) with a plain reason; retriable classes show a centred "Retry image"/"Retry file" that refetches past cache and stored failure with a priority boost, transient classes are re-eligible after 300 s and retried once on sync reconnect at normal rank, permanent classes never refetch. Failure records are capped at 256. Minor: a local queue refusal reads as "Couldn't load this image". |
 | C3, C4 | Production strings rewritten per model §9.2; manual Refresh buttons and the refresh icon removed, no string mentions Refresh. |
+| V2 | Demo sends go through the production composer, outbox and history code to a local demo worker that answers like the server (Sent, then Incoming); F12 "Fail next send" (uncertain) and "Reject next send" exercise Resend/Cancel and typed Retry. Demo-only; the real worker and Retry path are unchanged. |
+| V3 | Demo chats open at latest like a real chat; reading, rich and photo scenarios deliberately open at the top. |
+| V4 | Fixtures are synthetic but realistic (mixed Japanese/English, link, long message, emoji, two-line rows) and dated relative to now: Today spread over ~3 h before now (compressed after midnight, DST-gap safe), Yesterday, this week, last year. Snapshot scenes use a fixed clock (2026-10-18 14:00). |

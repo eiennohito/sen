@@ -363,6 +363,8 @@ fn covered_scroll_content_can_be_fully_revealed() {
         let window = snapshot::install().unwrap();
         let ui = create_app_window().unwrap();
         let mut view = fixture(&ui);
+        // Keep composer geometry fixed while testing the overlaid strip.
+        ui.set_storage_error("Fixture storage unavailable".into());
         ui.show().unwrap();
         for (width, height) in [(980, 720), (360, 520), (1400, 900)] {
             for text in [15, 24] {

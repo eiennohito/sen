@@ -458,6 +458,72 @@ impl Worker {
     }
 }
 
+pub fn start_demo(
+    failure: Arc<std::sync::atomic::AtomicU8>,
+    publish: impl Fn(Update) + Send + 'static,
+) -> Worker {
+    let now = crate::present::fixed_now();
+    Worker::spawn(move |inbox| {
+        while let Ok(command) = inbox.rx.recv() {
+            if inbox.cancel.load(Ordering::Relaxed) || matches!(command, Command::Stop) {
+                break;
+            }
+            let Command::Send {
+                id,
+                text,
+                local_id,
+                request_seq,
+                ..
+            } = command
+            else {
+                continue;
+            };
+            let outcome = failure.swap(0, Ordering::Relaxed);
+            std::thread::sleep(Duration::from_millis(if outcome == 0 { 120 } else { 1000 }));
+            match outcome {
+                1 => publish(Update::SendUncertain { id, local_id }),
+                2 => publish(Update::SendRejected {
+                    id,
+                    local_id,
+                    reason: "Message was not accepted. You can retry.".into(),
+                }),
+                _ => {
+                    let timestamp = now.unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
+                    let server_id = format!("demo-{request_seq}");
+                    publish(Update::Sent {
+                        id: id.clone(),
+                        local_id,
+                        server_id: server_id.clone(),
+                    });
+                    publish(Update::Incoming {
+                        chat: id,
+                        messages: vec![MessageView {
+                            id: server_id,
+                            body: text,
+                            timestamp,
+                            delivered_time: timestamp,
+                            outgoing: true,
+                            sender_id: "self".into(),
+                            sender_name: String::new(),
+                            sender_key: String::new(),
+                            sticker: false,
+                            photo: false,
+                            image_key: String::new(),
+                            reactions: Vec::new(),
+                            rich: Default::default(),
+                            decryption_failed: false,
+                            emoji: Vec::new(),
+                            mentioned: false,
+                            skip_badge: false,
+                        }],
+                        replay: false,
+                    });
+                }
+            }
+        }
+    })
+}
+
 pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker {
     Worker::spawn(move |inbox| {
         let Inbox {

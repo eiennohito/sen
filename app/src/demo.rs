@@ -6,31 +6,58 @@ pub(super) struct Conversation {
     pub messages: Vec<MessageRow>,
 }
 
+fn fixture_time(time: &str) -> i64 {
+    fixture_time_at(
+        time,
+        chrono::DateTime::from_timestamp_millis(now_millis())
+            .unwrap()
+            .with_timezone(&chrono::Local),
+    )
+}
+
+pub(super) fn fixture_time_at<Tz: chrono::TimeZone>(time: &str, now: chrono::DateTime<Tz>) -> i64 {
+    use chrono::Timelike;
+    let reference = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap();
+    let parsed =
+        chrono::NaiveDateTime::parse_from_str(time, "%Y/%m/%d %H:%M").unwrap_or_else(|_| {
+            reference.and_time(chrono::NaiveTime::parse_from_str(time, "%H:%M").unwrap())
+        });
+    let today = now.date_naive();
+    let timezone = now.timezone();
+    let timestamp = now.timestamp_millis();
+    if parsed.date() == reference {
+        // A midnight gap starts the day at its first valid local minute.
+        let start = (0..=now.hour() * 60 + now.minute())
+            .find_map(|minute| {
+                let local = today.and_hms_opt(minute / 60, minute % 60, 0)?;
+                timezone
+                    .from_local_datetime(&local)
+                    .earliest()
+                    .map(|time| time.timestamp_millis())
+            })
+            .unwrap_or(timestamp);
+        let minute = parsed.hour() as i64 * 60 + parsed.minute() as i64;
+        let age = (12 * 60 + 12 - minute).max(1) * 60_000;
+        let span = (174 * 60_000).max(age);
+        return timestamp - age * (timestamp - start).min(span) / span;
+    }
+    let days = parsed.date() - reference;
+    let date = today + days;
+    timezone
+        .from_local_datetime(&date.and_time(parsed.time()))
+        .earliest()
+        .map(|time| time.timestamp_millis())
+        .unwrap_or(timestamp + days.num_days() * 86_400_000)
+}
+
 fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
+    let timestamp = fixture_time(time);
     MessageRow {
         id: format!("demo-{time}-{body}").into(),
-        sort_key: order_key(
-            chrono::NaiveDateTime::parse_from_str(time, "%Y/%m/%d %H:%M")
-                .ok()
-                .or_else(|| {
-                    chrono::NaiveTime::parse_from_str(time, "%H:%M")
-                        .ok()
-                        .map(|time| {
-                            chrono::NaiveDate::from_ymd_opt(2026, 10, 15)
-                                .unwrap()
-                                .and_time(time)
-                        })
-                })
-                .map(|time| time.and_utc().timestamp_millis())
-                .unwrap_or(0),
-        )
-        .into(),
+        sort_key: order_key(timestamp).into(),
+        delivered_time: timestamp.to_string().into(),
         body: body.into(),
-        time: if time.len() == 5 {
-            format!("2026/10/15 {time}").into()
-        } else {
-            time.into()
-        },
+        time: display_time(timestamp).into(),
         outgoing,
         ..Default::default()
     }
@@ -38,19 +65,19 @@ fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
 
 fn group_fixture() -> Vec<MessageRow> {
     [
-        ("Morning!", "2026/10/15 09:18", "aoi", "葵", false),
-        ("Shall we walk?", "2026/10/15 09:19", "aoi", "葵", false),
-        ("Yes!", "2026/10/15 09:20", "ren", "蓮", false),
+        ("Morning!", "2026/10/17 09:18", "aoi", "葵", false),
+        ("Shall we walk?", "2026/10/17 09:19", "aoi", "葵", false),
+        ("Yes!", "2026/10/17 09:20", "ren", "蓮", false),
         (
             "The riverside route looks good.",
-            "2026/10/15 09:21",
+            "2026/10/17 09:21",
             "self",
             "",
             true,
         ),
-        ("See you there 🐈", "2026/10/15 09:22", "self", "", true),
-        ("Bring a jacket.", "2026/10/15 09:27", "self", "", true),
-        ("On my way!", "2026/10/16 09:18", "aoi", "葵", false),
+        ("See you there 🐈", "2026/10/17 09:22", "self", "", true),
+        ("Bring a jacket.", "2026/10/17 09:27", "self", "", true),
+        ("On my way!", "2026/10/18 09:18", "aoi", "葵", false),
     ]
     .into_iter()
     .map(|(body, time, id, name, outgoing)| MessageRow {
@@ -70,6 +97,18 @@ pub(super) fn examples() -> Vec<Conversation> {
             preview: "また明日、駅の前で。",
             initial: "葵",
             messages: vec![
+                message("去年の秋の散歩、楽しかったね。", "2025/10/18 15:20", false),
+                message("今週も川沿いのカフェに行こう。", "2026/10/15 18:30", true),
+                message(
+                    "メニューはこちら: https://example.org/cafe",
+                    "2026/10/17 19:10",
+                    false,
+                ),
+                message(
+                    "駅前のカフェは11時からだって。窓際の席で本を読みながら待っているね。If it rains, we can spend the afternoon there and take the riverside walk another day. ☕",
+                    "10:36",
+                    false,
+                ),
                 message("明日は何時に待ち合わせる？", "10:41", false),
                 message("11時でどう？ コーヒーも飲もう。", "10:42", true),
                 message("いいね！\nまた明日、駅の前で。", "10:43", false),
@@ -87,7 +126,7 @@ pub(super) fn examples() -> Vec<Conversation> {
             initial: "N",
             messages: vec![message(
                 "A quiet place for a thought.",
-                "2026/10/14 18:00",
+                "2025/10/18 18:00",
                 true,
             )],
         },
@@ -153,8 +192,7 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
                 view.messages.push(MessageRow {
                     id: id.into(),
                     body: "新しいメッセージ 🐈".into(),
-                    sort_key: order_key(1800000000000 + id.parse::<i64>().unwrap()).into(),
-                    ..Default::default()
+                    ..message("新しいメッセージ 🐈", "12:10", false)
                 });
             }
         }
@@ -208,9 +246,7 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
                 .unwrap_or("参照「https://example.org/reading」。またはwww.example.jp、どう？")
                 .into(),
             sender_name: "葵".into(),
-            time: "2026/10/17 12:00".into(),
-            sort_key: order_key(i as i64).into(),
-            ..Default::default()
+            ..message("", &format!("12:{i:02}"), false)
         })
         .collect();
         view.render(ui);
@@ -223,7 +259,7 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
         view.saved.outbox.retain(|item| item.chat != current);
         view.messages = group_fixture();
         view.render(ui);
-        ui.invoke_show_history(0., false);
+        ui.invoke_show_history(0., true);
         return;
     }
     if kind == 6 {
@@ -236,11 +272,10 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
             sticker: true,
             body: "[sticker]".into(),
             image_key: key.clone().into(),
-            time: "2026/10/15 12:09".into(),
-            ..Default::default()
+            ..message("[sticker]", "12:09", false)
         }];
         view.render(ui);
-        ui.invoke_show_history(0., false);
+        ui.invoke_show_history(0., true);
         drop(view);
         let weak = ui.as_weak();
         let state = state.clone();
@@ -273,12 +308,9 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
                 picture: thumbnail(false),
                 has_picture: true,
                 outgoing: true,
-                time: "2026/10/15 12:05".into(),
-                sort_key: order_key(100).into(),
-                ..Default::default()
+                ..message("Photo", "12:05", true)
             },
             MessageRow {
-                sort_key: order_key(200).into(),
                 ..message(
                     "写真の下に時間が表示されます。\nA message following the photo.",
                     "12:06",
@@ -292,9 +324,7 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
                 image_key: "demo-photo-portrait".into(),
                 picture: thumbnail(true),
                 has_picture: true,
-                time: "2026/10/15 12:07".into(),
-                sort_key: order_key(300).into(),
-                ..Default::default()
+                ..message("Photo", "12:07", false)
             },
         ];
         let current = view.current.clone();
@@ -361,7 +391,7 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
                 let rows = (0..3)
                     .map(|i| {
                         message(
-                            &format!("到着 {} · 🐈 synthetic burst {}", i + 1, view.serial),
+                            &format!("到着 {} · コーヒーを買っていくね 🐈 {}", i + 1, view.serial),
                             "12:01",
                             false,
                         )
@@ -412,38 +442,22 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
                 );
             }
         });
-    } else if kind == 3 || kind == 10 {
+    } else if matches!(kind, 3 | 10 | 30 | 31) {
         let mut view = state.borrow_mut();
-        view.serial += 1;
-        let local_id = format!("synthetic-outgoing-{}", view.serial);
-        view.saved.outbox.push(storage::Outgoing {
-            local_id: local_id.clone(),
-            request_seq: None,
-            timestamp_ms: i64::MAX,
-            chat: chat.clone(),
-            text: "Synthetic submission · no network request".into(),
-            status: "Pending…".into(),
-            server_id: String::new(),
-        });
-        view.render(ui);
-        ui.invoke_latest();
-        drop(view);
-        let weak = ui.as_weak();
-        let state = state.clone();
-        slint::Timer::single_shot(std::time::Duration::from_secs(1), move || {
-            if let Some(ui) = weak.upgrade() {
-                let outcome = if kind == 10 {
-                    account::Update::SendRejected {
-                        id: chat,
-                        local_id,
-                        reason: "Submission rejected".into(),
-                    }
-                } else {
-                    account::Update::SendUncertain { id: chat, local_id }
-                };
-                state.borrow_mut().update(&ui, outcome);
+        view.demo_send_failure.store(
+            if matches!(kind, 10 | 31) { 2 } else { 1 },
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        if kind < 30 {
+            let draft = ui.get_draft();
+            ui.set_draft("駅に着いたら連絡してね。See you soon! 🐈".into());
+            if !view.submit(ui) {
+                view.demo_send_failure
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
             }
-        });
+            ui.set_draft(draft);
+            view.persist(ui);
+        }
     }
 }
 
@@ -576,7 +590,7 @@ pub(crate) fn rich_fixture() -> Vec<MessageRow> {
 pub(super) fn paged_rows(range: std::ops::Range<usize>) -> Vec<MessageRow> {
     range
         .map(|n| {
-            let timestamp = 1_760_000_000_000i64 + n as i64 * 60_000;
+            let timestamp = fixture_time("12:00") - (1000 - n) as i64 * 60_000;
             MessageRow {
                 id: format!("paged-{n:04}").into(),
                 body: format!("History item {n:04} · bounded page\n日本語 🐈").into(),
@@ -616,8 +630,6 @@ pub(crate) fn media_failure(index: usize) -> MessageRow {
         image_failure: format!("{failure:?}").into(),
         image_error: failure.image_text().into(),
         image_retryable: failure.retriable(),
-        time: "2026/10/18 12:00".into(),
-        sort_key: order_key(1_792_281_600_000).into(),
-        ..Default::default()
+        ..message("Photo", "12:00", false)
     }
 }

@@ -535,6 +535,8 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                 out.snapshot_scene = args.next().ok_or("missing snapshot scene")?;
                 if ![
                     "chats",
+                    "conversation",
+                    "failed-send",
                     "chats-query",
                     "chats-query-offline",
                     "friends",
@@ -630,6 +632,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         backend.select()?;
     }
     slint::set_xdg_app_id("org.lineclient.Desktop")?;
+    if options.snapshot.is_some() {
+        fix_snapshot_clock();
+    }
     let ui = create_app_window()?;
     ui.global::<State>().set_automation_background(automation);
     background::install(&ui);
@@ -708,6 +713,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let worker = Rc::new(RefCell::new(None));
     if options.demo {
         ui.set_demo(true);
+        ui.set_connected(true);
+        let weak = ui.as_weak();
+        let demo_worker =
+            account::start_demo(state.borrow().demo_send_failure.clone(), move |event| {
+                let _ = weak.upgrade_in_event_loop(move |ui| {
+                    UI_STATE.with(|slot| {
+                        if let Some(state) = slot.borrow().as_ref() {
+                            state.borrow_mut().update(&ui, event);
+                        }
+                    });
+                });
+            });
+        state.borrow_mut().commands = Some(demo_worker.commands.clone());
+        *worker.borrow_mut() = Some(demo_worker);
         if let Some(dark) = options.demo_dark {
             ui.invoke_preview_dark(dark);
         }
@@ -728,7 +747,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     .into(),
                 title: chat.title.into(),
                 preview: single_line(chat.preview).into(),
-                activity: order_key(3 - index as i64).into(),
+                activity: chat
+                    .messages
+                    .last()
+                    .map(|m| m.sort_key.clone())
+                    .unwrap_or_default(),
                 initial: chat.initial.into(),
                 avatar: demo::avatar(index),
                 ..Default::default()
@@ -744,7 +767,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     id: i.to_string().into(),
                     name: row.title.clone(),
                     initial: name_initial(&row.title),
-                    status: "こんにちは 🌿\nSynthetic profile".into(),
+                    status: [
+                        "散歩とコーヒーが好き 🌿",
+                        "Saturday by the river",
+                        "Ideas for a quiet afternoon",
+                    ][i]
+                        .into(),
                     group: i == 1,
                     avatar: row.avatar.clone(),
                     ..Default::default()
@@ -1066,6 +1094,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         match options.snapshot_scene.as_str() {
             "chats" => ui.set_show_conversation(false),
+            "conversation" => {
+                snapshot::render(&window, options.snapshot_size)?;
+                ui.invoke_show_history(0., false);
+            }
+            "failed-send" => {
+                let mut view = state.borrow_mut();
+                let chat = view.current.clone();
+                view.saved.outbox.push(storage::Outgoing {
+                    local_id: "snapshot-failed".into(),
+                    request_seq: Some(1),
+                    timestamp_ms: now_millis(),
+                    chat,
+                    text: "駅に着いたら連絡してね。See you soon! 🐈".into(),
+                    status: "The message may have arrived. Check before sending again.".into(),
+                    server_id: String::new(),
+                });
+                view.render(&ui);
+                ui.invoke_latest();
+            }
             "chats-query" | "chats-query-offline" => {
                 ui.set_show_conversation(false);
                 snapshot::render(&window, options.snapshot_size)?;
