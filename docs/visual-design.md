@@ -241,6 +241,44 @@ line in `text`, and optionally one line in `text-secondary`.
 - Chat with no messages: the 96 px avatar, the name and "No messages yet".
 - Friends empty: "No friends yet".
 
+## Flows added after the audit
+
+**Reactions.** Hovering or focusing a bubble shows a 28 px round
+reaction button beside the time slot, and the context menu has React.
+Either opens a horizontal popover above the bubble: radius 20, `bg`, the menu
+border, six 32 px reaction buttons (NICE, LOVE, FUN, AMAZING, SAD, OMG) drawn
+as the existing Unicode substitutes until reaction images exist. The current
+own reaction gets a `surface-selected` circle. Picking it again cancels the
+reaction (`cancelReaction`). Reactions under a bubble are a pill (`bg`, 1 px
+`divider`) with up to three reaction icons and a total count. Own reactions
+are applied optimistically and reverted, with one transient danger line,
+when they fail.
+
+**Sticker picker.** The Sticker icon button in the composer opens a popover
+anchored above the composer: 360×320 px (in narrow layouts the full width at
+the same height), radius 12, `bg` with the menu border.
+
+- Top: a horizontal row of 36 px package tabs, each showing the package's
+  first sticker. The selected tab gets `surface-selected`.
+- Body: a 4-column grid of 72 px stickers with a hover fill, scrolling.
+- Activating a sticker sends it at once (LINE behaviour) and closes the
+  popover. Escape closes it.
+- Stickers are images from the media cache: packages that are already
+  loaded open with no delay.
+- "No stickers" is the empty state.
+
+**New chat.** A New chat icon button (pencil-square) at the right of the
+"Chats" title. It opens a dialog (Dialog component, 400×560):
+
+- search field;
+- the friends list with checkboxes (40 px avatars);
+- the selected friends as removable chips above the list;
+- with exactly one friend selected, primary "Chat", which opens or selects the
+  1:1 chat with no RPC;
+- with two or more, a name field (placeholder: the member names) and primary
+  "Create group" (`createChat` type 0). Its progress label is "Creating…".
+  Failure gives one danger line in the dialog. Success opens the new group.
+
 ## Not in scope here
 
 - Animations, beyond the scrollbar fade and the hover fill.

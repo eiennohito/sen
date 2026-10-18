@@ -112,6 +112,14 @@ Report, Block and Add friend only, with the fraud notice.
 - Leave: `TalkService/deleteSelfFromChat` `[{"reqSeq","chatMid"}]` → `{}`; operations 127, 41.
 - `getChats` `[{"chatMids":[…],"withMembers":true,"withInvitees":true},1]` → `extra.groupExtra {creator, memberMids:{mid:joinTime}, inviteeMids, preventedJoinByTicket, invitationTicket, addFriendDisabled, ticketDisabled, autoName}`.
 
+## From `main.js` source (not captured)
+
+Request shapes read from the extension's call sites. Response handling is
+inferred.
+
+- React: `TalkService/react` `[{"reqSeq","messageId","reactionType":{"predefinedReactionType":N}}]`, with N one of 2 NICE, 3 LOVE, 4 FUN, 5 AMAZING, 6 SAD, 7 OMG. Picking the current reaction again cancels it: `TalkService/cancelReaction` `[{"reqSeq","messageId"}]`.
+- Create a group or room: `TalkService/createChat` `[{"reqSeq","type":0 GROUP|1 ROOM,"name":"<trimmed or empty>","targetUserMids":[…without self]}]` → `{chat:{chatMid,…}}`. A 1:1 chat with a friend needs no call: the first `sendMessage` to the friend's MID creates it.
+
 ## Unsend
 
 `TalkService/unsendMessage` `[<reqSeq>, "<server message id>"]` → `{}` (observed
