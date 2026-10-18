@@ -458,11 +458,7 @@ fn fetch(
                     ImageCache::store_shared(cache, &job.asset, &bytes)?
                 }
             };
-            Ok(Payload::Image(if job.asset.kind() == "avatar" {
-                Arc::new(circular_avatar(&pixels))
-            } else {
-                pixels
-            }))
+            Ok(Payload::Image(pixels))
         }
         Purpose::Original { .. } => {
             let bytes = job.asset.fetch(

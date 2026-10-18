@@ -218,7 +218,7 @@ export global State {
     in-out property <bool> viewer-saving;
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
-    out property <bool> window-modal-open: self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || (self.demo && self.demo-scenarios-open) || self.recovery-kind != "" || self.detail-dialog != "";
+    out property <bool> window-modal-open: self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.demo-scenarios-open || self.recovery-kind != "" || self.detail-dialog != "";
     in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
     callback viewer-step(int);
     callback save-photo();
@@ -246,6 +246,8 @@ export global State {
     in-out property <string> auth-stage;
     in-out property <string> auth-error;
     in-out property <bool> demo;
+    in-out property <string> title-override;
+    in-out property <string> link-feedback;
     in-out property <bool> demo-scenarios-open: false;
     callback remember-demo-focus();
     callback restore-demo-focus();

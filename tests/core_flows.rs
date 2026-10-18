@@ -1151,14 +1151,17 @@ fn rename_contact_failure_then_success_updates_the_store_page() {
     fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
     profile_action(&mut app, action.clone());
     assert_eq!(app.state.contacts["alice"].name, "葵");
-    assert_eq!(app.state.action_error, "Couldn't rename.");
+    assert_eq!(
+        app.state.action_error,
+        Some(line_wasm_poc::engine::ProfileFailure::Rename)
+    );
     profile_action(&mut app, action);
     assert_eq!(app.state.contacts["alice"].name, "Aoi 🌿");
     assert_eq!(
         app.state.contacts["alice"].profile.original_name.as_deref(),
         Some("葵")
     );
-    assert!(app.state.action_error.is_empty());
+    assert!(app.state.action_error.is_none());
     app.send(Intent::Contact("alice".into()));
     app.until(|s| s.contacts["alice"].profile.overridden_name.as_deref() == Some("Aoi 🌿"));
 }
@@ -1195,10 +1198,13 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
     fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
     profile_action(&mut app, action.clone());
     assert_eq!(app.state.contacts[&mid].profile.relation, Some(2));
-    assert_eq!(app.state.action_error, "Couldn't add friend.");
+    assert_eq!(
+        app.state.action_error,
+        Some(line_wasm_poc::engine::ProfileFailure::AddFriend)
+    );
     profile_action(&mut app, action);
     assert_eq!(app.state.contacts[&mid].profile.relation, Some(0));
-    assert!(app.state.action_error.is_empty());
+    assert!(app.state.action_error.is_none());
 }
 #[test]
 fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
@@ -1220,12 +1226,15 @@ fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
     fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
     profile_action(&mut app, action.clone());
     assert!(!app.state.chats[&chat].chat.muted);
-    assert_eq!(app.state.action_error, "Couldn't change notifications.");
+    assert_eq!(
+        app.state.action_error,
+        Some(line_wasm_poc::engine::ProfileFailure::Mute)
+    );
     profile_action(&mut app, action);
     assert!(app.state.chats[&chat].chat.muted);
     assert_eq!(app.state.group_info[&chat]["notificationDisabled"], true);
     assert!(app.state.group_info[&chat]["extra"]["groupExtra"].is_object());
-    assert!(app.state.action_error.is_empty());
+    assert!(app.state.action_error.is_none());
 }
 #[test]
 fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
@@ -1240,13 +1249,16 @@ fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
     fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
     profile_action(&mut app, action.clone());
     assert!(!app.state.chats[&chat].chat.left);
-    assert_eq!(app.state.action_error, "Couldn't leave group.");
+    assert_eq!(
+        app.state.action_error,
+        Some(line_wasm_poc::engine::ProfileFailure::Leave)
+    );
     profile_action(&mut app, action);
     assert!(app.state.chats[&chat].chat.left);
     assert!(app.state.chat_order.contains(&chat));
     app.state.composer = "still here".into();
     assert!(!app.state.can_send());
-    assert!(app.state.action_error.is_empty());
+    assert!(app.state.action_error.is_none());
 }
 #[test]
 fn detail_stack_pop_and_close_use_the_recorded_opener() {

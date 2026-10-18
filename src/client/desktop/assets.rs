@@ -560,38 +560,6 @@ pub(super) fn original_pixels(bytes: &[u8]) -> Result<Pixels> {
     pixels(bytes, 8192)
 }
 
-/// The software renderer doesn't round image clipping. Supply a masked square
-/// so old square cache entries also render as circular avatars.
-pub fn circular_avatar(pixels: &Pixels) -> Pixels {
-    let Some(image) = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba.clone())
-    else {
-        return Pixels {
-            width: 0,
-            height: 0,
-            rgba: Vec::new(),
-        };
-    };
-    let edge = image.width().min(image.height());
-    let square = image::imageops::crop_imm(
-        &image,
-        (image.width() - edge) / 2,
-        (image.height() - edge) / 2,
-        edge,
-        edge,
-    )
-    .to_image();
-    let mut image = image::imageops::resize(&square, 64, 64, image::imageops::FilterType::Triangle);
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let distance = ((x as f32 + 0.5 - 32.).powi(2) + (y as f32 + 0.5 - 32.).powi(2)).sqrt();
-        pixel.0[3] = (pixel.0[3] as f32 * (32. - distance).clamp(0., 1.)) as u8;
-    }
-    Pixels {
-        width: 64,
-        height: 64,
-        rgba: image.into_raw(),
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -634,7 +602,7 @@ mod tests {
         Ok(())
     }
     #[test]
-    fn original_photo_uses_source_object_and_avatar_is_a_centered_circle() -> Result<()> {
+    fn original_photo_uses_source_object() -> Result<()> {
         let encrypted = Asset::photo(
             &json!({"id":"42", "contentMetadata":{"SID":"m","OID":"asset42","ENC_KM":"synthetic"}}),
         )
@@ -652,14 +620,6 @@ mod tests {
         let source = original_pixels(bytes.get_ref())?;
         assert_eq!((source.width, source.height), (1600, 1000));
         assert_eq!(pixels(bytes.get_ref(), 384)?.width, 384);
-        let circle = circular_avatar(&source);
-        assert_eq!((circle.width, circle.height), (64, 64));
-        assert_eq!(circle.rgba[3], 0);
-        assert_eq!(circle.rgba[(32 * 64 + 32) * 4 + 3], 255);
-        assert_eq!(
-            &circle.rgba[(32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 3],
-            &[25, 70, 200]
-        );
         Ok(())
     }
     #[test]

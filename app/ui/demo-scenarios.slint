@@ -11,8 +11,13 @@ export component DemoScenarios inherits Rectangle {
     property <int> media-focus-last;
     property <bool> media-last-focused;
     function reset-focus() { root.last-focus-request = 0; root.last-scenario-focused = false; root.media-focus-last = 0; root.media-last-focused = false; }
-    public function open() {
-        if State.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; State.remember-demo-focus(); State.demo-scenarios-open = true; close.focus(); }
+    public function handle-key(event: KeyEvent) -> EventResult {
+        if event.text == Key.F12 && root.open() { return accept; }
+        return reject;
+    }
+    public function open() -> bool {
+        if State.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; State.remember-demo-focus(); State.demo-scenarios-open = true; close.focus(); return true; }
+        return false;
     }
     public function dismiss() { root.reset-focus(); State.demo-scenarios-open = false; root.media-menu = false; State.restore-demo-focus(); }
     // A fixture may replace the previously focused message or button.
@@ -34,7 +39,7 @@ export component DemoScenarios inherits Rectangle {
     property <int> last-focus-request;
     property <bool> last-scenario-focused;
     dialog := Rectangle {
-        visible: State.demo && State.demo-scenarios-open;
+        visible: State.demo-scenarios-open;
         width: root.width; height: root.height;
         Rectangle {
             background: Tokens.foreground.with-alpha(0.32);

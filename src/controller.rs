@@ -25,13 +25,13 @@ pub struct DetailEntry {
 pub struct AppState {
     pub sticker_packages: Vec<StickerPackage>,
     pub reaction_failure: Option<Key>,
-    pub created_chat: Option<std::result::Result<ChatId, String>>,
+    pub created_chat: Option<std::result::Result<ChatId, crate::engine::CreateFailure>>,
     pub detail: Vec<DetailEntry>,
     pub contacts: BTreeMap<String, crate::store::Friend>,
     pub group_info: BTreeMap<ChatId, serde_json::Value>,
     pub notices: BTreeMap<String, serde_json::Value>,
     pub action: Option<crate::backend::ProfileAction>,
-    pub action_error: String,
+    pub action_error: Option<crate::engine::ProfileFailure>,
     pub friends: Vec<crate::store::Friend>,
     pub members: Vec<crate::store::Member>,
     pub connection: Connection,
@@ -67,7 +67,7 @@ impl Default for AppState {
             group_info: BTreeMap::new(),
             notices: BTreeMap::new(),
             action: None,
-            action_error: String::new(),
+            action_error: None,
             friends: vec![],
             members: vec![],
             connection: Connection::Local,
@@ -98,7 +98,7 @@ impl AppState {
     pub fn push_detail(&mut self, page: DetailPage, opener: String) {
         self.detail.push(DetailEntry { page, opener });
         self.panel = Panel::Detail;
-        self.action_error.clear();
+        self.action_error = None;
     }
     pub fn pop_detail(&mut self, all: bool) -> Option<String> {
         let entry = if all {
@@ -113,7 +113,7 @@ impl AppState {
         } else {
             self.panel = Panel::Detail;
         }
-        self.action_error.clear();
+        self.action_error = None;
         entry.map(|e| e.opener)
     }
     pub fn detail_page(&self) -> Option<&DetailPage> {
@@ -202,7 +202,7 @@ impl AppState {
             Delta::CreatedChat(result) => self.created_chat = Some(result),
             Delta::Fatal => {
                 self.connection = Connection::Fatal;
-                self.error = Some("Something went wrong — restart".into());
+                self.error = Some("engine stopped".into());
                 self.submitting = None;
             }
             Delta::Reset => *self = Self::default(),
@@ -249,11 +249,7 @@ impl AppState {
                     _ => false,
                 };
                 self.action = None;
-                self.action_error = if relevant {
-                    error.unwrap_or_default()
-                } else {
-                    String::new()
-                };
+                self.action_error = if relevant { error } else { None };
             }
             Delta::Friends(rows) => {
                 for r in &rows {

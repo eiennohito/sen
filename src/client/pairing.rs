@@ -2,8 +2,56 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+/// Protocol progress, independent of desktop wording. Display retains CLI logs.
+#[derive(Clone, Copy, Debug)]
+pub enum Stage {
+    RecoveringKeys,
+    Authenticated,
+    CreatingSession,
+    AwaitScan,
+    CheckingCertificate,
+    AwaitPin,
+    RequestCredentials,
+    UnwrappingKeys,
+    KeysVerified,
+    CheckingRecovery,
+    Synthetic,
+    RestoredKeys(usize),
+}
+impl std::fmt::Display for Stage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::RecoveringKeys => f.write_str("Recovering E2EE keys from saved pairing metadata"),
+            Self::Authenticated => {
+                f.write_str("SUCCESS: saved session authenticated and E2EE keys restored")
+            }
+            Self::CreatingSession => f.write_str("Creating Chrome QR pairing session"),
+            Self::AwaitScan => f.write_str("QR ready; waiting for phone scan"),
+            Self::CheckingCertificate => f.write_str("QR scanned; checking device certificate"),
+            Self::AwaitPin => f.write_str("Waiting for phone PIN verification"),
+            Self::RequestCredentials => {
+                f.write_str("Phone approved; requesting session credentials")
+            }
+            Self::UnwrappingKeys => f.write_str(
+                "Session credentials received; unwrapping Letter Sealing keychain in WASM",
+            ),
+            Self::KeysVerified => {
+                f.write_str("Letter Sealing keys unwrapped and export/import verified")
+            }
+            Self::CheckingRecovery => {
+                f.write_str("Authenticated getProfile succeeded; checking restart recovery")
+            }
+            Self::Synthetic => f.write_str("Synthetic sign-in"),
+            Self::RestoredKeys(count) => write!(
+                f,
+                "Restored {count} Letter Sealing key(s) in a fresh WASM instance"
+            ),
+        }
+    }
+}
+
 pub enum Event {
-    Stage(String),
+    Stage(Stage),
     Qr {
         width: u32,
         height: u32,
@@ -21,9 +69,9 @@ impl<F: Fn(Event)> LoginUi for NativeLogin<'_, F> {
         ensure!(!self.cancel.load(Ordering::Relaxed), "sign-in cancelled");
         Ok(())
     }
-    fn set(&self, stage: &str) -> Result<()> {
+    fn set(&self, stage: Stage) -> Result<()> {
         self.check()?;
-        (self.emit)(Event::Stage(stage.into()));
+        (self.emit)(Event::Stage(stage));
         Ok(())
     }
     fn qr(&self, _link: &str, png: &[u8]) -> Result<()> {

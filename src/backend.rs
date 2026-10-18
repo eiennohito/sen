@@ -34,7 +34,7 @@ pub struct Page {
 pub use crate::store::{LiveOperation as LiveOp, Operation as Op};
 #[derive(Clone)]
 pub enum PairEvent {
-    Stage(String),
+    Stage(crate::client::pairing::Stage),
     Qr(Arc<crate::client::desktop::assets::Pixels>),
     Pin(String),
     Scanned,
@@ -476,7 +476,7 @@ impl FakeBackend {
 }
 impl Backend for FakeBackend {
     fn sign_in(&mut self, _cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
-        deliver(PairEvent::Stage("Synthetic sign-in".into()));
+        deliver(PairEvent::Stage(crate::client::pairing::Stage::Synthetic));
         Err(Error::Rejected(RejectReason::SyntheticSignIn))
     }
 

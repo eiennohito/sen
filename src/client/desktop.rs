@@ -66,10 +66,7 @@ pub enum SendFailure {
 }
 impl std::fmt::Display for SendFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Rejected => "Message was not accepted",
-            Self::Uncertain => "Acceptance could not be confirmed",
-        })
+        write!(f, "send failure: {self:?}")
     }
 }
 impl std::error::Error for SendFailure {}
