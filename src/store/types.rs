@@ -9,7 +9,7 @@ pub struct ChatId(pub String);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Key(pub i64);
 /// Canonical decimal server identity: 1–20 digits, no leading zeros except zero.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ServerId(pub String);
 /// Caller-generated, globally unique local send identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -102,6 +102,7 @@ pub enum PageKind {
 /// Window selection; Key anchors must belong to the requested chat.
 #[derive(Clone, Copy, Debug)]
 pub enum Anchor {
+    Unread,
     Latest,
     Key(Key),
 }
@@ -125,6 +126,8 @@ pub struct ChatListItem {
     pub chat: ChatRecord,
     pub preview: Option<StoredMessage>,
     pub activity_ms: i64,
+    pub failed_count: u32,
+    pub draft: Option<Draft>,
 }
 /// Single account profile and durable sync checkpoints.
 #[derive(Clone, Debug, PartialEq)]
@@ -141,6 +144,7 @@ pub struct Account {
 pub struct Draft {
     pub text: String,
     pub cursor: usize,
+    pub anchor: usize,
     pub updated: i64,
 }
 /// Store failures never partially commit mutations.
@@ -158,3 +162,18 @@ pub enum StoreError {
     Invalid(String),
 }
 pub(super) type Result<T> = std::result::Result<T, StoreError>;
+
+#[derive(Clone, Debug)]
+pub enum Operation {
+    Message(MessageInput),
+    Receipt { chat: ChatId, up_to: ServerId },
+    Read { chat: ChatId, up_to: ServerId },
+    Withdraw(ServerId),
+    Checkpoint,
+}
+#[derive(Clone, Debug)]
+pub struct LiveOperation {
+    pub revision: i64,
+    pub replay: bool,
+    pub op: Operation,
+}

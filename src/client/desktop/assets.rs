@@ -26,6 +26,9 @@ pub struct Asset {
 }
 
 impl Asset {
+    pub fn failure(&self) -> Option<Failure> {
+        self.failure
+    }
     pub fn kind(&self) -> &'static str {
         if self.private {
             "photo"
@@ -312,6 +315,7 @@ pub struct ImageCache {
 }
 
 impl ImageCache {
+    #[cfg(test)]
     pub(super) fn directory(&self) -> &Path {
         &self.directory
     }

@@ -102,13 +102,14 @@ fn echo_and_result_orders_preserve_key_and_merge_duplicate() {
                     .unwrap();
             }
             let duplicate = all(&s).into_iter().find(|r| r.key != key).map(|r| r.key);
-            let changes = s.link_sent(1, id(101), 101).unwrap();
+            let changes = s.link_sent(1, id(101), 999).unwrap();
             if let Some(duplicate) = duplicate {
                 assert!(changes.messages_removed.contains(&duplicate));
             }
             let rows = all(&s);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0].key, key);
+            assert_eq!(rows[0].sort.sort_ts, 101);
             assert_eq!(rows[0].body, json!({"text":101}));
             assert_eq!(rows[0].local_id, Some(LocalId("local-1".into())));
         }
@@ -394,16 +395,31 @@ fn unread_read_markers_drafts_preferences_and_account() {
     assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 10);
     s.mark_read(&chat(), id(2)).unwrap();
     let c = s.chat_list(1, 0).unwrap()[0].chat.clone();
-    assert_eq!(c.unread_count, 1);
+    assert_eq!(c.unread_count, 8);
     assert!(!c.unread_stale);
     s.mark_read(&chat(), id(1)).unwrap();
     assert_eq!(
         s.chat_list(1, 0).unwrap()[0].chat.last_read_server_id,
         Some(id(2))
     );
+    let mut server = ChatInput {
+        id: chat(),
+        unread_count: 10,
+        last_message_id: Some(id(100)),
+        ..Default::default()
+    };
+    s.upsert_chats(&[server.clone()], false).unwrap();
+    assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 8);
+    s.confirm_read(&chat(), &id(2)).unwrap();
+    server.unread_count = 8;
+    s.upsert_chats(&[server], false).unwrap();
+    assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 8);
+    s.mark_read(&chat(), id(3)).unwrap();
+    assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 7);
     let d = Draft {
         text: "hello".into(),
         cursor: 3,
+        anchor: 0,
         updated: 99,
     };
     s.save_draft(&chat(), &d).unwrap();
@@ -453,6 +469,7 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
             &Draft {
                 text: "draft".into(),
                 cursor: 2,
+                anchor: 0,
                 updated: 10,
             },
         )
@@ -508,11 +525,11 @@ fn newer_schema_is_refused_without_migration() {
     let dir = TempDir::new();
     {
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 2).unwrap();
+        s.conn.pragma_update(None, "user_version", 3).unwrap();
     }
     assert!(matches!(
         Store::open(&dir.0),
-        Err(StoreError::NewerSchema(2))
+        Err(StoreError::NewerSchema(3))
     ));
 }
 
@@ -556,7 +573,7 @@ fn pending_between_confirmed_rows_does_not_hide_gap() {
     assert_eq!(
         w.gaps,
         vec![Gap {
-            before: Some(w.rows[1].key),
+            before: Some(w.rows[0].key),
             after: w.rows[2].key
         }]
     );

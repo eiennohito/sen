@@ -1,6 +1,8 @@
-import { ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
+import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
+    in-out property <PanelState> panel: none;
+    callback request-panel(PanelState);
     in-out property <bool> preview-demo;
     in-out property <bool> window-active: false;
     in-out property <int> unread-conversations;
@@ -16,17 +18,14 @@ export global State {
     changed chat-list-height => { self.read-state-changed(); }
     changed window-active => { self.read-state-changed(); }
     changed modal-open => { self.read-state-changed(); }
-    changed loading-history => { self.read-state-changed(); }
     changed unread-locating => { self.read-state-changed(); }
     changed show-conversation => { self.read-state-changed(); }
 
     in-out property <int> section: 0;
-    changed settings-open => { if self.settings-open { self.profile-open = false; } }
     in-out property <int> category: 0;
     callback filter-category();
     callback switch-chat(int);
     callback focus-chat-list();
-    callback focus-chat-header();
     callback focus-friend-list();
     public function browser-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
@@ -56,23 +55,18 @@ export global State {
     in-out property <bool> groups-expanded: true;
     in-out property <bool> friends-expanded: true;
     in-out property <length> friends-y;
-    in-out property <bool> loading-friends;
-    in-out property <string> friends-error;
     in-out property <int> member-result;
     callback back-to-members();
-    in-out property <bool> members-open;
-    in-out property <bool> member-profile;
+    out property <bool> members-open: self.panel == PanelState.members || self.member-profile;
+    out property <bool> member-profile: self.panel == PanelState.member-profile;
     in-out property <[MemberRow]> members;
     in-out property <string> member-query;
-    in-out property <bool> members-loading;
-    in-out property <bool> members-failed;
     in-out property <bool> chat-group;
     in-out property <int> member-count: -1;
     callback open-members();
     callback filter-members();
     callback open-member(string);
-    changed profile-open => { if !self.profile-open { self.members-open = false; self.member-profile = false; } }
-    in-out property <bool> profile-open;
+    out property <bool> profile-open: self.panel == PanelState.profile || self.members-open;
     out property <length> rail-width: 56px;
     out property <length> browser-width: 286px;
     out property <length> panel-width: 320px;
@@ -117,10 +111,13 @@ export global State {
     in-out property <string> recovery-focus-id;
     in-out property <string> recovery-focus-action;
     callback restore-editor(int, int);
+    callback discard-message(string);
     callback retry-message(string);
     callback resolve-recovery(string);
     callback quit();
-    in-out property <bool> can-send;
+    in-out property <bool> send-pending;
+    pure callback has-text(string) -> bool;
+    out property <bool> can-send: self.connected && self.has-chat && !self.send-pending && self.has-text(self.draft);
     in-out property <string> send-reason;
     in-out property <bool> list-pressed;
     in-out property <bool> list-release-pending;
@@ -138,12 +135,10 @@ export global State {
     in-out property <bool> notification-group-events;
     in-out property <bool> notification-available;
     in-out property <string> notification-status;
-    in-out property <bool> demo-notifications;
     in-out property <string> transient-notice;
     callback test-notification();
-    callback demo-notification(int);
-    in-out property <bool> settings-open;
-    in-out property <bool> viewer-open;
+    out property <bool> settings-open: self.panel == PanelState.settings;
+    out property <bool> viewer-open: self.panel == PanelState.viewer;
     in-out property <image> viewer-image;
     in-out property <string> viewer-status;
     in-out property <string> viewer-error;
@@ -162,22 +157,22 @@ export global State {
     callback viewer-step(int);
     callback save-photo();
     callback close-settings();
-    in-out property <bool> connected;
-    in-out property <bool> connection-failed;
-    in-out property <bool> auth-expired;
-    in-out property <bool> session-unavailable;
+    in-out property <ConnectionState> connection: local;
+    out property <bool> connected: self.connection == ConnectionState.online;
+    out property <bool> connection-failed: self.connection == ConnectionState.offline || self.auth-expired || self.session-unavailable;
+    out property <bool> auth-expired: self.connection == ConnectionState.auth-expired;
+    out property <bool> session-unavailable: self.connection == ConnectionState.session-invalid;
     out property <bool> sign-in-available: self.auth-expired || self.session-unavailable;
-    in-out property <bool> reconnected-notice;
-    out property <bool> connection-feedback-visible: (self.connection-failed || self.reconnected-notice) && !self.window-modal-open && !(self.profile-open && self.profile-sheet && !self.members-open);
-    out property <bool> connection-actions-enabled: self.connection-failed && self.connection-feedback-visible && !self.retrying-connection && !self.auth-busy;
+    out property <bool> connection-feedback-visible: self.connection-failed && !self.window-modal-open && !(self.profile-open && self.profile-sheet && !self.members-open);
+    out property <bool> connection-actions-enabled: self.sign-in-available && self.connection-feedback-visible && !self.retrying-connection && !self.auth-busy;
     out property <length> connection-notice-height: max(40px, self.text-size * 1.4px + 16px);
     in-out property <length> connection-area-x;
     in-out property <length> connection-area-y;
     in-out property <length> connection-area-width;
     in-out property <length> connection-area-height;
-    in-out property <bool> retrying-connection;
-    in-out property <bool> auth-open;
-    in-out property <bool> auth-busy;
+    out property <bool> retrying-connection: self.connection == ConnectionState.connecting;
+    out property <bool> auth-open: self.panel == PanelState.sign-in;
+    out property <bool> auth-busy: self.connection == ConnectionState.signing-in;
     in-out property <bool> auth-cancel-confirm;
     in-out property <bool> auth-cancelling;
     in-out property <image> auth-qr;
@@ -186,15 +181,12 @@ export global State {
     in-out property <string> auth-error;
     in-out property <bool> demo;
     in-out property <bool> demo-scenarios-open: false;
+    callback remember-demo-focus();
+    callback restore-demo-focus();
     in-out property <bool> automation-background;
     in-out property <bool> more-chats;
     in-out property <bool> has-chat;
-    in-out property <bool> loading-chats;
-    in-out property <bool> loading-history;
-    in-out property <string> history-error;
-    in-out property <string> list-error;
     in-out property <string> storage-error;
-    in-out property <bool> storage-retryable;
     in-out property <string> desktop-warning;
     in-out property <string> connection-status;
     in-out property <string> account-name;
@@ -230,22 +222,18 @@ export global State {
     in-out property <bool> file-saving;
     in-out property <string> last-opened-link;
     callback photo-closed();
-    callback reconnect();
     callback start-sign-in();
     callback cancel-sign-in();
     callback select-chat(int);
     callback search-changed(string);
     callback draft-edited();
     callback retry-image(string);
-    callback retry-list();
-    callback retry-history();
     callback more();
     callback send();
     callback settings-changed();
-    callback retry-storage();
     callback recover-message(string);
     callback demo-event(int);
-    callback release-deferred();
+
     callback show-profile();
     callback close-profile();
     callback focus-composer();
@@ -298,14 +286,10 @@ export global State {
     in-out property <length> history-cover-inset;
     in-out property <length> history-pill-height;
     changed history-pill-height => { self.read-state-changed(); }
+    in-out property <bool> older-start-known;
     in-out property <string> older-status;
-    in-out property <bool> older-failed;
-    in-out property <bool> paging-demo;
-    in-out property <int> history-retained;
-    in-out property <int> history-pages;
     in-out property <string> highlight-message;
     in-out property <bool> return-visible;
-    in-out property <string> jump-error;
     in-out property <bool> history-needs-refresh;
     in-out property <bool> history-budget-warning;
     in-out property <bool> history-can-follow: true;
@@ -313,7 +297,6 @@ export global State {
     callback row-geometry(string, length, length);
     callback history-scrolled();
     callback latest-request();
-    callback older-retry();
     callback jump-message(string);
     callback return-to-message();
     callback history-scroll(length);

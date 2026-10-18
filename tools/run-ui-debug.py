@@ -96,7 +96,7 @@ with tempfile.TemporaryDirectory(prefix='line-ui-automation-') as directory:
         signal.signal(signum, terminate_owned_scope)
     # KWin 6 segfaults in Compositor::stop on teardown; keep that out of coredumps.
     process = subprocess.Popen(command, env=environment, stdout=log, stderr=log, start_new_session=True,
-        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (0, 0)))
+        preexec_fn=lambda: resource.setrlimit(resource.RLIMIT_CORE, (1, 1)))
     try:
         for _ in range(200):
             if pid_file.exists():

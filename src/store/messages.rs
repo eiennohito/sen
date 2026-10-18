@@ -53,7 +53,7 @@ pub(super) fn by_key(conn: &Connection, key: Key) -> Result<StoredMessage> {
     Ok(conn.query_row(&format!("{SELECT} WHERE key=?"), [key.0], decode)?)
 }
 
-fn by_server(conn: &Connection, id: &ServerId) -> Result<Option<StoredMessage>> {
+pub(super) fn by_server(conn: &Connection, id: &ServerId) -> Result<Option<StoredMessage>> {
     let key = conn
         .query_row("SELECT key FROM message WHERE server_id=?", [&id.0], |r| {
             r.get::<_, i64>(0)
@@ -145,7 +145,7 @@ fn link(
     changes: &mut Changes,
     key: Key,
     id: &ServerId,
-    ts: i64,
+    mut ts: i64,
 ) -> Result<StoredMessage> {
     let sort_id = server_sort(id)?;
     let mut target = by_key(conn, key)?;
@@ -170,6 +170,7 @@ fn link(
         let local = target.local_id;
         let seq = target.request_seq;
         let local_time = target.created_at_local;
+        ts = other.sort.sort_ts;
         target = other;
         target.key = key;
         target.local_id = local;

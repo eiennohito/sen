@@ -1,5 +1,8 @@
+pub mod backend;
 pub mod client;
+pub mod controller;
 pub mod credentials;
+pub mod engine;
 pub mod locations;
 pub mod native_crypto;
 pub mod runtime;

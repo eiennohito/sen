@@ -5,7 +5,7 @@ mod queries;
 #[cfg(test)]
 mod tests;
 mod types;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use std::path::Path;
 use types::Result;
 pub use types::*;
@@ -13,6 +13,7 @@ pub use types::*;
 /// Sole-writer account store. Every mutation commits atomically before returning deltas.
 pub struct Store {
     conn: Connection,
+    writes: u64,
 }
 impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
@@ -28,7 +29,7 @@ impl Store {
     }
     fn initialize(mut conn: Connection) -> Result<Self> {
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 1 {
+        if version > 2 {
             return Err(StoreError::NewerSchema(version));
         }
         conn.execute_batch(
@@ -40,16 +41,25 @@ impl Store {
             tx.pragma_update(None, "user_version", 1)?;
             tx.commit()?;
         }
-        Ok(Self { conn })
+        if version < 2 {
+            let tx = conn.transaction()?;
+            tx.execute_batch("ALTER TABLE draft ADD COLUMN anchor INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=2;")?;
+            tx.commit()?;
+        }
+        Ok(Self { conn, writes: 0 })
+    }
+    pub fn writes(&self) -> u64 {
+        self.writes
     }
     fn mutate(
         &mut self,
-        f: impl FnOnce(&Transaction<'_>, &mut Changes) -> Result<()>,
+        f: impl FnOnce(&Connection, &mut Changes) -> Result<()>,
     ) -> Result<Changes> {
-        let tx = self.conn.transaction()?;
+        let tx = self.conn.savepoint()?;
         let mut changes = Changes::default();
         f(&tx, &mut changes)?;
         tx.commit()?;
+        self.writes += 1;
         Ok(changes)
     }
 }
@@ -81,6 +91,80 @@ fn numeric_max(a: Option<ServerId>, b: Option<ServerId>) -> Result<Option<Server
                 server_sort(id)?;
             }
             Ok(v)
+        }
+    }
+}
+
+impl Store {
+    /// Operation and checkpoint form one durable commit, including non-message ops.
+    pub fn apply_operation(
+        &mut self,
+        live: &LiveOperation,
+        continuous: bool,
+    ) -> types::Result<Changes> {
+        use Operation as Op;
+        self.conn.execute_batch("SAVEPOINT live_operation")?;
+        let result = (|| {
+            let unknown_chat = if let Op::Message(m) = &live.op {
+                !self.conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM chat WHERE chat_id=?)",
+                    [&m.chat_id.0],
+                    |r| r.get::<_, bool>(0),
+                )?
+            } else {
+                false
+            };
+            let fresh = match &live.op {
+                Op::Message(m) => !self.contains_server(&m.server_id)?,
+                _ => false,
+            };
+            let mut changes = match &live.op {
+                Op::Message(m) => self.apply_live(&m.chat_id, m, continuous, None)?,
+                Op::Receipt { chat, up_to } => self.advance_read_receipt(chat, up_to.clone())?,
+                Op::Read { chat, up_to } => {
+                    let changes = self.mark_read(chat, up_to.clone())?;
+                    self.confirm_read(chat, up_to)?;
+                    changes
+                }
+                Op::Withdraw(id) => self.withdraw(id)?,
+                Op::Checkpoint => Changes::default(),
+            };
+            if let Op::Message(m) = &live.op
+                && fresh
+                && !m.outgoing
+                && !live.replay
+                && m.body["skip_badge"].as_bool() != Some(true)
+            {
+                let marker: Option<String> = self.conn.query_row(
+                    "SELECT last_read_server_id FROM chat WHERE chat_id=?",
+                    [&m.chat_id.0],
+                    |r| r.get(0),
+                )?;
+                let marker = marker.map(|id| server_sort(&ServerId(id))).transpose()?;
+                if marker.is_none_or(|id| server_sort(&m.server_id).unwrap() > id) {
+                    let c = self.increment_unread(&m.chat_id)?;
+                    changes.chats_changed.extend(c.chats_changed);
+                }
+                if unknown_chat {
+                    self.conn.execute(
+                        "UPDATE chat SET unread_stale=1 WHERE chat_id=?",
+                        [&m.chat_id.0],
+                    )?;
+                }
+            }
+            self.set_sync_revision(live.revision)?;
+            Ok(changes)
+        })();
+        match result {
+            Ok(c) => {
+                self.conn.execute_batch("RELEASE live_operation")?;
+                Ok(c)
+            }
+            Err(e) => {
+                self.conn
+                    .execute_batch("ROLLBACK TO live_operation; RELEASE live_operation")?;
+                Err(e)
+            }
         }
     }
 }

@@ -494,7 +494,7 @@ pub(crate) fn file_size(bytes: u64) -> String {
     }
 }
 
-pub(crate) fn install(ui: &AppWindow, state: Rc<RefCell<View>>) {
+pub(crate) fn install(ui: &AppWindow) {
     ui.global::<State>().on_rich_source(|rows| {
         rows.model_tracker().track_row_count_changes();
         for i in 0..rows.row_count() {
@@ -530,85 +530,50 @@ pub(crate) fn install(ui: &AppWindow, state: Rc<RefCell<View>>) {
                 .map(|ui| reuse(previous, layout(&ui, &rows, width, size, &metrics)))
                 .unwrap_or_default()
         });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_save_file(move |id| {
-        let Some(ui) = weak.upgrade() else {
-            return;
-        };
-        if ui.global::<State>().get_file_saving() {
-            return;
-        }
-        let mut view = state.borrow_mut();
-        if view
-            .messages
-            .iter()
-            .any(|row| row.id == id && row.file_failed && !row.file_retryable)
-        {
-            return;
-        }
-        ui.global::<State>().set_file_save_id(id.clone());
-        ui.global::<State>().set_file_save_status("".into());
-        ui.global::<State>().set_file_saving(true);
-        if view.demo {
-            save_download(
-                &ui,
-                "資料.txt".into(),
-                std::sync::Arc::new(b"Synthetic attachment\n".to_vec()),
-                true,
-            );
-            return;
-        }
-        view.serial += 1;
-        view.file_request = view.serial;
-        let command = account::Command::SaveFile {
-            chat: view.current.clone(),
-            message_id: id.to_string(),
-            request: view.file_request,
-        };
-        if view
-            .commands
-            .as_ref()
-            .is_none_or(|tx| tx.try_send(command).is_err())
-        {
-            ui.global::<State>().set_file_saving(false);
-            let request = view.file_request;
-            view.update(
-                &ui,
-                account::Update::FileFailed {
-                    request,
-                    failure: line_wasm_poc::client::desktop::assets::Failure::Network,
-                },
-            );
-        }
-    });
-}
-
-pub(crate) fn save_download(
-    ui: &AppWindow,
-    name: String,
-    bytes: std::sync::Arc<Vec<u8>>,
-    demo: bool,
-) {
-    let weak = ui.as_weak();
-    std::thread::spawn(move || {
-        let result = crate::viewer::save_bytes(&bytes, &name, demo);
-        let _ = weak.upgrade_in_event_loop(move |ui| {
-            ui.global::<State>().set_file_saving(false);
-            ui.global::<State>().set_file_save_status(
-                match result {
-                    Ok(Some(_)) => "Saved".into(),
-                    Ok(None) => String::new(),
-                    Err(error) => error,
-                }
-                .into(),
-            );
-        });
-    });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn rich_fixture() -> Vec<MessageRow> {
+        let body =
+            "日😀[笑]本🌸 longunbrokenabcdefghijklmnopqrstuvwxyz0123456789\n二行目のテキスト";
+        let mut row = MessageRow {
+            id: "rich-emoji".into(),
+            body: body.into(),
+            ..Default::default()
+        };
+        row.rich_runs = runs(
+            body,
+            &[account::EmojiView {
+                span: line_wasm_poc::client::desktop::rich::InlineEmoji {
+                    start_utf16: 3,
+                    end_utf16: 6,
+                    start_byte: 7,
+                    end_byte: 12,
+                    fallback: "[笑]".into(),
+                    product_id: "synthetic".into(),
+                    sticon_id: "synthetic".into(),
+                    version: None,
+                    animated: false,
+                },
+                image_key: "demo-inline".into(),
+            }],
+        );
+        if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
+            for i in 0..runs.row_count() {
+                let mut run = runs.row_data(i).unwrap();
+                if run.emoji {
+                    run.picture = slint::Image::from_rgba8(
+                        slint::SharedPixelBuffer::clone_from_slice(&[0, 180, 100, 255], 1, 1),
+                    );
+                    run.has_picture = true;
+                    runs.set_row_data(i, run);
+                }
+            }
+        }
+        vec![MessageRow::default(), row]
+    }
     slint::slint! {
         import { TextMetrics } from "../ui/text-metrics.slint";
         export component MetricsProbe inherits Window {
@@ -624,8 +589,6 @@ mod tests {
             Text { x: 20px; y: 100px; width: root.measured-width * 1px; height: 40px; text: root.sample; font-size: root.size * 1px; color: #008c52; wrap: no-wrap; overflow: clip; }
         }
     }
-
-    use slint::SharedString;
 
     fn layout(ui: &AppWindow, rows: &ModelRc<RichRun>, width: f32, size: f32) -> ModelRc<RichRun> {
         super::layout(
@@ -659,7 +622,7 @@ mod tests {
         std::thread::spawn(|| {
             let _window = snapshot::install().unwrap();
             let ui = create_app_window().unwrap();
-            let mut message = demo::rich_fixture().remove(1);
+            let mut message = rich_fixture().remove(1);
             links::decorate_message(&mut message, "contact");
             let before = layout(&ui, &message.rich_runs, 140., 24.);
             if let Some(runs) = message
@@ -779,7 +742,7 @@ mod tests {
         std::thread::spawn(|| {
             let window = snapshot::install().unwrap();
             let ui = create_app_window().unwrap();
-            install(&ui, Rc::new(RefCell::new(View::default())));
+            install(&ui);
             let mut row = MessageRow {
                 body: "Before https://example.org/a after".into(),
                 outgoing: true,
@@ -880,8 +843,8 @@ mod tests {
         std::thread::spawn(|| {
             let window = snapshot::install().unwrap();
             let ui = create_app_window().unwrap();
-            let state = Rc::new(RefCell::new(View::default()));
-            install(&ui, state);
+
+            install(&ui);
             let observed = watch_layout(&ui);
             let letter = |i: u8| char::from(if i < 26 { b'a' + i } else { b'A' + i - 26 });
             let words = (0..2047)
@@ -965,7 +928,7 @@ mod tests {
         std::thread::spawn(|| {
             let window = snapshot::install().unwrap();
             let ui = create_app_window().unwrap();
-            install(&ui, Rc::new(RefCell::new(View::default())));
+            install(&ui);
             let observed = watch_layout(&ui);
             let opened = Rc::new(RefCell::new(Vec::new()));
             let recorded = opened.clone();
@@ -1089,8 +1052,8 @@ mod tests {
         std::thread::spawn(|| {
             let window = snapshot::install().unwrap();
             let ui = create_app_window().unwrap();
-            install(&ui, Rc::new(RefCell::new(View::default())));
-            let mut row = demo::rich_fixture().remove(1);
+            install(&ui);
+            let mut row = rich_fixture().remove(1);
             row.reply_id = "".into();
             let runs = row.rich_runs.clone();
             let model = runs.as_any().downcast_ref::<VecModel<RichRun>>().unwrap();
@@ -1271,7 +1234,7 @@ mod tests {
             for size in [(980, 720), (360, 520)] {
                 for text_size in [15, 24] {
                     ui.set_text_size(text_size);
-                    for delivery in ["Not sent", "Unconfirmed"] {
+                    for delivery in ["Rejected", "Unconfirmed"] {
                         ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                             id: "failed".into(),
                             body: "Meet at eleven.".into(),
@@ -1452,30 +1415,6 @@ mod tests {
     }
 
     #[test]
-    fn shared_link_strings_are_budgeted_once_per_message() {
-        let url: SharedString = "https://example.org/a".into();
-        let mut row = MessageRow {
-            rich_runs: ModelRc::new(VecModel::from(vec![
-                RichRun {
-                    url: url.clone(),
-                    ..Default::default()
-                };
-                2
-            ])),
-            links: ModelRc::new(VecModel::from(vec![LinkRow {
-                url,
-                ..Default::default()
-            }])),
-            ..Default::default()
-        };
-        let before = paging::bytes(&row);
-        let mut runs: Vec<_> = row.rich_runs.iter().collect();
-        runs[1].url = "https://example.org/b".into();
-        row.rich_runs = ModelRc::new(VecModel::from(runs));
-        assert_eq!(paging::bytes(&row) - before, "https://example.org/b".len());
-    }
-
-    #[test]
     fn first_frame_never_paints_unpositioned_or_overlapping_runs() {
         for size in [(980, 720, 15), (360, 520, 24)] {
             for emoji in [false, true] {
@@ -1484,12 +1423,12 @@ mod tests {
                     let window = snapshot::install().unwrap();
                     window.set_size(slint::PhysicalSize::new(size.0, size.1));
                     let ui = create_app_window().unwrap();
-                    install(&ui, Rc::new(RefCell::new(View::default())));
+                    install(&ui);
                     ui.set_has_chat(true);
                     ui.set_show_conversation(true);
                     ui.set_text_size(size.2);
                     let mut row = if emoji {
-                        demo::rich_fixture().remove(1)
+                        rich_fixture().remove(1)
                     } else {
                         MessageRow {
                             body: "Before https://example.org/a after words".into(),

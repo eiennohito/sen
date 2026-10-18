@@ -1,3 +1,4 @@
+import { PanelState } from "types.slint";
 import { Button, LineEdit, TextEdit, ScrollView, ComboBox, CheckBox } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -49,7 +50,6 @@ export component Layers inherits Rectangle {
         if State.auth-busy { root.cancel-confirm = true; keep-waiting.focus(); }
         else { State.close-sign-in(); }
     }
-    Timer { interval: 3s; running: State.reconnected-notice; triggered => { State.reconnected-notice = false; } }
     Timer { interval: 3s; running: State.transient-notice != ""; triggered => { State.transient-notice = ""; } }
     Rectangle {
         x: max(12px, parent.width - self.width - 12px); y: 12px;
@@ -179,7 +179,6 @@ export component Layers inherits Rectangle {
                                     selected(value) => { State.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; State.settings-changed(); }
                                 }
                                 if State.storage-error != "": Text { text: State.storage-error; wrap: word-wrap; color: Tokens.danger; }
-                                if State.storage-error != "": Button { text: "Retry saving preferences"; clicked => { State.retry-storage(); } }
                                 enter-sends := CheckBox { accessible-description: self.has-focus ? "Focused" : ""; text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
                             }
                             VerticalLayout { visible: root.settings-section == 1; height: self.visible ? self.preferred-height : 0px;
@@ -332,7 +331,9 @@ export component Layers inherits Rectangle {
     }
     public function fit-photo() { State.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
     public function original-photo() { State.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
-    public function back-to-members() { State.member-profile = false; members.focus-list(); }
+    public function focus-member-list() {members.focus-list();}
+    public function back-to-members() { State.request-panel(PanelState.members); members.focus-list(); }
+    public function focus-profile-close() { if State.members-open && !State.member-profile { members.focus-first(); } else { profile-close.focus(); } }
     public function focus-profile-last() { if State.members-open && !State.member-profile { members.focus-last(); } else if State.profile-available { profile-chat.focus(); } else { profile-close.focus(); } }
     public function focus-profile() { if State.members-open && !State.member-profile { members.focus-first(); } else if State.members-open { profile-back.focus(); } else { profile-close.focus(); } }
     public function focus-settings() { root.settings-section = 0; settings-close.focus-button(); }

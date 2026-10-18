@@ -104,6 +104,16 @@ pub fn receive(
     state_path: &Path,
     wasm_path: &Path,
     stop: &Arc<AtomicBool>,
+    deliver: impl FnMut(Event) -> bool,
+) -> Result<()> {
+    receive_from(state_path, wasm_path, 0, stop, deliver)
+}
+
+pub fn receive_from(
+    state_path: &Path,
+    wasm_path: &Path,
+    revision: u64,
+    stop: &Arc<AtomicBool>,
     mut deliver: impl FnMut(Event) -> bool,
 ) -> Result<()> {
     set_request_cancel(stop.clone());
@@ -111,51 +121,10 @@ pub fn receive(
     let mut api = Api::new(&fs::read(wasm_path)?)?;
     // A separate agent keeps the long-lived stream out of the RPC pool.
     let transport = http::Transport::new()?;
-    let mut revisions = Revisions::default();
-    let mut seeded = false;
+    let mut revisions = Revisions { local: revision };
     let mut refreshed_once = false;
     let mut attempt = 0;
     while !stop.load(Ordering::Relaxed) {
-        if !seeded {
-            match chat::talk(&mut api, access(&state)?, "getLastOpRevision", json!([])) {
-                Ok(revision) => {
-                    revisions.local = number(&revision).context("missing operation revision")?;
-                    seeded = true;
-                }
-                Err(error) => {
-                    if error
-                        .downcast_ref::<RpcError>()
-                        .is_some_and(|e| matches!(e.http, 401 | 403))
-                    {
-                        if refreshed_once {
-                            deliver(Event::State(SyncState::AuthExpired));
-                            return Ok(());
-                        }
-                        match refresh(&mut api, &mut state, state_path, stop, &mut deliver) {
-                            Ok(()) => refreshed_once = true,
-                            Err(error) if expired_refresh(&error) => {
-                                deliver(Event::State(SyncState::AuthExpired));
-                                return Ok(());
-                            }
-                            Err(_) => {
-                                attempt += 1;
-                                if !deliver(Event::State(retry_state(attempt))) {
-                                    break;
-                                }
-                                pause(stop, backoff(attempt));
-                            }
-                        }
-                    } else {
-                        attempt += 1;
-                        if !deliver(Event::State(retry_state(attempt))) {
-                            break;
-                        }
-                        pause(stop, backoff(attempt));
-                    }
-                    continue;
-                }
-            }
-        }
         let result = stream(
             &transport,
             access(&state)?,
@@ -219,7 +188,7 @@ impl std::fmt::Display for ExpiredSession {
     }
 }
 impl std::error::Error for ExpiredSession {}
-fn expired_refresh(error: &anyhow::Error) -> bool {
+pub(super) fn expired_refresh(error: &anyhow::Error) -> bool {
     error.downcast_ref::<ExpiredSession>().is_some()
         || error.downcast_ref::<RpcError>().is_some_and(|e| {
             ((400..500).contains(&e.http) && !matches!(e.http, 408 | 429)) || e.code == 10201
@@ -233,7 +202,7 @@ fn retry_state(attempt: u32) -> SyncState {
         SyncState::Reconnecting { attempt }
     }
 }
-fn refresh(
+pub(super) fn refresh(
     api: &mut Api,
     state: &mut Value,
     state_path: &Path,

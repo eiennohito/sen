@@ -1,3 +1,4 @@
+import { PanelState } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -24,7 +25,7 @@ export component Rail inherits Rectangle {
     property <int> cursor: State.section;
     public function activate(index: int) {
         if index < 2 { State.browse(index); }
-        else if index == 2 { State.settings-open = true; State.focus-settings-close(); }
+        else if index == 2 { State.request-panel(PanelState.settings); State.focus-settings-close(); }
     }
     rail-focus := FocusScope {
         accessible-role: button; accessible-label: "Navigation"; accessible-description: self.has-focus ? "Focused navigation" : "";

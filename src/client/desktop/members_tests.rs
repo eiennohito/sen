@@ -65,10 +65,9 @@ fn client(transport: http::Transport) -> (Client, PathBuf) {
         cache: Arc::new(std::sync::Mutex::new(
             ImageCache::new(&root, "uself").unwrap(),
         )),
-        messages: messages::MessageCache::new(&root, &[7; 32]).unwrap(),
-        detail_boxes: vec![],
-        loaded_chats: vec![],
-        live_ids: Default::default(),
+        requests: HashMap::new(),
+        session_path: root.join("session.json"),
+        cache_root: root.clone(),
     };
     (client, root)
 }

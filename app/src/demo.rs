@@ -1,896 +1,332 @@
-use super::*;
-pub(super) struct Conversation {
-    pub title: &'static str,
-    pub preview: &'static str,
-    pub initial: &'static str,
-    pub messages: Vec<MessageRow>,
-}
-
-fn fixture_time(time: &str) -> i64 {
-    fixture_time_at(
-        time,
-        chrono::DateTime::from_timestamp_millis(now_millis())
-            .unwrap()
-            .with_timezone(&chrono::Local),
-    )
-}
-
-pub(super) fn fixture_time_at<Tz: chrono::TimeZone>(time: &str, now: chrono::DateTime<Tz>) -> i64 {
-    use chrono::Timelike;
-    let reference = chrono::NaiveDate::from_ymd_opt(2026, 10, 18).unwrap();
-    let parsed =
-        chrono::NaiveDateTime::parse_from_str(time, "%Y/%m/%d %H:%M").unwrap_or_else(|_| {
-            reference.and_time(chrono::NaiveTime::parse_from_str(time, "%H:%M").unwrap())
-        });
-    let today = now.date_naive();
-    let timezone = now.timezone();
-    let timestamp = now.timestamp_millis();
-    if parsed.date() == reference {
-        // A midnight gap starts the day at its first valid local minute.
-        let start = (0..=now.hour() * 60 + now.minute())
-            .find_map(|minute| {
-                let local = today.and_hms_opt(minute / 60, minute % 60, 0)?;
-                timezone
-                    .from_local_datetime(&local)
-                    .earliest()
-                    .map(|time| time.timestamp_millis())
-            })
-            .unwrap_or(timestamp);
-        let minute = parsed.hour() as i64 * 60 + parsed.minute() as i64;
-        let age = (12 * 60 + 12 - minute).max(1) * 60_000;
-        let span = (174 * 60_000).max(age);
-        return timestamp - age * (timestamp - start).min(span) / span;
-    }
-    let days = parsed.date() - reference;
-    let date = today + days;
-    timezone
-        .from_local_datetime(&date.and_time(parsed.time()))
-        .earliest()
-        .map(|time| time.timestamp_millis())
-        .unwrap_or(timestamp + days.num_days() * 86_400_000)
-}
-
-fn message(body: &str, time: &str, outgoing: bool) -> MessageRow {
-    let timestamp = fixture_time(time);
-    MessageRow {
-        id: format!("demo-{time}-{body}").into(),
-        sort_key: order_key(timestamp).into(),
-        delivered_time: timestamp.to_string().into(),
-        body: body.into(),
-        time: display_time(timestamp).into(),
-        outgoing,
-        ..Default::default()
-    }
-}
-
-pub(super) fn members() -> Vec<MemberRow> {
-    (0..25)
-        .map(|i| {
-            let name = match i {
-                0 => "Offline preview".into(),
-                1 => "葵".into(),
-                2 => "蓮".into(),
-                24 => "Unknown member".into(),
-                _ => format!("Weekend walker {i:02}"),
-            };
-            MemberRow {
-                id: if i == 0 {
-                    "self".into()
-                } else if i == 1 {
-                    "0".into()
-                } else {
-                    format!("member-{i}").into()
-                },
-                initial: member_initial(&name),
-                name: name.into(),
-                is_self: i == 0,
-                avatar: if i == 24 {
-                    Default::default()
-                } else {
-                    avatar(i % 3)
-                },
-                ..Default::default()
-            }
-        })
-        .collect()
-}
-
-fn group_fixture() -> Vec<MessageRow> {
-    [
-        ("Morning!", "2026/10/17 09:18", "aoi", "葵", false),
-        ("Shall we walk?", "2026/10/17 09:19", "aoi", "葵", false),
-        ("Yes!", "2026/10/17 09:20", "ren", "蓮", false),
-        (
-            "The riverside route looks good.",
-            "2026/10/17 09:21",
-            "self",
-            "",
-            true,
-        ),
-        ("See you there 🐈", "2026/10/17 09:22", "self", "", true),
-        ("Bring a jacket.", "2026/10/17 09:27", "self", "", true),
-        ("On my way!", "2026/10/18 09:18", "aoi", "葵", false),
-    ]
-    .into_iter()
-    .map(|(body, time, id, name, outgoing)| MessageRow {
-        sender_id: id.into(),
-        sender_name: name.into(),
-        sender_avatar: avatar(if id == "aoi" { 0 } else { 1 }),
-        has_sender_avatar: !outgoing,
-        ..message(body, time, outgoing)
-    })
-    .collect()
-}
-
-pub(super) fn examples() -> Vec<Conversation> {
-    vec![
-        Conversation {
-            title: "葵",
-            preview: "また明日、駅の前で。",
-            initial: "葵",
-            messages: vec![
-                message("去年の秋の散歩、楽しかったね。", "2025/10/18 15:20", false),
-                message("今週も川沿いのカフェに行こう。", "2026/10/15 18:30", true),
-                message(
-                    "メニューはこちら: https://example.org/cafe",
-                    "2026/10/17 19:10",
-                    false,
-                ),
-                message(
-                    "駅前のカフェは11時からだって。窓際の席で本を読みながら待っているね。If it rains, we can spend the afternoon there and take the riverside walk another day. ☕",
-                    "10:36",
-                    false,
-                ),
-                message("明日は何時に待ち合わせる？", "10:41", false),
-                message("11時でどう？ コーヒーも飲もう。", "10:42", true),
-                message("いいね！\nまた明日、駅の前で。", "10:43", false),
-            ],
-        },
-        Conversation {
-            title: "Weekend plans",
-            preview: "The riverside route looks good.",
-            initial: "W",
-            messages: group_fixture(),
-        },
-        Conversation {
-            title: "Notes to self",
-            preview: "A quiet place for a thought.",
-            initial: "N",
-            messages: vec![message(
-                "A quiet place for a thought.",
-                "2025/10/18 18:00",
-                true,
-            )],
-        },
-    ]
-}
-
-/// All scenario events are local fixtures, even when completions are delayed.
-pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
-    // Switching synthetic fixtures must not inherit the paging fixture's range.
-    if !matches!(kind, 1 | 2 | 3 | 4 | 9 | 10 | 16 | 17 | 18 | 19) {
-        let mut view = state.borrow_mut();
-        if view.demo_paging {
-            view.demo_paging = false;
-            let current = view.current.clone();
-            view.paging.borrow_mut().remove(&current);
-            view.recent.remove(&current);
-            ui.global::<State>().set_paging_demo(false);
-            ui.global::<State>().set_history_needs_refresh(false);
+//! Synthetic data enters through the backend and follows the normal commit path.
+use crate::*;
+use line_wasm_poc::backend::{LiveOp, Op};
+pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: i32) {
+    let chat = d.state.selected.clone().unwrap_or(ChatId("alice".into()));
+    match kind {
+        12 => {
+            fixture(
+                ui,
+                d,
+                fake,
+                "rich",
+                "Rich content",
+                demo_data::rich_fixture(fake, "rich", 2000),
+            );
         }
-    }
-
-    if !state.borrow().demo {
-        return;
-    }
-    if matches!(kind, 32 | 33) && state.borrow().demo_previews {
-        let mut view = state.borrow_mut();
-        view.demo_preview_loading = kind == 32;
-        view.preview_requested.clear();
-        if kind == 32 {
-            for row in &view.rows {
-                if let Some(runs) = row
-                    .preview_runs
-                    .as_any()
-                    .downcast_ref::<VecModel<RichRun>>()
-                {
-                    for i in 0..runs.row_count() {
-                        let mut run = runs.row_data(i).unwrap();
-                        run.picture = Default::default();
-                        run.has_picture = false;
-                        runs.set_row_data(i, run);
-                    }
-                }
-            }
-            for row in &mut view.messages {
-                clear_picture(row);
-            }
-            for history in view.history.values_mut() {
-                for row in &mut history.messages {
-                    clear_picture(row);
-                }
-            }
-            for rows in view.recent.values_mut() {
-                for row in rows {
-                    clear_picture(row);
-                }
-            }
-            view.render(ui);
-        } else {
-            for (key, pixels) in preview_assets() {
-                view.update(ui, account::Update::Image { key, pixels });
-            }
-        }
-        view.history_exposure(ui);
-        return;
-    }
-    if (20..30).contains(&kind) {
-        let mut view = state.borrow_mut();
-        view.messages = vec![media_failure((kind - 20) as usize)];
-        view.render(ui);
-        ui.invoke_show_history(0., true);
-        return;
-    }
-    if kind == 15 {
-        let mut view = state.borrow_mut();
-        for number in 0..40 {
-            let id = format!("browser-{number}");
-            if view.ids.contains(&id) {
-                continue;
-            }
-            let index = view.ids.len() as i32;
-            view.ids.push(id);
-            view.rows.push(ChatRow {
-                index,
-                title: format!("Browser friend {number:02}").into(),
-                time: "New".into(),
-                preview: "No messages yet".into(),
-                initial: "B".into(),
-                ..Default::default()
+        0 => {
+            let mut rows = fake.page(&chat);
+            rows.extend(demo_data::history(fake, &chat.0));
+            rows.sort_by_key(|m| m.created_ms);
+            rows.dedup_by(|a, b| a.server_id == b.server_id);
+            fake.set_page(chat.clone(), rows);
+            d.sender.send(Intent::Page {
+                chat,
+                kind: PageKind::Recent,
             });
+            let intent = d.state.subscribe_window(Anchor::Latest, 80, 0);
+            d.sender.send(intent);
+            d.opening_history = false;
+            ui.invoke_show_history(0., true);
         }
-        view.filter(ui);
-        return;
-    }
-    if kind == 14 {
-        let mut view = state.borrow_mut();
-        let chat = view.current.clone();
-        view.unread.chats.remove(&chat);
-        view.unread.server(&chat, Some(0), None);
-        let ids = ["90001", "90002", "90003"];
-        view.unread
-            .incoming(&chat, ids.into_iter().map(str::to_owned));
-        for id in ids {
-            if !view.messages.iter().any(|m| m.id == id) {
-                view.messages.push(MessageRow {
-                    id: id.into(),
-                    body: "新しいメッセージ 🐈".into(),
-                    ..message("新しいメッセージ 🐈", "12:10", false)
+        8 => fixture(
+            ui,
+            d,
+            fake,
+            "reading",
+            "Reading fixtures",
+            demo_data::reading(fake, "reading"),
+        ),
+        14 => {
+            for (target, count) in [(chat.clone(), 3), (ChatId("weekend".into()), 2)] {
+                let mut rows = fake.page(&target);
+                // New ids must sort after everything already read.
+                let newest = rows
+                    .iter()
+                    .filter_map(|m| m.server_id.0.parse::<i64>().ok())
+                    .max()
+                    .unwrap_or(0);
+                for n in 1..=count {
+                    let id = newest + n;
+                    let row = FakeBackend::message(&target.0, id, "新しいメッセージ 🐈", false);
+                    rows.push(row.clone());
+                    fake.inject(LiveOp {
+                        revision: fake.revision(),
+                        replay: false,
+                        op: Op::Message(row),
+                    });
+                }
+                fake.set_page(target, rows);
+            }
+        }
+        15 => {
+            for i in 0..40 {
+                fake.add_chat(ChatInput {
+                    id: ChatId(format!("browser-{i}")),
+                    title: format!("Browser friend {i:02}"),
+                    ..Default::default()
+                });
+            }
+            d.sender.send(Intent::MoreChats);
+        }
+        1 => {
+            for i in 1..=3 {
+                let id = fake.revision();
+                fake.inject(LiveOp {
+                    revision: id,
+                    replay: false,
+                    op: Op::Message(FakeBackend::message(
+                        &chat.0,
+                        id,
+                        &format!("到着 {i}"),
+                        false,
+                    )),
                 });
             }
         }
-        if let Some(other) = view.ids.iter().find(|id| **id != chat).cloned() {
-            view.unread.server(&other, Some(0), None);
-            view.unread
-                .incoming(&other, ["80001", "80002"].into_iter().map(str::to_owned));
+        5 => fixture(
+            ui,
+            d,
+            fake,
+            "photos",
+            "Photo preview",
+            demo_data::photos(fake, "photos"),
+        ),
+        6 => {
+            let row = demo_data::sticker(fake, "stickers");
+            fixture(ui, d, fake, "stickers", "Sticker preview", vec![row]);
         }
-        ui.set_following(false);
-        ui.set_new_count(3);
-        view.unread_page(ui);
-        view.render(ui);
-        return;
-    }
-    if kind == 12 {
-        let mut view = state.borrow_mut();
-        view.messages = rich_fixture();
-        view.render(ui);
-        ui.invoke_show_history(0., false);
-        return;
-    }
-    if kind == 9 {
-        ui.set_loading_history(!ui.get_loading_history());
-        ui.set_history_error("".into());
-        return;
-    }
-    if kind == 8 {
-        let mut view = state.borrow_mut();
-        let current = view.current.clone();
-        view.saved.outbox.retain(|item| item.chat != current);
-        view.messages = [
-            MessageKind::Text,
-            MessageKind::Photo,
-            MessageKind::Sticker,
-            MessageKind::Video,
-            MessageKind::Voice,
-            MessageKind::File,
-            MessageKind::Location,
-            MessageKind::Contact,
-            MessageKind::System,
-            MessageKind::Withdrawn,
-            MessageKind::Undecryptable,
-            MessageKind::Unknown,
-        ]
-        .into_iter()
-        .enumerate()
-        .map(|(i, kind)| MessageRow {
-            id: format!("reading-{i}").into(),
-            kind,
-            body: crate::links::placeholder(kind)
-                .unwrap_or("参照「https://example.org/reading」。またはwww.example.jp、どう？")
-                .into(),
-            sender_name: "葵".into(),
-            ..message("", &format!("12:{i:02}"), false)
-        })
-        .collect();
-        view.render(ui);
-        ui.invoke_show_history(0., false);
-        return;
-    }
-    if kind == 32 {
-        let mut view = state.borrow_mut();
-        view.select(ui, 1);
-        ui.set_show_conversation(true);
-        view.open_members(ui);
-        return;
-    }
-    if kind == 7 {
-        let mut view = state.borrow_mut();
-        let current = view.current.clone();
-        view.saved.outbox.retain(|item| item.chat != current);
-        view.messages = group_fixture();
-        view.render(ui);
-        ui.invoke_show_history(0., true);
-        return;
-    }
-    if kind == 6 {
-        let key = "synthetic-sticker".to_string();
-        let mut view = state.borrow_mut();
-        let current = view.current.clone();
-        view.saved.outbox.retain(|item| item.chat != current);
-        view.messages = vec![MessageRow {
-            id: key.clone().into(),
-            sticker: true,
-            body: "[sticker]".into(),
-            image_key: key.clone().into(),
-            ..message("[sticker]", "12:09", false)
-        }];
-        view.render(ui);
-        ui.invoke_show_history(0., true);
-        drop(view);
-        let weak = ui.as_weak();
-        let state = state.clone();
-        slint::Timer::single_shot(std::time::Duration::from_secs(1), move || {
-            if let Some(ui) = weak.upgrade() {
-                state.borrow_mut().update(
-                    &ui,
-                    account::Update::Image {
-                        key,
-                        pixels: line_wasm_poc::client::desktop::assets::Pixels {
-                            width: 2,
-                            height: 1,
-                            rgba: vec![54, 130, 88, 255, 196, 220, 173, 255],
-                        }
-                        .into(),
-                    },
-                );
-            }
-        });
-        return;
-    }
-    if kind == 5 {
-        let mut view = state.borrow_mut();
-        view.messages = vec![
-            MessageRow {
-                id: "demo-photo-wide".into(),
-                photo: true,
-                body: "Photo".into(),
-                image_key: "demo-photo-wide".into(),
-                picture: thumbnail(false),
-                has_picture: true,
-                outgoing: true,
-                ..message("Photo", "12:05", true)
-            },
-            MessageRow {
-                ..message(
-                    "写真の下に時間が表示されます。\nA message following the photo.",
-                    "12:06",
-                    false,
-                )
-            },
-            MessageRow {
-                id: "demo-photo-portrait".into(),
-                photo: true,
-                body: "Photo".into(),
-                image_key: "demo-photo-portrait".into(),
-                picture: thumbnail(true),
-                has_picture: true,
-                ..message("Photo", "12:07", false)
-            },
-        ];
-        let current = view.current.clone();
-        view.saved
-            .outbox
-            .retain(|outgoing| outgoing.chat != current);
-        view.render(ui);
-        ui.invoke_show_history(0., false);
-        return;
-    }
-    if matches!(kind, 4 | 16 | 17 | 18 | 19) {
-        use line_wasm_poc::client::desktop::sync::SyncState;
-        let event = match kind {
-            4 => account::Update::ConnectionFailed(account::ConnectionFailure::Session),
-            16 => account::Update::Sync(SyncState::Reconnecting { attempt: 1 }),
-            17 => account::Update::Sync(SyncState::Offline),
-            19 => account::Update::Sync(SyncState::AuthExpired),
-            _ => account::Update::ChatsFailed(account::ListRequest::Refresh),
-        };
-        state
-            .borrow_mut()
-            .update(ui, account::Update::Sync(SyncState::Connected));
-        ui.global::<State>().set_reconnected_notice(false);
-        ui.set_list_error("".into());
-        state.borrow_mut().update(ui, event);
-        if kind == 16 {
-            let weak = ui.as_weak();
-            let state = state.clone();
-            slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
-                if let Some(ui) = weak.upgrade()
-                    && ui.get_retrying_connection()
-                    && !ui.get_connection_failed()
-                {
-                    state
-                        .borrow_mut()
-                        .update(&ui, account::Update::Sync(SyncState::Connected));
-                }
+        7 => fixture(
+            ui,
+            d,
+            fake,
+            "groups",
+            "Group preview",
+            demo_data::group(fake, "groups", 5200),
+        ),
+        20..=29 => {
+            let mut row = FakeBackend::message(&chat.0, fake.revision(), "", false);
+            row.content_type = 1;
+            row.body["rich"] =
+                serde_json::to_value(line_wasm_poc::client::desktop::rich::RichContent {
+                    content_type: 1,
+                    ..Default::default()
+                })
+                .unwrap();
+            let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
+            asset["failure"] = serde_json::to_value(media_failure((kind - 20) as usize)).unwrap();
+            row.body["image"] = asset;
+            fake.set_page(chat.clone(), vec![row]);
+            d.sender.send(Intent::Page {
+                chat,
+                kind: PageKind::Recent,
+            });
+            ui.set_following(true);
+        }
+        19 => fake.auth_expired(),
+        3 => {
+            fake.uncertain_send();
+            d.sender.send(Intent::Send {
+                chat: chat.clone(),
+                text: "駅に着いたら連絡してね。See you soon! 🐈".into(),
+            });
+            d.sender.send(Intent::Draft {
+                chat,
+                draft: Draft {
+                    text: d.state.composer.clone(),
+                    cursor: 0,
+                    anchor: 0,
+                    updated: line_wasm_poc::engine::now_ms(),
+                },
             });
         }
-        return;
-    }
-    if kind == 0 {
-        let mut view = state.borrow_mut();
-        view.messages = (0..40).map(|i| {
-            let text = match i % 4 {
-                0 => format!("{i}: 日本語の長いメッセージ 🐈\n二行目を選択してコピーできます。\nA final line with emoji 👩🏽‍💻"),
-                1 => format!("{i}: https://example.invalid/{}", "averylongunbrokenpath".repeat(8)),
-                _ => format!("{i}: compact message"),
-            };
-            message(&text, "2026/10/15 12:00", i % 3 == 0)
-        }).collect();
-        view.render(ui);
-        ui.invoke_show_history(0., true);
-        return;
-    }
-    let chat = state.borrow().current.clone();
-    if kind == 1 {
-        let weak = ui.as_weak();
-        let state = state.clone();
-        slint::Timer::single_shot(std::time::Duration::from_millis(350), move || {
-            if let Some(ui) = weak.upgrade() {
-                let mut view = state.borrow_mut();
-                view.serial += 1;
-                let rows = (0..3)
-                    .map(|i| {
-                        message(
-                            &format!("到着 {} · コーヒーを買っていくね 🐈 {}", i + 1, view.serial),
-                            "12:01",
-                            false,
-                        )
-                    })
-                    .collect::<Vec<_>>();
-                if view.current == chat {
-                    view.messages.extend(rows);
-                    if !ui.get_following() {
-                        ui.set_new_count(ui.get_new_count() + 3);
-                    }
-                    view.render(&ui);
-                } else if let Some(history) = view.history.get_mut(&chat) {
-                    history.messages.extend(rows);
-                }
+        10 | 31 => {
+            fake.fail_send();
+            if kind == 10 {
+                d.sender.send(Intent::Send {
+                    chat,
+                    text: "Rejected message".into(),
+                });
             }
-        });
-    } else if kind == 2 {
-        let mut view = state.borrow_mut();
-        view.serial += 1;
-        let key = format!("synthetic-media-{}", view.serial);
-        // Complete media on an existing message above the reader, rather than
-        // disguising a fourth arrival as part of the three-message burst.
-        let Some(message) = view.messages.first_mut() else {
-            return;
-        };
-        message.image_key = key.clone().into();
-        message.photo = true;
-        message.has_picture = false;
-        message.image_failed = false;
-        message.picture = Default::default();
-        view.render(ui);
-        drop(view);
-        let weak = ui.as_weak();
-        let state = state.clone();
-        slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
-            if let Some(ui) = weak.upgrade() {
-                state.borrow_mut().update(
-                    &ui,
-                    account::Update::Image {
-                        key,
-                        pixels: line_wasm_poc::client::desktop::assets::Pixels {
-                            width: 2,
-                            height: 1,
-                            rgba: vec![54, 130, 88, 255, 196, 220, 173, 255],
-                        }
-                        .into(),
-                    },
-                );
-            }
-        });
-    } else if matches!(kind, 3 | 10 | 30 | 31) {
-        let mut view = state.borrow_mut();
-        view.demo_send_failure.store(
-            if matches!(kind, 10 | 31) { 2 } else { 1 },
-            std::sync::atomic::Ordering::Relaxed,
+        }
+        30 => fake.fail_send(),
+        17 => fake.offline(true),
+        16 => fake.offline(false),
+        _ => {}
+    }
+}
+
+pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
+    demo_data::seed(fake);
+    if scene == "previews" {
+        demo_data::previews(fake);
+    }
+    if scene == "paging" {
+        fake.set_page(
+            ChatId("alice".into()),
+            demo_data::paged_rows(fake, "alice", 0..1000),
         );
-        if kind < 30 {
-            let draft = ui.get_draft();
-            ui.set_draft("駅に着いたら連絡してね。See you soon! 🐈".into());
-            if !view.submit(ui) {
-                view.demo_send_failure
-                    .store(0, std::sync::atomic::Ordering::Relaxed);
-            }
-            ui.set_draft(draft);
-            view.persist(ui);
-        }
     }
-}
-
-/// High-resolution local fixture; source pixels remain visible when zoomed.
-pub(super) fn photo(portrait: bool) -> slint::Image {
-    let (width, height) = if portrait { (800, 1200) } else { (1200, 800) };
-    render_photo(width, height)
-}
-pub(super) fn thumbnail(portrait: bool) -> slint::Image {
-    let (width, height) = if portrait { (256, 384) } else { (384, 256) };
-    render_photo(width, height)
-}
-fn render_photo(width: u32, height: u32) -> slint::Image {
-    let mut pixels = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(width, height);
-    for y in 0..height as usize {
-        for x in 0..width as usize {
-            let (source_width, source_height) = if width > height {
-                (1200, 800)
-            } else {
-                (800, 1200)
-            };
-            let source_x = x * source_width / width as usize;
-            let source_y = y * source_height / height as usize;
-            let grid = source_x % 100 < 3 || source_y % 100 < 3;
-            pixels.make_mut_slice()[y * width as usize + x] = slint::Rgba8Pixel {
-                r: if grid {
-                    255
-                } else {
-                    (source_x * 200 / source_width + 30) as u8
-                },
-                g: if grid {
-                    255
-                } else {
-                    (source_y * 180 / source_height + 40) as u8
-                },
-                b: 100,
-                a: 255,
-            };
-        }
-    }
-    slint::Image::from_rgba8(pixels)
-}
-
-pub(super) fn avatar(index: usize) -> slint::Image {
-    let mut rgba = vec![0; 80 * 120 * 4];
-    for y in 0..120usize {
-        for x in 0..80usize {
-            let i = (y * 80 + x) * 4;
-            rgba[i..i + 4].copy_from_slice(&[
-                80 + index as u8 * 40,
-                (80 + x) as u8,
-                (50 + y) as u8,
-                255,
-            ]);
-        }
-    }
-    let pixels = line_wasm_poc::client::desktop::assets::circular_avatar(
-        &line_wasm_poc::client::desktop::assets::Pixels {
-            width: 80,
-            height: 120,
-            rgba,
-        },
-    );
-    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-        &pixels.rgba,
-        pixels.width,
-        pixels.height,
-    ))
-}
-
-pub(crate) fn rich_fixture() -> Vec<MessageRow> {
-    let mut target = message(
-        "前のメッセージ — 日本語と emoji 🌸",
-        "2026/10/17 12:00",
-        false,
-    );
-    target.id = "rich-target".into();
-    let body = "日😀[笑]本🌸 longunbrokenabcdefghijklmnopqrstuvwxyz0123456789\n二行目のテキスト";
-    let span = line_wasm_poc::client::desktop::rich::InlineEmoji {
-        start_utf16: 3,
-        end_utf16: 6,
-        start_byte: 7,
-        end_byte: 12,
-        fallback: "[笑]".into(),
-        product_id: "synthetic".into(),
-        sticon_id: "synthetic".into(),
-        version: None,
-        animated: false,
-    };
-    let mut row = message(body, "2026/10/17 12:01", false);
-    row.id = "rich-emoji".into();
-    row.rich_runs = crate::rich_content::runs(
-        body,
-        &[account::EmojiView {
-            span,
-            image_key: "demo-inline".into(),
-        }],
-    );
-    if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
-        for i in 0..runs.row_count() {
-            let mut run = runs.row_data(i).unwrap();
-            if run.emoji {
-                run.picture = avatar(0);
-                run.has_picture = true;
-                runs.set_row_data(i, run);
-            }
-        }
-    }
-    row.reply_id = target.id.clone();
-    row.reply_preview = "葵: 前のメッセージ".into();
-    let mut rows = vec![target, row];
-    for (kind, body, detail) in [
-        (MessageKind::File, "資料.txt", "2.0 KB"),
-        (MessageKind::Video, "Video", "2:05"),
-        (MessageKind::Voice, "Voice message", "0:12"),
-        (MessageKind::Contact, "Contact · 葵", ""),
-        (MessageKind::System, "葵 joined the group", ""),
-        (MessageKind::Withdrawn, "Message withdrawn", ""),
-    ] {
-        let mut row = message(body, "2026/10/17 12:02", false);
-        row.id = format!("rich-{kind:?}").into();
-        row.kind = kind;
-        row.detail = detail.into();
-        rows.push(row);
-    }
-    rows
-}
-
-/// Generate only the requested synthetic page, never a retained thousand-row model.
-pub(super) fn paged_rows(range: std::ops::Range<usize>) -> Vec<MessageRow> {
-    range
-        .map(|n| {
-            let timestamp = fixture_time("12:00") - (1000 - n) as i64 * 60_000;
-            MessageRow {
-                id: format!("paged-{n:04}").into(),
-                body: format!("History item {n:04} · bounded page\n日本語 🐈").into(),
-                sort_key: order_key(timestamp).into(),
-                delivered_time: timestamp.to_string().into(),
-                time: display_time(timestamp).into(),
+    if let Some(case) = case
+        && let Some(class) = case.strip_prefix("media-")
+    {
+        let index = [
+            "timeout",
+            "network",
+            "404",
+            "403",
+            "500",
+            "unsupported",
+            "path",
+            "large",
+            "decode",
+            "cancelled",
+        ]
+        .iter()
+        .position(|v| *v == class)
+        .unwrap();
+        let mut row = FakeBackend::message("alice", 900, "", false);
+        row.content_type = 1;
+        row.body["rich"] =
+            serde_json::to_value(line_wasm_poc::client::desktop::rich::RichContent {
+                content_type: 1,
                 ..Default::default()
+            })
+            .unwrap();
+        let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
+        asset["failure"] = serde_json::to_value(media_failure(index)).unwrap();
+        row.body["image"] = asset;
+        fake.set_page(ChatId("alice".into()), vec![row]);
+        return;
+    }
+    if let Some(case) = case {
+        let body=match case {"long-url"=>format!("https://example.org/{}","averylongunbrokenpath".repeat(8)),"mixed"=>"Before https://www.example.jp after ordinary words. Next: https://example.org/a?b=c&name=one_two#part after.".into(),"cjk"=>"日本語の前置き https://www.example.jp。続きの日本語と https://example.org/長い/道?名前=値。終わり".into(),_=>"日😀[笑]本🌸".into()};
+        fake.set_page(
+            ChatId("alice".into()),
+            vec![FakeBackend::message("alice", 900, &body, true)],
+        );
+    }
+    if scene.starts_with("message-selected") {
+        fake.set_page(
+            ChatId("alice".into()),
+            vec![FakeBackend::message(
+                "alice",
+                900,
+                "選択したメッセージ\nSelected message",
+                scene.ends_with("outgoing"),
+            )],
+        );
+    }
+    if scene == "rich" {
+        fake.set_page(
+            ChatId("alice".into()),
+            demo_data::rich_fixture(fake, "alice", 900),
+        );
+    }
+    if scene == "groups" {
+        fake.set_page(ChatId("alice".into()), demo_data::group(fake, "alice", 900));
+    }
+    if scene == "photos" {
+        let mut row = FakeBackend::message("alice", 900, "Riverside walk", false);
+        row.content_type = 1;
+        row.body["rich"] =
+            serde_json::to_value(line_wasm_poc::client::desktop::rich::RichContent {
+                content_type: 1,
+                ..Default::default()
+            })
+            .unwrap();
+        row.body["image"] = serde_json::to_value(demo_data::image_asset(
+            fake,
+            "photo-landscape",
+            demo_data::photo(false),
+        ))
+        .unwrap();
+        fake.set_page(ChatId("alice".into()), vec![row]);
+    }
+}
+pub fn install(ui: &AppWindow, actions: Runtime, fake: FakeBackend) {
+    let weak = ui.as_weak();
+    let links = actions.clone();
+    ui.global::<State>().on_open_link(move |url| {
+        let weak = weak.clone();
+        links.push(move |_| {
+            if let Some(ui) = weak.upgrade() {
+                ui.global::<State>().set_last_opened_link(url);
             }
-        })
-        .collect()
+        });
+    });
+    let weak = ui.as_weak();
+    ui.on_demo_event(move |kind| {
+        let weak = weak.clone();
+        let fake = fake.clone();
+        actions.push(move |d| {
+            if let Some(ui) = weak.upgrade() {
+                scenario(&ui, d, &fake, kind);
+            }
+        });
+    });
 }
 
-pub(crate) const MEDIA_FAILURES: [(&str, line_wasm_poc::client::desktop::assets::Failure); 10] = {
+fn media_failure(index: usize) -> line_wasm_poc::client::desktop::assets::Failure {
     use line_wasm_poc::client::desktop::assets::Failure::*;
     [
-        ("timeout", Timeout),
-        ("network", Network),
-        ("404", Http(404)),
-        ("403", Http(403)),
-        ("500", Http(500)),
-        ("unsupported", UnsupportedHost),
-        ("path", RejectedPath),
-        ("large", TooLarge),
-        ("decode", Decode),
-        ("cancelled", Cancelled),
-    ]
-};
-
-pub(crate) fn media_failure(index: usize) -> MessageRow {
-    let (name, failure) = MEDIA_FAILURES[index];
-    MessageRow {
-        id: format!("media-{name}").into(),
-        image_key: format!("media-{name}").into(),
-        kind: MessageKind::Photo,
-        photo: true,
-        image_failed: true,
-        image_failure: format!("{failure:?}").into(),
-        image_error: failure.image_text().into(),
-        image_retryable: failure.retriable(),
-        ..message("Photo", "12:00", false)
-    }
+        Timeout,
+        Network,
+        Http(404),
+        Http(403),
+        Http(500),
+        UnsupportedHost,
+        RejectedPath,
+        TooLarge,
+        Decode,
+        Cancelled,
+    ][index]
 }
 
-pub(crate) fn preview_examples() -> Vec<Conversation> {
-    let mut chats = Vec::new();
-    for (i, (title, body)) in [
-        ("One LINE emoji", "[笑]"),
-        ("Several LINE emoji", "[笑][笑][笑]"),
-        ("Mixed LINE emoji", "日😀[笑]本🌸 [笑] See you soon"),
-        (
-            "Long LINE emoji",
-            "Hi [笑] a long preview [笑] with enough text to elide at the row width [笑] end",
-        ),
-        ("Missing LINE emoji", "Waiting [笑] for you"),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let emoji = body
-            .match_indices("[笑]")
-            .map(|(start, text)| account::EmojiView {
-                span: line_wasm_poc::client::desktop::rich::InlineEmoji {
-                    start_utf16: body[..start].encode_utf16().count(),
-                    end_utf16: body[..start + text.len()].encode_utf16().count(),
-                    start_byte: start,
-                    end_byte: start + text.len(),
-                    fallback: text.into(),
-                    product_id: "synthetic".into(),
-                    sticon_id: "smile".into(),
-                    version: None,
-                    animated: false,
-                },
-                image_key: if i == 4 {
-                    "demo-missing-emoji"
-                } else {
-                    "demo-inline"
-                }
-                .into(),
-            })
-            .collect::<Vec<_>>();
-        let timestamp = fixture_time("10:43") - i as i64 * 60_000;
-        let row = message_row(account::MessageView {
-            id: format!("preview-emoji-{i}"),
-            body: body.into(),
-            timestamp,
-            delivered_time: timestamp,
-            outgoing: i == 2,
-            emoji,
-            ..Default::default()
-        });
-        if i != 4
-            && let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>()
-        {
-            for i in 0..runs.row_count() {
-                let mut run = runs.row_data(i).unwrap();
-                if run.emoji {
-                    run.picture = avatar(0);
-                    run.has_picture = true;
-                    runs.set_row_data(i, run);
-                }
-            }
-        }
-        chats.push(Conversation {
-            title,
-            preview: body,
-            initial: "L",
-            messages: vec![row],
-        });
-    }
-    for (i, (title, body, kind)) in [
-        (
-            "Photo preview",
-            "Photo · Riverside walk",
-            MessageKind::Photo,
-        ),
-        ("Album preview", "Album · 4 items", MessageKind::Photo),
-        ("Sticker preview", "Sticker", MessageKind::Sticker),
-        ("Animated sticker preview", "Sticker", MessageKind::Sticker),
-        ("Missing photo preview", "Photo", MessageKind::Photo),
-        ("File preview", "File · walk.pdf", MessageKind::File),
-        ("Video preview", "Video · Weekend walk", MessageKind::Video),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let media = kind != MessageKind::File;
-        let timestamp = fixture_time("10:43") - (5 + i) as i64 * 60_000;
-        let mut row = message_row(account::MessageView {
-            id: format!("preview-media-{i}"),
-            timestamp,
-            delivered_time: timestamp,
-            body: if kind == MessageKind::Sticker {
-                "Nice!"
-            } else if kind == MessageKind::File {
-                "walk.pdf"
-            } else {
-                ""
-            }
-            .into(),
-            photo: kind == MessageKind::Photo,
-            sticker: kind == MessageKind::Sticker,
-            image_key: if media {
-                format!("demo-preview-{i}")
-            } else {
-                String::new()
-            },
-            rich: line_wasm_poc::client::desktop::rich::RichContent {
-                content_type: match kind {
-                    MessageKind::Photo => 1,
-                    MessageKind::Video => 2,
-                    MessageKind::Sticker => 7,
-                    _ => 14,
-                },
-                album_count: (i == 1).then_some(4),
-                caption: match i {
-                    0 => Some("Riverside walk".into()),
-                    6 => Some("Weekend walk".into()),
-                    _ => None,
-                },
-                ..Default::default()
-            },
-            ..Default::default()
-        });
-        row.has_picture = media && i != 4;
-        row.picture = if row.has_picture {
-            thumbnail(kind == MessageKind::Sticker)
-        } else {
-            Default::default()
-        };
-        row.image_failed = i == 4;
-        if i == 4 {
-            row.image_failure = "Http(404)".into();
-            row.image_error = "Not available for this sender".into();
-        }
-        chats.push(Conversation {
-            title,
-            preview: body,
-            initial: "M",
-            messages: vec![row],
-        });
-    }
-    chats
-}
-
-pub(crate) fn preview_assets()
--> HashMap<String, std::sync::Arc<line_wasm_poc::client::desktop::assets::Pixels>> {
-    let mut assets = HashMap::new();
-    for chat in preview_examples() {
-        for row in chat.messages {
-            let pictures = std::iter::once((row.image_key, row.picture, row.has_picture)).chain(
-                row.rich_runs
-                    .iter()
-                    .map(|run| (run.image_key, run.picture, run.has_picture)),
-            );
-            for (key, picture, loaded) in pictures {
-                if loaded && let Some(pixels) = picture.to_rgba8() {
-                    assets.insert(
-                        key.to_string(),
-                        std::sync::Arc::new(line_wasm_poc::client::desktop::assets::Pixels {
-                            width: pixels.width(),
-                            height: pixels.height(),
-                            rgba: pixels.as_bytes().to_vec(),
-                        }),
-                    );
-                }
-            }
-        }
-    }
-    assets
-}
-
-pub(crate) fn clear_picture(row: &mut MessageRow) {
-    row.picture = Default::default();
-    row.has_picture = false;
-    if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
-        for i in 0..runs.row_count() {
-            let mut run = runs.row_data(i).unwrap();
-            run.picture = Default::default();
-            run.has_picture = false;
-            runs.set_row_data(i, run);
-        }
-    }
+fn fixture(
+    ui: &AppWindow,
+    d: &mut Desktop,
+    fake: &FakeBackend,
+    id: &str,
+    title: &str,
+    rows: Vec<MessageInput>,
+) {
+    let chat = ChatId(id.into());
+    fake.add_chat(ChatInput {
+        id: chat.clone(),
+        title: title.into(),
+        kind: if id == "groups" { 1 } else { 0 },
+        member_count: (id == "groups").then_some(25),
+        ..Default::default()
+    });
+    fake.set_page(chat.clone(), rows.clone());
+    fake.inject(LiveOp {
+        revision: fake.revision(),
+        replay: true,
+        op: Op::Message(rows[0].clone()),
+    });
+    d.capture_draft(ui);
+    // A fixture changes the history only; the composer text stays. The draft row
+    // would otherwise hide the new chat from detail loading, so load the chat list.
+    d.sender.send(Intent::Draft {
+        chat: chat.clone(),
+        draft: Draft {
+            text: d.state.composer.clone(),
+            cursor: ui.get_editor_caret() as usize,
+            anchor: ui.get_editor_anchor() as usize,
+            updated: line_wasm_poc::engine::now_ms(),
+        },
+    });
+    d.sender.send(Intent::MoreChats);
+    let intent = d.state.select(chat.clone());
+    d.opening_history = false;
+    d.restore_anchor = None;
+    d.geometry.borrow_mut().clear();
+    d.sender.send(intent);
+    d.sender.send(Intent::Page {
+        chat,
+        kind: PageKind::Recent,
+    });
+    d.render(ui);
+    ui.invoke_show_history(0., false);
 }

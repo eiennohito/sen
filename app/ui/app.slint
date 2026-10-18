@@ -1,3 +1,4 @@
+import { PanelState } from "types.slint";
 export { State } from "state.slint";
 export { Palette } from "std-widgets.slint";
 import { Button, LineEdit, TextEdit, ScrollView, ComboBox, Palette } from "std-widgets.slint";
@@ -7,7 +8,7 @@ import { TextMetrics, RichMetric } from "text-metrics.slint";
 export { RichMetric } from "text-metrics.slint";
 import { ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { Pane } from "scrollpane.slint";
-export { ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow, RichRun } from "types.slint";
+export { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow, RichRun } from "types.slint";
 import { Rail } from "rail.slint";
 import { Friends } from "friends.slint";
 import { Chats } from "chats.slint";
@@ -25,7 +26,7 @@ export component AppWindow inherits Window {
         return [
             { x: rail.absolute-position.x, y: rail.absolute-position.y, width: rail.visible && shell.visible ? rail.width : 0px, height: rail.height },
             { x: browser.absolute-position.x, y: browser.absolute-position.y, width: browser.visible && shell.visible ? browser.width : 0px, height: root.narrow ? State.connection-area-y : browser.height },
-            conversation.header-bounds, conversation.composer-bounds, layers.profile-bounds, conversation.feedback-bounds, conversation.older-retry-bounds, chats-surface.visible-first-row-bounds
+            conversation.header-bounds, conversation.composer-bounds, layers.profile-bounds, chats-surface.visible-first-row-bounds
         ];
     }
     public function connection-first-row() -> FeedbackRect { return chats-surface.first-row-bounds; }
@@ -34,12 +35,9 @@ export component AppWindow inherits Window {
     public function preview-dark(dark: bool) { if State.demo { Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light; } }
     rich-metrics := TextMetrics {}
     public function measure-rich(content: string, size: float) -> RichMetric { return rich-metrics.measure(content, size); }
-    in property <bool> migration-needed;
-    in property <string> migration-error;
     in-out property <string> desktop-warning <=> State.desktop-warning;
     in-out property <string> connection-status <=> State.connection-status;
-    callback migration-choice(bool);
-    public function go-back() { if root.narrow && root.show-conversation && !State.modal-open && !root.migration-needed { root.show-conversation = false; if root.section == 1 { root.focus-friend-search(); } else { root.focus-search(); } } }
+    public function go-back() { if root.narrow && root.show-conversation && !State.modal-open { root.show-conversation = false; if root.section == 1 { root.focus-friend-search(); } else { root.focus-search(); } } }
     in-out property <int> section <=> State.section;
     in-out property <[FriendRow]> friends <=> State.friends;
     in-out property <int> friend-result <=> State.friend-result;
@@ -48,21 +46,17 @@ export component AppWindow inherits Window {
     in-out property <bool> groups-expanded <=> State.groups-expanded;
     in-out property <bool> friends-expanded <=> State.friends-expanded;
     in-out property <length> friends-y <=> State.friends-y;
-    in-out property <bool> loading-friends <=> State.loading-friends;
-    in-out property <string> friends-error <=> State.friends-error;
-    in-out property <bool> members-open <=> State.members-open;
-    in-out property <bool> member-profile <=> State.member-profile;
+    out property <bool> members-open <=> State.members-open;
+    out property <bool> member-profile <=> State.member-profile;
     in-out property <[MemberRow]> members <=> State.members;
     in-out property <string> member-query <=> State.member-query;
-    in-out property <bool> members-loading <=> State.members-loading;
-    in-out property <bool> members-failed <=> State.members-failed;
     in-out property <bool> chat-group <=> State.chat-group;
     in-out property <int> member-count <=> State.member-count;
     callback open-members(); callback filter-members(); callback open-member(string);
+    public function focus-member-list() {layers.focus-member-list();}
     public function back-to-members() { layers.back-to-members(); }
-    public function focus-chat-header() { conversation.focus-header(); }
     public function focus-members-header() { conversation.focus-members(); }
-    in-out property <bool> profile-open <=> State.profile-open;
+    out property <bool> profile-open <=> State.profile-open;
     in-out property <string> profile-name <=> State.profile-name;
     in-out property <string> profile-id <=> State.profile-id;
     in-out property <string> profile-status <=> State.profile-status;
@@ -73,8 +67,8 @@ export component AppWindow inherits Window {
     callback filter-category(); callback switch-chat(int);
     callback browse(int); callback refresh-friends(); callback filter-friends();
     callback open-profile(string); callback start-friend-chat();
-    public function show-profile() { root.profile-open = true; State.focus-profile-close(); }
-    public function close-profile() { if root.members-open { root.profile-open = false; conversation.focus-members(); } else { root.profile-open = false; State.focus-friend-list(); } }
+    public function show-profile() { State.request-panel(PanelState.profile); State.focus-profile-close(); }
+    public function close-profile() { if root.members-open { State.request-panel(PanelState.none); conversation.focus-members(); } else { State.request-panel(PanelState.none); State.focus-friend-list(); } }
     in-out property <bool> ime-active <=> State.ime-active;
     public function focus-composer() { if root.profile-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
     public function focus-reading-before-editor() { conversation.focus-reading-before-editor(); }
@@ -104,14 +98,13 @@ export component AppWindow inherits Window {
     callback resolve-recovery(string);
     callback quit();
     public function restore-editor(anchor: int, caret: int) { conversation.restore-editor(anchor, caret); }
-    in-out property <bool> can-send <=> State.can-send;
+    out property <bool> can-send <=> State.can-send;
     in-out property <string> send-reason <=> State.send-reason;
     in-out property <bool> list-pressed <=> State.list-pressed;
     property <bool> list-release-pending <=> State.list-release-pending;
     out property <length> chat-row-height <=> State.chat-row-height;
-    Timer { interval: 1ms; running: root.list-release-pending; triggered => { root.list-release-pending = false; root.release-deferred(); } }
-    in-out property <bool> settings-open <=> State.settings-open;
-    in-out property <bool> viewer-open <=> State.viewer-open;
+    out property <bool> settings-open <=> State.settings-open;
+    out property <bool> viewer-open <=> State.viewer-open;
     in-out property <image> viewer-image <=> State.viewer-image;
     in-out property <string> viewer-status <=> State.viewer-status;
     in-out property <string> viewer-error <=> State.viewer-error;
@@ -119,42 +112,36 @@ export component AppWindow inherits Window {
     in-out property <string> viewer-key <=> State.viewer-key;
     property <float> viewer-zoom <=> State.viewer-zoom;
     callback open-photo(string); callback photo-closed();
-    public function show-viewer(key: string) { root.viewer-open = true; root.viewer-key = key; root.viewer-zoom = 1; State.reset-viewer(); State.focus-viewer-close(); }
-    public function close-viewer() { root.viewer-open = false; State.focus-history(); State.viewer-return-key = root.viewer-key; State.viewer-return-serial += 1; root.viewer-key = ""; root.photo-closed(); }
-    in-out property <bool> connected <=> State.connected;
-    in-out property <bool> connection-failed <=> State.connection-failed;
-    in-out property <bool> auth-expired <=> State.auth-expired;
-    in-out property <bool> session-unavailable <=> State.session-unavailable;
-    in-out property <bool> retrying-connection <=> State.retrying-connection;
-    in-out property <bool> auth-open <=> State.auth-open;
-    in-out property <bool> auth-busy <=> State.auth-busy;
+    public function show-viewer(key: string) { State.request-panel(PanelState.viewer); root.viewer-key = key; root.viewer-zoom = 1; State.reset-viewer(); State.focus-viewer-close(); }
+    public function close-viewer() { State.request-panel(PanelState.none); State.focus-history(); State.viewer-return-key = root.viewer-key; State.viewer-return-serial += 1; root.viewer-key = ""; root.photo-closed(); }
+    out property <bool> connected <=> State.connected;
+    out property <bool> connection-failed <=> State.connection-failed;
+    out property <bool> auth-expired <=> State.auth-expired;
+    out property <bool> session-unavailable <=> State.session-unavailable;
+    out property <bool> retrying-connection <=> State.retrying-connection;
+    out property <bool> auth-open <=> State.auth-open;
+    out property <bool> auth-busy <=> State.auth-busy;
     in-out property <bool> auth-cancelling <=> State.auth-cancelling;
     in-out property <image> auth-qr <=> State.auth-qr;
     in-out property <string> auth-pin <=> State.auth-pin;
     in-out property <string> auth-stage <=> State.auth-stage;
     in-out property <string> auth-error <=> State.auth-error;
-    callback reconnect(); callback start-sign-in(); callback cancel-sign-in();
-    public function account-ready() { root.auth-open = false; root.show-conversation = false; State.focus-search(); }
-    public function close-settings() { root.settings-open = false; State.focus-settings-opener(); }
-    public function close-sign-in() { root.auth-open = false; State.focus-sign-in-opener(); }
-    public function open-sign-in() { if State.sign-in-available { root.auth-open = true; State.focus-auth-start(); } }
+    callback start-sign-in(); callback cancel-sign-in();
+    public function account-ready() { State.request-panel(PanelState.none); root.show-conversation = false; State.focus-search(); }
+    public function close-settings() { State.request-panel(PanelState.none); State.focus-settings-opener(); }
+    public function close-sign-in() { State.request-panel(PanelState.none); State.focus-sign-in-opener(); }
+    public function open-sign-in() { if State.sign-in-available { State.request-panel(PanelState.sign-in); State.focus-auth-start(); } }
 
     in-out property <bool> demo <=> State.demo;
     in-out property <bool> more-chats <=> State.more-chats;
     in-out property <bool> has-chat <=> State.has-chat;
-    in-out property <bool> loading-chats <=> State.loading-chats;
-    in-out property <bool> loading-history <=> State.loading-history;
-    in-out property <string> history-error <=> State.history-error;
-    in-out property <string> list-error <=> State.list-error;
     in-out property <string> storage-error <=> State.storage-error;
-    in-out property <bool> storage-retryable <=> State.storage-retryable;
     in-out property <string> account-name <=> State.account-name;
     in-out property <bool> show-conversation <=> State.show-conversation;
     in-out property <bool> following <=> State.following;
     in-out property <int> new-count <=> State.new-count;
     in-out property <length> history-y <=> State.history-y;
     out property <bool> history-dragging <=> State.history-dragging;
-    changed history-dragging => { if !root.history-dragging { State.release-deferred(); } }
     in-out property <string> query <=> State.query;
     in-out property <length> list-y <=> State.list-y;
     in-out property <length> editor-y <=> State.editor-y;
@@ -165,8 +152,8 @@ export component AppWindow inherits Window {
     callback select-chat(int);
     callback search-changed(string);
     callback draft-edited();
-    callback retry-image(string); callback retry-list(); callback retry-history(); callback more(); callback send();
-    callback settings-changed(); callback retry-storage(); callback recover-message(string); callback demo-event(int); callback release-deferred();
+    callback retry-image(string); callback more(); callback send();
+    callback settings-changed(); callback recover-message(string); callback demo-event(int);
     public function show-history(y: length, latest: bool) {
         root.following = latest;
         root.history-y = y;
@@ -183,7 +170,7 @@ export component AppWindow inherits Window {
         key-pressed(event) => { if root.demo && !State.modal-open && event.text == Key.F12 { scenarios.open(); return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: 0px;
         width: 100%; height: root.height;
-        visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.profile-open) && !root.migration-needed;
+        visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.profile-open);
         rail := Rail { x: 0px; y: root.narrow ? parent.height - 48px : 0px; width: root.narrow ? parent.width : State.rail-width; height: root.narrow ? 48px : parent.height; visible: !root.narrow || !root.show-conversation; }
         browser := Rectangle {
             x: root.narrow ? 0px : State.rail-width; y: 0px;
@@ -241,7 +228,7 @@ export component AppWindow inherits Window {
     public function focus-friend-search() { friends-surface.focus-search(); }
     public function focus-settings-opener() { rail.focus-navigation(); }
     public function focus-settings-close() { layers.focus-settings(); }
-    public function focus-profile-close() { layers.focus-profile(); }
+    public function focus-profile-close() { layers.focus-profile-close(); }
     public function focus-auth-start() { layers.focus-auth(); }
     public function focus-viewer-close() { layers.focus-viewer(); }
     public function focus-history() { if root.profile-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-history(); } }
@@ -254,7 +241,7 @@ export component AppWindow inherits Window {
     auth-notice := ConnectionNotice {
         x: State.connection-area-x; y: State.connection-area-y;
         width: State.connection-area-width;
-        visible: State.connection-feedback-visible && !root.migration-needed;
+        visible: State.connection-feedback-visible;
         scenarios-requested => { scenarios.open(); }
         leave(back) => {
             if root.profile-open && State.profile-sheet && root.members-open {
@@ -271,17 +258,6 @@ export component AppWindow inherits Window {
             }
         }
     }
-    Rectangle {
-        width: 100%; height: 100%; visible: root.migration-needed; background: Tokens.background;
-        VerticalLayout {
-            padding: 24px; spacing: 16px; alignment: center;
-            Text { text: "Existing local files"; font-size: Tokens.heading; wrap: word-wrap; }
-            Text { text: "Use the session and local drafts already on this device, or start with new app folders. Existing files stay in place."; wrap: word-wrap; }
-            Button { text: "Use existing files"; clicked => { root.migration-choice(true); } }
-            Button { text: "Start fresh"; clicked => { root.migration-choice(false); } }
-            if root.migration-error != "": Text { text: root.migration-error; color: Tokens.danger; wrap: word-wrap; }
-        }
-    }
     RecoveryDialog { }
-    scenarios := DemoScenarios { scenario-selected => { shell.focus(); } }
+    scenarios := DemoScenarios { width: root.width; height: root.height; scenario-selected => { shell.focus(); } }
 }

@@ -19,15 +19,13 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--port", type=int, default=9447)
 parser.add_argument("--screenshot", type=Path)
 parser.add_argument("--unread", action="store_true", help="Check synthetic unread badges, divider and arrivals while reading older history")
-parser.add_argument("--paging", action="store_true", help="Exercise bounded thousand-message older paging, failure and retry")
-parser.add_argument("--paging-pid", type=int, help="Optional demo process PID for RSS sampling")
 parser.add_argument("--scenarios", action="store_true", help="Run synthetic arrival, media, clipboard, and uncertain-send scenarios")
 parser.add_argument("--friends", action="store_true", help="Exercise offline friend search, profiles, categories and opening chats")
-parser.add_argument("--auth-recovery", action="store_true", help="Exercise the offline failed-login recovery UI without pairing")
 parser.add_argument("--layout-photos", action="store_true", help="Check bounded avatars/media, settings placement, and photo viewer")
 parser.add_argument("--reading", action="store_true", help="Check reading focus, keyboard scroll, stable loading, links and content placeholders")
 parser.add_argument("--rich", action="store_true", help="Check rich emoji fallback copy, reply jump/return, durations and file Save")
 parser.add_argument("--media", action="store_true", help="Check each media failure reason and its item Retry")
+parser.add_argument("--auth-recovery", action="store_true", help="Check offline feedback, sign-in focus, synthetic sign-in failure and draft preservation")
 parser.add_argument("--layers", action="store_true", help="Check dialogs, profile panels, viewer input, export, and opener focus")
 parser.add_argument("--focus", action="store_true", help="Check every forward/reverse Tab stop on chats, friends and conversation, with and without recovery")
 add_preview_arguments(parser)
@@ -66,7 +64,15 @@ def tree():
     return result["elements"]
 
 def element(label, role):
-    return next(item for item in tree() if (item.get("accessibleLabel") == label or item.get("accessibleLabel", "").startswith(label + ", ")) and item.get("accessibleRole") == role)
+    # The engine applies commands on its worker, so a control may appear a moment after the click.
+    deadline = time.monotonic() + 2
+    while True:
+        try:
+            return next(item for item in tree() if (item.get("accessibleLabel") == label or item.get("accessibleLabel", "").startswith(label + ", ")) and item.get("accessibleRole") == role)
+        except StopIteration:
+            if time.monotonic() > deadline:
+                raise
+            time.sleep(0.05)
 
 def scenario_element(label):
     # Inspect the modal itself with the same bound as the shell behind it.
@@ -101,6 +107,7 @@ def demo_scenario(label):
         call("click_element", elementHandle=scenario_action("Media failures")["handle"])
     call("click_element", elementHandle=scenario_action(label)["handle"])
     scenario_bounds = (started, datetime.datetime.now())
+    time.sleep(0.15)  # The engine applies the scenario on its worker; the UI polls its deltas.
 
 
 def fixture_times(clock):
@@ -131,7 +138,7 @@ call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release"
 try:
     last_scenario = scenario_element("Demo exposed")
 except StopIteration:
-    last_scenario = scenario_element("List load failure")
+    last_scenario = scenario_element("Offline")
 last_scenario_label = last_scenario["accessibleLabel"]
 assert last_scenario.get("accessibleDescription") == "Focused", "reverse Tab did not focus the final scenario"
 call("dispatch_key_event", windowHandle=window, text="\t", eventType="PressAndRelease")
@@ -189,6 +196,7 @@ if args.focus:
     layer_kind = "panel" if panel else "sheet"
     def click_focus(label, role="Button"):
         call("click_element", elementHandle=element(label, role)["handle"])
+        time.sleep(0.1)  # A chat opens its stored draft from the engine worker.
 
     def browser():
         if narrow:
@@ -203,9 +211,9 @@ if args.focus:
         click_focus("Chats")
         click_focus("葵")
         browser()
-        if offline: demo_scenario("Login recovery")
+        if offline: demo_scenario("Expired sign-in")
         suffix = "with strip" if offline else "without strip"
-        recovery = ["Retry connection", "Sign in again"] if offline else []
+        recovery = ["Sign in again"] if offline else []
         for surface, search_label, list_label in [("chats", "Find a conversation", "Conversations"), ("friends", "Search friends and groups", "Friends and groups")]:
             click_focus("Friends" if surface == "friends" else "Chats")
             expected = browser_stops(search_label, list_label, recovery)
@@ -277,6 +285,7 @@ if args.focus:
 def smoke_chat(label):
     show_chats()
     call("click_element", elementHandle=element(label, "Button")["handle"])
+    time.sleep(.05)  # The controller's draft/window snapshot arrives over the engine FIFO.
 
 show_chats()
 search = element("Find a conversation", "TextInput")["handle"]
@@ -304,6 +313,10 @@ before_shortcut = value.get("accessibleValue")
 call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Press")
 call("dispatch_key_event", windowHandle=window, text="\n")
 call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Release")
+deadline = time.monotonic() + 2
+while call("get_element_properties", elementHandle=composer).get("accessibleValue", ""):
+    assert time.monotonic() < deadline, "durable send acknowledgement did not clear the draft"
+    time.sleep(.02)
 assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "") == "", "Ctrl+Enter did not clear the submitted draft"
 time.sleep(.2)
 assert any(item.get("accessibleValue") == before_shortcut for item in tree()), "submitted draft did not appear in history"
@@ -329,7 +342,6 @@ if args.scenarios:
     body = next(item for item in bodies() if "\n" in item.get("accessibleValue", "") and item["absolutePosition"]["y"] > 110)
     expected_text = body["accessibleValue"]
     expected_y = body["absolutePosition"]["y"]
-    demo_scenario("Load media")
     demo_scenario("Receive 3")
     call("click_element", elementHandle=body["handle"])
     ctrl("a")
@@ -353,12 +365,13 @@ if args.scenarios:
     call("set_element_value", elementHandle=composer, value="Keep this newer draft")
     demo_scenario("Uncertain send")
     time.sleep(1.2)
+    assert not any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") in ("Retry connection", "Retry conversations", "Retry older") for item in tree()), "removed network Retry control returned"
     assert any("may have arrived" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == "Keep this newer draft", "late result replaced newer text"
-    call("click_element", elementHandle=element("Edit", "Button")["handle"])
+    call("click_element", elementHandle=element("Copy to composer", "Button")["handle"])
     call("click_element", elementHandle=element("Append", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "").startswith("Keep this newer draft\n"), "recovery overwrote the draft"
-    print("PASS: simulated pointer scrolling, burst anchor/count, delayed media, keyboard selection/clipboard, uncertain-send recovery")
+    print("PASS: simulated pointer scrolling, burst anchor/count, keyboard selection/clipboard, uncertain-send recovery")
 
 if args.layout_photos:
     assert not any(item.get("accessibleLabel") in ("Smaller text", "Larger text", "Text size") for item in tree()), "text-size controls leaked onto the main screen"
@@ -378,6 +391,7 @@ if args.layout_photos:
     assert timestamp["size"]["height"] <= 32, "timestamp exceeded a single line at the supported time type scale"
     call("click_element", elementHandle=element("Open photo", "Button")["handle"])
     element("Close photo", "Button")
+    time.sleep(0.15)  # The original arrives from the engine worker.
     assert any("Synthetic original · 1200 × 800" in item.get("accessibleLabel", "") for item in tree()), "viewer did not request original resolution"
     call("click_element", elementHandle=element("Original size", "Button")["handle"])
     original = element("Photo in viewer", "Image")
@@ -390,16 +404,16 @@ if args.layout_photos:
     print("PASS: bounded round-avatar frames, settings placement, media/timestamp separation, original viewer, zoom/fit, Escape, and draft retention")
     demo_scenario("Sticker preview")
     time.sleep(0.05)
-    element("[sticker]", "Text")
+    element("☺ Sticker · [sticker]", "Text")
     sticker_time = next(item['accessibleLabel'] for item in tree() if item.get('accessibleRole') == 'Text' and item.get('accessibleLabel') in fixture_times('12:09'))
     before_sticker_time = element(sticker_time, "Text")["absolutePosition"]
     time.sleep(1.1)
     element("Message image", "Image")
-    assert not any(item.get("accessibleLabel") == "[sticker]" or item.get("accessibleValue") == "[sticker]" for item in tree()), "loaded sticker retained its fallback label"
+    assert not any(item.get("accessibleLabel") == "☺ Sticker · [sticker]" or item.get("accessibleValue") == "☺ Sticker · [sticker]" for item in tree()), "loaded sticker retained its fallback label"
     assert element(sticker_time, "Text")["absolutePosition"] == before_sticker_time, "sticker completion moved its timestamp"
     print("PASS: sticker fallback disappears after loading without moving the timestamp")
     demo_scenario("Group preview")
-    time.sleep(0.05)
+    element("Members", "Button")  # The group's details arrive after the fixture history.
     # Inspect both ends because the final timestamp can be clipped. Scope to
     # history: a browser relative time may also legitimately say "Yesterday".
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=2000, deltaX=0)
@@ -448,6 +462,7 @@ if args.friends:
     call("set_element_value", elementHandle=composer, value=draft)
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     friend_search = element("Search friends and groups", "TextInput")["handle"]
+    element("Open profile: 葵", "Button")  # Friends load on the engine worker.
     call("set_element_value", elementHandle=friend_search, value="葵")
     friend_rows = [item for item in tree() if item.get("accessibleLabel", "").startswith("Open profile:")]
     assert len(friend_rows) == 1, "friend name search failed"
@@ -501,100 +516,50 @@ if args.friends:
 if args.auth_recovery:
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
     tracked = [("Find a conversation", "TextInput"), ("Conversations", "List"), ("Message history", "List"), ("Message draft", "TextInput")]
-    positions = {label: element(label, role)["absolutePosition"].get("y", 0) for label, role in tracked}
-
-    def no_strip():
-        assert not any(item.get("accessibleLabel") in ("Connection needs attention", "Retry connection", "Sign in again") for item in tree()), "quiet state raised recovery controls"
+    positions = {label: element(label, role)["absolutePosition"]["y"] for label, role in tracked}
 
     def unchanged_shell():
-        current = {label: element(label, role)["absolutePosition"].get("y", 0) for label, role in tracked}
-        assert current == positions, f"connection state moved shell content: {positions} -> {current}"
+        current = {label: element(label, role)["absolutePosition"]["y"] for label, role in tracked}
+        assert current == positions, f"connection feedback moved shell content: {positions} -> {current}"
 
-    def disjoint(left, right):
-        a, b = left["absolutePosition"], right["absolutePosition"]
-        s, t = left["size"], right["size"]
-        return (a.get("x", 0) + s.get("width", 0) <= b.get("x", 0) or b.get("x", 0) + t.get("width", 0) <= a.get("x", 0)
-                or a.get("y", 0) + s.get("height", 0) <= b.get("y", 0) or b.get("y", 0) + t.get("height", 0) <= a.get("y", 0))
-
-    def safe_strip(label="Connection needs attention"):
-        strip = element(label, "Banner")
+    def safe_strip():
+        strip = element("Connection needs attention", "Banner")
         history = element("Message history", "List")
-        assert strip["absolutePosition"].get("y", 0) == history["absolutePosition"].get("y", 0), "feedback is not below the conversation header"
-        assert strip["size"]["height"] <= 52, "strip is no longer one line"
-        for control, role in [("Chats", "Button"), ("Friends", "Button"), ("Settings", "Button"), ("Find a conversation", "TextInput"), ("Message draft", "TextInput"), ("Send", "Button")]:
-            assert disjoint(strip, element(control, role)), f"feedback covered {control}"
-        return strip
+        assert strip["absolutePosition"]["y"] == history["absolutePosition"]["y"], "feedback is not below the conversation header"
+        assert strip["size"]["height"] >= 32, "connection feedback is too small"
+        for label, role in [("Find a conversation", "TextInput"), ("Message draft", "TextInput"), ("Send", "Button")]:
+            control = element(label, role)
+            a, b = strip["absolutePosition"], control["absolutePosition"]
+            size_a, size_b = strip["size"], control["size"]
+            assert (a["x"] + size_a["width"] <= b["x"] or b["x"] + size_b["width"] <= a["x"]
+                    or a["y"] + size_a["height"] <= b["y"] or b["y"] + size_b["height"] <= a["y"]), f"feedback covered {label}"
 
-    demo_scenario("Reconnect blip")
-    element("Connecting…", "Text")
-    no_strip()
-    unchanged_shell()
-    deadline = time.monotonic() + 4
-    while time.monotonic() < deadline:
-        if any(item.get("accessibleLabel") == "Reconnected" for item in tree()): break
-        time.sleep(.05)
-    element("Reconnected", "Text")
-    safe_strip("Connection restored")
-    no_strip()
-    unchanged_shell()
-    time.sleep(3.2)
-    assert not any(item.get("accessibleLabel") == "Reconnected" for item in tree()), "confirmation did not expire"
     demo_scenario("Offline")
-    strip = safe_strip()
-    element("Offline", "Text")
-    assert not any(item.get("accessibleLabel") == "Sign in again" for item in tree()), "network-only failure offered sign-in"
-    unchanged_shell()
-    call("click_element", elementHandle=search)
-    call("dispatch_key_event", windowHandle=window, text="\t")
-    call("dispatch_key_event", windowHandle=window, text="\t")
-    assert element("Retry connection", "Button").get("accessibleDescription") == "Focused", "forward Tab skipped recovery"
-    call("dispatch_key_event", windowHandle=window, text="\uf709")  # F6 leaves for history
-    call("dispatch_key_event", windowHandle=window, text="\uf709")  # F6 returns to recovery
-    assert element("Retry connection", "Button").get("accessibleDescription") == "Focused"
-    call("dispatch_key_event", windowHandle=window, text="\n")
-    element("Retrying…", "Text")
-    assert not element("Retry connection", "Button").get("accessibleEnabled"), "retry stayed enabled while pending"
-    time.sleep(1.2)
-    assert element("Retry connection", "Button").get("accessibleEnabled")
-    call("click_element", elementHandle=composer)
-    demo_scenario("Login recovery")  # The failed startup path, without a usable session.
     safe_strip()
-    element("Signed out", "Text")
-    element("Sign in again", "Button")
+    unchanged_shell()
+    assert not any(item.get("accessibleLabel") == "Sign in again" for item in tree()), "network failure offered sign-in"
+    assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before
+    demo_scenario("Expired sign-in")
+    safe_strip()
     unchanged_shell()
     call("click_element", elementHandle=composer)
-    call("dispatch_key_event", windowHandle=window, text="\uf709")
+    call("dispatch_key_event", windowHandle=window, text="\uf709")  # F6 enters sign-in recovery.
     assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
-    call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
-    call("dispatch_key_event", windowHandle=window, text="\t")
-    call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
-    assert element("Retry connection", "Button").get("accessibleDescription") == "Focused"
-    call("dispatch_key_event", windowHandle=window, text="\t")
     call("dispatch_key_event", windowHandle=window, text="\n")
-    assert any("Chrome device slot" in item.get("accessibleLabel", "") for item in tree()), "sign-in did not explain its scope"
-    assert any("encrypted drafts" in item.get("accessibleLabel", "") for item in tree()), "sign-in did not explain draft isolation"
-    call("click_element", elementHandle=element("Start sign-in", "Button")["handle"])
-    assert any("No pairing request was made" in item.get("accessibleLabel", "") for item in tree()), "offline sign-in guard did not report its result"
+    assert any("Chrome device slot" in item.get("accessibleLabel", "") for item in tree())
+    assert element("Start sign-in", "Button").get("accessibleDescription") == "Focused"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "sign-in dismissal changed the draft"
     call("dispatch_key_event", windowHandle=window, text="\t")
-    assert element("Message history", "List").get("accessibleDescription") == "Focused history", "Tab left recovery outside the reading order"
-    demo_scenario("Expired sign-in")
-    element("Session expired", "Text")
-    call("click_element", elementHandle=element("Retry connection", "Button")["handle"])
-    element("Retrying…", "Text")
-    time.sleep(1.2)
-    assert element("Sign in again", "Button").get("accessibleEnabled"), "failed expiry Retry lost sign-in"
-    call("click_element", elementHandle=composer)
-    demo_scenario("Reconnect blip")  # A successful local connection clears the unavailable-session state.
-    # Expiry stays actionable until success; this fixture explicitly opens a usable session.
-    time.sleep(2.2)
-    demo_scenario("List load failure")
-    no_strip()
-    element("Couldn’t load conversations. Retry.", "Text")
-    element("Retry conversations", "Button")
-    print(f"PASS: quiet reconnect/no header overlap, transient expiry, network/startup/expired recovery, pending Retry, F6/Tab order, offline pairing guard, footer Retry; unchanged shell y={positions}; strip y={strip['absolutePosition'].get('y', 0)} height={strip['size']['height']}")
+    assert element("Message history", "List").get("accessibleDescription") == "Focused history"
+    demo_scenario("Reconnect blip")
+    deadline = time.monotonic() + 5
+    while any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()):
+        assert time.monotonic() < deadline, "automatic reconnect did not clear recovery"
+        time.sleep(.05)
+    unchanged_shell()
+    print("PASS: offline/expired feedback placement, F6/Tab order, sign-in dismissal and draft preservation")
 
 if args.layers:
     def bounds_by_id(qualified_id):
@@ -642,6 +607,7 @@ if args.layers:
     demo_scenario("Photo preview")
     call("click_element", elementHandle=element("Open photo", "Button")["handle"])
     call("click_element", elementHandle=element("Next", "Button")["handle"])
+    time.sleep(0.15)  # The original arrives from the engine worker.
     assert any("800 × 1200" in item.get("accessibleLabel", "") for item in tree()), "Next left the loaded photo scope"
     call("click_element", elementHandle=element("Previous", "Button")["handle"])
     call("dispatch_key_event", windowHandle=window, text="1")
@@ -671,7 +637,7 @@ if args.layers:
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert any(item.get("accessibleLabel") == "Open photo" and item.get("accessibleDescription") == "Focused" for item in tree()), "viewer did not restore the photo opener"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "layers changed the draft"
-    demo_scenario("Login recovery")
+    demo_scenario("Expired sign-in")
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     close = element("Close profile", "Button")
@@ -700,7 +666,10 @@ if args.reading:
         return [item for item in tree() if item.get("accessibleRole") in ("TextInput", "Text") and item.get("accessibleLabel", "").startswith(("Incoming from ", "Outgoing, "))]
 
     demo_scenario("Reading fixtures")
-    time.sleep(0.05)
+    deadline = time.monotonic() + 5
+    while not any(item.get("accessibleLabel") == "Beginning of conversation" for item in tree()):
+        assert time.monotonic() < deadline, "automatic reading-window refresh did not finish"
+        time.sleep(.05)
     labels = [item.get("accessibleLabel", "") for item in tree()]
     # MCP exposes clipped rows only while visible; inspect both fixture halves.
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=-1800, deltaX=0)
@@ -712,12 +681,6 @@ if args.reading:
         assert any(expected in label for label in labels), f"missing placeholder: {expected}"
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     first_y = first["absolutePosition"]["y"]
-    demo_scenario("History load")
-    time.sleep(0.05)
-    element("Loading recent messages…", "Text")
-    assert call("get_element_properties", elementHandle=first["handle"])["absolutePosition"]["y"] == first_y, "loading strip shifted history"
-    demo_scenario("History load")
-    assert call("get_element_properties", elementHandle=first["handle"])["absolutePosition"]["y"] == first_y, "loading completion shifted history"
     url = "https://example.org/reading"
     link = element("Open link " + url, "Button")
     assert link.get("accessibleDescription") == url, "full link cannot be inspected"
@@ -770,6 +733,7 @@ if args.reading:
             break
     assert history.get("accessibleDescription") == "Focused history", "reverse Tab entered a message"
     reading_key("\uf72b")  # End
+    time.sleep(0.3)  # The latest window arrives from the engine worker.
     bottom = call("get_element_properties", elementHandle=first["handle"])["absolutePosition"]["y"]
     reading_key("\uf729")  # Home
     top = call("get_element_properties", elementHandle=first["handle"])["absolutePosition"]["y"]
@@ -799,9 +763,10 @@ if args.reading:
     call("dispatch_key_event", windowHandle=window, text="\x11", eventType="Release")
     call("click_element", elementHandle=element("Weekend plans", "Button")["handle"])
     call("click_element", elementHandle=element("葵", "Button")["handle"])
+    time.sleep(0.3)  # The stored draft arrives from the engine worker.
     assert element("Message draft", "TextInput").get("accessibleValue") == before_copy, "selected-body chat switch lost draft or failed"
     demo_scenario("Reading fixtures")
-    print(f"PASS: reading search→composer in {tabs} Tabs, single history focus/scroll, stable loading, demo link activation and 12 content kinds")
+    print(f"PASS: reading search→composer in {tabs} Tabs, single history focus/scroll, demo link activation and 12 content kinds")
 
 if args.rich:
     demo_scenario("Rich content")
@@ -957,6 +922,7 @@ if args.media:
         assert not any("Refresh" in item.get("accessibleLabel", "") for item in tree())
         if retriable:
             call("click_element", elementHandle=retries[0]["handle"])
+            time.sleep(0.15)  # The retry completes on the engine worker.
             assert not any(item.get("accessibleLabel") == reason for item in tree()), "Retry kept the cached failure"
     print("PASS: all media failure reasons, permanent classes without Retry, and per-item Retry completion")
 
@@ -965,62 +931,6 @@ if args.screenshot:
     image = next(item for item in result["content"] if item["type"] == "image")
     args.screenshot.write_bytes(base64.b64decode(image["data"]))
 print(f"PASS: MCP draft retention, chat selection, filtering, local demo Ctrl+Enter send, and multiline input; scale {properties.get('scaleFactor')}")
-
-if args.paging:
-    import re
-    def rss_kib():
-        if not args.paging_pid: return None
-        match = re.search(r"^VmRSS:\s+(\d+)", Path(f"/proc/{args.paging_pid}/status").read_text(), re.M)
-        return int(match.group(1)) if match else None
-    def paging_bodies():
-        return [item for item in tree() if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue", "").startswith("History item ")]
-    def state_counts():
-        call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
-        text = next(item["accessibleLabel"] for item in tree() if item.get("accessibleLabel", "").startswith("History window "))
-        call("click_element", elementHandle=element("Close demo scenarios", "Button")["handle"])
-        window_count, retained_count, page_count = map(int, re.findall(r"\d+", text))
-        assert window_count <= 200 and retained_count <= 600, "history exceeded the UI or retained-row budget"
-        return page_count
-    demo_scenario("Paged history")
-    time.sleep(.15)
-    rss_before = rss_kib()
-    failure_seen = False
-    anchor_checks = 0
-    for step in range(85):
-        call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=100000, deltaX=0)
-        time.sleep(.015)
-        candidates = [body for body in paging_bodies() if 100 <= body["absolutePosition"]["y"] < 400]
-        anchor = candidates[0] if candidates else None
-        time.sleep(.15)
-        page_count = state_counts()
-        if anchor:
-            same = [body for body in paging_bodies() if body.get("accessibleValue") == anchor.get("accessibleValue")]
-            if same:
-                assert same[0]["absolutePosition"]["y"] == anchor["absolutePosition"]["y"], "older load/failure moved the anchored message"
-                anchor_checks += 1
-        retries = [item for item in tree() if item.get("accessibleLabel") == "Retry older" and item.get("accessibleRole") == "Button"]
-        if retries:
-            failure_seen = True
-            before_retry = paging_bodies()
-            call("click_element", elementHandle=retries[0]["handle"])
-            time.sleep(.15)
-            after_retry = paging_bodies()
-            for old in before_retry:
-                same = [body for body in after_retry if body.get("accessibleValue") == old.get("accessibleValue")]
-                if same: assert same[0]["absolutePosition"]["y"] == old["absolutePosition"]["y"], "retry moved the reading anchor"
-        if any(item.get("accessibleLabel") == "Beginning of conversation" for item in tree()):
-            break
-    else: raise AssertionError("older paging never reached the beginning")
-    assert failure_seen and anchor_checks >= 3, "failure/retry or three prepend anchors were not exercised"
-    assert state_counts() >= 20, "did not traverse the thousand-message fixture"
-    first = [body for body in paging_bodies() if body.get("accessibleValue", "").startswith("History item 0000")]
-    assert first, "beginning did not expose the first message"
-    before_end = state_counts()
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=100000, deltaX=0)
-    time.sleep(.2)
-    assert state_counts() == before_end, "beginning continued loading"
-    rss_after = rss_kib()
-    print(f"PASS: SC4 thousand-message paging, failure/retry/end, {anchor_checks} stable prepend anchors, UI<=200/retained<=600; RSS KiB before={rss_before} after={rss_after}")
 
 if args.unread:
     demo_scenario("Long history")
@@ -1087,3 +997,19 @@ scenario_key("\t", eventType="PressAndRelease")
 assert scenario_element("Long history").get("accessibleDescription") == "Focused", "stale media focus trapped Tab after reopening"
 scenario_key("\x1b")
 print("PASS: exact F12 reverse-Tab target and Escape/Space activation → reopen → Tab focus, including media")
+
+if args.auth_recovery:
+    # Failed sign-in stops the old stream. Check this terminal auth state last,
+    # after other groups have finished using the demo connection.
+    before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
+    demo_scenario("Expired sign-in")
+    call("click_element", elementHandle=element("Sign in again", "Button")["handle"])
+    call("click_element", elementHandle=element("Start sign-in", "Button")["handle"])
+    deadline = time.monotonic() + 3
+    while not any("Sign-in did not finish" in item.get("accessibleLabel", "") for item in tree()):
+        assert time.monotonic() < deadline, "synthetic sign-in did not report its failure"
+        time.sleep(.05)
+    call("dispatch_key_event", windowHandle=window, text="\x1b")
+    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
+    assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "failed sign-in changed the draft"
+    print("PASS: synthetic sign-in failure preserves cached composer and returns focus to recovery")

@@ -5,50 +5,36 @@ import { Tokens } from "tokens.slint";
 struct Scenario { text: string, label: string, kind: int }
 
 export component DemoScenarios inherits Rectangle {
-    // PopupWindow preserves the exact focused item, including selections in the shell.
+    // Keep the scenario surface in the main window on every backend.
     callback scenario-selected();
     property <bool> media-menu;
     property <int> media-focus-last;
     property <bool> media-last-focused;
-    function reset-focus() { root.last-focus-request = 0; root.last-scenario-focused = false; root.last-notification-focused = false; root.media-focus-last = 0; root.media-last-focused = false; }
+    function reset-focus() { root.last-focus-request = 0; root.last-scenario-focused = false; root.media-focus-last = 0; root.media-last-focused = false; }
     public function open() {
-        if State.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; dialog.show(); State.demo-scenarios-open = true; }
+        if State.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; State.remember-demo-focus(); State.demo-scenarios-open = true; close.focus(); }
     }
-    public function dismiss() { root.reset-focus(); dialog.close(); State.demo-scenarios-open = false; root.media-menu = false; }
+    public function dismiss() { root.reset-focus(); State.demo-scenarios-open = false; root.media-menu = false; State.restore-demo-focus(); }
     // A fixture may replace the previously focused message or button.
     callback run(int);
     run(kind) => { root.dismiss(); root.scenario-selected(); State.demo-event(kind); }
-    public function notify(kind: int) { root.dismiss(); State.demo-notification(kind); }
     property <[[Scenario]]> scenarios: [
-        [{ text: "History", label: "Long history", kind: 0 }, { text: "Arrivals", label: "Receive 3", kind: 1 }],
-        [{ text: "Media", label: "Media failures", kind: -1 }, { text: "Rejected", label: "Rejected send", kind: 10 }],
-        [{ text: "Fail next send", label: "Fail next send", kind: 30 }],
-        [{ text: "Reject next send", label: "Reject next send", kind: 31 }],
-        [{ text: "Send state", label: "Uncertain send", kind: 3 }],
-        [{ text: "Paged history", label: "Paged history", kind: 11 }],
-        [{ text: "Photo preview", label: "Photo preview", kind: 5 }],
-        [{ text: "Sticker preview", label: "Sticker preview", kind: 6 }],
-        [{ text: "Group preview", label: "Group preview", kind: 7 }],
-        [{ text: "Reading fixtures", label: "Reading fixtures", kind: 8 }, { text: "History load", label: "History load", kind: 9 }],
-        [{ text: "Unread scenario", label: "Unread scenario", kind: 14 }],
-        [{ text: "Rich content", label: "Rich content", kind: 12 }],
-        [{ text: "Long chat list", label: "Long chat list", kind: 15 }],
-        [{ text: "Login recovery", label: "Login recovery", kind: 4 }],
-        [{ text: "Reconnect blip", label: "Reconnect blip", kind: 16 }],
-        [{ text: "Offline", label: "Offline", kind: 17 }],
-        [{ text: "Expired sign-in", label: "Expired sign-in", kind: 19 }],
-        [{ text: "Group members", label: "Group members", kind: 32 }],
-        [{ text: "List load failure", label: "List load failure", kind: 18 }],
+        [{text:"History",label:"Long history",kind:0},{text:"Arrivals",label:"Receive 3",kind:1}],
+        [{text:"Media",label:"Media failures",kind:-1}],
+        [{text:"Rejected",label:"Rejected send",kind:10},{text:"Reject next send",label:"Reject next send",kind:31}],
+        [{text:"Send state",label:"Uncertain send",kind:3}],
+        [{text:"Reading fixtures",label:"Reading fixtures",kind:8},{text:"Rich content",label:"Rich content",kind:12}],
+        [{text:"Photo preview",label:"Photo preview",kind:5},{text:"Sticker preview",label:"Sticker preview",kind:6}],
+        [{text:"Long chat list",label:"Long chat list",kind:15}],
+        [{text:"Group preview",label:"Group preview",kind:7},{text:"Unread scenario",label:"Unread scenario",kind:14}],
+        [{text:"Expired sign-in",label:"Expired sign-in",kind:19}],
+        [{text:"Reconnect",label:"Reconnect blip",kind:16},{text:"Offline",label:"Offline",kind:17}],
     ];
-    property <[string]> notifications: ["Demo inactive", "Demo muted", "Demo replay", "Demo mention", "Demo exposed"];
     property <int> last-focus-request;
     property <bool> last-scenario-focused;
-    property <bool> last-notification-focused;
-    dialog := PopupWindow {
+    dialog := Rectangle {
+        visible: State.demo && State.demo-scenarios-open;
         width: root.width; height: root.height;
-        close-policy: no-auto-close;
-        property <bool> opened: State.demo-scenarios-open;
-        changed opened => { if self.opened { close.focus(); } }
         Rectangle {
             background: Tokens.foreground.with-alpha(0.32);
             TouchArea { scroll-event(event) => { accept } }
@@ -64,7 +50,7 @@ export component DemoScenarios inherits Rectangle {
                     if event.text == Key.Escape { root.dismiss(); return accept; }
                     if event.text == Key.Tab {
                         if event.modifiers.shift && close.has-focus { if root.media-menu { root.media-focus-last += 1; } else { root.last-focus-request += 1; } return accept; }
-                        if !event.modifiers.shift && ((root.media-menu && root.media-last-focused) || (!root.media-menu && ((!State.demo-notifications && root.last-scenario-focused) || root.last-notification-focused))) { close.focus(); return accept; }
+                        if !event.modifiers.shift && ((root.media-menu && root.media-last-focused) || (!root.media-menu && root.last-scenario-focused)) { close.focus(); return accept; }
                     }
                     reject
                 }
@@ -77,10 +63,6 @@ export component DemoScenarios inherits Rectangle {
                         VerticalLayout {
                             padding-right: 12px; spacing: 8px; alignment: start;
                             demo-marker := Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.small; }
-                            if State.preview-demo: HorizontalLayout {
-                                Button { text: "Preview loading"; clicked => { root.run(32); } }
-                                Button { text: "Preview loaded"; clicked => { root.run(33); } }
-                            }
                             VerticalLayout {
                                 visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
                                 spacing: 8px; alignment: start;
@@ -92,23 +74,10 @@ export component DemoScenarios inherits Rectangle {
                                             accessible-description: self.has-focus ? "Focused" : "";
                                             horizontal-stretch: row.length == 1 ? 1 : 0;
                                             property <int> focus-request: root.last-focus-request;
-                                            changed focus-request => { if self.focus-request > 0 && State.demo-scenarios-open && scenario.kind == 18 && !State.demo-notifications { self.focus(); } }
-                                            changed has-focus => { if scenario.kind == 18 { root.last-scenario-focused = self.has-focus; } }
+                                            changed focus-request => { if self.focus-request > 0 && State.demo-scenarios-open && scenario.kind == 17 { self.focus(); } }
+                                            changed has-focus => { if scenario.kind == 17 { root.last-scenario-focused = self.has-focus; } }
                                             clicked => { if scenario.kind == -1 { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } else { root.run(scenario.kind); } }
                                         }
-                                    }
-                                    if row[0].kind == 11 && State.paging-demo: Text { text: "History window " + State.messages.length + " · retained " + State.history-retained + " · pages " + State.history-pages; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
-                                }
-                                VerticalLayout {
-                                    visible: State.demo-notifications; height: self.visible ? self.preferred-height : 0px;
-                                    spacing: 8px;
-                                    Text { text: "Notification preview scenarios"; color: Tokens.secondary; wrap: word-wrap; }
-                                    for label[i] in root.notifications: Button {
-                                        text: label; accessible-description: self.has-focus ? "Focused" : "";
-                                        property <int> focus-request: root.last-focus-request;
-                                        changed focus-request => { if self.focus-request > 0 && State.demo-scenarios-open && i == 4 && State.demo-notifications { self.focus(); } }
-                                        changed has-focus => { if i == 4 { root.last-notification-focused = self.has-focus; } }
-                                        clicked => { root.notify(i); }
                                     }
                                 }
                             }
@@ -119,7 +88,6 @@ export component DemoScenarios inherits Rectangle {
                                 media-options := VerticalLayout {
                                     spacing: 8px; alignment: start;
                                     Button { text: "Back to scenarios"; clicked => { root.media-menu = false; close.focus(); } }
-                                    Button { text: "Load media"; clicked => { root.run(2); } }
                                     for label[index] in ["Media timeout", "Media network", "Media 404", "Media 403", "Media 500", "Media unsupported sender", "Media rejected path", "Media too large", "Media decode failure"]: Button { text: label; clicked => { root.run(20 + index); } }
                                     media-last := Button {
                                         text: "Media cancelled"; accessible-description: self.has-focus ? "Focused" : "";

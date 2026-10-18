@@ -156,21 +156,6 @@ fn lock_file(path: &Path) -> std::io::Result<Option<File>> {
     }
 }
 
-pub use line_wasm_poc::locations::Locations;
-
-pub fn storage_directory(session: &Path) -> PathBuf {
-    if let Ok(mut paths) = Locations::from_environment() {
-        let _ = paths.load_existing();
-        if session == paths.session {
-            return paths.state;
-        }
-    }
-    session
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("desktop-state")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
