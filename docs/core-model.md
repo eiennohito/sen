@@ -159,9 +159,12 @@ count cap; a chat's failed rows are listed in its row badge until resolved.
 
 ### Legacy import
 
-Nothing is imported (user decision 2026-10-18). On the first open the store
-starts empty; the old `desktop.state`, encrypted message pages and
-`protocol.state` are deleted, and the encryption code is removed (D7, D6).
+Nothing is imported (user decision 2026-10-18). The store starts empty and
+the app contains no code that reads, migrates or deletes the old files. Once
+phase 4 has removed the encryption code (D7, D6), a one-off subagent lists the
+old `desktop.state`, encrypted message pages and `protocol.state` and deletes
+them after the user confirms. The session file and the media cache are not
+legacy and stay.
 
 ## Worker
 
@@ -312,7 +315,7 @@ Each phase is one Codex task in its own worktree, reviewed before merge.
    demo branches and `start_demo`. Snapshot scenes move to `FakeBackend`
    scripts. Probably split into 3a (chat list and window) and 3b (outbox,
    unread, connection banner).
-4. **Cleanup**: remove the legacy encryption and the old cache, media cache
+4. **Cleanup**: remove the legacy encryption and the old cache code (the old files are deleted separately, see "Legacy import"), media cache
    LRU without expiry (D8), update app-design.md and ux-acceptance rows, reset
    V6 rows.
 
