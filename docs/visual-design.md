@@ -279,6 +279,29 @@ the same height), radius 12, `bg` with the menu border.
   "Create group" (`createChat` type 0). Its progress label is "Creating…".
   Failure gives one danger line in the dialog. Success opens the new group.
 
+**Attachments (P3).** An Attach icon button (paperclip) after Sticker in
+the composer opens the system file chooser (XDG portal) for multiple files.
+Pasting an image (Ctrl+V with image data, or file URIs) or dropping files on
+the conversation does the same without the chooser. Nothing is transmitted
+on selection, paste or drop (CMP9). It opens the attachment dialog
+(Dialog, 480 px wide):
+
+- The title is "Send to <chat name>".
+- A list of the chosen items, each 64 px high: a 56 px thumbnail (photos) or
+  the file-type icon tile, then the name and size, then a × remove icon
+  button.
+- Photos over 10 MB, or files over the server limit, show one danger line
+  in the row ("Too large") and are excluded.
+- Buttons: Cancel and primary "Send N", disabled when nothing sendable is
+  left.
+
+Sending creates one pending row per item, in order, through the normal send
+lifecycle. Photo rows show the local thumbnail with a thin progress bar
+(`accent`) along the bottom edge until the upload finishes. File rows show
+the file card with the same bar. Failure gives the usual "Not sent" line with
+Retry and Discard. Retry re-uploads from the original path. A file that no
+longer exists turns Retry into "File missing".
+
 ## Not in scope here
 
 - Animations, beyond the scrollbar fade and the hover fill.
