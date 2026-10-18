@@ -1,6 +1,9 @@
 import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
+    in-out property <bool> history-virtual;
+    in-out property <length> virtual-history-height;
+    in-out property <length> plain-history-height;
     pure callback avatar-tint(string) -> color;
     in-out property <string> account-initial;
     in-out property <string> chat-id;

@@ -1,6 +1,6 @@
 use crate::*;
 
-fn small(image: &slint::Image, size: i32) -> slint::Image {
+pub(crate) fn small(image: &slint::Image, size: i32) -> slint::Image {
     let edge = ((size.clamp(12, 24) - 1) * 3) as u32;
     let dimensions = image.size();
     if dimensions.width <= edge && dimensions.height <= edge {

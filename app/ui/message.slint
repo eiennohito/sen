@@ -32,6 +32,7 @@ component TextAction inherits Rectangle {
 
 export component Message inherits VerticalLayout {
     in property <MessageRow> message;
+    in property <length> origin-y;
     property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.unknown || root.message.kind == MessageKind.undecryptable;
     property <bool> selecting-rich: false;
     property <bool> rich-focused: false;
@@ -42,14 +43,14 @@ export component Message inherits VerticalLayout {
     function copy-message() { root.copying-rich = true; body.select-all(); body.copy(); root.copying-rich = false; }
 
     property <bool> system-item: root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn;
-    property <length> anchor-top: root.y + (root.system-item ? (root.message.day-label != "" ? 27px : 0px) + (root.message.id == State.unread-divider ? 31px : 0px) : message-content.y + message-column.y + message-bubble.y);
-    property <length> anchor-height: max(1px, root.height - (root.anchor-top - root.y));
+    property <length> anchor-top: root.origin-y + root.y + (root.system-item ? (root.message.day-label != "" ? 27px : 0px) + (root.message.id == State.unread-divider ? 31px : 0px) : message-content.y + message-column.y + message-bubble.y);
+    property <length> anchor-height: max(1px, root.height - (root.anchor-top - root.origin-y - root.y));
     public function report-geometry() {
         // The history layout reserves at least 16 px before its first delegate.
         // Initial unlaid-out values must never count as an exposed message.
-        if root.y >= 16px && root.width > 0px && root.anchor-height > 1px {
+        if root.origin-y + root.y >= 16px && root.width > 0px && root.anchor-height > 1px {
             State.row-geometry(root.message.id, root.anchor-top, root.anchor-height);
-            if root.message.id == State.unread-divider { State.row-geometry("unread", root.y, 28px); }
+            if root.message.id == State.unread-divider { State.row-geometry("unread", root.origin-y + root.y, 28px); }
         }
     }
     changed anchor-top => { root.report-geometry(); }
