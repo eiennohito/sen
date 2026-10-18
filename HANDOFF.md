@@ -1,6 +1,26 @@
 # LINE native client PoC: fresh-session handoff
 
-Updated 2026-10-17. Workspace: `/home/eien/work/misc/line-app`.
+Updated 2026-10-18. Workspace: `/home/eien/work/misc/line-app`.
+
+## Ask the user first
+
+Open decisions left by the 2026-10-18 session. At the start of the next
+session, ask the user these before picking up the affected items, then
+remove this section once answered:
+
+1. **T11, session credentials at rest.** The refresh token and wrapped
+   keys are plaintext JSON at mode 0600. Encrypt them with the same store
+   the drafts use, or move them to the desktop secret service? Either way
+   `artifacts/auth/session.json` and the encrypted state must be preserved
+   and migrated, not replaced.
+2. **T5, P1–P3, P5 mutations: where do protocol traces come from?**
+   Live reaction updates, official-account media routes, sticker sending,
+   attachment upload and group membership changes all need a trace that
+   the repository doesn't have. Fetch and read the extension package, or
+   do a live Chrome capture (the user would have to drive Chrome)?
+
+Items ready without a decision are in [docs/ux-sessions.md](docs/ux-sessions.md)
+(e.g. P4, S23, S24).
 
 ## Current state and authorization — read this first
 
