@@ -1,4 +1,7 @@
-import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { EmptyState } from "empty-state.slint";
+import { Avatar } from "avatar.slint";
+import { Button } from "button.slint";
+import { LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
@@ -40,10 +43,10 @@ export component Chats inherits Rectangle {
     }
             VerticalLayout {
                 y: 0px; height: parent.height; visible: State.section == 0;
-                padding: 14px; spacing: 10px;
+                padding: 12px; spacing: 10px;
                 HorizontalLayout {
                     height: 42px;
-                    Text { text: "Chats"; color: Tokens.accent; font-size: Tokens.heading; font-weight: 800; vertical-alignment: center; }
+                    Text { text: "Chats"; color: Tokens.text; font-size: Tokens.heading; font-weight: 800; vertical-alignment: center; }
                     Text { width: State.narrow ? Tokens.small * 6.5 : 0px; horizontal-stretch: 0; text: State.narrow && State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
                 }
                 HorizontalLayout {
@@ -85,18 +88,17 @@ export component Chats inherits Rectangle {
                     HorizontalLayout {
                     spacing: 4px;
                     for category[i] in ["All", "Friends", "Groups"]: Rectangle {
-                        height: max(32px, Tokens.base * 2); border-radius: 16px;
-                        background: State.category == i ? Tokens.selection : Tokens.surface;
-                        border-width: (chips-focus.has-focus && chips-focus.cursor == i) || State.category == i ? 2px : 1px; border-color: (chips-focus.has-focus && chips-focus.cursor == i) || State.category == i ? Tokens.accent : Tokens.border;
+                        height: 28px; border-radius: 14px;
+                        background: State.category == i ? Tokens.text : Tokens.surface-2;
+                        border-width: chips-focus.has-focus && chips-focus.cursor == i ? 2px : 0px; border-color: (chips-focus.has-focus && chips-focus.cursor == i) || State.category == i ? Tokens.accent : Tokens.border;
                         accessible-role: button; accessible-label: category;
                         accessible-item-selectable: true; accessible-item-selected: State.category == i;
                         accessible-action-default => { chips-focus.cursor = i; chips-focus.focus(); State.category = i; State.filter-category(); }
-                        Text { text: category; color: State.category == i ? Tokens.selection-foreground : Tokens.foreground; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+                        Text { text: category; color: State.category == i ? Tokens.bg : Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
                         TouchArea { mouse-cursor: pointer; clicked => { chips-focus.cursor = i; chips-focus.focus(); State.category = i; State.filter-category(); } }
                     }
                 }
                 }
-                if State.chats.length == 0: Text { text: State.query == "" ? "No conversations yet" : "No conversations match your search"; wrap: word-wrap; }
                 list-focus := FocusScope {
                     accessible-role: list; accessible-label: "Conversations";
                     accessible-description: self.has-focus ? "Focused conversations" : "";
@@ -117,35 +119,31 @@ export component Chats inherits Rectangle {
                     VerticalLayout { spacing: 0px;
 for chat[i] in State.chats: Rectangle {
                         width: chat-list.visible-width; height: State.chat-row-height;
-                        border-radius: 6px; clip: true;
+                        border-radius: 8px; clip: true;
                         background: chat.index == State.selected-chat ? Tokens.selection : row-touch.has-hover ? Tokens.chat-hover : transparent;
                         border-width: (list-focus.has-focus || search.has-focus) && i == State.result-focus ? 2px : 0px;
                         border-color: Tokens.accent;
+                        Avatar { x: 8px; y: (parent.height - 44px) / 2; identity: chat.id; initial: chat.initial; picture: chat.avatar; }
                         Rectangle {
-                            x: 10px; y: (parent.height - 40px) / 2; width: 40px; height: 40px;
-                            border-radius: 20px; background: Tokens.selection;
-                            Text { width: 100%; height: 100%; visible: chat.avatar.width == 0; text: chat.initial; horizontal-alignment: center; vertical-alignment: center; }
-                            Image { source: chat.avatar; width: 100%; height: 100%; image-fit: contain; accessible-role: image; accessible-label: "Contact photo"; }
-                        }
-                        Rectangle {
-                            x: 60px; y: 10px; width: max(0px, parent.width - 72px); height: parent.height - 20px; clip: true;
-                            time := Text { y: 3px; x: parent.width - self.width; max-width: parent.width * 0.55; text: chat.time; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.time; horizontal-alignment: right; overflow: elide; }
-                            name := Text { x: 0px; y: 0px; width: max(0px, parent.width - time.width - 8px); height: State.text-size * 1.5px; text: chat.title; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.foreground; font-weight: 600; overflow: elide; wrap: no-wrap; }
+                            x: 64px; y: 10px; width: max(0px, parent.width - 76px); height: parent.height - 20px; clip: true;
+                            time := Text { y: 3px; x: parent.width - self.width; max-width: parent.width * 0.55; text: chat.time; color: Tokens.secondary; font-size: Tokens.time; horizontal-alignment: right; overflow: elide; }
+                            name := Text { x: 0px; y: 0px; width: max(0px, parent.width - time.width - (chat.muted ? 24px : 8px)); height: State.text-size * 1.5px; text: chat.title; color: Tokens.text; font-weight: 600; overflow: elide; wrap: no-wrap; }
+                            if chat.muted: Image { x: name.width + 4px; y: 3px; width: 16px; height: 16px; source: @image-url("../assets/icons/muted.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Muted"; }
                             preview := Rectangle {
-                                x: 0px; y: name.height + 4px; width: max(0px, parent.width - markers.width - 4px); height: max(0px, parent.height - self.y);
-                                if chat.draft || chat.preview-runs.length == 0: Text { width: parent.width; height: parent.height; text: chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview; color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; font-size: Tokens.preview; wrap: no-wrap; overflow: elide; }
+                                x: 0px; y: name.height + 2px; width: max(0px, parent.width - markers.width - 4px); height: max(0px, parent.height - self.y);
+                                if chat.draft || chat.preview-runs.length == 0: Text { width: parent.width; height: parent.height; text: chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview; color: Tokens.secondary; font-size: Tokens.preview; wrap: no-wrap; overflow: elide; }
                                 if !chat.draft && chat.preview-runs.length > 0 && i * State.chat-row-height + State.list-y + State.chat-row-height >= 0px && i * State.chat-row-height + State.list-y <= chat-list.visible-height: PreviewLine {
                                     width: parent.width; height: parent.height; runs: chat.preview-runs;
                                     prefix: chat.outgoing-preview ? "You: " : "";
-                                    text-color: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary;
+                                    text-color: Tokens.secondary;
                                 }
                             }
                             markers := HorizontalLayout {
-                                x: parent.width - self.width; y: name.height + 4px; spacing: 4px; width: (chat.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
-                                if chat.unread > 0 || chat.unread-unknown: Rectangle { width: 32px; height: 20px; border-radius: 10px; background: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.accent; Text { text: chat.unread-unknown ? "•" : chat.unread > 99 ? "99+" : "" + chat.unread; color: chat.index == State.selected-chat ? Tokens.accent : Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
-                                if chat.draft: Image { source: @image-url("../assets/icons/draft.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.accent; width: 16px; height: 16px; accessible-role: image; accessible-label: "Draft"; }
-                                if chat.failed: Image { source: @image-url("../assets/icons/failed.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.danger; width: 16px; height: 16px; accessible-role: image; accessible-label: "Send failed"; }
-                                if chat.muted: Image { source: @image-url("../assets/icons/muted.svg"); colorize: chat.index == State.selected-chat ? Tokens.selection-foreground : Tokens.secondary; width: 16px; height: 16px; accessible-role: image; accessible-label: "Muted"; }
+                                x: parent.width - self.width; y: name.height + 2px; spacing: 4px; width: (chat.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
+                                if !chat.failed && (chat.unread > 0 || chat.unread-unknown): Rectangle { width: chat.unread-unknown ? 8px : 32px; height: chat.unread-unknown ? 8px : 20px; border-radius: self.height / 2; background: chat.muted ? Tokens.secondary : Tokens.accent; Text { visible: !chat.unread-unknown; text: chat.unread > 999 ? "999+" : "" + chat.unread; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
+                                if chat.draft: Image { source: @image-url("../assets/icons/draft.svg"); colorize: Tokens.accent; width: 16px; height: 16px; accessible-role: image; accessible-label: "Draft"; }
+                                if chat.failed: Image { source: @image-url("../assets/icons/error.svg"); colorize: Tokens.danger; width: 16px; height: 16px; accessible-role: image; accessible-label: "Send failed"; }
+
                             }
                         }
                         accessible-role: button;
@@ -170,5 +168,6 @@ for chat[i] in State.chats: Rectangle {
                 if State.more-chats: Button { text: "Load more"; clicked => { State.more(); } }
 
             }
+    if State.chats.length == 0: EmptyState { y: 160px; height: max(0px, parent.height - 160px); text: State.query == "" ? "No conversations yet" : "No results"; icon: @image-url("../assets/icons/search.svg"); }
     public function focus-search() { search.focus(); }
 }

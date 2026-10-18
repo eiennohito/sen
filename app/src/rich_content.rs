@@ -765,7 +765,7 @@ mod tests {
             let pixels = render(&window, (980, 720));
             let (x, y, _) = pixels
                 .enumerate_pixels()
-                .find(|(_, _, p)| p.0 == [24, 41, 30])
+                .find(|(_, _, p)| p.0 == [17, 17, 17])
                 .expect("fallback body did not paint");
             let position = slint::LogicalPosition::new(x as f32, y as f32);
             for pressed in [true, false] {
@@ -795,7 +795,7 @@ mod tests {
             }
             let selected = render(&window, (980, 720));
             assert!(
-                selected.pixels().filter(|p| p.0 == [36, 89, 166]).count() > 100,
+                selected.pixels().filter(|p| p.0 == [0, 135, 60]).count() > 100,
                 "fallback did not expose native selection"
             );
             ui.hide().unwrap();
@@ -976,7 +976,7 @@ mod tests {
                         }
                         let green: Vec<_> = pixels
                             .enumerate_pixels()
-                            .filter(|(_, _, p)| p.0 == [216, 243, 220])
+                            .filter(|(_, _, p)| p.0 == [199, 242, 164])
                             .map(|(x, y, _)| (x, y))
                             .collect();
                         assert!(!green.is_empty());
@@ -986,8 +986,8 @@ mod tests {
                             let link = runs.iter().find(|r| r.link_start).unwrap();
                             let top = green.iter().map(|p| p.1).min().unwrap();
                             let position = slint::LogicalPosition::new(
-                                left as f32 + 9.0 + link.x + link.link_width * 0.8,
-                                top as f32 + 9.0 + link.y + link.measured_height / 2.0,
+                                left as f32 + 12.0 + link.x + link.link_width * 0.8,
+                                top as f32 + 8.0 + link.y + link.measured_height / 2.0,
                             );
                             ui.window().dispatch_event(
                                 slint::platform::WindowEvent::PointerPressed {
@@ -1007,9 +1007,11 @@ mod tests {
                                 "inline link hit area did not cover its text"
                             );
                         }
+                        let bubble_top = green.iter().map(|p| p.1).min().unwrap();
+                        let bubble_bottom = green.iter().map(|p| p.1).max().unwrap();
                         let ink: Vec<_> = pixels
                             .enumerate_pixels()
-                            .filter(|(_, _, p)| p.0 == [24, 41, 30])
+                            .filter(|(x, y, p)| (size.0 < 740 || *x > 342) && *y >= bubble_top && *y <= bubble_bottom && p.0 == [17, 17, 17])
                             .map(|(x, y, _)| (x, y))
                             .collect();
                         assert!(!ink.is_empty());
@@ -1029,7 +1031,7 @@ mod tests {
                                             && *x < right
                                             && *y >= top
                                             && *y <= bottom
-                                            && p.0 == [0, 95, 184]
+                                            && p.0 == [0, 135, 60]
                                     })
                                     .map(|(_, y, _)| y),
                             );
@@ -1128,6 +1130,7 @@ mod tests {
         std::thread::spawn(|| {
             let window = snapshot::install().unwrap();
             let ui = create_app_window().unwrap();
+            ui.set_demo(true);
             ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                 id: "selection".into(),
                 body: "Select this message".into(),
@@ -1142,17 +1145,17 @@ mod tests {
                 (
                     "light",
                     slint::language::ColorScheme::Light,
-                    [24, 41, 30],
-                    [36, 89, 166],
+                    [17, 17, 17],
+                    [0, 135, 60],
                 ),
                 (
                     "dark",
                     slint::language::ColorScheme::Dark,
-                    [228, 246, 233],
-                    [168, 201, 255],
+                    [236, 236, 236],
+                    [61, 220, 132],
                 ),
             ] {
-                ui.global::<Palette>().set_color_scheme(scheme);
+                ui.invoke_preview_dark(scheme == slint::language::ColorScheme::Dark);
                 for size in [(980, 720), (360, 520)] {
                     ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                         id: format!("selection-{theme}-{}", size.0).into(),
@@ -1164,7 +1167,7 @@ mod tests {
                     let before = render(&window, size);
                     let (x, y, _) = before
                         .enumerate_pixels()
-                        .find(|(_, _, p)| p.0 == ink)
+                        .find(|(x, y, p)| *y > 56 && (size.0 < 740 || *x > 342) && p.0 == ink)
                         .expect("outgoing text did not paint");
                     let position = slint::LogicalPosition::new(x as f32, y as f32);
                     ui.window()
@@ -1250,7 +1253,7 @@ mod tests {
                         let pixels = render(&window, size);
                         let green: Vec<_> = pixels
                             .enumerate_pixels()
-                            .filter(|(_, _, p)| p.0 == [216, 243, 220])
+                            .filter(|(_, _, p)| p.0 == [199, 242, 164])
                             .map(|(x, y, _)| (x, y))
                             .collect();
                         let right = green.iter().map(|p| p.0).max().unwrap();
@@ -1260,7 +1263,12 @@ mod tests {
                             pixels.enumerate_pixels().any(|(x, y, p)| x > right
                                 && y >= top
                                 && y <= bottom
-                                && p.0 == [148, 56, 36]),
+                                && p.0
+                                    == if delivery == "Rejected" {
+                                        [217, 48, 37]
+                                    } else {
+                                        [107, 111, 118]
+                                    }),
                             "failure mark moved below the bubble"
                         );
                     }
@@ -1457,7 +1465,13 @@ mod tests {
                             .as_slice()
                             .iter()
                             .enumerate()
-                            .filter(|(_, p)| p.r == 24 && p.g == 41 && p.b == 30)
+                            .filter(|(i, p)| {
+                                i / size.0 as usize > 56
+                                    && (size.0 < 740 || i % size.0 as usize > 342)
+                                    && p.r == 17
+                                    && p.g == 17
+                                    && p.b == 17
+                            })
                             .map(|(i, _)| i)
                             .collect();
                         assert!(!ink.is_empty(), "first frame has no message ink");
@@ -1474,7 +1488,7 @@ mod tests {
                                 !pixels
                                     .as_slice()
                                     .iter()
-                                    .any(|p| p.r == 24 && p.g == 41 && p.b == 30),
+                                    .any(|p| p.r == 17 && p.g == 17 && p.b == 17),
                                 "first frame painted stacked runs"
                             );
                         } else {

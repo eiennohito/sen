@@ -29,6 +29,16 @@ pub use line_desktop_ui::*;
 use present::*;
 fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
+    ui.global::<State>().on_avatar_tint(|id| {
+        let hash = id.bytes().fold(0u32, |hash, byte| {
+            hash.wrapping_mul(31).wrapping_add(byte as u32)
+        });
+        let hues = [
+            0xDCCEDC, 0xC6D9E8, 0xC9DDD0, 0xE7D4BD, 0xD2D2EA, 0xE8CCD0, 0xDADDBE, 0xBEDDDA,
+        ];
+        let rgb = hues[hash as usize % hues.len()];
+        slint::Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+    });
     ui.global::<State>()
         .on_has_text(|text| !text.trim().is_empty());
     {

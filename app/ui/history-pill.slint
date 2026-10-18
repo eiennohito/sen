@@ -1,0 +1,11 @@
+import { Tokens } from "tokens.slint";
+export component DatePill inherits Rectangle {
+    in property <string> text;
+    in property <image> icon;
+    horizontal-stretch: 0; preferred-width: label.preferred-width + 24px + (root.icon.width > 0 ? 20px : 0px);
+    height: label.preferred-height + 8px; border-radius: self.height / 2; background: Tokens.surface-2;
+    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
+        if root.icon.width > 0: Image { width: 14px; height: 14px; source: root.icon; colorize: Tokens.secondary; }
+        label := Text { text: root.text; font-size: Tokens.small; color: Tokens.secondary; vertical-alignment: center; overflow: elide; }
+    }
+}

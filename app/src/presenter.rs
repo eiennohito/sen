@@ -214,6 +214,7 @@ impl Presenter {
             grouped.push(FriendRow {
                 id: format!("header-{label}").into(),
                 name: label.into(),
+                count: rows.len() as i32,
                 header: true,
                 group,
                 ..Default::default()
@@ -294,6 +295,21 @@ impl Presenter {
             );
         }
 
+        if matches!(&state.panel, Panel::Profile(id) if id == "self") {
+            ui.set_profile_name(
+                state.profile["displayName"]
+                    .as_str()
+                    .unwrap_or("LINE")
+                    .into(),
+            );
+            ui.global::<State>()
+                .set_profile_initial(name_initial(&ui.get_profile_name()));
+            ui.set_profile_id("self".into());
+            ui.set_profile_status(state.profile["statusMessage"].as_str().unwrap_or("").into());
+            ui.set_profile_group(false);
+            ui.set_profile_available(false);
+            ui.set_profile_avatar(slint::Image::default());
+        }
         let mut chats = Vec::new();
         for (index, id) in state.chat_order.iter().enumerate() {
             let item = &state.chats[id];
@@ -305,6 +321,7 @@ impl Presenter {
                 continue;
             }
             let mut row = ChatRow {
+                id: id.0.clone().into(),
                 index: index as i32,
                 title: c.title.clone().into(),
                 initial: name_initial(&c.title),
@@ -354,7 +371,8 @@ impl Presenter {
                     } else {
                         quoted.sender_name.as_str()
                     };
-                    row.reply_preview = format!("{name}: {}", quoted.body).into();
+                    row.reply_sender = name.into();
+                    row.reply_preview = quoted.body;
                 }
                 row
             })
@@ -413,6 +431,9 @@ impl Presenter {
             }
             .into(),
         );
+        ui.global::<State>().set_account_initial(name_initial(
+            state.profile["displayName"].as_str().unwrap_or("LINE"),
+        ));
         ui.set_account_name(
             state.profile["displayName"]
                 .as_str()
@@ -461,6 +482,21 @@ impl Presenter {
         );
         if let Some(c) = state.selected.as_ref().and_then(|id| state.chats.get(id)) {
             ui.set_chat_title(c.chat.title.clone().into());
+            ui.global::<State>().set_chat_id(c.chat.id.0.clone().into());
+            ui.global::<State>()
+                .set_chat_initial(name_initial(&c.chat.title));
+            let avatar = c
+                .chat
+                .avatar
+                .as_ref()
+                .and_then(|value| {
+                    serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(value)
+                        .ok()
+                })
+                .and_then(|asset| self.images.get(&asset.key()))
+                .cloned()
+                .unwrap_or_default();
+            ui.global::<State>().set_chat_avatar(avatar);
             ui.set_chat_group(c.chat.kind != 0);
             ui.set_member_count(c.chat.member_count.unwrap_or(0) as i32);
             ui.set_chat_subtitle(

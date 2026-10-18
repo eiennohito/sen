@@ -1,3 +1,5 @@
+import { EmptyState } from "empty-state.slint";
+import { Avatar } from "avatar.slint";
 import { Button, LineEdit } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -7,7 +9,7 @@ import { IconButton } from "icon-button.slint";
 export component Friends inherits Rectangle {
     out property <bool> has-focus: friend-search.contains-focus || list-focus.has-focus;
     visible: State.section == 1;
-    out property <length> row-height: max(70px, name-metric.preferred-height + status-metric.preferred-height + 20px);
+    out property <length> row-height: max(68px, name-metric.preferred-height + status-metric.preferred-height + 20px);
     changed row-height => { State.friend-row-height = root.row-height; }
     init => { State.friend-row-height = root.row-height; }
     name-metric := Text { visible: false; text: "友 Ag"; font-size: Tokens.base; font-weight: 600; }
@@ -30,7 +32,7 @@ export component Friends inherits Rectangle {
     VerticalLayout {
         padding: 12px; spacing: 8px;
         HorizontalLayout {
-            Text { text: "Friends"; font-size: Tokens.heading; color: Tokens.accent; font-weight: 700; }
+            Text { text: "Friends"; font-size: Tokens.heading; color: Tokens.text; font-weight: 700; }
         }
         HorizontalLayout {
             friend-search := SearchField {
@@ -49,7 +51,6 @@ export component Friends inherits Rectangle {
                 }
             }
         }
-        if State.friend-query != "" && State.friends.length == 0: Text { text: "No friends or groups match your search"; wrap: word-wrap; }
         list-focus := FocusScope {
             accessible-role: list; accessible-label: "Friends and groups"; accessible-description: self.has-focus ? "Focused friends and groups" : "";
             key-pressed(event) => {
@@ -69,27 +70,23 @@ export component Friends inherits Rectangle {
                     spacing: 0px;
                     for friend[i] in State.friends: Rectangle {
                         width: friend-list.visible-width; height: State.friend-row-height;
-                        background: row-touch.has-hover ? Tokens.surface : transparent;
+                        background: row-touch.has-hover ? Tokens.surface-hover : transparent;
                         border-width: (list-focus.has-focus || friend-search.has-focus) && State.friend-result == i ? 2px : 0px;
-                        border-color: Tokens.accent; border-radius: 6px;
+                        border-color: Tokens.accent; border-radius: 8px;
                         accessible-role: button;
                         accessible-label: friend.header ? friend.name : "Open profile: " + friend.name;
                         accessible-expandable: friend.header;
                         accessible-expanded: friend.header && (friend.group ? State.groups-expanded : State.friends-expanded);
                         accessible-action-default => { State.friend-result = i; root.activate(); }
                         if friend.header: Image {
-                            x: 8px; y: (parent.height - 20px) / 2; width: 20px; height: 20px;
+                            x: parent.width - 28px; y: (parent.height - 20px) / 2; width: 20px; height: 20px;
                             source: (friend.group ? State.groups-expanded : State.friends-expanded) ? @image-url("../assets/icons/chevron-down.svg") : @image-url("../assets/icons/chevron.svg");
                             colorize: Tokens.foreground;
                         }
-                        if friend.header: Text { x: 36px; width: parent.width - 44px; height: parent.height; vertical-alignment: center; font-weight: 600; text: friend.name; }
-                        if !friend.header: Rectangle {
-                            x: 8px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.selection;
-                            Text { width: 100%; height: 100%; text: friend.initial; color: Tokens.selection-foreground; horizontal-alignment: center; vertical-alignment: center; visible: friend.avatar.width == 0; }
-                            Image { width: 100%; height: 100%; source: friend.avatar; image-fit: contain; }
-                        }
+                        if friend.header: Text { x: 8px; width: parent.width - 44px; color: Tokens.secondary; font-size: Tokens.small; height: parent.height; vertical-alignment: center; font-weight: 600; text: friend.name + " " + friend.count; }
+                        if !friend.header: Avatar { x: 8px; y: (parent.height - 44px) / 2; identity: friend.id; initial: friend.initial; picture: friend.avatar; }
                         if !friend.header: VerticalLayout {
-                            x: 60px; y: 8px; width: max(0px, parent.width - 68px); height: parent.height - 16px; spacing: 4px; alignment: center;
+                            x: 64px; y: 8px; width: max(0px, parent.width - 68px); height: parent.height - 16px; spacing: 4px; alignment: center;
                             Text { text: friend.name; color: Tokens.foreground; font-weight: 600; overflow: elide; wrap: no-wrap; }
                             Text { text: friend.status; color: Tokens.secondary; font-size: Tokens.preview; overflow: elide; wrap: no-wrap; }
                         }
@@ -99,4 +96,6 @@ export component Friends inherits Rectangle {
             }
         }
     }
+    if State.friends.length == 0: EmptyState { y: 100px; height: max(0px, parent.height - 100px); text: State.friend-query != "" ? "No results" : "No friends yet"; icon: @image-url("../assets/icons/friends.svg"); }
+
 }

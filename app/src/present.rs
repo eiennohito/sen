@@ -24,7 +24,10 @@ pub(crate) fn fix_snapshot_clock() {
 }
 
 pub(crate) fn name_initial(name: &str) -> slint::SharedString {
-    name.chars().next().unwrap_or('·').to_string().into()
+    unicode_segmentation::UnicodeSegmentation::graphemes(name, true)
+        .next()
+        .unwrap_or("·")
+        .into()
 }
 
 pub(crate) fn single_line(text: &str) -> String {
@@ -35,13 +38,7 @@ pub(crate) fn single_line(text: &str) -> String {
 pub(crate) fn group_messages(messages: &mut [MessageRow]) {
     let mut previous: Option<(String, bool, i64, String)> = None;
     for row in messages {
-        row.sender_initial = row
-            .sender_name
-            .chars()
-            .next()
-            .unwrap_or('?')
-            .to_string()
-            .into();
+        row.sender_initial = name_initial(&row.sender_name);
         let (date, clock) = row.time.rsplit_once(' ').unwrap_or(("", row.time.as_str()));
         let date = date.to_owned();
         row.clock = clock.into();
@@ -151,14 +148,17 @@ pub(crate) fn message_text(m: &account::MessageView) -> String {
     let mut body = crate::links::placeholder(kind)
         .map(|label| {
             if kind == MessageKind::System {
-                m.rich
-                    .system_text
-                    .clone()
-                    .map(|text| format!("ⓘ {text}"))
-                    .unwrap_or_else(|| label.into())
+                m.rich.system_text.clone().unwrap_or_else(|| label.into())
             } else if matches!(kind, MessageKind::File | MessageKind::Contact) && !m.body.is_empty()
             {
-                format!("{label} · {}", m.body)
+                if kind == MessageKind::File {
+                    m.rich.file_name.clone().unwrap_or_else(|| m.body.clone())
+                } else {
+                    m.rich
+                        .contact_name
+                        .clone()
+                        .unwrap_or_else(|| m.body.trim_start_matches("Contact · ").to_owned())
+                }
             } else {
                 label.into()
             }
@@ -169,7 +169,7 @@ pub(crate) fn message_text(m: &account::MessageView) -> String {
     }
     if matches!(kind, MessageKind::Photo | MessageKind::Video) {
         if let Some(count) = m.rich.album_count {
-            body = format!("▧ Album · {count} items");
+            body = format!("Album · {count} items");
         }
         if let Some(caption) = &m.rich.caption {
             body = format!("{body} · {caption}");

@@ -33,7 +33,7 @@ export component RichFlow inherits Rectangle {
         width: run.measured-width * 1px;
         height: run.measured-height * 1px;
         background: transparent;
-        Text { x: 0px; y: 0px; width: parent.width; height: parent.height; min-width: 0px; min-height: 0px; preferred-width: parent.width; preferred-height: parent.height; accessible-role: none; wrap: no-wrap; visible: !run.emoji || !run.has-picture; text: run.text; font-size: run.emoji ? Tokens.small : Tokens.base; color: run.url != "" ? Tokens.accent : root.text-color; vertical-alignment: center; overflow: clip; }
+        Text { x: 0px; y: 0px; width: parent.width; height: parent.height; min-width: 0px; min-height: 0px; preferred-width: parent.width; preferred-height: parent.height; accessible-role: none; wrap: no-wrap; visible: !run.emoji || !run.has-picture; text: run.text; font-size: run.emoji ? Tokens.small : Tokens.base; color: run.url != "" ? Tokens.accent-strong : root.text-color; vertical-alignment: center; overflow: clip; }
         if run.emoji && run.has-picture: Image { width: parent.width; height: parent.height; source: run.picture; image-fit: contain; accessible-role: image; accessible-label: run.text; }
         if run.link-start: ContextMenuArea {
             x: 0px; y: 0px;
@@ -44,7 +44,7 @@ export component RichFlow inherits Rectangle {
                 MenuItem { title: "Open link"; activated => { State.open-link(run.url); } }
                 MenuItem { title: "Copy link"; activated => { link-copy.select-all(); link-copy.copy(); } }
             }
-            Rectangle { y: parent.height - 2px; height: 1px; background: Tokens.accent; }
+            Rectangle { y: parent.height - 2px; height: 1px; background: Tokens.accent-strong; }
             link-copy := TextInput { visible: false; text: run.url; read-only: true; }
             link-focus := FocusScope {
                 visible: run.link-first;

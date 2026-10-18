@@ -177,8 +177,8 @@ observations below do not verify the current build.
 | ID | Requirement | Impl | Verified |
 | --- | --- | --- | --- |
 | FB1 | No general status line; each failure appears at its model §9.1 location | yes ([C2 resolved](ux-sessions.md#resolved); P7 transient failure at the message row) | S M (history/local feedback; Settings recovery compiled and synthetic) |
-| FB2 | Connection and authentication use one header strip with Retry and Sign in again; it never starts pairing by itself | yes | S M |
-| FB3 | No permanent explanatory captions; no implementation vocabulary in production UI | yes ([C3/C4 resolved](ux-sessions.md#resolved)) | S M |
+| FB2 | Connection and authentication use one header strip with automatic reconnection and Sign in again; it never starts pairing by itself | yes | S M |
+| FB3 | No permanent explanatory captions; no implementation vocabulary in production UI | yes (6a: composer caption removed; sign-in, strip, failed-send and empty-state wording follows [visual design](visual-design.md)) | S M; offline screenshot matrix |
 | FB4 | Button labels are verbs of at most three words | yes (short action labels including Retry/Edit/Resend/Replace/Append) | S M (S6 recovery flows) |
 | FB5 | Technical diagnostics never appear in message content | yes | S |
 
@@ -187,12 +187,29 @@ observations below do not verify the current build.
 | ID | Requirement | Impl | Verified |
 | --- | --- | --- | --- |
 | VIS1 | Type scale derives from the text-size setting; no hard-coded text sizes except the two minimums | yes (S1) | S M |
-| VIS2 | Colours come from the system palette and follow light/dark | yes (S1, Palette roles) | S M; dark desktop screenshot, physical scale/theme V pending |
-| VIS3 | Hover, selected, focused, pressed, disabled are distinct and not colour-only | yes ([S5/S9/M9 resolved](ux-sessions.md#resolved)) | M |
-| VIS4 | One icon family; rail and markers use icons, not text glyphs | yes (shared SVG rail, row and delivery icons) | S M |
+| VIS2 | Semantic colours follow the system light/dark scheme using the visual-design token table | yes (6a; only tokens read Palette) | S M; six headless size/theme variants; physical theme V pending |
+| VIS3 | Hover, selected, focused, pressed, disabled are distinct and not colour-only | yes (6a controls, focus rings, neutral selected rows and 40% disabled opacity) | M; forward/reverse focus groups |
+| VIS4 | One icon family; rail, toolbars, rich cards and delivery use icons, not text glyphs | yes (6a; existing SVG stroke family extended) | S M; detail/profile stack deferred to 6b |
 | VIS5 | 100 %, 150 %, 200 % scale with long names, unbroken links, Japanese and emoji text remain usable | part | M (1.5 only) P— |
-| VIS6 | Avatars 40 px in lists, 32 px in groups, circular; bubble widths per model | yes | M |
+| VIS6 | Avatars 44 px in chat/friend lists, 32 px in headers/group runs; circular, first-grapheme fallback on stable id tint | yes (6a; eight muted hues); member/profile layouts remain 6b | S M; avatar bounds and sender grouping checks |
 | VIS7 | Emoji render in colour on the desktop build or the limitation is recorded | yes (limitation recorded: Unicode font emoji are monochrome in software captures; LINE image-emoji assets retain their colours) | M; physical colour rendering P— |
+
+Phase 6a follows [visual-design.md](visual-design.md) outside the detail/profile
+stack (§3.4, phase 6b). Headless MCP captures are in `target/phase6a/`: 980×720,
+1280×900 and 420×760, each light and `--demo-dark`, including history, browser,
+rich cards, Settings, connection strip, viewer and sign-in. Screenshot review
+corrected header alignment, composer divider, viewer gradient placement,
+friend counts, redundant rich/photo labels and strip width.
+
+Renderer/API accommodations: the scrollbar hides instantly after one second;
+software-renderer shadows are omitted (`draw_box_shadow` is unimplemented in
+1.18.1); fixed dialog/column widths clamp to the window; the QR card appears only once
+QR data exists. Context menus retain Slint's native styling and behavior:
+1.18.1's public `Menu` API has no per-item colour, radius or spacing hooks, and
+the compiler rejects imports of its internal menu components. Consequently
+menu padding, hover/focus treatment and destructive-item colour remain native.
+Photo corner masks compensate for rectangular software clipping without changing
+the cached image or original export. No custom font or phase 6b profile layout is introduced.
 
 ## OS — Desktop integration (model §11)
 
@@ -274,6 +291,7 @@ Keep account contents and private screenshots out of Git. Newest first.
 | 2026-10-15 | `f7ab75a` and follow-ups | RD2–RD5, RD8 partial, MSG1–MSG3, OUT1, OUT3, OUT4, OUT8, CMP3–CMP7, FB2, SC1, SC2, SC5–SC8 | Wayland, scale 1.5, MCP simulated pointer and keyboard; `cargo test` | Passed as simulated input. Physical pointer, Fcitx, and 100/200 % scale never run. Sticker fallback, group identity, photo viewer, and authentication recovery sheets checked by MCP. |
 | 2026-10-15 | `f7ab75a` | Idle resource sample | Wayland, release build, 980×720 | 37.9 MiB RSS, 0.4 % CPU idle; scale factor not recorded. |
 | before 2026-10-15 | earlier | Real account: chat list, recent messages, photos, stickers, paid reactions displayed; one real send not yet validated | Native session, since invalidated by the Chrome login | Historical; does not prove current authorization. |
+| 2026-10-18 | Phase 6a working tree | VIS1–VIS4, VIS6, FB3; visual-design implementation outside §3.4 | Offline fmt, all-target workspace Clippy with warnings denied, workspace tests, release ui-debug; fresh owned headless MCP scopes | PASS: 199 tests, 6 ignored prerequisites; fmt/Clippy/build pass. Default, unread, scenarios, friends, layout-photos, reading, rich, media, auth-recovery, layers and focus pass separately at 980×720; layers/focus/friends/scenarios also pass separately at 1280×900. Six size/theme variants (980×720, 1280×900, 420×760; light/dark) captured through MCP and inspected in `target/phase6a/`. Native-menu styling and absent software shadows are recorded above. No account, external network, Git commands or physical-input verification. |
 | 2026-10-18 | Phase 4 known defects | MSG5, CMP7; continuous send linking, first-identity local work, C6/C7, S23/S24 and wide layouts | Offline workspace tests, formatting, all-target Clippy with warnings denied, release ui-debug; fresh owned headless demos | 196 tests pass (6 prerequisite-dependent tests ignored). At 980×720, unread, scenarios, friends, layout-photos, reading, rich, media, auth-recovery, layers and focus pass separately; at 1280×900, layers, focus, friends and scenarios pass separately with profiles as side panels. No account, external network or physical-input verification. |
 
 Detailed narratives of the earlier follow-ups (identity-preserving model

@@ -254,7 +254,7 @@ if args.focus:
             click_focus("Friends" if surface == "friends" else "Chats")
             expected = browser_stops(search_label, list_label, recovery)
             if not narrow:
-                expected += recovery + ["Message history", "Message draft"]
+                expected += ["葵", "More"] + recovery + ["Message history", "Message draft"]
                 if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
             check_chain(f"{surface} {suffix}", expected, (search_label, "TextInput"))
             call("set_element_value", elementHandle=element(search_label, "TextInput")["handle"], value="葵")
@@ -265,8 +265,9 @@ if args.focus:
             click_focus(chat)
             call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value="Focus check")
             expected = ["Back"] if narrow else ["Navigation", "Find a conversation", "All", "Conversations"]
+            expected.append(chat)
             if chat == "Weekend plans": expected.append(element("Members", "Button")["accessibleLabel"])
-            expected += recovery + ["Message history", "Message draft"]
+            expected += ["More"] + recovery + ["Message history", "Message draft"]
             if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
             check_chain(f"conversation {chat} {suffix}", expected, ("Message draft", "TextInput"))
             if chat == "Weekend plans":
@@ -290,7 +291,7 @@ if args.focus:
         click_focus("Open profile: 葵")
         prefix = [] if narrow else ["Navigation", "Search friends and groups", "Friends and groups"]
         if panel:
-            prefix += [element("Members", "Button")["accessibleLabel"]] + recovery + ["Message history", "Message draft"]
+            prefix += ["Weekend plans", element("Members", "Button")["accessibleLabel"], "More"] + recovery + ["Message history", "Message draft"]
             if element("Send", "Button").get("accessibleEnabled"): prefix.append("Send")
         check_chain(f"profile {layer_kind} {suffix}", prefix + ["Close profile", "Open chat"], ("Close profile", "Button"))
         focus_key("\x1b")
@@ -321,6 +322,10 @@ if args.focus:
 def smoke_chat(label):
     show_chats()
     call("click_element", elementHandle=element(label, "Button")["handle"])
+    deadline = time.monotonic() + 2
+    while not any(item.get("accessibleItemSelected") and item.get("accessibleLabel", "").startswith(label + ", ") for item in tree()):
+        assert time.monotonic() < deadline, f"chat selection did not settle: {label}"
+        time.sleep(.02)
 
 show_chats()
 search = element("Find a conversation", "TextInput")["handle"]
@@ -403,9 +408,11 @@ if args.scenarios:
     demo_scenario("Uncertain send")
     time.sleep(1.2)
     assert not any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") in ("Retry connection", "Retry conversations", "Retry older") for item in tree()), "removed network Retry control returned"
-    assert any("may have arrived" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
+    assert any("Maybe not sent" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == "Keep this newer draft", "late result replaced newer text"
-    call("click_element", elementHandle=element("Copy to composer", "Button")["handle"])
+    failed = next(item for item in bodies() if "Unconfirmed" in item.get("accessibleLabel", ""))
+    call("click_element", elementHandle=failed["handle"], button="Right")
+    call("click_element", elementHandle=element("Copy to composer", "Text")["handle"])
     call("click_element", elementHandle=element("Append", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "").startswith("Keep this newer draft\n"), "recovery overwrote the draft"
     print("PASS: simulated pointer scrolling, burst anchor/count, keyboard selection/clipboard, uncertain-send recovery")
@@ -413,7 +420,7 @@ if args.scenarios:
 if args.layout_photos:
     assert not any(item.get("accessibleLabel") in ("Smaller text", "Larger text", "Text size") for item in tree()), "text-size controls leaked onto the main screen"
     avatars = [item for item in tree() if item.get("accessibleLabel") == "Contact photo"]
-    assert avatars and all(item["size"] == {"height": 40.0, "width": 40.0} for item in avatars), "avatar escaped its frame"
+    assert avatars and all(item["size"] == {"height": 44.0, "width": 44.0} for item in avatars), "avatar escaped its frame"
     call("click_element", elementHandle=element("Settings", "Button")["handle"])
     element("Message text size", "Combobox")
     call("dispatch_key_event", windowHandle=window, text="\x1b")
@@ -438,12 +445,12 @@ if args.layout_photos:
     element("Open photo", "Button")
     print("PASS: bounded round-avatar frames, settings placement, media/timestamp separation, original viewer, zoom/fit, Escape, and draft retention")
     demo_scenario("Sticker preview")
-    element("☺ Sticker · [sticker]", "Text")
+    element("Sticker · [sticker]", "Text")
     sticker_time = next(item['accessibleLabel'] for item in tree() if item.get('accessibleRole') == 'Text' and item.get('accessibleLabel') in fixture_times('12:09'))
     before_sticker_time = element(sticker_time, "Text")["absolutePosition"]
     time.sleep(1.1)
     element("Message image", "Image")
-    assert not any(item.get("accessibleLabel") == "☺ Sticker · [sticker]" or item.get("accessibleValue") == "☺ Sticker · [sticker]" for item in tree()), "loaded sticker retained its fallback label"
+    assert not any(item.get("accessibleLabel") == "Sticker · [sticker]" or item.get("accessibleValue") == "Sticker · [sticker]" for item in tree()), "loaded sticker retained its fallback label"
     assert element(sticker_time, "Text")["absolutePosition"] == before_sticker_time, "sticker completion moved its timestamp"
     print("PASS: sticker fallback disappears after loading without moving the timestamp")
     demo_scenario("Group preview")
@@ -579,8 +586,8 @@ if args.auth_recovery:
     call("dispatch_key_event", windowHandle=window, text="\uf709")  # F6 enters sign-in recovery.
     assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
     call("dispatch_key_event", windowHandle=window, text="\n")
-    assert any("Chrome device slot" in item.get("accessibleLabel", "") for item in tree())
-    assert element("Start sign-in", "Button").get("accessibleDescription") == "Focused"
+    assert any("Signing in here signs LINE out in Chrome." in item.get("accessibleLabel", "") for item in tree())
+    assert element("Start", "Button").get("accessibleDescription") == "Focused"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "sign-in dismissal changed the draft"
@@ -692,7 +699,7 @@ if args.layers:
     call("drag_element", elementHandle=zoomed["handle"], target=center)
     assert abs(element("Photo in viewer", "Image")["absolutePosition"]["x"] - zoomed["absolutePosition"]["x"]) > 20, "drag did not pan"
     call("dispatch_key_event", windowHandle=window, text="0")
-    assert element("Photo in viewer", "Image")["size"]["width"] < 1199, "0 did not fit the photo"
+    assert element("Photo in viewer", "Image")["size"]["width"] <= properties["size"]["width"] + 1 and element("Photo in viewer", "Image")["size"]["height"] <= properties["size"]["height"] + 1, "0 did not fit the photo"
     call("click_element", elementHandle=element("Save photo", "Button")["handle"])
     for _ in range(100):
         saved = [item.get("accessibleLabel", "") for item in tree() if item.get("accessibleLabel", "").startswith("Saved to ")]
@@ -747,7 +754,7 @@ if args.reading:
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=-1800, deltaX=0)
     labels.extend(item.get("accessibleLabel", "") for item in tree())
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=1800, deltaX=0)
-    for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "System message", "Message unsent", "Unable to decrypt message", "Unknown message"):
+    for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "System message", "Message unsent", "Couldn't decrypt this message", "Unsupported message"):
         assert any(expected in label for label in labels), f"missing placeholder: {expected}"
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     first_y = first["absolutePosition"]["y"]
@@ -818,7 +825,7 @@ if args.reading:
     element("Latest", "Button")
     reading_key("\uf72d")  # PageDown
     reading_key("\uf72b")  # End
-    last = next(item for item in reading_bodies() if "Unknown message" in item.get("accessibleValue", ""))
+    last = next(item for item in reading_bodies() if "Unsupported message" in item.get("accessibleValue", ""))
     call("click_element", elementHandle=last["handle"])
     assert not any(item.get("accessibleLabel") == "Latest" and item.get("accessibleRole") == "Button" for item in tree()), "click focus disabled following"
     reading_key("\uf700")  # Up from a click-focused body scrolls on the first press.
@@ -847,10 +854,13 @@ if args.rich:
     rich_body = next(item for item in rich_tree() if item.get("accessibleRole") == "Text" and "日😀[笑]本🌸" in item.get("accessibleLabel", ""))
     assert rich_body["size"]["height"] > emoji_image["size"]["height"] * 2, "rich text did not wrap into measured lines"
     assert emoji_image["absolutePosition"]["x"] > rich_body["absolutePosition"]["x"], "inline image overlapped the first text run"
-    labels = [item.get("accessibleLabel", "") for item in rich_tree()]
+    metadata_rows = rich_tree()
+    labels = [item.get("accessibleLabel", "") for item in metadata_rows]
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=-800, deltaX=0)
-    labels += [item.get("accessibleLabel", "") for item in rich_tree()]
-    for expected in ("2.0 KB", "2:05", "0:12", "Contact · 葵", "葵 joined the group", "Message unsent"):
+    metadata_rows += rich_tree()
+    labels += [item.get("accessibleLabel", "") for item in metadata_rows]
+    assert any(item.get("accessibleValue") == "葵" and any(base.get("id", "").endswith("::card-title") for base in item.get("typeNamesAndIds", [])) for item in metadata_rows), "contact card lost its name"
+    for expected in ("2.0 KB", "2:05", "0:12", "葵", "葵 joined the group", "Message unsent"):
         assert any(expected in label for label in labels), f"missing rich metadata: {expected}"
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
     reply = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel") == "Jump to replied message")
@@ -917,7 +927,7 @@ if args.rich:
     viewports = call("find_elements_by_id", windowHandle=window, elementsId="Pane::viewport")["elementHandles"]
     viewport = next(item for handle in viewports
                     if -1 <= (item := call("get_element_properties", elementHandle=handle))["absolutePosition"].get("x", 0) - history["absolutePosition"].get("x", 0) <= 16
-                    and abs(item["size"]["width"] - (history["size"]["width"] - 16)) <= 1)
+                    and abs(item["size"]["width"] - (history["size"]["width"] - 12)) <= 1)
     assert abs(viewport["absolutePosition"]["y"] - history["absolutePosition"]["y"]) <= 1, "Return left a blank residual band above the anchor"
     print(f"PASS: reply return with Offline disappearing: y={origin_y} -> {restored_y}")
     # Retain the unchanged-inset regression as well.
@@ -1052,7 +1062,7 @@ if args.auth_recovery:
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
     demo_scenario("Expired sign-in")
     call("click_element", elementHandle=element("Sign in again", "Button")["handle"])
-    call("click_element", elementHandle=element("Start sign-in", "Button")["handle"])
+    call("click_element", elementHandle=element("Start", "Button")["handle"])
     deadline = time.monotonic() + 3
     while not any("Sign-in did not finish" in item.get("accessibleLabel", "") for item in tree()):
         assert time.monotonic() < deadline, "synthetic sign-in did not report its failure"
