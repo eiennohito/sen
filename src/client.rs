@@ -453,16 +453,14 @@ fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
     );
     let mut api = Api::new(wasm)?;
     if state["e2ee_keys"].as_array().is_none_or(|k| k.is_empty()) {
-        progress.set("Recovering E2EE keys from saved pairing metadata")?;
+        progress.set(pairing::Stage::RecoveringKeys)?;
         let key = login_key(&mut api.rt, &state)?;
         state["e2ee_keys"] = json!(unwrap_keys(&mut api.rt, key, &state["login_metadata"])?);
         api.rt.destroy("Curve25519Key", key)?;
         save_state(&opts.state, &state)?;
     }
     let count = validate_keys(&mut api.rt, &state)?;
-    progress.set(&format!(
-        "Restored {count} Letter Sealing key(s) in a fresh WASM instance"
-    ))?;
+    progress.set(pairing::Stage::RestoredKeys(count))?;
     let profile = api.profile(access(&state)?)?;
     ensure!(
         profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
@@ -470,10 +468,10 @@ fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
     );
     state["validated"] = json!(true);
     save_state(&opts.state, &state)?;
-    progress.set("SUCCESS: saved session authenticated and E2EE keys restored")
+    progress.set(pairing::Stage::Authenticated)
 }
 trait LoginUi {
-    fn set(&self, stage: &str) -> Result<()>;
+    fn set(&self, stage: pairing::Stage) -> Result<()>;
     fn qr(&self, _link: &str, _png: &[u8]) -> Result<()> {
         Ok(())
     }
@@ -488,8 +486,8 @@ trait LoginUi {
     }
 }
 impl LoginUi for Progress {
-    fn set(&self, stage: &str) -> Result<()> {
-        Progress::set(self, stage)
+    fn set(&self, stage: pairing::Stage) -> Result<()> {
+        Progress::set(self, &stage.to_string())
     }
 }
 struct CliLogin<'a> {
@@ -508,8 +506,8 @@ impl CliLogin<'_> {
     }
 }
 impl LoginUi for CliLogin<'_> {
-    fn set(&self, stage: &str) -> Result<()> {
-        self.progress.set(stage)
+    fn set(&self, stage: pairing::Stage) -> Result<()> {
+        self.progress.set(&stage.to_string())
     }
     fn qr(&self, link: &str, png: &[u8]) -> Result<()> {
         private_write(&self.qr_path(), png)?;
@@ -548,7 +546,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
     let mut api = Api::new(wasm)?;
-    progress.set("Creating Chrome QR pairing session")?;
+    progress.set(pairing::Stage::CreatingSession)?;
     let created = api.qr("createSession", json!({}), "", 0)?;
     let session = required(&created, "authSessionId")?.to_owned();
     let qr = api.qr("createQrCode", json!({"authSessionId":session}), "", 0)?;
@@ -558,7 +556,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     let link = callback(required(&qr, "callbackUrl")?, &public)?;
     let png = qr_png(&link)?;
     progress.qr(&link, &png)?;
-    progress.set("QR ready; waiting for phone scan")?;
+    progress.set(pairing::Stage::AwaitScan)?;
     let interval = qr["longPollingIntervalSec"]
         .as_u64()
         .unwrap_or(30)
@@ -594,7 +592,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     ensure!(verified, "QR code expired before phone verification");
     progress.check()?;
     progress.scanned()?;
-    progress.set("QR scanned; checking device certificate")?;
+    progress.set(pairing::Stage::CheckingCertificate)?;
     match api.qr(
         "verifyCertificate",
         json!({"authSessionId":session,"certificate":""}),
@@ -616,7 +614,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
                 "invalid verification PIN format"
             );
             progress.pin(pin)?;
-            progress.set("Waiting for phone PIN verification")?;
+            progress.set(pairing::Stage::AwaitPin)?;
             api.qr(
                 "checkPinCodeVerified",
                 json!({"authSessionId":session}),
@@ -626,7 +624,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
         }
     }
     progress.check()?;
-    progress.set("Phone approved; requesting session credentials")?;
+    progress.set(pairing::Stage::RequestCredentials)?;
     let result=api.qr("qrCodeLoginV2",json!({"authSessionId":session,"systemName":"CHROMEOS","modelName":"CHROME","autoLoginIsRequired":false}),"",0)?;
     let mut token = result["tokenV3IssueResult"].clone();
     if token["accessToken"].as_str().is_none_or(|s| s.is_empty()) {
@@ -636,11 +634,11 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     // Preserve the successful session and wrapped login key before any new
     // keychain operation, so a failure can be diagnosed/recovered with status.
     save_state(&opts.state, &state)?;
-    progress.set("Session credentials received; unwrapping Letter Sealing keychain in WASM")?;
+    progress.set(pairing::Stage::UnwrappingKeys)?;
     let keys = unwrap_keys(&mut api.rt, key, &state["login_metadata"])?;
     state["e2ee_keys"] = json!(keys);
     save_state(&opts.state, &state)?;
-    progress.set("Letter Sealing keys unwrapped and export/import verified")?;
+    progress.set(pairing::Stage::KeysVerified)?;
     api.rt.destroy("Curve25519Key", key)?;
     let profile = api.profile(access(&state)?)?;
     ensure!(
@@ -649,7 +647,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     );
     state["validated"] = json!(true);
     save_state(&opts.state, &state)?;
-    progress.set("Authenticated getProfile succeeded; checking restart recovery")?;
+    progress.set(pairing::Stage::CheckingRecovery)?;
     drop(api);
     status(opts, wasm, progress)
 }

@@ -96,13 +96,15 @@ pub(super) fn avatar(index: usize) -> slint::Image {
             ]);
         }
     }
-    let pixels = line_wasm_poc::client::desktop::assets::circular_avatar(
-        &line_wasm_poc::client::desktop::assets::Pixels {
+    let pixels = std::thread::spawn(move || {
+        crate::assets::circular_avatar(&line_wasm_poc::client::desktop::assets::Pixels {
             width: 80,
             height: 120,
             rgba,
-        },
-    );
+        })
+    })
+    .join()
+    .unwrap();
     slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
         &pixels.rgba,
         pixels.width,

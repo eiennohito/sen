@@ -204,8 +204,8 @@ export component Conversation inherits Rectangle {
                     traversed(back) => { if !back { State.focus-composer(); } else if root.latest-visible { latest-button.focus-pill(); } else { history-focus.focus(); } }
                 }
               }
-              if State.demo && State.last-opened-link != "": Text {
-                y: parent.height - self.preferred-height; text: "Preview opened: " + State.last-opened-link;
+              if State.link-feedback != "": Text {
+                y: parent.height - self.preferred-height; text: State.link-feedback;
                 accessible-label: "Recorded link activation"; accessible-value: State.last-opened-link;
                 font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap;
               }

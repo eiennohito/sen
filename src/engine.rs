@@ -117,11 +117,25 @@ pub enum Intent {
     },
     Stop,
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProfileFailure {
+    Rename,
+    AddFriend,
+    Mute,
+    Leave,
+}
+#[derive(Clone, Debug)]
+pub enum CreateFailure {
+    InvalidSelection,
+    Local(String),
+    Rejected,
+    Uncertain,
+}
 #[derive(Clone)]
 pub enum Delta {
     ReactionFailed(Key),
     StickerPackages(Vec<StickerPackage>),
-    CreatedChat(std::result::Result<ChatId, String>),
+    CreatedChat(std::result::Result<ChatId, CreateFailure>),
     Fatal,
     Reset,
     Pair(PairEvent),
@@ -145,7 +159,7 @@ pub enum Delta {
     },
     ProfileAction {
         action: ProfileAction,
-        error: Option<String>,
+        error: Option<ProfileFailure>,
     },
     MoreChats(bool),
     Notify(crate::store::MessageInput),
@@ -276,10 +290,11 @@ type DeltaWake = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
 struct DeltaSender {
     tx: mpsc::Sender<Delta>,
     wake: DeltaWake,
+    project: Arc<dyn Fn(Delta) -> Delta + Send + Sync>,
 }
 impl DeltaSender {
     fn send(&self, delta: Delta) -> bool {
-        if self.tx.send(delta).is_err() {
+        if self.tx.send((self.project)(delta)).is_err() {
             return false;
         }
         if let Some(wake) = self.wake.lock().unwrap().as_ref() {
@@ -325,6 +340,15 @@ impl Worker {
         open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
         timing: Timing,
     ) -> Self {
+        Self::start_projected(location, open, timing, |delta| delta)
+    }
+    /// Project output on its publishing worker, before enqueueing or waking the UI.
+    pub fn start_projected<B: Backend + 'static>(
+        location: StoreLocation,
+        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
+        timing: Timing,
+        project: impl Fn(Delta) -> Delta + Send + Sync + 'static,
+    ) -> Self {
         let inbox = Arc::new(Inbox::default());
         let sender = Sender(inbox.clone());
         let (tx, deltas) = mpsc::channel();
@@ -332,6 +356,7 @@ impl Worker {
         let tx = DeltaSender {
             tx,
             wake: wake.clone(),
+            project: Arc::new(project),
         };
         let cancel = Arc::new(AtomicBool::new(false));
         let worker_cancel = cancel.clone();
@@ -1041,14 +1066,11 @@ impl Engine {
                 self.rpc_completion(
                     move |b| b.profile_action(&net_action, Value::Null, seq),
                     move |engine, result, _| {
-                        let error = result.err().map(|_| {
-                            match action {
-                                ProfileAction::Rename { .. } => "Couldn't rename.",
-                                ProfileAction::AddFriend { .. } => "Couldn't add friend.",
-                                ProfileAction::Mute { .. } => "Couldn't change notifications.",
-                                ProfileAction::Leave { .. } => "Couldn't leave group.",
-                            }
-                            .to_owned()
+                        let error = result.err().map(|_| match action {
+                            ProfileAction::Rename { .. } => ProfileFailure::Rename,
+                            ProfileAction::AddFriend { .. } => ProfileFailure::AddFriend,
+                            ProfileAction::Mute { .. } => ProfileFailure::Mute,
+                            ProfileAction::Leave { .. } => ProfileFailure::Leave,
                         });
                         if error.is_none() {
                             match &action {
@@ -1203,7 +1225,11 @@ impl Engine {
             }
             Intent::CreateChat { name, targets } => {
                 let request = (|| {
-                    let own = self.store.account()?.own_mid;
+                    let own = self
+                        .store
+                        .account()
+                        .map_err(|e| CreateFailure::Local(e.to_string()))?
+                        .own_mid;
                     let mut targets = targets
                         .into_iter()
                         .filter(|id| id != &own)
@@ -1211,13 +1237,15 @@ impl Engine {
                     targets.sort();
                     targets.dedup();
                     if targets.len() < 2 {
-                        return Err(StoreError::Invalid("Select at least two friends.".into()));
+                        return Err(CreateFailure::InvalidSelection);
                     }
                     let identity = (own, targets.clone());
                     let seq = if let Some(seq) = self.group_requests.get(&identity) {
                         *seq
                     } else {
-                        let seq = self.next_seq()?;
+                        let seq = self
+                            .next_seq()
+                            .map_err(|e| CreateFailure::Local(e.to_string()))?;
                         self.group_requests.insert(identity.clone(), seq);
                         seq
                     };
@@ -1226,7 +1254,7 @@ impl Engine {
                 let (targets, identity, seq) = match request {
                     Ok(request) => request,
                     Err(error) => {
-                        self.emit(Delta::CreatedChat(Err(error.to_string())));
+                        self.emit(Delta::CreatedChat(Err(error)));
                         return Ok(());
                     }
                 };
@@ -1235,7 +1263,7 @@ impl Engine {
                     move |engine, result, current| {
                         let outcome = if !current {
                             engine.inbox.refresh(Refresh::ChatList);
-                            Err("The group may have been created.".into())
+                            Err(CreateFailure::Uncertain)
                         } else {
                             match result {
                                 Ok(chat) => {
@@ -1251,17 +1279,17 @@ impl Engine {
                                         }
                                         Err(_) => {
                                             engine.inbox.refresh(Refresh::ChatList);
-                                            Err("The group may have been created.".into())
+                                            Err(CreateFailure::Uncertain)
                                         }
                                     }
                                 }
                                 Err(Error::Rejected(_)) => {
                                     engine.group_requests.remove(&identity);
-                                    Err("Couldn't create group.".into())
+                                    Err(CreateFailure::Rejected)
                                 }
                                 Err(_) => {
                                     engine.inbox.refresh(Refresh::ChatList);
-                                    Err("The group may have been created.".into())
+                                    Err(CreateFailure::Uncertain)
                                 }
                             }
                         };

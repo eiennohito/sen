@@ -36,7 +36,7 @@ component Action inherits Rectangle {
 }
 
 export component ConnectionNotice inherits Rectangle {
-    callback scenarios-requested();
+    callback scenarios-key(KeyEvent) -> EventResult;
     callback leave(bool);
     width: 100%; height: State.connection-notice-height;
     visible: State.connection-feedback-visible;
@@ -54,7 +54,7 @@ export component ConnectionNotice inherits Rectangle {
     TouchArea { scroll-event(event) => { accept } }
     FocusScope {
         focus-on-tab-navigation: false;
-        key-pressed(event) => { if event.text == Key.F6 { root.leave(false); return accept; } if State.demo && !State.modal-open && event.text == Key.F12 { root.scenarios-requested(); return accept; } State.browser-key(event) }
+        key-pressed(event) => { if event.text == Key.F6 { root.leave(false); return accept; } if root.scenarios-key(event) == accept { return accept; } State.browser-key(event) }
         HorizontalLayout {
             padding-left: 16px; padding-right: 16px; spacing: 8px; alignment: start;
             Rectangle { width: 20px; height: 36px; Image { y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/warning.svg"); colorize: Tokens.text; } }

@@ -33,7 +33,7 @@ export component AppWindow inherits Window {
     public function connection-first-row() -> FeedbackRect { return chats-surface.first-row-bounds; }
     public function list-scroll(delta: length) { chats-surface.scroll(delta); }
     public function list-jump(y: length) { chats-surface.jump(y); }
-    public function preview-dark(dark: bool) { if State.demo { Tokens.preview-dark(dark); } }
+    public function preview-dark(dark: bool) { Tokens.preview-dark(dark); }
     rich-metrics := TextMetrics {}
     public function measure-rich(content: string, size: float) -> RichMetric { return rich-metrics.measure(content, size); }
     in-out property <string> desktop-warning <=> State.desktop-warning;
@@ -73,7 +73,7 @@ export component AppWindow inherits Window {
     in-out property <bool> ime-active <=> State.ime-active;
     public function focus-composer() { if root.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
     public function focus-reading-before-editor() { conversation.focus-reading-before-editor(); }
-    title: root.demo ? "LINE (preview · F12: scenarios)" : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
+    title: State.title-override != "" ? State.title-override : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
     icon: @image-url("../assets/icon.svg");
     forward-focus: shell;
     preferred-width: 980px; preferred-height: 720px;
@@ -170,7 +170,7 @@ export component AppWindow inherits Window {
     shell := FocusScope {
         enabled: !State.new-chat-open;
         focus-on-tab-navigation: false;
-        key-pressed(event) => { if root.demo && !State.modal-open && event.text == Key.F12 { scenarios.open(); return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
+        key-pressed(event) => { if scenarios.handle-key(event) == accept { return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: 0px;
         width: 100%; height: root.height;
         visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.detail-open);
@@ -247,7 +247,7 @@ export component AppWindow inherits Window {
         x: State.connection-area-x; y: State.connection-area-y;
         width: State.connection-area-width;
         visible: State.connection-feedback-visible;
-        scenarios-requested => { scenarios.open(); }
+        scenarios-key(event) => { scenarios.handle-key(event) }
         leave(back) => {
             if root.detail-open && State.profile-sheet {
                 if !back { layers.focus-profile(); }

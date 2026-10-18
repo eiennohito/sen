@@ -228,7 +228,7 @@ impl Presenter {
         row.can_unsend = m.outgoing && m.server_id.is_some() && !m.body.is_withdrawn();
         row.recoverable = matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain);
         row.delivery_detail = match &m.delivery {
-            Delivery::Rejected { reason } => reason.to_string(),
+            Delivery::Rejected { reason } => text::rejection(reason).into(),
             Delivery::Uncertain => {
                 "The message may have arrived. Check before sending again.".into()
             }
@@ -246,7 +246,7 @@ impl Presenter {
         if let Some(failure) = self.failures.get(row.image_key.as_str()) {
             row.image_failed = true;
             row.image_failure = format!("{failure:?}").into();
-            row.image_error = failure.image_text().into();
+            row.image_error = text::image_text(*failure).into();
             row.image_retryable = failure.retriable();
         }
         if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
@@ -406,7 +406,13 @@ impl Presenter {
                 .unwrap_or("")
                 .into(),
         );
-        g.set_detail_error(state.action_error.clone().into());
+        g.set_detail_error(
+            state
+                .action_error
+                .map(text::profile_failure)
+                .unwrap_or_default()
+                .into(),
+        );
         g.set_chat_left(
             state
                 .selected
@@ -1020,7 +1026,10 @@ fn patch_message_asset(
         }
         row.image_failed = failure.is_some();
         row.image_failure = failure.map(|f| format!("{f:?}")).unwrap_or_default().into();
-        row.image_error = failure.map(|f| f.image_text()).unwrap_or_default().into();
+        row.image_error = failure
+            .map(|f| text::image_text(*f))
+            .unwrap_or_default()
+            .into();
         row.image_retryable = failure.is_some_and(|f| f.retriable());
     }
     if row.sender_key == key

@@ -27,23 +27,23 @@ pub enum Error {
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
 pub enum RejectReason {
     #[serde(rename = "Synthetic send failure")]
-    #[error("Synthetic send failure")]
+    #[error("rejection: {self:?}")]
     SyntheticSend,
     #[serde(rename = "Synthetic friends failure")]
-    #[error("Synthetic friends failure")]
+    #[error("rejection: {self:?}")]
     SyntheticFriends,
     #[serde(rename = "Synthetic sign-in is unavailable")]
-    #[error("Synthetic sign-in is unavailable")]
+    #[error("rejection: {self:?}")]
     SyntheticSignIn,
     #[serde(rename = "read failed")]
-    #[error("read failed")]
+    #[error("rejection: {self:?}")]
     ReadFailed,
     #[serde(rename = "Synthetic unsend rejection")]
-    #[error("Synthetic unsend rejection")]
+    #[error("rejection: {self:?}")]
     SyntheticUnsend,
     #[serde(other)]
     #[serde(rename = "Message was not accepted")]
-    #[error("Message was not accepted")]
+    #[error("rejection: {self:?}")]
     NotAccepted,
 }
 

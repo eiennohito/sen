@@ -9,7 +9,7 @@ fn message(id: &str, text: &str) -> account::MessageView {
     }
 }
 fn test_window() -> AppWindow {
-    let ui = create_app_window().unwrap();
+    let ui = window::create_app_window().unwrap();
     let weak = ui.as_weak();
     ui.global::<State>().on_request_panel(move |panel| {
         if let Some(ui) = weak.upgrade() {

@@ -27,37 +27,6 @@ impl Failure {
         matches!(self, Self::Timeout | Self::Network | Self::Http(500..=599))
     }
 
-    pub fn image_text(self) -> &'static str {
-        match self {
-            Self::Timeout => "Image took too long to load",
-            Self::Network => "Couldn’t load this image",
-            Self::Http(404) => "Image is no longer available",
-            Self::Http(403) => "You don’t have access to this image",
-            Self::Http(500..=599) => "Image is temporarily unavailable",
-            Self::Http(_) => "Image is unavailable",
-            Self::UnsupportedHost => "Not available for this sender",
-            Self::RejectedPath => "Image is unavailable",
-            Self::TooLarge => "Image too large",
-            Self::Decode => "Couldn’t display this image",
-            Self::Cancelled => "Image loading cancelled",
-        }
-    }
-
-    pub fn file_text(self) -> &'static str {
-        match self {
-            Self::Timeout => "File took too long to download",
-            Self::Network => "Couldn’t download this file",
-            Self::Http(404) => "File is no longer available",
-            Self::Http(403) => "You don’t have access to this file",
-            Self::Http(500..=599) => "File is temporarily unavailable",
-            Self::Http(_) | Self::RejectedPath => "File is unavailable",
-            Self::UnsupportedHost => "Not available for this sender",
-            Self::TooLarge => "File too large",
-            Self::Decode => "Couldn’t open this file",
-            Self::Cancelled => "File download cancelled",
-        }
-    }
-
     pub(crate) fn transport_error(self) -> anyhow::Error {
         TransportFailure(self).into()
     }

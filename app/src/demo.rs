@@ -51,7 +51,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             });
             let intent = d.state.subscribe_window(Anchor::Latest, 80, 0);
             d.sender.send(intent);
-            d.opening_history = false;
+            d.history.opening_history = false;
             ui.invoke_show_history(0., true);
         }
         8 => fixture(
@@ -280,6 +280,8 @@ pub fn install(ui: &AppWindow, actions: Runtime, fake: FakeBackend) {
         let weak = weak.clone();
         links.push(move |_| {
             if let Some(ui) = weak.upgrade() {
+                ui.global::<State>()
+                    .set_link_feedback(format!("Preview opened: {url}").into());
                 ui.global::<State>().set_last_opened_link(url);
             }
         });
@@ -348,9 +350,9 @@ fn fixture(
     });
     d.sender.send(Intent::MoreChats);
     let intent = d.state.select(chat.clone());
-    d.opening_history = false;
-    d.restore_anchor = None;
-    d.geometry.borrow_mut().clear();
+    d.history.opening_history = false;
+    d.history.restore_anchor = None;
+    d.history.geometry.clear();
     d.sender.send(intent);
     d.sender.send(Intent::Page {
         chat,
@@ -358,4 +360,110 @@ fn fixture(
     });
     d.render(ui);
     ui.invoke_show_history(0., false);
+}
+
+pub(crate) fn stage(
+    ui: &AppWindow,
+    desktop: &Runtime,
+    fake: Option<&FakeBackend>,
+    scene: &str,
+    snapshot_profile: bool,
+) {
+    ui.set_show_conversation(scene != "chats" && !scene.starts_with("friends"));
+    if scene == "settings" {
+        desktop.update(|d| {
+            d.state.panel = Panel::Settings;
+            d.render(ui);
+        });
+    }
+    if scene == "friends" {
+        ui.invoke_browse(1);
+    }
+    if matches!(
+        scene,
+        "members" | "member-profile" | "group-header" | "room-header"
+    ) {
+        desktop.update(|d| d.select(ui, 1));
+    }
+    if scene.starts_with("members") || scene.starts_with("member-profile") {
+        ui.invoke_open_members();
+    }
+    if snapshot_profile || scene == "member-profile" {
+        ui.invoke_browse(1);
+    }
+    if scene.starts_with("message-selected")
+        && let Some(key) = desktop.update(|d| d.state.rows().first().map(|m| m.key))
+    {
+        ui.global::<State>()
+            .set_highlight_message(key.0.to_string().into());
+    }
+    if scene == "session-expired"
+        && let Some(fake) = fake
+    {
+        fake.auth_expired();
+    }
+    if scene.ends_with("offline")
+        && let Some(fake) = fake
+    {
+        fake.offline(true);
+    }
+    if scene == "failed-send"
+        && let Some(fake) = fake
+    {
+        fake.fail_send();
+        ui.set_draft("See you soon! 🐈".into());
+        ui.invoke_send();
+    }
+}
+
+pub(crate) fn destination() -> viewer::Destination {
+    viewer::Destination::Directory(std::env::temp_dir().join("line-desktop-demo-exports"))
+}
+
+pub(crate) fn settle(ui: &AppWindow, desktop: &Runtime, worker: &Worker) {
+    for _ in 0..20 {
+        desktop.update(|_| {});
+        desktop.update(|d| d.apply_batch(ui, worker.deltas.try_iter()));
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
+pub(crate) fn worker(fake: FakeBackend, text_size: i32, assets: assets::Assets) -> Worker {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let initial = AtomicBool::new(true);
+    let worker = Worker::start_projected(
+        StoreLocation::Memory,
+        move || Ok(fake),
+        Default::default(),
+        move |delta| {
+            let delta = match delta {
+                Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
+                    prefs.text_size = text_size;
+                    Delta::Prefs(prefs)
+                }
+                other => other,
+            };
+            assets.project(delta)
+        },
+    );
+    worker.sender.send(Intent::Prefs(Prefs {
+        text_size,
+        ..Default::default()
+    }));
+    worker
+}
+
+pub(crate) fn prepare(ui: &AppWindow, scene: &str, dark: bool) {
+    ui.set_demo(true);
+    ui.global::<State>()
+        .set_title_override("LINE (preview · F12: scenarios)".into());
+    ui.global::<State>().set_preview_demo(scene == "previews");
+    if dark {
+        ui.invoke_preview_dark(true);
+    }
+}
+pub(crate) fn profile(ui: &AppWindow, scene: &str, snapshot_profile: bool) {
+    if snapshot_profile || scene == "member-profile" {
+        ui.invoke_open_profile("alice".into());
+    }
 }
