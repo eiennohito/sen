@@ -301,8 +301,7 @@ pub(crate) fn install(ui: &AppWindow) {
                 UI_STATE.with(|slot| {
                     if let Some(view) = slot.borrow().as_ref() {
                         let mut view = view.borrow_mut();
-                        let exposed = view.unread.exposed.clone();
-                        view.read_exposure(&ui, exposed);
+                        view.history_exposure(&ui);
                     }
                 });
             }

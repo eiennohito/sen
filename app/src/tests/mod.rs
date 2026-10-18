@@ -22,6 +22,7 @@ fn message(id: &str, text: &str) -> account::MessageView {
     }
 }
 
+mod connection;
 mod controller;
 mod grouping;
 

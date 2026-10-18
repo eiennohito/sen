@@ -75,15 +75,16 @@ impl View {
                 };
                 if next != self.notification_connection {
                     if next == 1 && self.notification_connection > 1 {
-                        ui.global::<State>()
-                            .set_transient_notice("Reconnected".into());
+                        ui.global::<State>().set_reconnected_notice(true);
                     }
-                    if next > 1 {
+                    if next != 1 {
+                        ui.global::<State>().set_reconnected_notice(false);
+                    }
+                    if next > 2 {
                         self.attention_notice(
                             ui,
                             "account",
                             match next {
-                                2 => "Reconnecting to LINE.",
                                 3 => "LINE is offline.",
                                 _ => "Sign in again to reconnect.",
                             },

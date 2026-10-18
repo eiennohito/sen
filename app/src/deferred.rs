@@ -174,8 +174,9 @@ impl View {
                 }
                 if incoming.len() > 1000 {
                     incoming.truncate(1000);
+                    self.list_retry.set(account::ListRequest::Refresh);
                     ui.set_list_error(
-                        "Conversation updates were deferred. Refresh to update the list.".into(),
+                        "Conversation updates were deferred. Retry to update the list.".into(),
                     );
                     stale = true;
                 }

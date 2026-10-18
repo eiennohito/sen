@@ -32,6 +32,7 @@ pub(crate) struct View {
     pub(crate) history: HashMap<String, Reading>,
     pub(crate) generation: u64,
     pub(crate) query: String,
+    pub(crate) list_retry: std::cell::Cell<account::ListRequest>,
     pub(crate) commands: Option<account::CommandSender>,
     pub(crate) demo: bool,
     pub(crate) saved: storage::Saved,
@@ -227,8 +228,17 @@ impl View {
         ));
     }
     pub(crate) fn request(&self, ui: &AppWindow, command: account::Command) -> bool {
+        let list_request = match &command {
+            account::Command::Chats { next: false } => Some(account::ListRequest::Refresh),
+            account::Command::Chats { next: true } => Some(account::ListRequest::More),
+            account::Command::ChatDetails => Some(account::ListRequest::Details),
+            _ => None,
+        };
+        if let Some(request) = list_request {
+            self.list_retry.set(request);
+        }
         let feedback = match &command {
-            account::Command::Chats { .. } => 1,
+            account::Command::Chats { .. } | account::Command::ChatDetails => 1,
             account::Command::Messages { .. } => 2,
             account::Command::Friends => 3,
             _ => 0,
@@ -249,6 +259,25 @@ impl View {
             }
             false
         }
+    }
+    pub(crate) fn retry_list(&self, ui: &AppWindow) {
+        ui.set_list_error("".into());
+        ui.set_loading_chats(self.request(ui, self.list_retry.get().command()));
+    }
+    pub(crate) fn connection_failed(&self, ui: &AppWindow, reason: account::ConnectionFailure) {
+        if reason == account::ConnectionFailure::Session {
+            ui.set_session_unavailable(true);
+        }
+        ui.set_connection_failed(true);
+        ui.set_connection_status(if ui.get_auth_expired() {
+            "Session expired".into()
+        } else if ui.get_session_unavailable() {
+            "Signed out".into()
+        } else {
+            "Offline".into()
+        });
+        ui.set_retrying_connection(false);
+        ui.set_connected(false);
     }
     pub(crate) fn with_outbox(&self, chat: &str, mut messages: Vec<MessageRow>) -> Vec<MessageRow> {
         for item in self.saved.outbox.iter().filter(|o| o.chat == chat) {
@@ -541,26 +570,31 @@ impl View {
             }
             account::Update::Sync(state) => {
                 use line_wasm_poc::client::desktop::sync::SyncState;
-                let (connected, retrying, message) = match state {
-                    SyncState::Connected => (true, false, String::new()),
-                    SyncState::Reconnecting { attempt } => {
-                        (false, true, format!("Reconnecting… (attempt {attempt})"))
+                match state {
+                    SyncState::Connected => {
+                        ui.set_connected(true);
+                        ui.set_connection_failed(false);
+                        ui.set_auth_expired(false);
+                        ui.set_session_unavailable(false);
+                        ui.set_retrying_connection(false);
+                        ui.set_connection_status("".into());
                     }
-                    SyncState::Offline => (
-                        false,
-                        false,
-                        "Offline. Your history and drafts are available.".into(),
-                    ),
-                    SyncState::AuthExpired => (
-                        false,
-                        false,
-                        "Your sign-in has expired. Sign in again to reconnect.".into(),
-                    ),
-                };
-                ui.set_connected(connected);
-                ui.set_connection_failed(!connected);
-                ui.set_retrying_connection(retrying);
-                ui.set_connection_status(message.into());
+                    SyncState::Reconnecting { .. } => {
+                        ui.set_connected(false);
+                        ui.set_retrying_connection(true);
+                        ui.set_connection_failed(
+                            ui.get_auth_expired() || ui.get_session_unavailable(),
+                        );
+                        ui.set_connection_status("Connecting…".into());
+                    }
+                    SyncState::Offline => {
+                        self.connection_failed(ui, account::ConnectionFailure::Network)
+                    }
+                    SyncState::AuthExpired => {
+                        ui.set_auth_expired(true);
+                        self.connection_failed(ui, account::ConnectionFailure::Session);
+                    }
+                }
                 self.send_availability(ui);
             }
             account::Update::Incoming {
@@ -814,10 +848,8 @@ impl View {
                 ui.set_viewer_error("Could not load the original photo. Retry, or refresh this conversation if the photo is no longer available.".into());
                 ui.set_viewer_status("Preview only".into());
             }
-            account::Update::ConnectionFailed => {
-                ui.set_connection_failed(true);
-                ui.set_retrying_connection(false);
-                ui.set_connected(false);
+            account::Update::ConnectionFailed(reason) => {
+                self.connection_failed(ui, reason);
                 ui.set_loading_chats(false);
                 ui.set_loading_history(false);
                 self.send_availability(ui);
@@ -937,6 +969,9 @@ impl View {
             }
             account::Update::Connected(name) => {
                 ui.set_connection_failed(false);
+                ui.set_auth_expired(false);
+                ui.set_session_unavailable(false);
+                ui.set_connection_status("".into());
                 ui.set_retrying_connection(false);
                 ui.set_account_name(name.into());
                 ui.set_connected(true);
@@ -1036,12 +1071,10 @@ impl View {
                     ui.set_chat_title(self.rows[index].title.clone());
                 }
             }
-            account::Update::ChatsFailed => {
-                ui.set_connection_failed(true);
-                ui.set_connected(false);
-                self.send_availability(ui);
+            account::Update::ChatsFailed(request) => {
+                self.list_retry.set(request);
                 ui.set_loading_chats(false);
-                ui.set_list_error("Conversations could not be loaded. Use Refresh or More conversations to retry.".into());
+                ui.set_list_error("Couldn’t load conversations. Retry.".into());
             }
             account::Update::Messages {
                 id,
@@ -1366,17 +1399,28 @@ impl View {
         }
     }
     pub(crate) fn reconnect(&mut self, ui: &AppWindow) {
-        if self.demo {
-            ui.set_retrying_connection(false);
+        if !ui.get_connection_failed() || ui.get_retrying_connection() || ui.get_auth_busy() {
             return;
         }
-        if !ui.get_connection_failed() || ui.get_retrying_connection() || ui.get_auth_busy() {
+        if self.demo {
+            ui.set_retrying_connection(true);
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_secs(1), move || {
+                if let Some(ui) = weak.upgrade()
+                    && ui.get_connection_failed()
+                {
+                    ui.set_retrying_connection(false);
+                }
+            });
             return;
         }
         ui.set_retrying_connection(self.request(ui, account::Command::Reconnect));
     }
     pub(crate) fn begin_sign_in(&mut self, ui: &AppWindow) {
-        if !ui.get_auth_open() || ui.get_auth_busy() || !ui.get_connection_failed() {
+        if !ui.get_auth_open()
+            || ui.get_auth_busy()
+            || !(ui.get_auth_expired() || ui.get_session_unavailable())
+        {
             return;
         }
         if self.demo {

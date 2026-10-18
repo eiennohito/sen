@@ -87,7 +87,8 @@ Priorities, in order. A lower priority never overrides a higher one.
   the browser and rail. Below 740 px it covers the whole shell. The 1060 px
   breakpoint adds a 320 px panel to the 740 px browser/conversation boundary;
   the conversation allowance derived from that boundary is 398 px
-  (740 − 56 rail − 286 browser). Both forms sit below the connection strip.
+  (740 − 56 rail − 286 browser). Connection feedback stays in the uncovered
+  conversation/list; profiles keep their position.
 
 ### 3.2 Layers and when to use each
 
@@ -261,13 +262,14 @@ leaves the conversation, even after the server boundary advances.
 
 Event classes: **message** (incoming in a conversation), **mention** (message
 addressing the user in a group), **group event** (invite, join, leave),
-**send failure**, **account** (authentication expired, reconnecting, offline).
+**send failure**, **account** (authentication expired, unavailable session, offline).
+Routine reconnects are quiet header state and never an account alert.
 
 | App state | message | mention | group event | send failure | account |
 | --- | --- | --- | --- | --- | --- |
-| Active, same chat, at latest | update quietly | update quietly | inline item | inline on item | header strip |
-| Active, same chat, reading older | latest control + count | as message, mark mention | inline item | inline on item | header strip |
-| Active, other chat | list badge, rail badge, app badge | same + in-app indicator | list badge | list marker + app badge | header strip |
+| Active, same chat, at latest | update quietly | update quietly | inline item | inline on item | recovery strip |
+| Active, same chat, reading older | latest control + count | as message, mark mention | inline item | inline on item | recovery strip |
+| Active, other chat | list badge, rail badge, app badge | same + in-app indicator | list badge | list marker + app badge | recovery strip |
 | Inactive (unfocused, occluded, minimised) | desktop notification, app badge, attention hint, sound | same, bypasses "mentions only" filter | notification if enabled | notification | notification once |
 | Muted conversation | badge only | badge only unless mention exception on | per pref | as above | — |
 | Do not disturb (desktop) | badge only; the daemon suppresses popups | same | same | same | same |
@@ -283,6 +285,24 @@ Rules:
   notification marks nothing read.
 - Notifications are withdrawn when their conversation is exposed, when the
   messages are read elsewhere, or on logout.
+- Reconnecting is a quiet inline “Connecting…” header state. Recovery shows
+  “Reconnected” briefly below the headers. Neither produces desktop notification
+  or sound. Offline and AuthExpired show an overlaid one-line recovery strip
+  with Retry. An unavailable session at startup/connect failure also offers
+  Sign in again; so does AuthExpired, including after a failed Retry. Network
+  failure alone after opening a usable session offers Retry only.
+- The strip sits directly below the headers over history, or over the list in
+  narrow browser layout. The scroll range gains a top inset equal to the strip
+  height. Offset compensation preserves the visible content when feedback appears
+  or disappears; scrolling to the top (including Home) reveals the first item
+  below the strip. Offsets stay in range; any residual visual inset after hiding
+  feedback is consumed by scrolling toward later content, without reversing a
+  scroll gesture. Home removes it explicitly. Exposure and navigation use the
+  remaining visible viewport height. Status text elides at the chosen text size;
+  its accessible label retains the full description.
+  Rail, header, composer and profile controls are never covered.
+  Profiles keep their position and can cover connection feedback as a modal
+  sheet. Retry shows “Retrying…” with actions disabled while it is pending.
 - Own outgoing messages, receipts, reactions to old messages, and replayed
   history never produce incoming-message alerts.
 - Preview privacy levels: name and text; name only; "New message" only. The
@@ -307,6 +327,7 @@ Rules:
 | Up / Down / Home / End / PageUp / PageDown | Scroll history | history has focus |
 | Tab / Shift+Tab | Move between controls, not between messages | global |
 | Ctrl+C | Copy selection | focused message or field |
+| F6 | Focus connection recovery actions | when the connection strip is visible |
 | Ctrl+Q | Quit | global |
 
 IME composition always wins: while a preedit is active no shortcut fires
@@ -316,8 +337,15 @@ not configurable in v1.
 ### 8.2 Focus
 
 - Focus order: rail → browser search → list (one Tab stop; arrows move
-  within) → conversation header actions → history (one Tab stop) → latest
+  within) → conversation header actions → visible connection recovery actions →
+  history (one Tab stop) → latest
   control → composer → Send.
+- F6 enters the visible recovery strip; F6 or Tab after its last action moves
+  to history, or the browser list in narrow browser layout. Shift+Tab before
+  its first action returns to the conversation header/browser search. In narrow
+  browser layout the strip belongs between browser search and the list.
+- In Friends, F6 or Shift+Tab from history enters the recovery actions; forward
+  Tab retains the Friends navigation order.
 - Messages are click-focusable for selection but not Tab stops.
 - Selection (which chat is open) and focus (which control receives keys)
   are visually distinct and independent.
@@ -348,7 +376,7 @@ not configurable in v1.
 | Older history load | item at the top of the history | banner |
 | Send | mark and explanation on the message | status line, connection banner |
 | Draft storage | caption under the composer with Retry; Send disabled | modal |
-| Connection, authentication | header strip across the window top with the next action | per-chat subtitles |
+| Connection, authentication | quiet inline header state; recovery strip below headers for Offline/AuthExpired or an unavailable session | per-chat subtitles |
 | Media | inside the media frame | row collapse |
 | Settings save | beside the control | toast only |
 

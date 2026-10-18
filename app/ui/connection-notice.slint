@@ -1,0 +1,74 @@
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+
+export struct FeedbackRect { x: length, y: length, width: length, height: length }
+
+component Action inherits Rectangle {
+    in property <length> text-size: Tokens.base;
+    in property <string> label;
+    in property <string> description;
+    in property <bool> enabled: true;
+    callback activated();
+    callback tab(bool);
+    public function focus-action() { focus.focus(); }
+    preferred-width: caption.preferred-width + 4px;
+    width: self.preferred-width;
+    height: max(32px, Tokens.base * 1.4 + 8px);
+    border-radius: 4px;
+    background: touch.pressed ? Tokens.selection : touch.has-hover ? Tokens.surface : transparent;
+    border-width: focus.has-focus ? 2px : 1px;
+    border-color: focus.has-focus ? Tokens.accent : Tokens.border;
+    opacity: root.enabled ? 1 : 0.45;
+    caption := Text { width: 100%; height: 100%; text: root.label; font-size: root.text-size; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; }
+    focus := FocusScope {
+        enabled: root.enabled;
+        accessible-role: button; accessible-label: root.description; accessible-enabled: root.enabled;
+        accessible-description: self.has-focus ? "Focused" : "";
+        accessible-action-default => { if root.enabled { root.activated(); } }
+        key-pressed(event) => {
+            if State.ime-active { return reject; }
+            if event.text == Key.Tab { root.tab(event.modifiers.shift); return accept; }
+            if event.text == Key.Return || event.text == " " { root.activated(); return accept; }
+            reject
+        }
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
+}
+
+export component ConnectionNotice inherits Rectangle {
+    callback scenarios-requested();
+    callback leave(bool);
+    width: 100%; height: State.connection-notice-height;
+    visible: State.connection-feedback-visible;
+    background: Tokens.surface; border-width: 1px; border-color: Tokens.secondary;
+    property <string> status: !State.connection-failed ? "Reconnected" : State.retrying-connection ? "Retrying…" : State.connection-status;
+    accessible-role: banner; accessible-label: State.connection-failed ? "Connection needs attention" : "Connection restored";
+    public function focus-first() { retry.focus-action(); }
+    public function focus-action() { if State.sign-in-available { sign-in.focus-action(); } else { retry.focus-action(); } }
+    public function actions-fit() -> bool {
+        return (!retry.visible || retry.absolute-position.x + retry.width <= root.absolute-position.x + root.width + 0.5px)
+            && (!sign-in.visible || sign-in.absolute-position.x + sign-in.width <= root.absolute-position.x + root.width + 0.5px);
+    }
+    TouchArea { scroll-event(event) => { accept } }
+    FocusScope {
+        key-pressed(event) => { if event.text == Key.F6 { root.leave(false); return accept; } if State.demo && !State.modal-open && event.text == Key.F12 { root.scenarios-requested(); return accept; } State.browser-key(event) }
+        HorizontalLayout {
+            padding: 4px; spacing: 2px; alignment: start;
+            Text { text: root.status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; min-width: 0px; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
+            retry := Action {
+                visible: State.connection-failed; width: self.visible ? self.preferred-width : 0px;
+                label: "Retry"; description: "Retry connection";
+                enabled: !State.retrying-connection && !State.auth-busy;
+                activated => { State.reconnect(); }
+                tab(back) => { if !back && State.sign-in-available { sign-in.focus-action(); } else { root.leave(back); } }
+            }
+            sign-in := Action {
+                visible: State.connection-failed && State.sign-in-available; width: self.visible ? self.preferred-width : 0px;
+                label: "Sign in again"; description: "Sign in again";
+                enabled: State.sign-in-available && !State.retrying-connection && !State.auth-busy;
+                activated => { State.open-sign-in(); }
+                tab(back) => { if back { retry.focus-action(); } else { root.leave(back); } }
+            }
+        }
+    }
+}

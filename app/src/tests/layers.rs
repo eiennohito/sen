@@ -54,7 +54,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             assert!(!ui.global::<State>().get_modal_open());
             events.borrow_mut().clear();
             notifications.borrow_mut().clear();
-            for index in 0..20 {
+            for index in 0..24 {
                 key("\u{f70f}");
                 for _ in 0..=index {
                     key("\t");
@@ -65,7 +65,9 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             }
             assert_eq!(
                 *events.borrow(),
-                [0, 1, 2, 10, 3, 11, 5, 6, 7, 8, 9, 14, 12, 15, 4]
+                [
+                    0, 1, 2, 10, 3, 11, 5, 6, 7, 8, 9, 14, 12, 15, 4, 16, 17, 19, 18
+                ]
             );
             assert_eq!(*notifications.borrow(), [0, 1, 2, 3, 4]);
             ui.invoke_focus_search();
@@ -93,6 +95,7 @@ fn escape_busy_sign_in_requires_a_decision() {
         let count = cancelled.clone();
         ui.on_cancel_sign_in(move || count.set(count.get() + 1));
         ui.set_auth_busy(true);
+        ui.set_auth_expired(true);
         ui.invoke_open_sign_in();
         ui.show().unwrap();
         let key = |text: &str| {

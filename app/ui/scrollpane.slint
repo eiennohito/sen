@@ -1,7 +1,37 @@
+import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 export component Pane inherits Rectangle {
+    in property <bool> connection-feedback: false;
+    out property <length> inset <=> root.cover-height;
+    property <length> cover-height: root.connection-feedback && State.connection-feedback-visible ? State.connection-notice-height : 0px;
+    property <length> residual;
+    out property <length> visible-top: root.cover-height + root.residual;
+    out property <length> visible-height: max(0px, root.height - root.visible-top);
+    property <length> previous-cover;
+    changed cover-height => {
+        let anchored = root.offset + root.residual + root.previous-cover - root.cover-height;
+        root.offset = max(-root.extent, min(0px, anchored));
+        root.residual = max(0px, anchored - root.offset);
+        root.previous-cover = root.cover-height;
+    }
+    property <length> area-x: root.absolute-position.x;
+    property <length> area-y: root.absolute-position.y;
+    changed area-x => { root.publish-area(); }
+    changed area-y => { root.publish-area(); }
+    changed width => { root.publish-area(); }
+    changed height => { root.publish-area(); }
+    changed connection-feedback => { root.publish-area(); }
+    init => { root.publish-area(); }
+    function publish-area() {
+        if root.connection-feedback {
+            State.connection-area-x = root.area-x;
+            State.connection-area-y = root.area-y;
+            State.connection-area-width = root.visible-width;
+            State.connection-area-height = root.height;
+        }
+    }
     in-out property <length> offset: 0px;
-    out property <length> extent: max(0px, content.height - root.height);
+    out property <length> extent: max(0px, content.height - root.height) + root.cover-height;
     out property <bool> dragging: thumb-touch.pressed;
     callback scrolled();
     callback focus-requested();
@@ -10,20 +40,33 @@ export component Pane inherits Rectangle {
     in property <length> content-width;
     in property <bool> horizontal-scrollbar-policy;
     clip: true;
-    public function jump(y: length) { root.offset = max(-root.extent, min(0px, y)); }
+    public function jump(y: length) { root.residual = 0px; root.offset = max(-root.extent, min(0px, y)); }
+    public function scroll(delta: length) {
+        if root.residual > 0px {
+            if delta < 0px {
+                let remaining = root.residual + delta;
+                root.residual = max(0px, remaining);
+                root.offset = max(-root.extent, min(0px, root.offset + min(0px, remaining)));
+            } else { root.offset = max(-root.extent, min(0px, root.offset + delta)); }
+        } else { root.jump(root.offset + delta); }
+    }
     TouchArea {
         clicked => { root.focus-requested(); }
         scroll-event(event) => {
-            root.jump(root.offset + event.delta-y);
+            root.scroll(event.delta-y);
             root.scrolled();
             return accept;
         }
     }
-    content := Rectangle {
-        x: 0px; y: root.offset;
-        width: max(0px, root.width - 16px);
-        height: self.preferred-height;
-        @children
+    viewport := Rectangle {
+        y: root.visible-top; width: root.visible-width; height: root.visible-height;
+        clip: root.visible-top > 0px;
+        content := Rectangle {
+            x: 0px; y: root.offset;
+            width: max(0px, root.width - 16px);
+            height: self.preferred-height;
+            @children
+        }
     }
     track := Rectangle {
         x: parent.width - 16px; width: 16px; height: parent.height;
@@ -31,8 +74,8 @@ export component Pane inherits Rectangle {
         visible: root.extent > 0px;
         thumb := Rectangle {
             x: 3px; width: 10px;
-            height: max(32px, track.height * track.height / max(1px, content.height));
-            y: (track.height - self.height) * (-root.offset / max(1px, root.extent));
+            height: min(track.height, max(32px, track.height * track.height / max(1px, root.height + root.extent)));
+            y: (track.height - self.height) * (max(0px, min(root.extent, -root.offset)) / max(1px, root.extent));
             border-radius: 5px;
             background: thumb-touch.pressed ? Tokens.accent : Tokens.secondary;
         }
@@ -55,7 +98,7 @@ export component Pane inherits Rectangle {
                     root.scrolled();
                 }
             }
-            scroll-event(event) => { root.jump(root.offset + event.delta-y); root.scrolled(); accept }
+            scroll-event(event) => { root.scroll(event.delta-y); root.scrolled(); accept }
         }
     }
 }

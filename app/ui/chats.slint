@@ -3,21 +3,32 @@ import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { IconButton } from "icon-button.slint";
+import { FeedbackRect } from "connection-notice.slint";
 import { Pane } from "scrollpane.slint";
 
 export component Chats inherits Rectangle {
-    out property <length> viewport-height: chat-list.height;
+    public function scroll(delta: length) { chat-list.scroll(delta); }
+    public function jump(y: length) { chat-list.jump(y); }
+    out property <FeedbackRect> first-row-bounds: { x: chat-list.absolute-position.x, y: chat-list.absolute-position.y + chat-list.visible-top + State.list-y, width: root.visible && (!State.narrow || !State.show-conversation) && State.section == 0 && State.chats.length > 0 ? chat-list.visible-width : 0px, height: State.chat-row-height };
+    out property <FeedbackRect> visible-first-row-bounds: {
+        x: root.first-row-bounds.x,
+        y: max(root.first-row-bounds.y, chat-list.absolute-position.y + chat-list.visible-top),
+        width: root.first-row-bounds.width,
+        height: max(0px, min(root.first-row-bounds.y + root.first-row-bounds.height, chat-list.absolute-position.y + chat-list.height) - max(root.first-row-bounds.y, chat-list.absolute-position.y + chat-list.visible-top))
+    };
+    out property <length> viewport-height: chat-list.visible-height;
     public function reveal(index: int) {
+        chat-list.jump(State.list-y);
         let top = index * State.chat-row-height;
         let bottom = top + State.chat-row-height;
-        let extent = max(0px, State.chats.length * State.chat-row-height - chat-list.height);
-        let y = top + State.list-y < 0px ? -top : bottom + State.list-y > chat-list.height ? chat-list.height - bottom : State.list-y;
+        let extent = max(0px, State.chats.length * State.chat-row-height - chat-list.height) + chat-list.inset;
+        let y = top + State.list-y < 0px ? -top : bottom + State.list-y > chat-list.visible-height ? chat-list.visible-height - bottom : State.list-y;
         State.list-y = max(-extent, min(0px, y));
     }
     public function focus-list() { list-focus.focus(); }
     public function move-cursor(delta: int) {
         State.result-focus = max(0, min(State.chats.length - 1, State.result-focus + delta));
-        chat-list.jump(-max(0px, State.result-focus * State.chat-row-height - chat-list.height / 2));
+        chat-list.jump(-max(0px, State.result-focus * State.chat-row-height - chat-list.visible-height / 2));
     }
     public function open-result() {
         if State.result-focus >= 0 && State.result-focus < State.chats.length { State.select-chat(State.chats[State.result-focus].index); State.show-conversation = true; State.focus-composer(); }
@@ -28,6 +39,7 @@ export component Chats inherits Rectangle {
                 HorizontalLayout {
                     height: 42px;
                     Text { text: "Chats"; color: Tokens.accent; font-size: Tokens.heading; font-weight: 800; vertical-alignment: center; }
+                    Text { width: State.narrow ? Tokens.small * 6.5 : 0px; horizontal-stretch: 0; text: State.narrow && State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
                     if !State.demo: IconButton { label: "Refresh conversations"; icon: @image-url("../assets/icons/refresh.svg"); enabled: State.connected && !State.loading-chats; activated => { State.refresh(); } }
                 }
                 HorizontalLayout {
@@ -44,7 +56,7 @@ export component Chats inherits Rectangle {
                         key-pressed(event) => {
                             if State.browser-key(event) == accept { return accept; }
                             if State.ime-active { return reject; }
-                            if event.text == Key.Tab { if event.modifiers.shift { State.focus-settings-opener(); } else { list-focus.focus(); } return accept; }
+                            if event.text == Key.Tab { if event.modifiers.shift { State.focus-settings-opener(); } else if State.narrow && !State.show-conversation && State.connection-failed && State.connection-feedback-visible { State.focus-connection-first(); } else { list-focus.focus(); } return accept; }
                             if event.text == Key.Escape && State.query != "" {
                                 State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; return accept;
                             }
@@ -72,7 +84,7 @@ export component Chats inherits Rectangle {
                     key-pressed(event) => {
                         if State.browser-key(event) == accept { return accept; }
                         if State.ime-active { return reject; }
-                        if event.text == Key.Tab { if event.modifiers.shift { search.focus(); } else if State.narrow && !State.show-conversation { State.focus-settings-opener(); } else { State.focus-history(); } return accept; }
+                        if event.text == Key.Tab { if event.modifiers.shift { search.focus(); } else if State.connection-failed && State.connection-feedback-visible && !State.narrow { State.focus-connection-first(); } else if State.narrow && !State.show-conversation { State.focus-settings-opener(); } else { State.focus-history(); } return accept; }
                         if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
                         if event.text == Key.Home { State.result-focus = 0; chat-list.jump(0px); return accept; }
                         if event.text == Key.End { State.result-focus = State.chats.length - 1; chat-list.jump(-chat-list.extent); return accept; }
@@ -81,6 +93,7 @@ export component Chats inherits Rectangle {
                         reject
                     }
                 chat-list := Pane {
+                    connection-feedback: State.narrow && !State.show-conversation && State.section == 0 && !(State.profile-open && State.profile-sheet);
                     offset <=> State.list-y;
                     content-width: self.visible-width;
                     VerticalLayout { spacing: 0px;
@@ -130,7 +143,7 @@ for chat[i] in State.chats: Rectangle {
                 }
                 if State.more-chats: Button { text: State.loading-chats ? "Loading…" : "Load more"; enabled: !State.loading-chats; clicked => { State.more(); } }
                 if State.loading-chats: Text { text: "Loading conversations…"; color: Tokens.secondary; }
-                if State.list-error != "": HorizontalLayout { Text { text: State.list-error; color: Tokens.danger; wrap: word-wrap; } Button { text: "Retry"; clicked => { State.refresh(); } } }
+                if State.list-error != "": HorizontalLayout { Text { text: State.list-error; color: Tokens.danger; wrap: word-wrap; } Button { text: "Retry"; accessible-label: "Retry conversations"; enabled: !State.loading-chats; clicked => { State.retry-list(); } } }
 
             }
     public function focus-search() { search.focus(); }

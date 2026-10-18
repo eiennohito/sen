@@ -16,6 +16,29 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ConnectionFailure {
+    Network,
+    Session,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ListRequest {
+    #[default]
+    Refresh,
+    More,
+    Details,
+}
+impl ListRequest {
+    pub fn command(self) -> Command {
+        match self {
+            Self::Refresh => Command::Chats { next: false },
+            Self::More => Command::Chats { next: true },
+            Self::Details => Command::ChatDetails,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Paths {
     pub state: PathBuf,
@@ -215,7 +238,7 @@ pub enum Update {
     OriginalFailed {
         request: u64,
     },
-    ConnectionFailed,
+    ConnectionFailed(ConnectionFailure),
     SignIn(line_wasm_poc::client::pairing::Event),
     SignInFailed {
         cancelled: bool,
@@ -240,7 +263,7 @@ pub enum Update {
         id: String,
         local_id: String,
     },
-    ChatsFailed,
+    ChatsFailed(ListRequest),
     ImageFailed {
         key: String,
     },
@@ -586,7 +609,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
 
                     Command::ChatDetails => match client.chat_details() {
                         Ok(chats) => publish(Update::Chats { chats: chats.into_iter().map(|c| chat_view(c, &mut jobs)).collect(), more: client.more_chats }),
-                        Err(_) => publish(Update::ChatsFailed),
+                        Err(_) => publish(Update::ChatsFailed(ListRequest::Details)),
                     },
                     Command::Friends => match client.friends() {
                         Ok(friends) => publish(Update::Friends(friends.into_iter().map(|friend| FriendView {
@@ -607,7 +630,7 @@ pub fn start(paths: Paths, publish: impl Fn(Update) + Send + 'static) -> Worker 
                             });
                             pending = Some(Command::ChatDetails);
                         }
-                        Err(_) => publish(Update::ChatsFailed),
+                        Err(_) => publish(Update::ChatsFailed(if next { ListRequest::More } else { ListRequest::Refresh })),
                     },
                     Command::Messages {
                         id,
@@ -833,7 +856,7 @@ fn connect(
             if let Ok(client) = Client::open(&paths.state, &paths.wasm, &paths.cache) {
                 return Some(client);
             }
-            publish(Update::ConnectionFailed);
+            publish(Update::ConnectionFailed(ConnectionFailure::Session));
             attempt = false;
         }
         match rx.recv() {
@@ -1222,12 +1245,12 @@ mod tests {
         );
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Update::ConnectionFailed
+            Update::ConnectionFailed(ConnectionFailure::Session)
         ));
         assert!(worker.commands.try_send(Command::Reconnect).is_ok());
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(2)).unwrap(),
-            Update::ConnectionFailed
+            Update::ConnectionFailed(ConnectionFailure::Session)
         ));
         // Exercise command handoff with cancellation already set: no pairing.
         worker.pairing_cancel.store(true, Ordering::Relaxed);

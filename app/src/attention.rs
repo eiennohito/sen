@@ -65,6 +65,30 @@ pub(crate) struct Attention {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Attention {
+    #[cfg(test)]
+    pub(crate) fn recording() -> Self {
+        let (wake, _) = mpsc::sync_channel(1);
+        Self {
+            shared: Arc::new(Shared {
+                latest: AtomicU64::new(0),
+                pending: Mutex::new(Pending::default()),
+                available: AtomicBool::new(true),
+                handler: Mutex::new(None),
+                ids: Mutex::new(HashMap::new()),
+                closed: Mutex::new(HashSet::new()),
+                stop: AtomicBool::new(false),
+            }),
+            wake,
+            worker: None,
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn take_recorded(&self) -> Vec<Notice> {
+        std::mem::take(&mut self.shared.pending.lock().unwrap().changes)
+            .into_values()
+            .flatten()
+            .collect()
+    }
     pub(crate) fn start() -> Self {
         let (wake, receiver) = mpsc::sync_channel(1);
         let shared = Arc::new(Shared {

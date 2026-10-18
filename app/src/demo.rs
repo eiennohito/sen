@@ -97,7 +97,7 @@ pub(super) fn examples() -> Vec<Conversation> {
 /// All scenario events are local fixtures, even when completions are delayed.
 pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
     // Switching synthetic fixtures must not inherit the paging fixture's range.
-    if !matches!(kind, 1 | 2 | 3 | 4 | 9 | 10) {
+    if !matches!(kind, 1 | 2 | 3 | 4 | 9 | 10 | 16 | 17 | 18 | 19) {
         let mut view = state.borrow_mut();
         if view.demo_paging {
             view.demo_paging = false;
@@ -298,10 +298,35 @@ pub(super) fn scenario(state: &Rc<RefCell<View>>, ui: &AppWindow, kind: i32) {
         ui.invoke_show_history(0., false);
         return;
     }
-    if kind == 4 {
-        state
-            .borrow_mut()
-            .update(ui, account::Update::ConnectionFailed);
+    if matches!(kind, 4 | 16 | 17 | 18 | 19) {
+        use line_wasm_poc::client::desktop::sync::SyncState;
+        let event = match kind {
+            4 => account::Update::ConnectionFailed(account::ConnectionFailure::Session),
+            16 => account::Update::Sync(SyncState::Reconnecting { attempt: 1 }),
+            17 => account::Update::Sync(SyncState::Offline),
+            19 => account::Update::Sync(SyncState::AuthExpired),
+            _ => account::Update::ChatsFailed(account::ListRequest::Refresh),
+        };
+        if kind == 16 {
+            state
+                .borrow_mut()
+                .update(ui, account::Update::Sync(SyncState::Connected));
+        }
+        state.borrow_mut().update(ui, event);
+        if kind == 16 {
+            let weak = ui.as_weak();
+            let state = state.clone();
+            slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
+                if let Some(ui) = weak.upgrade()
+                    && ui.get_retrying_connection()
+                    && !ui.get_connection_failed()
+                {
+                    state
+                        .borrow_mut()
+                        .update(&ui, account::Update::Sync(SyncState::Connected));
+                }
+            });
+        }
         return;
     }
     if kind == 0 {

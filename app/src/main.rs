@@ -222,6 +222,12 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         }
     });
     let weak = ui.as_weak();
+    ui.global::<State>().on_focus_connection_first(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_focus_connection_first();
+        }
+    });
+    let weak = ui.as_weak();
     ui.global::<State>().on_focus_sign_in_opener(move || {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_focus_sign_in_opener();
@@ -231,6 +237,12 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     ui.global::<State>().on_reset_viewer(move || {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_reset_viewer();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_history_scroll(move |delta| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_history_scroll(delta);
         }
     });
     let weak = ui.as_weak();
@@ -273,6 +285,12 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     ui.global::<State>().on_send(move || {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_send();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_retry_list(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_retry_list();
         }
     });
     let weak = ui.as_weak();
@@ -393,6 +411,7 @@ struct Options {
     demo_friends: bool,
     demo_notify: bool,
     demo_size: Option<(u32, u32)>,
+    demo_dark: bool,
     debug_background: bool,
     snapshot: Option<String>,
     snapshot_size: (u32, u32),
@@ -421,6 +440,7 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
         demo_friends: false,
         demo_notify: false,
         demo_size: None,
+        demo_dark: false,
         debug_background: false,
         snapshot: None,
         snapshot_size: (980, 720),
@@ -484,7 +504,14 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                     out.demo_size = Some(out.snapshot_size);
                 }
             }
-            "--snapshot-text-size" => {
+            "--demo-dark" => {
+                out.demo = true;
+                out.demo_dark = true;
+            }
+            "--snapshot-text-size" | "--demo-text-size" => {
+                if arg == "--demo-text-size" {
+                    out.demo = true;
+                }
                 out.snapshot_text_size = args.next().ok_or("missing text size")?.parse()?;
                 if !(12..=24).contains(&out.snapshot_text_size) {
                     return Err("text size must be 12–24".into());
@@ -500,7 +527,7 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
             }
             "--help" | "-h" => {
                 println!(
-                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups | --demo-friends] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT sets an offline preview window size.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
+                    "Usage: line-desktop [--demo | --demo-photos | --demo-groups | --demo-friends] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT and --demo-text-size 12..24 set offline preview geometry; --demo-dark selects the dark palette.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
                 );
                 std::process::exit(0);
             }
@@ -890,6 +917,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     });
     let weak = ui.as_weak();
     let view = state.clone();
+    ui.on_retry_list(move || {
+        if let Some(ui) = weak.upgrade() {
+            view.borrow().retry_list(&ui);
+        }
+    });
+    let weak = ui.as_weak();
+    let view = state.clone();
     ui.on_more(move || {
         if let Some(ui) = weak.upgrade() {
             ui.set_loading_chats(
@@ -962,6 +996,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         state.borrow_mut().browse(&ui, 1);
     }
     state.borrow().send_availability(&ui);
+    if options.demo_dark {
+        ui.invoke_preview_dark(true);
+    }
     if let (Some(window), Some(path)) = (snapshot, options.snapshot) {
         ui.show()?;
         ui.set_text_size(options.snapshot_text_size);
@@ -972,6 +1009,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         snapshot::save(&window, &path, options.snapshot_size)?;
         ui.hide()?;
     } else {
+        if options.demo {
+            ui.set_text_size(options.snapshot_text_size);
+        }
         if let Some((width, height)) = options.demo_size {
             ui.window()
                 .set_size(slint::LogicalSize::new(width as f32, height as f32));

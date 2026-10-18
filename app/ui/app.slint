@@ -1,5 +1,5 @@
 export { State } from "state.slint";
-import { Button, LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
+import { Button, LineEdit, TextEdit, ScrollView, ComboBox, Palette } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
@@ -11,9 +11,23 @@ import { Chats } from "chats.slint";
 import { Conversation } from "conversation.slint";
 import { Layers } from "layers.slint";
 import { RecoveryDialog } from "recovery-dialog.slint";
+export { FeedbackRect } from "connection-notice.slint";
+import { ConnectionNotice, FeedbackRect } from "connection-notice.slint";
 import { DemoScenarios } from "demo-scenarios.slint";
 
 export component AppWindow inherits Window {
+    public function connection-actions-fit() -> bool { return auth-notice.actions-fit(); }
+    public function connection-obstacles() -> [FeedbackRect] {
+        return [
+            { x: rail.absolute-position.x, y: rail.absolute-position.y, width: rail.visible && shell.visible ? rail.width : 0px, height: rail.height },
+            { x: browser.absolute-position.x, y: browser.absolute-position.y, width: browser.visible && shell.visible ? browser.width : 0px, height: root.narrow ? State.connection-area-y : browser.height },
+            conversation.header-bounds, conversation.composer-bounds, layers.profile-bounds, conversation.feedback-bounds, conversation.older-retry-bounds, chats-surface.visible-first-row-bounds
+        ];
+    }
+    public function connection-first-row() -> FeedbackRect { return chats-surface.first-row-bounds; }
+    public function list-scroll(delta: length) { chats-surface.scroll(delta); }
+    public function list-jump(y: length) { chats-surface.jump(y); }
+    public function preview-dark(dark: bool) { if State.demo { Palette.color-scheme = dark ? ColorScheme.dark : ColorScheme.light; } }
     in property <bool> migration-needed;
     in property <string> migration-error;
     in-out property <string> desktop-warning <=> State.desktop-warning;
@@ -91,6 +105,8 @@ export component AppWindow inherits Window {
     public function close-viewer() { root.viewer-open = false; State.focus-history(); State.viewer-return-key = root.viewer-key; State.viewer-return-serial += 1; root.viewer-key = ""; root.photo-closed(); }
     in-out property <bool> connected <=> State.connected;
     in-out property <bool> connection-failed <=> State.connection-failed;
+    in-out property <bool> auth-expired <=> State.auth-expired;
+    in-out property <bool> session-unavailable <=> State.session-unavailable;
     in-out property <bool> retrying-connection <=> State.retrying-connection;
     in-out property <bool> auth-open <=> State.auth-open;
     in-out property <bool> auth-busy <=> State.auth-busy;
@@ -103,7 +119,7 @@ export component AppWindow inherits Window {
     public function account-ready() { root.auth-open = false; root.show-conversation = false; State.focus-search(); }
     public function close-settings() { root.settings-open = false; State.focus-settings-opener(); }
     public function close-sign-in() { root.auth-open = false; State.focus-sign-in-opener(); }
-    public function open-sign-in() { root.auth-open = true; State.focus-auth-start(); }
+    public function open-sign-in() { if State.sign-in-available { root.auth-open = true; State.focus-auth-start(); } }
 
     in-out property <bool> demo <=> State.demo;
     in-out property <bool> more-chats <=> State.more-chats;
@@ -131,7 +147,7 @@ export component AppWindow inherits Window {
     callback select-chat(int);
     callback search-changed(string);
     callback draft-edited();
-    callback refresh(); callback retry-history(); callback more(); callback send();
+    callback refresh(); callback retry-list(); callback retry-history(); callback more(); callback send();
     callback settings-changed(); callback retry-storage(); callback recover-message(string); callback demo-event(int); callback release-deferred();
     public function show-history(y: length, latest: bool) {
         root.following = latest;
@@ -144,28 +160,10 @@ export component AppWindow inherits Window {
         root.new-count = 0;
         conversation.jump(-State.history-extent);
     }
-    auth-notice := Rectangle {
-        x: 0px; y: 0px; width: root.width;
-        height: root.connection-failed && !root.auth-open ? 116px : 0px;
-        visible: root.connection-failed && !root.auth-open;
-        background: Tokens.alternate-background;
-        FocusScope {
-            key-pressed(event) => { State.browser-key(event) }
-            VerticalLayout {
-                padding: 12px; spacing: 8px;
-                Text { text: root.connection-status != "" ? root.connection-status : root.retrying-connection ? "Reconnecting to your saved account…" : "Connection needs attention. Retry, or sign in again if your login has expired."; font-size: Tokens.small; color: Tokens.foreground; wrap: word-wrap; }
-                HorizontalLayout {
-                    Button { text: "Retry"; accessible-label: "Retry connection"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.reconnect(); } }
-                    sign-in-opener := Button { text: "Sign in again"; enabled: !root.retrying-connection && !root.auth-busy; clicked => { root.open-sign-in(); } }
-                }
-            }
-        }
-    }
-
     shell := FocusScope {
         key-pressed(event) => { if root.demo && !State.modal-open && event.text == Key.F12 { scenarios.open(); return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
-        y: auth-notice.height;
-        width: 100%; height: root.height - auth-notice.height;
+        y: 0px;
+        width: 100%; height: root.height;
         visible: !root.auth-open && !root.viewer-open && !(root.narrow && root.profile-open) && !root.migration-needed;
         rail := Rail { x: 0px; y: root.narrow ? parent.height - 48px : 0px; width: root.narrow ? parent.width : State.rail-width; height: root.narrow ? 48px : parent.height; visible: !root.narrow || !root.show-conversation; }
         browser := Rectangle {
@@ -198,10 +196,27 @@ export component AppWindow inherits Window {
     public function focus-auth-start() { layers.focus-auth(); }
     public function focus-viewer-close() { layers.focus-viewer(); }
     public function focus-history() { if root.profile-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-history(); } }
-    public function focus-sign-in-opener() { sign-in-opener.focus(); }
+    public function focus-connection-first() { auth-notice.focus-first(); }
+    public function focus-sign-in-opener() { auth-notice.focus-action(); }
     public function reset-viewer() { layers.reset-viewer(); }
+    public function history-scroll(delta: length) { conversation.scroll(delta); }
     public function history-jump(y: length) { conversation.jump(y); }
-    layers := Layers { profile-top: auth-notice.height; }
+    layers := Layers {}
+    auth-notice := ConnectionNotice {
+        x: State.connection-area-x; y: State.connection-area-y;
+        width: State.connection-area-width;
+        visible: State.connection-feedback-visible && !root.migration-needed;
+        scenarios-requested => { scenarios.open(); }
+        leave(back) => {
+            if !root.narrow || root.show-conversation {
+                if back { conversation.focus-header(); } else { conversation.focus-history(); }
+            } else if root.section == 1 {
+                if back { friends-surface.focus-search(); } else { friends-surface.focus-list(); }
+            } else {
+                if back { chats-surface.focus-search(); } else { chats-surface.focus-list(); }
+            }
+        }
+    }
     Rectangle {
         width: 100%; height: 100%; visible: root.migration-needed; background: Tokens.background;
         VerticalLayout {

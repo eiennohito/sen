@@ -5,24 +5,39 @@ import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 import { Message } from "message.slint";
+import { FeedbackRect } from "connection-notice.slint";
 import { Composer } from "composer.slint";
 
 export component Conversation inherits Rectangle {
+    out property <FeedbackRect> older-retry-bounds: { x: older-retry.absolute-position.x, y: older-retry.absolute-position.y, width: root.visible && State.older-failed && State.has-chat ? older-retry.width : 0px, height: older-retry.height };
+    out property <FeedbackRect> header-bounds: { x: header.absolute-position.x, y: header.absolute-position.y, width: root.visible ? header.width : 0px, height: header.height };
+    out property <FeedbackRect> feedback-bounds: history-feedback.visible ? { x: history-feedback.absolute-position.x, y: history-feedback.absolute-position.y, width: history-feedback.width, height: history-feedback.height } : { x: 0px, y: 0px, width: 0px, height: 0px };
+    out property <FeedbackRect> composer-bounds: { x: composer-surface.absolute-position.x, y: composer-surface.absolute-position.y, width: root.visible ? composer-surface.width : 0px, height: composer-surface.height };
 
           visible: !State.narrow || State.show-conversation;
           VerticalLayout {
             spacing: 0px;
-            Rectangle {
+            header := Rectangle {
                 height: max(64px, Tokens.heading * 1.4 + 28px) + (State.chat-subtitle != "" ? Tokens.small * 1.4 + 5px : 0px) + (State.unread-locating || State.unread-boundary-unknown ? Tokens.small * 1.4 + 5px : 0px); background: Tokens.surface;
+                FocusScope {
+                    key-pressed(event) => {
+                        if event.text == Key.Tab && !event.modifiers.shift && State.narrow && !State.ime-active {
+                            if State.connection-failed && State.connection-feedback-visible { State.focus-connection-first(); } else { history-focus.focus(); }
+                            return accept;
+                        }
+                        reject
+                    }
                 VerticalLayout {
                     padding: 14px; spacing: 5px;
                     HorizontalLayout {
                         back-button := IconButton { visible: State.narrow; enabled: State.narrow; width: State.narrow ? 40px : 0px; label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } } }
                         if State.narrow && State.unread-conversations > 0: Rectangle { width: 24px; height: 22px; border-radius: 11px; background: Tokens.accent; Text { text: State.unread-stale ? "•" : "" + State.unread-conversations; color: Tokens.selection-foreground; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
                         Text { text: State.chat-title; color: Tokens.foreground; font-size: Tokens.heading; font-weight: 700; overflow: elide; vertical-alignment: center; }
+                        Text { width: Tokens.small * 6.5; horizontal-stretch: 0; text: State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
                     }
                     if State.unread-locating || State.unread-boundary-unknown: Text { text: State.unread-locating ? "Finding unread messages…" : "Unread boundary unavailable"; color: Tokens.secondary; font-size: Tokens.small; }
                     if State.chat-subtitle != "": Text { text: State.chat-subtitle; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; }
+                }
                 }
             }
             history-surface := Rectangle {
@@ -34,32 +49,33 @@ export component Conversation inherits Rectangle {
                     if State.ime-active { return reject; }
                     if State.browser-key(event) == accept { return accept; }
                     if State.recovery-kind != "" { return reject; }
-                    if event.text == Key.Tab { if event.modifiers.shift { if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if !State.following && State.has-chat { latest-button.focus(); } else { State.focus-composer(); } } return accept; }
-                    if event.text == Key.UpArrow { history.jump(State.history-y + Tokens.base * 1.4); history.scrolled(); return accept; }
-                    if event.text == Key.DownArrow { history.jump(State.history-y - Tokens.base * 1.4); history.scrolled(); return accept; }
-                    if event.text == Key.PageUp { history.jump(State.history-y + history.height * 0.9); history.scrolled(); return accept; }
-                    if event.text == Key.PageDown { history.jump(State.history-y - history.height * 0.9); history.scrolled(); return accept; }
+                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-failed { State.focus-sign-in-opener(); } else if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } } else { if !State.following && State.has-chat { latest-button.focus(); } else { State.focus-composer(); } } return accept; }
+                    if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
+                    if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
+                    if event.text == Key.PageUp { history.scroll(history.visible-height * 0.9); history.scrolled(); return accept; }
+                    if event.text == Key.PageDown { history.scroll(-history.visible-height * 0.9); history.scrolled(); return accept; }
                     if event.text == Key.Home { history.jump(0px); history.scrolled(); return accept; }
                     if event.text == Key.End { State.latest(); return accept; }
                     reject
                 }
               }
               history := Pane {
+                connection-feedback: (!State.narrow || State.show-conversation) && !(State.profile-open && State.profile-sheet);
                 focus-requested => { history-focus.focus(); }
                 changed extent => { State.history-extent = self.extent; if State.following && !self.dragging { self.jump(-self.extent); } }
                 changed dragging => { State.history-dragging = self.dragging; }
                 offset <=> State.history-y;
 
                 vertical-stretch: 1;
-                scrolled => { State.following = State.history-can-follow && !State.history-dragging && State.history-extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } State.history-scrolled(); }
+                scrolled => { State.following = State.history-can-follow && self.visible-top == self.inset && !State.history-dragging && State.history-extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } State.history-scrolled(); }
                 VerticalLayout {
                     padding: 16px; spacing: 5px;
                     if !State.has-chat: Text { text: "Choose a conversation"; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
                     Rectangle {
                         height: State.has-chat ? max(32px, Tokens.small * 1.8) : 0px;
                         HorizontalLayout { alignment: center; spacing: 8px;
-                            Text { text: State.older-status; color: Tokens.secondary; font-size: Tokens.small; vertical-alignment: center; }
-                            if State.older-failed: Button { text: "Retry older"; clicked => { State.older-retry(); } }
+                            Text { text: State.older-status; color: Tokens.secondary; font-size: Tokens.small; min-width: 0px; overflow: elide; vertical-alignment: center; }
+                            older-retry := Button { visible: State.older-failed; width: self.visible ? self.preferred-width : 0px; text: "Retry older"; clicked => { State.older-retry(); } }
                         }
                     }
                     if State.has-chat && State.messages.length == 0 && !State.loading-history && State.history-error == "": Text { text: "No messages yet"; accessible-label: self.text; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
@@ -73,7 +89,8 @@ export component Conversation inherits Rectangle {
                 font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap;
               }
               // Overlay: async loading/error never contributes to history geometry.
-              Rectangle {
+              history-feedback := Rectangle {
+                y: State.connection-feedback-visible ? State.connection-notice-height : 0px;
                 visible: State.history-error != "" || State.loading-history;
                 height: 24px; background: Tokens.surface;
                 HorizontalLayout {
@@ -106,15 +123,17 @@ composer-surface := Composer { }
             }
         }
     
+    public function focus-header() { if State.narrow { back-button.focus-button(); } else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); } }
     public function restore-editor(anchor: int, caret: int) { composer-surface.restore-editor(anchor, caret); }
     public function focus-editor() { composer-surface.focus-editor(); }
     public function focus-history() { history-focus.focus(); }
     public function focus-reading-before-editor() { if !State.following && State.has-chat { latest-button.focus(); } else { history-focus.focus(); } }
+    public function scroll(delta: length) { history.scroll(delta); history.scrolled(); }
     public function jump(y: length) { history.jump(y); }
     changed width => { State.history-width = history.width; }
-    property <length> viewport-height: history.height;
+    property <length> viewport-height: history.visible-height;
     changed viewport-height => { State.history-viewport-height = root.viewport-height; }
-    init => { State.history-width = history.width; State.history-viewport-height = history.height; State.conversation-height = root.height; State.history-extent = history.extent; }
+    init => { State.history-width = history.width; State.history-viewport-height = history.visible-height; State.conversation-height = root.height; State.history-extent = history.extent; }
     changed height => { State.conversation-height = root.height; }
 
 }

@@ -63,7 +63,21 @@ def element(label, role):
 
 def demo_scenario(label):
     call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
-    call("click_element", elementHandle=element(label, "Button")["handle"])
+    try:
+        action = element(label, "Button")
+    except StopIteration:
+        close = element("Close demo scenarios", "Button")
+        position = {"x": close["absolutePosition"]["x"] + close["size"]["width"] / 2, "y": close["absolutePosition"]["y"] + close["size"]["height"] + 60}
+        for delta in (10000, -320, -320, -320):
+            call("dispatch_pointer_scroll", windowHandle=window, position=position, deltaY=delta)
+            try:
+                action = element(label, "Button")
+                break
+            except StopIteration:
+                pass
+        else:
+            raise AssertionError(f"demo scenario was not reachable: {label}") from None
+    call("click_element", elementHandle=action["handle"])
 
 # Refuse to operate on a real account. This script never clicks Send.
 call("dispatch_key_event", windowHandle=window, text="\uf70f")  # F12
@@ -283,18 +297,101 @@ if args.friends:
 
 if args.auth_recovery:
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
-    demo_scenario("Login recovery")
-    element("Retry connection", "Button")
-    call("click_element", elementHandle=element("Sign in again", "Button")["handle"])
+    tracked = [("Find a conversation", "TextInput"), ("Conversations", "List"), ("Message history", "List"), ("Message draft", "TextInput")]
+    positions = {label: element(label, role)["absolutePosition"].get("y", 0) for label, role in tracked}
+
+    def no_strip():
+        assert not any(item.get("accessibleLabel") in ("Connection needs attention", "Retry connection", "Sign in again") for item in tree()), "quiet state raised recovery controls"
+
+    def unchanged_shell():
+        current = {label: element(label, role)["absolutePosition"].get("y", 0) for label, role in tracked}
+        assert current == positions, f"connection state moved shell content: {positions} -> {current}"
+
+    def disjoint(left, right):
+        a, b = left["absolutePosition"], right["absolutePosition"]
+        s, t = left["size"], right["size"]
+        return (a.get("x", 0) + s.get("width", 0) <= b.get("x", 0) or b.get("x", 0) + t.get("width", 0) <= a.get("x", 0)
+                or a.get("y", 0) + s.get("height", 0) <= b.get("y", 0) or b.get("y", 0) + t.get("height", 0) <= a.get("y", 0))
+
+    def safe_strip(label="Connection needs attention"):
+        strip = element(label, "Banner")
+        history = element("Message history", "List")
+        assert strip["absolutePosition"].get("y", 0) == history["absolutePosition"].get("y", 0), "feedback is not below the conversation header"
+        assert strip["size"]["height"] <= 52, "strip is no longer one line"
+        for control, role in [("Chats", "Button"), ("Friends", "Button"), ("Settings", "Button"), ("Find a conversation", "TextInput"), ("Message draft", "TextInput"), ("Send", "Button")]:
+            assert disjoint(strip, element(control, role)), f"feedback covered {control}"
+        return strip
+
+    demo_scenario("Reconnect blip")
+    element("Connecting…", "Text")
+    no_strip()
+    unchanged_shell()
+    deadline = time.monotonic() + 4
+    while time.monotonic() < deadline:
+        if any(item.get("accessibleLabel") == "Reconnected" for item in tree()): break
+        time.sleep(.05)
+    element("Reconnected", "Text")
+    safe_strip("Connection restored")
+    no_strip()
+    unchanged_shell()
+    time.sleep(3.2)
+    assert not any(item.get("accessibleLabel") == "Reconnected" for item in tree()), "confirmation did not expire"
+    demo_scenario("Offline")
+    strip = safe_strip()
+    element("Offline", "Text")
+    assert not any(item.get("accessibleLabel") == "Sign in again" for item in tree()), "network-only failure offered sign-in"
+    unchanged_shell()
+    call("click_element", elementHandle=search)
+    call("dispatch_key_event", windowHandle=window, text="\t")
+    call("dispatch_key_event", windowHandle=window, text="\t")
+    assert element("Retry connection", "Button").get("accessibleDescription") == "Focused", "forward Tab skipped recovery"
+    call("dispatch_key_event", windowHandle=window, text="\uf709")  # F6 leaves for history
+    call("dispatch_key_event", windowHandle=window, text="\uf709")  # F6 returns to recovery
+    assert element("Retry connection", "Button").get("accessibleDescription") == "Focused"
+    call("dispatch_key_event", windowHandle=window, text="\n")
+    element("Retrying…", "Text")
+    assert not element("Retry connection", "Button").get("accessibleEnabled"), "retry stayed enabled while pending"
+    time.sleep(1.2)
+    assert element("Retry connection", "Button").get("accessibleEnabled")
+    call("click_element", elementHandle=composer)
+    demo_scenario("Login recovery")  # The failed startup path, without a usable session.
+    safe_strip()
+    element("Signed out", "Text")
+    element("Sign in again", "Button")
+    unchanged_shell()
+    call("click_element", elementHandle=composer)
+    call("dispatch_key_event", windowHandle=window, text="\uf709")
+    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
+    call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
+    call("dispatch_key_event", windowHandle=window, text="\t")
+    call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
+    assert element("Retry connection", "Button").get("accessibleDescription") == "Focused"
+    call("dispatch_key_event", windowHandle=window, text="\t")
+    call("dispatch_key_event", windowHandle=window, text="\n")
     assert any("Chrome device slot" in item.get("accessibleLabel", "") for item in tree()), "sign-in did not explain its scope"
     assert any("encrypted drafts" in item.get("accessibleLabel", "") for item in tree()), "sign-in did not explain draft isolation"
     call("click_element", elementHandle=element("Start sign-in", "Button")["handle"])
     assert any("No pairing request was made" in item.get("accessibleLabel", "") for item in tree()), "offline sign-in guard did not report its result"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
-    element("Sign in again", "Button")
+    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "sign-in dismissal changed the draft"
-    assert element("Retry connection", "Button").get("accessibleEnabled"), "retry stayed disabled"
-    print("PASS: failed-login recovery controls, explicit sign-in explanation, offline pairing guard, Escape, and draft preservation")
+    call("dispatch_key_event", windowHandle=window, text="\t")
+    assert element("Message history", "List").get("accessibleDescription") == "Focused history", "Tab left recovery outside the reading order"
+    demo_scenario("Expired sign-in")
+    element("Session expired", "Text")
+    call("click_element", elementHandle=element("Retry connection", "Button")["handle"])
+    element("Retrying…", "Text")
+    time.sleep(1.2)
+    assert element("Sign in again", "Button").get("accessibleEnabled"), "failed expiry Retry lost sign-in"
+    call("click_element", elementHandle=composer)
+    demo_scenario("Reconnect blip")  # A successful local connection clears the unavailable-session state.
+    # Expiry stays actionable until success; this fixture explicitly opens a usable session.
+    time.sleep(2.2)
+    demo_scenario("List load failure")
+    no_strip()
+    element("Couldn’t load conversations. Retry.", "Text")
+    element("Retry conversations", "Button")
+    print(f"PASS: quiet reconnect/no header overlap, transient expiry, network/startup/expired recovery, pending Retry, F6/Tab order, offline pairing guard, footer Retry; unchanged shell y={positions}; strip y={strip['absolutePosition'].get('y', 0)} height={strip['size']['height']}")
 
 if args.layers:
     call("click_element", elementHandle=composer)
@@ -322,7 +419,7 @@ if args.layers:
     friend_search = element("Search loaded friends and groups", "TextInput")["handle"]
     call("set_element_value", elementHandle=friend_search, value="葵")
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
-    element("Close profile", "Button")
+    profile_close_y = element("Close profile", "Button")["absolutePosition"].get("y", 0)
     assert not any(item.get("accessibleLabel") == "Message draft" for item in tree()), "sheet exposed the covered conversation"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert element("Friends and groups", "List").get("accessibleDescription") == "Focused friends and groups", "profile did not restore its list opener"
@@ -363,9 +460,10 @@ if args.layers:
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     close = element("Close profile", "Button")
-    assert close["absolutePosition"]["y"] >= 116, "profile painted over the connection strip"
-    assert element("Search loaded friends and groups", "TextInput")["absolutePosition"]["x"] < 342, "profile hid the browser"
-    element("Retry connection", "Button")
+    assert close["absolutePosition"].get("y", 0) == profile_close_y, "connection feedback moved the profile"
+    assert not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()), "sheet did not cover the conversation feedback"
+    browser_search = element("Search loaded friends and groups", "TextInput")
+    assert browser_search["absolutePosition"]["x"] + browser_search["size"]["width"] <= close["absolutePosition"]["x"], "profile hid the browser"
     print("PASS: Settings modal focus, profile reading/focus/browser/connection-strip placement, viewer keys/wheel/pan/loaded-photo navigation, isolated PNG export, opener restoration, draft retention")
 
 if args.reading:

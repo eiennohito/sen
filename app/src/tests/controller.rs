@@ -77,7 +77,10 @@ fn controller_scenario(stop: usize) {
     assert_eq!(ui.get_messages(), model, "append rebuilt the message model");
     assert_eq!(ui.get_new_count(), 1);
     assert!(!ui.get_following());
-    view.update(&ui, account::Update::ChatsFailed);
+    view.update(
+        &ui,
+        account::Update::ChatsFailed(account::ListRequest::Refresh),
+    );
     assert_eq!(view.ids.len(), 3);
     assert_eq!(view.current, "0");
     assert_eq!(ui.get_messages(), model);
@@ -251,13 +254,19 @@ fn controller_scenario(stop: usize) {
         return;
     }
     ui.set_draft("preserve this draft during sign-in".into());
-    view.update(&ui, account::Update::ConnectionFailed);
+    view.update(
+        &ui,
+        account::Update::ConnectionFailed(account::ConnectionFailure::Session),
+    );
     assert!(ui.get_connection_failed());
     assert!(!ui.get_connected());
     assert!(!ui.get_auth_open(), "failure started pairing automatically");
     view.begin_sign_in(&ui);
     assert!(rx.try_recv().is_err());
+    assert!(!ui.get_auth_expired());
+    assert!(ui.get_session_unavailable());
     ui.invoke_open_sign_in();
+    assert!(ui.get_auth_open());
     assert!(
         rx.try_recv().is_err(),
         "opening the explanation started pairing"
@@ -288,6 +297,10 @@ fn controller_scenario(stop: usize) {
     assert!(!ui.get_connection_failed());
     assert!(!ui.get_retrying_connection());
     assert_eq!(ui.get_draft(), "preserve this draft during sign-in");
+    view.update(
+        &ui,
+        account::Update::Sync(line_wasm_poc::client::desktop::sync::SyncState::AuthExpired),
+    );
     ui.invoke_open_sign_in();
     ui.set_auth_busy(true);
     view.update(

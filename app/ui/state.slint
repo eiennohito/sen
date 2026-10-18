@@ -24,6 +24,7 @@ export global State {
     public function browser-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
         if event.text == Key.Escape && self.profile-open && self.profile-sheet && !self.window-modal-open { self.close-profile(); return accept; }
+        if !self.window-modal-open && !(self.profile-open && self.profile-sheet) && self.connection-failed && event.text == Key.F6 { self.focus-sign-in-opener(); return accept; }
         if self.window-modal-open || (self.narrow && self.profile-open) { return reject; }
         if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
             if event.text == "f" || event.text == "F" { self.show-conversation = false; if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
@@ -127,6 +128,16 @@ export global State {
     callback close-settings();
     in-out property <bool> connected;
     in-out property <bool> connection-failed;
+    in-out property <bool> auth-expired;
+    in-out property <bool> session-unavailable;
+    out property <bool> sign-in-available: self.auth-expired || self.session-unavailable;
+    in-out property <bool> reconnected-notice;
+    out property <bool> connection-feedback-visible: (self.connection-failed || self.reconnected-notice) && !self.window-modal-open && !(self.profile-open && self.profile-sheet);
+    out property <length> connection-notice-height: max(40px, self.text-size * 1.4px + 16px);
+    in-out property <length> connection-area-x;
+    in-out property <length> connection-area-y;
+    in-out property <length> connection-area-width;
+    in-out property <length> connection-area-height;
     in-out property <bool> retrying-connection;
     in-out property <bool> auth-open;
     in-out property <bool> auth-busy;
@@ -187,6 +198,7 @@ export global State {
     callback search-changed(string);
     callback draft-edited();
     callback refresh();
+    callback retry-list();
     callback retry-history();
     callback more();
     callback send();
@@ -212,6 +224,7 @@ export global State {
     callback focus-settings-close();
     callback focus-profile-close();
     callback focus-auth-start();
+    callback focus-connection-first();
     callback focus-sign-in-opener();
     callback focus-viewer-close();
     public function reading-key(event: KeyEvent) -> EventResult {
@@ -219,21 +232,24 @@ export global State {
         if self.browser-key(event) == accept { return accept; }
         if self.recovery-kind != "" { return reject; }
         if event.text == Key.End { self.latest(); self.focus-history(); return accept; }
-        if event.text == Key.UpArrow { self.history-jump(self.history-y + self.text-size * 1.4px); }
-        else if event.text == Key.DownArrow { self.history-jump(self.history-y - self.text-size * 1.4px); }
-        else if event.text == Key.PageUp { self.history-jump(self.history-y + self.history-viewport-height * 0.9); }
-        else if event.text == Key.PageDown { self.history-jump(self.history-y - self.history-viewport-height * 0.9); }
+        if event.text == Key.UpArrow { self.history-scroll(self.text-size * 1.4px); }
+        else if event.text == Key.DownArrow { self.history-scroll(-self.text-size * 1.4px); }
+        else if event.text == Key.PageUp { self.history-scroll(self.history-viewport-height * 0.9); }
+        else if event.text == Key.PageDown { self.history-scroll(-self.history-viewport-height * 0.9); }
         else if event.text == Key.Home { self.history-jump(0px); }
         else { return reject; }
-        self.following = self.history-can-follow && !self.history-dragging && self.history-extent + self.history-y <= self.text-size * 1px;
-        if self.following { self.new-count = 0; }
-        self.history-scrolled();
+        if event.text == Key.Home {
+            self.following = self.history-can-follow && !self.history-dragging && self.history-extent + self.history-y <= self.text-size * 1px;
+            if self.following { self.new-count = 0; }
+            self.history-scrolled();
+        }
         self.focus-history();
         return accept;
     }
     callback focus-history();
     callback reset-viewer();
     in-out property <length> history-viewport-height;
+    changed history-viewport-height => { self.read-state-changed(); }
     in-out property <string> older-status;
     in-out property <bool> older-failed;
     in-out property <bool> paging-demo;
@@ -252,5 +268,6 @@ export global State {
     callback older-retry();
     callback jump-message(string);
     callback return-to-message();
+    callback history-scroll(length);
     callback history-jump(length);
 }

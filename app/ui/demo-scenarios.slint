@@ -31,8 +31,8 @@ export component DemoScenarios inherits Rectangle {
                 key-pressed(event) => {
                     if event.text == Key.Escape { root.dismiss(); return accept; }
                     if event.text == Key.Tab {
-                        if event.modifiers.shift && close.has-focus { if State.demo-notifications { exposed.focus(); } else { login.focus(); } return accept; }
-                        if !event.modifiers.shift && ((!State.demo-notifications && login.has-focus) || exposed.has-focus) { close.focus(); return accept; }
+                        if event.modifiers.shift && close.has-focus { if State.demo-notifications { exposed.focus(); } else { list-failure.focus(); } return accept; }
+                        if !event.modifiers.shift && ((!State.demo-notifications && list-failure.has-focus) || exposed.has-focus) { close.focus(); return accept; }
                     }
                     reject
                 }
@@ -66,7 +66,11 @@ export component DemoScenarios inherits Rectangle {
                             Button { text: "Unread scenario"; clicked => { root.run(14); } }
                             Button { text: "Rich content"; clicked => { root.run(12); } }
                             Button { text: "Long chat list"; clicked => { root.run(15); } }
-                            login := Button { text: "Login recovery"; clicked => { root.run(4); } }
+                            Button { text: "Login recovery"; clicked => { root.run(4); } }
+                            Button { text: "Reconnect blip"; clicked => { root.run(16); } }
+                            Button { text: "Offline"; clicked => { root.run(17); } }
+                            Button { text: "Expired sign-in"; clicked => { root.run(19); } }
+                            list-failure := Button { text: "List load failure"; clicked => { root.run(18); } }
                             VerticalLayout {
                                 visible: State.demo-notifications; height: self.visible ? self.preferred-height : 0px;
                                 spacing: 8px;
