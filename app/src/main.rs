@@ -53,6 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut snapshot_profile = false;
     let mut background = false;
     let mut locations = line_wasm_poc::locations::Locations::from_environment()?;
+    let mut explicit_paths = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -93,8 +94,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 text_size = args.next().ok_or("missing text size")?.parse()?
             }
             "--snapshot-scene" => scene = args.next().ok_or("missing scene")?,
-            "--state" => locations.session = args.next().ok_or("missing state")?.into(),
-            "--wasm" => locations.wasm = args.next().ok_or("missing wasm")?.into(),
+            "--state" => {
+                locations.session = args.next().ok_or("missing state")?.into();
+                explicit_paths = true;
+            }
+            "--wasm" => {
+                locations.wasm = args.next().ok_or("missing wasm")?.into();
+                explicit_paths = true;
+            }
             "--cache-dir" => locations.cache = args.next().ok_or("missing cache directory")?.into(),
             "--demo-rich" | "--demo-photos" | "--demo-groups" | "--demo-friends" => {
                 demo = true;
@@ -102,6 +109,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => return Err(format!("unknown option {arg}").into()),
         }
+    }
+    if !demo && !explicit_paths {
+        locations.load_existing()?;
     }
     startup::start(startup::Options {
         demo,
