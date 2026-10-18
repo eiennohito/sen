@@ -4,6 +4,28 @@ use line_wasm_poc::backend::{LiveOp, Op};
 pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: i32) {
     let chat = d.state.selected.clone().unwrap_or(ChatId("alice".into()));
     match kind {
+        34 => {
+            let directory =
+                std::env::temp_dir().join(format!("line-demo-attachments-{}", std::process::id()));
+            if std::fs::create_dir_all(&directory).is_ok() {
+                let photo = directory.join("Holiday.png");
+                let file = directory.join("Notes.txt");
+                let image =
+                    image::RgbaImage::from_pixel(160, 120, image::Rgba([58, 145, 191, 255]));
+                if image.save(&photo).is_ok()
+                    && std::fs::write(&file, b"Synthetic demo file").is_ok()
+                {
+                    let paths = [photo, file]
+                        .iter()
+                        .filter_map(|path| url::Url::from_file_path(path).ok())
+                        .map(|url| url.to_string())
+                        .collect::<Vec<_>>()
+                        .join("\n");
+                    ui.global::<State>().invoke_drop_attachment(paths.into());
+                }
+            }
+        }
+
         32 => {
             let rows = vec![
                 FakeBackend::message("protocol", 6300, "Unsend success fixture", true),
@@ -186,6 +208,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
 
 pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
     demo_data::seed(fake);
+    fake.upload_delay(std::time::Duration::from_millis(1800));
     if scene == "previews" {
         demo_data::previews(fake);
     }

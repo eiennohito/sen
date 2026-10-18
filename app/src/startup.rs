@@ -101,9 +101,33 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
             winit::event::{Ime, WindowEvent},
         };
         let weak = ui.as_weak();
+        let drops = Rc::new(RefCell::new(Vec::<std::path::PathBuf>::new()));
+        let drop_timer = slint::Timer::default();
         ui.window().on_winit_window_event(move |_, event| {
             if let Some(ui) = weak.upgrade() {
                 match event {
+                    WindowEvent::DroppedFile(path) => {
+                        if ui.get_show_conversation() && !ui.global::<State>().get_modal_open() {
+                            drops.borrow_mut().push(path.clone());
+                            let drops = drops.clone();
+                            let weak = ui.as_weak();
+                            drop_timer.start(
+                                slint::TimerMode::SingleShot,
+                                std::time::Duration::from_millis(80),
+                                move || {
+                                    let uris = std::mem::take(&mut *drops.borrow_mut())
+                                        .iter()
+                                        .filter_map(|path| url::Url::from_file_path(path).ok())
+                                        .map(|uri| uri.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    if let Some(ui) = weak.upgrade() {
+                                        ui.global::<State>().invoke_drop_attachment(uris.into());
+                                    }
+                                },
+                            );
+                        }
+                    }
                     WindowEvent::Focused(active) => ui.global::<State>().set_window_active(*active),
                     WindowEvent::Ime(Ime::Preedit(text, _)) => ui.set_ime_active(!text.is_empty()),
                     WindowEvent::Ime(Ime::Commit(_)) | WindowEvent::Ime(Ime::Disabled) => {

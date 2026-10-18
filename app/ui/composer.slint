@@ -11,14 +11,15 @@ export component Composer inherits Rectangle {
     height: max(52px, min(Tokens.base * 8.4 + 32px, draft-measure.preferred-height + 32px));
     vertical-stretch: 0; background: Tokens.bg;
     Rectangle { x: 0px; y: 0px; height: 1px; width: parent.width; background: Tokens.divider; }
-    draft-measure := Text { visible: false; text: State.draft == "" ? "Ag" : State.draft; width: max(100px, root.width - 120px); wrap: word-wrap; font-size: Tokens.base; }
+    draft-measure := Text { visible: false; text: State.draft == "" ? "Ag" : State.draft; width: max(100px, root.width - 160px); wrap: word-wrap; font-size: Tokens.base; }
     FocusScope {
         focus-on-tab-navigation: false;
         key-pressed(event) => {
             if State.ime-active { return reject; }
             if event.text == Key.Tab {
-                if event.modifiers.shift { if send-button.has-focus && sticker-button.enabled { sticker-button.focus-button(); } else { composer.focus-editor(); } }
+                if event.modifiers.shift { if send-button.has-focus && attach-button.enabled { attach-button.focus-button(); } else { composer.focus-editor(); } }
                 else if composer.has-focus && sticker-button.enabled { sticker-button.focus-button(); }
+                else if composer.has-focus && attach-button.enabled { attach-button.focus-button(); }
                 else if composer.has-focus && State.can-send { send-button.focus-button(); }
                 else { State.focus-after-conversation(); }
                 return accept;
@@ -27,7 +28,8 @@ export component Composer inherits Rectangle {
         }
         HorizontalLayout {
             padding: 8px; spacing: 8px;
-            sticker-button := IconButton { label: "Stickers"; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { composer.focus-editor(); } else if State.can-send { send-button.focus-button(); } else { State.focus-after-conversation(); } return accept; } reject } focus-description: "Focused"; icon: @image-url("../assets/icons/sticker.svg"); enabled: State.connected && State.has-chat && !State.chat-left; activated => { State.load-stickers(); picker.show(); } }
+            sticker-button := IconButton { label: "Stickers"; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { composer.focus-editor(); } else { attach-button.focus-button(); } return accept; } reject } focus-description: "Focused"; icon: @image-url("../assets/icons/sticker.svg"); enabled: State.connected && State.has-chat && !State.chat-left; activated => { State.load-stickers(); picker.show(); } }
+            attach-button := IconButton { label: "Attach"; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { if sticker-button.enabled { sticker-button.focus-button(); } else { composer.focus-editor(); } } else if State.can-send { send-button.focus-button(); } else { State.focus-after-conversation(); } return accept; } reject } focus-description: "Focused"; icon: @image-url("../assets/icons/attach.svg"); enabled: State.has-chat && !State.chat-left; activated => { State.attach(); } }
             composer := DraftEditor {}
             send-button := IconButton { label: "Send"; focus-description: "Focused"; icon: @image-url("../assets/icons/send.svg"); icon-color: State.can-send ? Tokens.accent : Tokens.secondary; enabled: State.can-send; activated => { State.focus-composer(); State.send(); } }
         }
@@ -35,7 +37,7 @@ export component Composer inherits Rectangle {
     picker := PopupWindow { x: 0px; y: -320px; width: State.narrow ? root.width : min(360px, root.width); height: 320px;
         StickerPicker { close => { picker.close(); State.focus-composer(); } }
     }
-    public function focus-last() { if State.can-send { send-button.focus-button(); } else if sticker-button.enabled { sticker-button.focus-button(); } else { composer.focus-editor(); } }
+    public function focus-last() { if State.can-send { send-button.focus-button(); } else if attach-button.enabled { attach-button.focus-button(); } else { composer.focus-editor(); } }
     public function focus-editor() { composer.focus-editor(); }
     public function restore-editor(anchor: int, caret: int) { composer.restore(anchor, caret); }
 }
