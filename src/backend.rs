@@ -75,6 +75,7 @@ pub trait Backend: Send {
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>>;
     fn messages(&mut self, chat: &ChatId, kind: &PageKind) -> Result<Page>;
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput>;
+    fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()>;
     fn receipts(&mut self, chat: &ChatId) -> Result<Vec<Option<ServerId>>>;
     fn mark_read(&mut self, chat: &ChatId, id: &ServerId) -> Result<()>;
     fn stream(
@@ -95,6 +96,7 @@ pub enum FakeRpc {
     Messages(ChatId),
     Receipts(ChatId),
     Read(ChatId),
+    Unsend(ServerId),
 }
 #[derive(Default)]
 struct FakeState {
@@ -282,6 +284,22 @@ impl FakeBackend {
     pub fn asset(photo: bool) -> crate::client::desktop::assets::Asset {
         serde_json::from_value(json!({"url":if photo {"https://obs.line-apps.com/r/talk/m/synthetic/preview"}else{"https://stickershop.line-scdn.net/stickershop/v1/sticker/1/android/sticker.png"},"private":photo,"key_material":null,"talk_meta":null,"dimension":384,"original_suffix":"","failure":null})).unwrap()
     }
+    pub fn official_image(chat: &str, id: i64) -> MessageInput {
+        let mut row = Self::message(chat, id, "", false);
+        row.content_type = 1;
+        row.body["rich"]["content_type"] = 1.into();
+        row.body["image"] = serde_json::to_value(
+            crate::client::desktop::assets::Asset::photo(&json!({
+                "id":id.to_string(), "contentMetadata":{
+                    "PREVIEW_URL":"https://manager.line-scdn.net/synthetic/clearpreview",
+                    "DOWNLOAD_URL":"https://manager.line-scdn.net/synthetic/original"
+                }
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        row
+    }
     pub fn uncertain_send(&self) {
         self.0.lock().unwrap().uncertain_send = true;
     }
@@ -316,6 +334,13 @@ impl FakeBackend {
     }
     pub fn resumed_revisions(&self) -> Vec<i64> {
         self.0.lock().unwrap().revisions.clone()
+    }
+    pub fn inject_raw(&self, mut raw: Value) {
+        raw["revision"] = self.revision().into();
+        let deliver = self.0.lock().unwrap().deliver.clone();
+        if let Some(d) = deliver {
+            d(StreamEvent::Raw(raw));
+        }
     }
     pub fn inject(&self, op: LiveOp) {
         let deliver = {
@@ -569,6 +594,19 @@ impl Backend for FakeBackend {
         }
         Ok(row)
     }
+    fn unsend(&mut self, id: &ServerId, _seq: u32) -> Result<()> {
+        self.rpc(FakeRpc::Unsend(id.clone()))?;
+        let mut s = self.0.lock().unwrap();
+        for row in s
+            .pages
+            .values_mut()
+            .flatten()
+            .filter(|m| &m.server_id == id)
+        {
+            row.body["rich"]["withdrawn"] = true.into();
+        }
+        Ok(())
+    }
     fn receipts(&mut self, chat: &ChatId) -> Result<Vec<Option<ServerId>>> {
         self.rpc(FakeRpc::Receipts(chat.clone()))?;
         Ok(self
@@ -600,8 +638,18 @@ impl Backend for FakeBackend {
             }
         }))
     }
-    fn decode(&mut self, _raw: Value) -> Result<LiveOp> {
-        Err(Error::Decode)
+    fn decode(&mut self, raw: Value) -> Result<LiveOp> {
+        Ok(LiveOp {
+            revision: raw["revision"].as_i64().ok_or(Error::Decode)?,
+            replay: raw["replay"].as_bool().unwrap_or(false),
+            op: match raw["type"].as_u64() {
+                Some(139 | 140) => reaction_operation(&raw, "self")?,
+                Some(64 | 65) => Op::Withdraw(ServerId(
+                    raw["param2"].as_str().ok_or(Error::Decode)?.into(),
+                )),
+                _ => Op::Checkpoint,
+            },
+        })
     }
     fn token(&mut self, _token: Value) {}
 }
@@ -656,7 +704,7 @@ fn message_input(chat: &ChatId, m: crate::client::desktop::Message, rev: i64) ->
         outgoing: m.outgoing,
         content_type: m.rich.content_type as i32,
         request_seq: m.request_seq,
-        reactions: serde_json::to_value(&m.reactions).unwrap(),
+        reactions: m.reaction_entries.clone(),
         body: serde_json::to_value(m).unwrap(),
         reactions_rev: rev,
     }
@@ -837,6 +885,9 @@ impl Backend for LineBackend {
                 _ => rpc(e),
             })
     }
+    fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()> {
+        self.client.unsend(&id.0, seq).map_err(rpc)
+    }
     fn receipts(&mut self, chat: &ChatId) -> Result<Vec<Option<ServerId>>> {
         Ok(self
             .client
@@ -912,6 +963,7 @@ impl Backend for LineBackend {
                 up_to: id(),
             },
             Some(64 | 65) => Op::Withdraw(id()),
+            Some(139 | 140) => reaction_operation(&raw, self.client.local_mid())?,
             _ => Op::Checkpoint,
         };
         Ok(LiveOp {
@@ -922,5 +974,39 @@ impl Backend for LineBackend {
     }
     fn token(&mut self, token: Value) {
         self.client.replace_token(token);
+    }
+}
+
+fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
+    let data: Value = serde_json::from_str(raw["param2"].as_str().ok_or(Error::Decode)?)
+        .map_err(|_| Error::Decode)?;
+    let chat = ChatId(
+        data["chatMid"]
+            .as_str()
+            .filter(|s| !s.is_empty())
+            .ok_or(Error::Decode)?
+            .into(),
+    );
+    let actor = if raw["type"] == 139 {
+        Some(own_mid)
+    } else {
+        data["fromUserMid"]
+            .as_str()
+            .or_else(|| raw["fromUserMid"].as_str())
+            .or_else(|| data["actorMid"].as_str())
+            .or_else(|| raw["actorMid"].as_str())
+            .or_else(|| {
+                raw["param3"]
+                    .as_str()
+                    .filter(|s| (s.starts_with('u') && s.len() == 33) || s.len() == 44)
+            })
+    };
+    match actor.filter(|s| !s.is_empty()) {
+        Some(actor) => Ok(Op::Reaction {
+            id: ServerId(raw["param1"].as_str().ok_or(Error::Decode)?.into()),
+            actor: actor.into(),
+            curr: data["curr"].clone(),
+        }),
+        None => Ok(Op::Recent(chat)),
     }
 }

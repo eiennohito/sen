@@ -252,7 +252,7 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
         (3, "Voice message"),
         (13, "Contact · 葵"),
         (18, "葵 joined the group"),
-        (1000, "Message withdrawn"),
+        (1000, "Message unsent"),
     ]
     .into_iter()
     .enumerate()

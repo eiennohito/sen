@@ -50,6 +50,7 @@ export component Layers inherits Rectangle {
         if State.auth-busy { root.cancel-confirm = true; keep-waiting.focus(); }
         else { State.close-sign-in(); }
     }
+    Timer { interval: 3s; running: State.unsend-feedback-id != ""; triggered => { State.unsend-feedback-id = ""; } }
     Timer { interval: 3s; running: State.transient-notice != ""; triggered => { State.transient-notice = ""; } }
     Rectangle {
         x: max(12px, parent.width - self.width - 12px); y: 12px;

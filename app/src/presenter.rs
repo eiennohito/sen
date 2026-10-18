@@ -69,14 +69,21 @@ impl Presenter {
                 delivered_time: raw.delivered_time,
                 outgoing: m.outgoing,
                 image_key: raw.image.map(|a| a.key()).unwrap_or_default(),
-                reactions: raw
+                reactions: if m
                     .reactions
-                    .into_iter()
-                    .map(|r| account::ReactionView {
-                        label: format!("{} {}", r.label, r.count),
-                        image_key: r.asset.map(|a| a.key()).unwrap_or_default(),
-                    })
-                    .collect(),
+                    .as_array()
+                    .is_some_and(|a| a.iter().any(|v| v.get("label").is_some()))
+                {
+                    serde_json::from_value(m.reactions.clone()).unwrap_or_default()
+                } else {
+                    line_wasm_poc::client::desktop::reactions(&m.reactions)
+                }
+                .into_iter()
+                .map(|r| account::ReactionView {
+                    label: format!("{} {}", r.label, r.count),
+                    image_key: r.asset.map(|a| a.key()).unwrap_or_default(),
+                })
+                .collect(),
                 emoji: raw
                     .rich
                     .emoji
@@ -112,7 +119,7 @@ impl Presenter {
         };
         if m.withdrawn {
             row.kind = MessageKind::Withdrawn;
-            row.body = "Message withdrawn".into();
+            row.body = "Message unsent".into();
             row.image_key = "".into();
         }
         row.delivery = match &m.delivery {
@@ -123,6 +130,7 @@ impl Presenter {
             Delivery::Uncertain => "Unconfirmed",
         }
         .into();
+        row.can_unsend = m.outgoing && m.server_id.is_some() && !m.withdrawn;
         row.recoverable = matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain);
         row.delivery_detail = match &m.delivery {
             Delivery::Rejected { reason } => reason.clone(),

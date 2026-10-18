@@ -25,14 +25,14 @@ export component RecoveryDialog inherits Rectangle {
             background: Tokens.surface; border-width: 1px; border-color: Tokens.border;
             content := VerticalLayout {
                 padding: 16px; spacing: 12px;
-                Text { text: State.recovery-kind == "resend" ? "Send again?" : "Use message text?"; font-size: Tokens.heading; wrap: word-wrap; }
-                Text { text: State.recovery-kind == "resend" ? "The message may already have arrived. Sending again could create a duplicate." : "There is already a draft in this conversation. Replace it or append this message?"; color: Tokens.foreground; wrap: word-wrap; }
+                Text { text: State.recovery-kind == "unsend" ? "Unsend message?" : State.recovery-kind == "resend" ? "Send again?" : "Use message text?"; font-size: Tokens.heading; wrap: word-wrap; }
+                Text { text: State.recovery-kind == "unsend" ? "It will be removed for everyone." : State.recovery-kind == "resend" ? "The message may already have arrived. Sending again could create a duplicate." : "There is already a draft in this conversation. Replace it or append this message?"; color: Tokens.foreground; wrap: word-wrap; }
                 HorizontalLayout {
                     spacing: 8px;
                     cancel := Button { text: "Cancel"; clicked => { State.resolve-recovery("cancel"); } }
                     replace := Button { visible: State.recovery-kind == "edit"; enabled: self.visible; text: "Replace"; clicked => { State.resolve-recovery("replace"); } }
                     append := Button { visible: State.recovery-kind == "edit"; enabled: self.visible; text: "Append"; clicked => { State.resolve-recovery("append"); } }
-                    resend := Button { visible: State.recovery-kind == "resend"; enabled: self.visible; text: "Resend"; clicked => { State.resolve-recovery("resend"); } }
+                    resend := Button { visible: State.recovery-kind == "resend" || State.recovery-kind == "unsend"; enabled: self.visible; text: State.recovery-kind == "unsend" ? "Unsend" : "Resend"; clicked => { State.resolve-recovery(State.recovery-kind); } }
                 }
             }
         }

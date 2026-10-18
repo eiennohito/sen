@@ -381,7 +381,10 @@ SID/OID (defaults m/message id), legacy content uses `/r/talk/m/{messageId}`;
 ENC_KM selects authenticated media decryption and X-Talk-Meta. Native explicit
 Save fetches at most 16 MiB, supports this constructed known-host route, and
 reports failure for external DOWNLOAD_URL variants rather than trusting an
-arbitrary URL. This is source-only implementation evidence, not a live download.
+arbitrary URL. Image messages without SID/OID use traced PREVIEW_URL and
+DOWNLOAD_URL directly only on exactly `https://manager.line-scdn.net/`; these
+public OA assets carry no LINE auth headers and are not decrypted. Other hosts
+remain refused. This is trace-based implementation evidence, live unverified.
 
 The source reader-count reducer explicitly rejects IDs `<= startMessageId` or
 `> endMessageId`: read coverage is **start-exclusive, end-inclusive**. The initial

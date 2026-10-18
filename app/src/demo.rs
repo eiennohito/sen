@@ -4,6 +4,29 @@ use line_wasm_poc::backend::{LiveOp, Op};
 pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: i32) {
     let chat = d.state.selected.clone().unwrap_or(ChatId("alice".into()));
     match kind {
+        32 => {
+            let rows = vec![
+                FakeBackend::message("protocol", 6300, "Unsend success fixture", true),
+                FakeBackend::message("protocol", 6301, "Unsend failure fixture", true),
+                FakeBackend::official_image("protocol", 6302),
+            ];
+            fake.fail_rpc(
+                line_wasm_poc::backend::FakeRpc::Unsend(ServerId("6301".into())),
+                line_wasm_poc::backend::Error::Rejected("Synthetic unsend rejection".into()),
+            );
+            fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
+        }
+        33 => {
+            if let Some(row) = d
+                .state
+                .rows()
+                .into_iter()
+                .find(|m| m.server_id.is_some() && !m.withdrawn)
+            {
+                fake.inject_raw(serde_json::json!({"type":139,"param1":row.server_id.as_ref().unwrap().0,
+                    "param2":serde_json::json!({"chatMid":chat.0,"curr":{"predefinedReactionType":2}}).to_string()}));
+            }
+        }
         12 => {
             fixture(
                 ui,

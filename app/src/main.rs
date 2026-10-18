@@ -595,7 +595,11 @@ impl Desktop {
                     raw.image
                         .into_iter()
                         .chain(raw.sender_avatar)
-                        .chain(raw.reactions.into_iter().filter_map(|r| r.asset))
+                        .chain(
+                            line_wasm_poc::client::desktop::reactions(&m.reactions)
+                                .into_iter()
+                                .filter_map(|r| r.asset),
+                        )
                         .chain(raw.rich.emoji.iter().filter_map(
                             line_wasm_poc::client::desktop::assets::Asset::inline_emoji,
                         ))
@@ -709,6 +713,11 @@ impl Desktop {
     }
     fn apply(&mut self, ui: &AppWindow, d: Delta) {
         match &d {
+            Delta::UnsendFailed(key) => {
+                if self.state.messages.contains_key(key) {
+                    ui.set_unsend_feedback_id(key.0.to_string().into());
+                }
+            }
             Delta::Pair(event) => {
                 use line_wasm_poc::backend::PairEvent;
                 match event {
@@ -953,10 +962,14 @@ fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
         let id = ui.get_recovery_id();
         let kind = ui.get_recovery_kind();
         ui.set_recovery_kind("".into());
-        if action == "cancel" || kind == "resend" {
+        if action == "cancel" || kind == "resend" || kind == "unsend" {
             ui.invoke_focus_history();
             ui.set_recovery_focus_id(id.clone());
             ui.set_recovery_focus_action(kind);
+        }
+        if action == "unsend" {
+            ui.set_unsend_feedback_id("".into());
+            d.sender.send(Intent::Unsend(Key(id.parse().unwrap())));
         }
         if action == "resend" {
             d.sender.send(Intent::Resend(Key(id.parse().unwrap())));

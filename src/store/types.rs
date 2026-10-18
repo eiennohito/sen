@@ -166,9 +166,21 @@ pub(super) type Result<T> = std::result::Result<T, StoreError>;
 #[derive(Clone, Debug)]
 pub enum Operation {
     Message(MessageInput),
-    Receipt { chat: ChatId, up_to: ServerId },
-    Read { chat: ChatId, up_to: ServerId },
+    Receipt {
+        chat: ChatId,
+        up_to: ServerId,
+    },
+    Read {
+        chat: ChatId,
+        up_to: ServerId,
+    },
     Withdraw(ServerId),
+    Reaction {
+        id: ServerId,
+        actor: String,
+        curr: serde_json::Value,
+    },
+    Recent(ChatId),
     Checkpoint,
 }
 #[derive(Clone, Debug)]

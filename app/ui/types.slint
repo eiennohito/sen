@@ -7,6 +7,7 @@ export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, dr
 export struct FriendRow { header: bool, id: string, name: string, initial: string, status: string, group: bool, avatar: image, avatar-key: string }
 export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
+    can-unsend: bool,
     file-failed: bool, file-failure: string, file-error: string, file-retryable: bool,
     skip-badge: bool, has-inline-emoji: bool, rich-fallback: bool,
     rich-runs: [RichRun], reply-id: string, reply-preview: string, detail: string,

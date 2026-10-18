@@ -8,12 +8,14 @@ use std::time::{Duration, Instant};
 struct App {
     worker: Worker,
     state: AppState,
+    notifications: usize,
 }
 impl App {
     fn new(fake: FakeBackend, location: StoreLocation) -> Self {
         Self {
             worker: Worker::start(fake, location),
             state: AppState::default(),
+            notifications: 0,
         }
     }
     fn send(&self, i: Intent) {
@@ -31,6 +33,9 @@ impl App {
                 .deltas
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .expect("engine progress");
+            if matches!(d, Delta::Notify(_)) {
+                self.notifications += 1;
+            }
             if let Delta::Error(e) = &d {
                 panic!("engine: {e}");
             }
@@ -444,4 +449,157 @@ fn opened_chat_history_and_reads_run_before_missing_details_sweep() {
     assert!(!calls.contains(&FakeRpc::Details(chat)));
     drop(app);
     std::fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn traced_reactions_replace_remove_and_refresh_quietly() {
+    use serde_json::json;
+    let fake = FakeBackend::canned();
+    let mut row = FakeBackend::message("alice", 10, "react here", false);
+    row.reactions = json!([{"fromUserMid":"other","reactionType":{"predefinedReactionType":3}}]);
+    fake.set_page(ChatId("alice".into()), vec![row]);
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    let key = app.body_key("react here");
+    let anchor = format!("{:?}", app.state.window_anchor);
+    let unread = app.state.chats[&ChatId("alice".into())].chat.unread_count;
+    for curr in [
+        json!({"predefinedReactionType":2}),
+        json!({"predefinedReactionType":4}),
+        json!({}),
+        serde_json::Value::Null,
+    ] {
+        let mut payload = json!({"chatMid":"alice"});
+        if !curr.is_null() {
+            payload["curr"] = curr.clone();
+        }
+        fake.inject_raw(json!({"type":139,"param1":"10","param2":payload.to_string()}));
+        let revision = fake.revision() - 1;
+        app.until(|s| s.messages[&key].reactions_rev >= revision);
+        let entries = app.state.messages[&key].reactions.as_array().unwrap();
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| e["fromUserMid"] == "other")
+                .count(),
+            1
+        );
+        assert_eq!(
+            entries
+                .iter()
+                .filter(|e| e["fromUserMid"] == "self")
+                .count(),
+            usize::from(curr.as_object().is_some_and(|c| !c.is_empty()))
+        );
+        assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
+        assert_eq!(
+            app.state.chats[&ChatId("alice".into())].chat.unread_count,
+            unread
+        );
+    }
+    fake.inject_raw(json!({"type":140,"param1":"10","param2":json!({"chatMid":"alice","fromUserMid":"other","curr":{"predefinedReactionType":7}}).to_string()}));
+    app.until(|s| s.messages[&key].reactions[0]["reactionType"]["predefinedReactionType"] == 7);
+    let calls = fake.page_requests("alice");
+    let mut refreshed = fake.page(&ChatId("alice".into()));
+    refreshed[0].reactions = json!([{"fromUserMid":"unknown-before-refresh","reactionType":{"predefinedReactionType":3}}]);
+    fake.set_page(ChatId("alice".into()), refreshed);
+    fake.inject_raw(json!({"type":140,"param1":"10","param2":json!({"chatMid":"alice","curr":{"predefinedReactionType":3}}).to_string()}));
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while fake.page_requests("alice") <= calls {
+        let delta = app
+            .worker
+            .deltas
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap();
+        assert!(!matches!(delta, Delta::Notify(_) | Delta::Error(_)));
+        app.state.apply(delta);
+    }
+    app.until(|s| s.messages[&key].reactions[0]["fromUserMid"] == "unknown-before-refresh");
+    assert_eq!(app.notifications, 0);
+    // A FIFO user intent fences the refresh publication and checks for alerts.
+    app.send(Intent::Pref {
+        key: "reaction_fence".into(),
+        value: true.into(),
+    });
+    loop {
+        let delta = app
+            .worker
+            .deltas
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        assert!(!matches!(delta, Delta::Notify(_) | Delta::Error(_)));
+        let done = matches!(&delta, Delta::Pref {key,..} if key == "reaction_fence");
+        app.state.apply(delta);
+        if done {
+            break;
+        }
+    }
+    assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
+    assert_eq!(
+        app.state.chats[&ChatId("alice".into())].chat.unread_count,
+        unread
+    );
+}
+
+#[test]
+fn unsend_success_echo_and_failure_keep_the_same_row() {
+    use line_wasm_poc::backend::{Error, FakeRpc};
+    use line_wasm_poc::store::ServerId;
+    let fake = FakeBackend::canned();
+    fake.set_page(
+        ChatId("alice".into()),
+        vec![FakeBackend::message("alice", 11, "own confirmed", true)],
+    );
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    let key = app.body_key("own confirmed");
+    fake.fail_rpc(
+        FakeRpc::Unsend(ServerId("11".into())),
+        Error::Rejected("synthetic".into()),
+    );
+    app.send(Intent::Unsend(key));
+    let mut failures = 0;
+    loop {
+        let delta = app
+            .worker
+            .deltas
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        if let Delta::UnsendFailed(k) = delta {
+            assert_eq!(k, key);
+            failures += 1;
+            break;
+        }
+        assert!(!matches!(delta, Delta::Error(_)));
+        app.state.apply(delta);
+    }
+    assert_eq!(failures, 1);
+    assert!(!app.state.messages[&key].withdrawn);
+    assert_eq!(app.state.messages[&key].body["body"], "own confirmed");
+    app.send(Intent::Unsend(key));
+    app.until(|s| s.messages[&key].withdrawn);
+    assert!(app.state.messages[&key].body.is_null());
+    fake.inject_raw(serde_json::json!({"type":64,"param1":"alice","param2":"11"}));
+    app.send(Intent::Pref {
+        key: "unsend_fence".into(),
+        value: true.into(),
+    });
+    app.until(|s| s.prefs.contains_key("unsend_fence"));
+    assert!(app.state.messages[&key].withdrawn);
+    assert_eq!(app.state.messages.len(), 1);
+    app.send(Intent::Unsend(key));
+    app.send(Intent::Pref {
+        key: "unsend_again".into(),
+        value: true.into(),
+    });
+    app.until(|s| s.prefs.contains_key("unsend_again"));
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, FakeRpc::Unsend(_)))
+            .count(),
+        2
+    );
 }

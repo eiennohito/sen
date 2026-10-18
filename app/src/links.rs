@@ -139,7 +139,7 @@ pub(crate) fn placeholder(kind: MessageKind) -> Option<&'static str> {
         MessageKind::Location => Some("⌖ Location"),
         MessageKind::Contact => Some("♙ Contact"),
         MessageKind::System => Some("ⓘ System message"),
-        MessageKind::Withdrawn => Some("⊘ Message withdrawn"),
+        MessageKind::Withdrawn => Some("Message unsent"),
         MessageKind::Undecryptable => Some("⚿ Unable to decrypt message"),
         MessageKind::Unknown => Some("◇ Unknown message"),
     }
