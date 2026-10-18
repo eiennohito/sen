@@ -353,3 +353,28 @@ focused on data loss and broken flows, not style.
 
 Out of scope here: U-group surfaces, P-group protocol additions (the engine
 gets a slot for reaction and unsend ops, which T5/P7 then fill), and T9.
+
+## Phase 2 implementation differences
+
+The worker, RPC backend seam, controller and keyed Slint presenter are now in
+this worktree. The following details differ from the design above:
+
+- The UI drains the engine's single FIFO on a 16 ms event-loop timer. Each
+  delta is applied as it is drained, including during pointer interaction;
+  there is no deferred-update queue.
+- The existing transport has an older-page RPC but no implemented newer-page
+  RPC. LineBackend answers a newer request with a recent page labelled
+  `Recent`, so the store never treats an unanchored response as proof of
+  continuity. Visible interior gaps fetch older messages before their upper
+  confirmed boundary.
+- Existing session credentials do not contain an account MID. Their first
+  local open uses an empty memory store until profile validation selects the
+  account's MID-hashed database. Successful validation records profile identity
+  in the session so subsequent launches can open that database before network
+  access. Legacy message/state files are neither read nor imported.
+- RPC errors use `client::Error`; authorization expiry is a single `Auth`
+  variant rather than a separate `AuthCause` enum. Media failures retain the
+  existing asset fetcher's typed failure enum.
+- The unused legacy encrypted page/cache source module was removed with its
+  retired Client call sites, ahead of Phase 3 cleanup. No legacy on-disk files
+  were touched.

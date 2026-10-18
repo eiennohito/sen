@@ -1,37 +1,23 @@
 use super::*;
-
 fn message(id: &str, text: &str) -> account::MessageView {
     account::MessageView {
         id: id.into(),
-        sender_id: String::new(),
-        sender_name: String::new(),
-        sender_key: String::new(),
-        sticker: false,
-        photo: false,
         body: text.into(),
         timestamp: 1,
         delivered_time: 1,
-        rich: Default::default(),
-        decryption_failed: false,
-        mentioned: false,
-        skip_badge: false,
-        emoji: Vec::new(),
-        outgoing: false,
-        image_key: String::new(),
-        reactions: Vec::new(),
+        ..Default::default()
     }
 }
-
-mod connection;
-mod controller;
+fn test_window() -> AppWindow {
+    let ui = create_app_window().unwrap();
+    let weak = ui.as_weak();
+    ui.global::<State>().on_request_panel(move |panel| {
+        if let Some(ui) = weak.upgrade() {
+            ui.global::<State>().set_panel(panel);
+        }
+    });
+    ui
+}
 mod grouping;
-
-mod composer;
-
 mod layers;
-
-mod paging;
-
-mod media;
-
 mod previews;

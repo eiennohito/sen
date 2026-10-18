@@ -30,7 +30,7 @@ behavior and toolkit deviations, is recorded in ux-acceptance.md.
 
 Pin Slint and slint-build to 1.18.1. Disable default features and enable `std`,
 `compat-1-18`, `backend-winit`, `renderer-software`, and `accessibility`.
-Select `winit` + `software` programmatically and fail if unavailable. Slint
+Normal launches select `winit` + `software` programmatically and fail if unavailable. Slint
 documents CPU rendering through this backend/renderer combination, and separate
 Wayland/X11 feature flags if a smaller platform-specific build is needed.
 [Backend docs](https://docs.slint.dev/latest/docs/slint/guide/backends-and-renderers/backend_winit/),
@@ -61,7 +61,14 @@ IME input by default; Enter sends is an opt-in preference. Shift+Enter inserts
 a newline. Ctrl+Enter uses the same submit action as Send outside composition;
 repeat does not resubmit.
 
-The Winit observer tracks native preedit without consuming composition events.
+Text entry uses Slint's IME-aware components as they are: no custom preedit
+handling, no key interception during composition, and no IME workarounds.
+Physical IME verification is a person-only check. The sole exception is the
+Winit IME observer and `ime_active` guard: Slint 1.18.1 `TextInput::key_event`
+(`i-slint-core/items/text.rs`) calls the app's `key-pressed` callback before
+any preedit check. The observer only tracks whether native preedit is active;
+it propagates every event and keeps app shortcuts, including Enter-to-send,
+from running during composition.
 A click on the already-selected chat does not replace editor text. Committed
 draft changes go to a coalescing encrypted-storage worker. Switching restores
 text, byte-offset caret/selection, and editor scroll; undo-history restoration
@@ -375,10 +382,10 @@ commands, generated-code costs and guidance for evaluating further reductions.
 
 `--features ui-debug` enables Slint's MCP server and element debug info.
 Agent-started previews use `tools/run-ui-debug.py`, which
-sets the loopback MCP port inside an owned private D-Bus/virtual KWin scope.
-The wrapper maps only its private virtual output and supplies guarded
-`--debug-background`; missing prerequisites fail without mapping a foreground
-host window. Normal user runs retain foreground startup. Headless snapshots do not
+sets the loopback MCP port inside an owned private headless D-Bus session
+with private XDG directories and no activation service directories. The wrapper
+selects Slint’s headless software backend and supplies guarded
+`--debug-background`; missing prerequisites fail. Normal user runs retain foreground startup. Headless snapshots do not
 map a GUI window. Regular builds omit this feature, and the desktop installer
 rejects debug-server builds. `tools/check-ui-mcp.py` checks an
 offline preview, including Japanese/emoji drafts, switching, filtering, and

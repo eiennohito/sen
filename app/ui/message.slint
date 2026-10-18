@@ -44,6 +44,7 @@ export component Message inherits VerticalLayout {
         // Initial unlaid-out values must never count as an exposed message.
         if root.y >= 16px && root.width > 0px && root.anchor-height > 1px {
             State.row-geometry(root.message.id, root.anchor-top, root.anchor-height);
+            if root.message.id == State.unread-divider { State.row-geometry("unread", root.y, 28px); }
         }
     }
     changed anchor-top => { root.report-geometry(); }
@@ -161,9 +162,9 @@ export component Message inherits VerticalLayout {
                                                 if State.reading-key(event) == accept { return accept; }
                                                 reject
                                             }
-                                            changed has-focus => { if !self.has-focus && State.history-interacting { State.history-interacting = false; State.release-deferred(); } }
-                                            changed anchor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else { State.release-deferred(); } }
-                                            changed cursor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else { State.release-deferred(); } }
+                                            changed has-focus => { if !self.has-focus && State.history-interacting { State.history-interacting = false;  } }
+                                            changed anchor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else {  } }
+                                            changed cursor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else {  } }
                                         }
                                     }
                                     if root.message.detail != "": Rectangle {
@@ -201,19 +202,20 @@ export component Message inherits VerticalLayout {
                                     }
                                 }
                             }
-                            if root.message.recoverable: Text { text: root.message.delivery == "Not sent" ? "Message was not sent." : "Confirmation unavailable. The message may have arrived."; color: Tokens.danger; font-size: Tokens.time; wrap: word-wrap; }
+                            if root.message.recoverable: Text { text: root.message.delivery == "Rejected" ? "Message was not sent." : "Confirmation unavailable. The message may have arrived."; color: Tokens.danger; font-size: Tokens.time; wrap: word-wrap; }
                             if root.message.recoverable: HorizontalLayout {
                                 spacing: 8px; alignment: start;
                                 TextAction {
-                                    text: root.message.delivery == "Not sent" ? "Retry" : "Resend";
+                                    text: root.message.delivery == "Rejected" ? "Retry" : "Resend";
                                     focus-on-click: false;
-                                    enabled: State.demo || (State.connected && State.storage-error == "");
+                                    enabled: State.connected;
                                     clicked => { State.retry-message(root.message.id); }
                                     property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "resend";
                                     changed restore-action => { if self.restore-action { self.focus-action(); State.recovery-focus-id = ""; } }
                                 }
+                                TextAction { text: "Discard"; clicked => { State.discard-message(root.message.id); } }
                                 TextAction {
-                                    text: "Edit";
+                                    text: "Copy"; action-label: "Copy to composer";
                                     clicked => { State.recover-message(root.message.id); }
                                     property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "edit";
                                     changed restore-action => { if self.restore-action { self.focus-action(); State.recovery-focus-id = ""; } }
@@ -237,7 +239,7 @@ export component Message inherits VerticalLayout {
                                 Text { text: (root.message.group-start || root.message.recoverable) ? root.message.clock : ""; accessible-label: (root.message.group-start || root.message.recoverable) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
                                 if root.message.outgoing: Image {
                                     width: 16px; height: 16px;
-                                    source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/sending.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/read.svg") : root.message.delivery == "Not sent" ? @image-url("../assets/icons/rejected.svg") : root.message.delivery == "Unconfirmed" ? @image-url("../assets/icons/uncertain.svg") : @image-url("../assets/icons/sent.svg");
+                                    source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/sending.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/read.svg") : root.message.delivery == "Rejected" ? @image-url("../assets/icons/rejected.svg") : root.message.delivery == "Unconfirmed" ? @image-url("../assets/icons/uncertain.svg") : @image-url("../assets/icons/sent.svg");
                                     accessible-role: image;
                                     accessible-label: root.message.delivery == "Sending…" ? "Sending" : root.message.delivery == "" ? "Sent" : root.message.delivery;
                                     colorize: root.message.recoverable ? Tokens.danger : Tokens.secondary;

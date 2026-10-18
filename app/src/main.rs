@@ -1,31 +1,86 @@
+use line_wasm_poc::{
+    backend::{FakeBackend, LineBackend},
+    controller::{ActionQueue, AppState, Panel},
+    engine::{Connection, Delta, Intent, Sender, StoreLocation, Worker},
+    store::*,
+};
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
-use std::{cell::RefCell, collections::HashMap, path::PathBuf, rc::Rc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc};
 mod account;
 mod attention;
 mod attention_policy;
 mod autostart;
 mod background;
-mod composer;
 mod debug_launch;
 mod demo;
+mod demo_data;
 mod desktop_integration;
+mod event_loop;
 mod links;
-mod members;
 mod notifications;
+mod present;
+mod presenter;
+mod preview;
+mod rich_content;
 mod snapshot;
-mod storage;
 mod tray;
-mod unread;
 mod viewer;
 pub use line_desktop_ui::*;
+use present::*;
 fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
-    paging::install(&ui);
-    unread::install(&ui);
+    ui.global::<State>()
+        .on_has_text(|text| !text.trim().is_empty());
+    {
+        use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
+        let saved = Rc::new(RefCell::new(None));
+        let record = saved.clone();
+        let weak = ui.as_weak();
+        ui.global::<State>().on_remember_demo_focus(move || {
+            if let Some(ui) = weak.upgrade() {
+                *record.borrow_mut() = Some(
+                    WindowInner::from_pub(ui.window())
+                        .focus_item
+                        .borrow()
+                        .clone(),
+                );
+            }
+        });
+        let weak = ui.as_weak();
+        ui.global::<State>().on_restore_demo_focus(move || {
+            if let Some(ui) = weak.upgrade()
+                && let Some(item) = saved.borrow_mut().take().and_then(|weak| weak.upgrade())
+            {
+                WindowInner::from_pub(ui.window()).set_focus_item(
+                    &item,
+                    true,
+                    FocusReason::PopupActivation,
+                );
+            }
+        });
+    }
+    macro_rules! bridge {
+        ($on:ident,$invoke:ident) => {{
+            let weak = ui.as_weak();
+            ui.global::<State>().$on(move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.$invoke();
+                }
+            });
+        }};
+    }
+    bridge!(on_open_members, invoke_open_members);
+    bridge!(on_filter_members, invoke_filter_members);
+    bridge!(on_back_to_members, invoke_back_to_members);
+    let weak = ui.as_weak();
+    ui.global::<State>().on_open_member(move |id| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_open_member(id);
+        }
+    });
     ui.on_quit(|| {
         let _ = slint::quit_event_loop();
     });
-    members::bridge(&ui);
     let weak = ui.as_weak();
     ui.global::<State>().on_focus_cycle_end(move || {
         if let Some(ui) = weak.upgrade() {
@@ -69,22 +124,6 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         }
     });
     let weak = ui.as_weak();
-    ui.global::<State>().on_save_photo(move || {
-        if let Some(ui) = weak.upgrade() {
-            viewer::save_photo(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_viewer_step(move |direction| {
-        if let Some(ui) = weak.upgrade() {
-            UI_STATE.with(|slot| {
-                if let Some(state) = slot.borrow().as_ref() {
-                    state.borrow_mut().step_photo(&ui, direction);
-                }
-            });
-        }
-    });
-    let weak = ui.as_weak();
     ui.global::<State>().on_quit(move || {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_quit();
@@ -118,16 +157,6 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
             }
         });
     let weak = ui.as_weak();
-    ui.global::<State>().on_open_link(move |url| {
-        if let Some(ui) = weak.upgrade() {
-            if ui.get_demo() {
-                ui.global::<State>().set_last_opened_link(url);
-            } else {
-                links::open(url.to_string());
-            }
-        }
-    });
-    let weak = ui.as_weak();
     ui.global::<State>().on_filter_category(move || {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_filter_category();
@@ -148,7 +177,7 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let weak = ui.as_weak();
     ui.global::<State>().on_show_profile(move || {
         if let Some(ui) = weak.upgrade() {
-            ui.invoke_show_profile();
+            ui.invoke_focus_profile_close();
         }
     });
     let weak = ui.as_weak();
@@ -284,12 +313,6 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         }
     });
     let weak = ui.as_weak();
-    ui.global::<State>().on_release_deferred(move || {
-        // Focus/selection changes may be emitted inside a model mutation while
-        // View is borrowed. Release queued updates on the next event turn.
-        let _ = weak.upgrade_in_event_loop(|ui| ui.invoke_release_deferred());
-    });
-    let weak = ui.as_weak();
     ui.global::<State>().on_demo_event(move |arg0| {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_demo_event(arg0);
@@ -299,12 +322,6 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     ui.global::<State>().on_recover_message(move |arg0| {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_recover_message(arg0);
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_retry_storage(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_retry_storage();
         }
     });
     let weak = ui.as_weak();
@@ -320,21 +337,9 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         }
     });
     let weak = ui.as_weak();
-    ui.global::<State>().on_retry_list(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_retry_list();
-        }
-    });
-    let weak = ui.as_weak();
     ui.global::<State>().on_more(move || {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_more();
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_retry_history(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_retry_history();
         }
     });
     let weak = ui.as_weak();
@@ -371,12 +376,6 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     ui.global::<State>().on_start_sign_in(move || {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_start_sign_in();
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_reconnect(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_reconnect();
         }
     });
     let weak = ui.as_weak();
@@ -424,72 +423,870 @@ fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     Ok(ui)
 }
 
-mod browser;
-mod deferred;
-mod history_window;
-#[cfg(all(test, not(debug_assertions)))]
-mod message_perf;
-mod paging;
-mod present;
-mod preview;
-mod rich_content;
-mod view;
-use members::member_initial;
-use present::*;
-use view::View;
-
-struct Options {
-    paths: account::Paths,
-    demo: bool,
-    demo_rich: bool,
-    demo_previews: bool,
-    demo_photos: bool,
-    demo_groups: bool,
-    demo_friends: bool,
-    demo_notify: bool,
-    demo_size: Option<(u32, u32)>,
-    demo_dark: Option<bool>,
-    debug_background: bool,
-    snapshot: Option<String>,
-    snapshot_case: Option<String>,
-    snapshot_size: (u32, u32),
-    snapshot_text_size: i32,
-    snapshot_profile: bool,
-    snapshot_scene: String,
-    check: bool,
-    explicit_paths: bool,
-    locations: desktop_integration::Locations,
-    configured_paths: bool,
+struct Desktop {
+    latest_requested: bool,
+    opening_history: bool,
+    divider_top: Rc<std::cell::Cell<Option<f32>>>,
+    return_anchor: Option<(Key, f32, bool)>,
+    geometry: Rc<RefCell<std::collections::BTreeMap<Key, (f32, f32)>>>,
+    gap_geometry: Rc<RefCell<std::collections::BTreeMap<Key, (f32, f32)>>>,
+    requested_gaps: std::collections::BTreeSet<(u64, Key)>,
+    restore_ready: bool,
+    exposed: std::collections::BTreeMap<ChatId, ServerId>,
+    paging_anchor: Option<Key>,
+    restore_anchor: Option<(Key, f32)>,
+    reading: Rc<RefCell<Option<(ChatId, Cursor)>>>,
+    shown_composer: String,
+    reveal: Option<ChatId>,
+    viewer_asset: Option<String>,
+    destination: viewer::Destination,
+    notifications: Option<notifications::Notifications>,
+    background: background::Background,
+    requested_assets: std::collections::BTreeSet<String>,
+    state: AppState,
+    presenter: presenter::Presenter,
+    sender: Sender,
+    query: String,
+    category: i32,
 }
-fn options() -> Result<Options, Box<dyn std::error::Error>> {
-    let locations = desktop_integration::Locations::from_environment()?;
-    let mut out = Options {
-        paths: account::Paths {
-            state: locations.session.clone(),
-            wasm: locations.wasm.clone(),
-            cache: locations.cache.clone(),
-        },
-        explicit_paths: false,
-        configured_paths: false,
-        locations,
-        demo: false,
-        demo_rich: false,
-        demo_previews: false,
-        demo_photos: false,
-        demo_groups: false,
-        demo_friends: false,
-        demo_notify: false,
-        demo_size: None,
-        demo_dark: None,
-        debug_background: false,
-        snapshot: None,
-        snapshot_case: None,
-        snapshot_size: (980, 720),
-        snapshot_text_size: 15,
-        snapshot_profile: false,
-        snapshot_scene: String::new(),
-        check: false,
-    };
+impl Desktop {
+    fn observe_reading(&mut self, ui: &AppWindow) {
+        let global = ui.global::<State>();
+        let top = -ui.get_history_y() + global.get_history_visible_top();
+        let bottom = -ui.get_history_y() + global.get_history_viewport_height();
+        if self.state.connection == Connection::Online {
+            for gap in &self.state.gaps {
+                if self
+                    .gap_geometry
+                    .borrow()
+                    .get(&gap.after)
+                    .is_some_and(|(y, h)| y + h >= top && *y <= bottom)
+                    && self
+                        .requested_gaps
+                        .insert((self.state.window_sub, gap.after))
+                {
+                    let row = &self.state.messages[&gap.after];
+                    self.sender.send(Intent::Page {
+                        chat: row.chat_id.clone(),
+                        kind: PageKind::Older {
+                            before: row.sort.clone(),
+                        },
+                    });
+                }
+            }
+        }
+
+        if self.opening_history
+            && self.state.unread_divider.is_some()
+            && let Some(top) = self.divider_top.get()
+        {
+            ui.invoke_show_history(-top + global.get_history_visible_top(), false);
+            self.opening_history = false;
+        } else if self.opening_history && self.state.reaches_end && !self.state.messages.is_empty()
+        {
+            ui.invoke_show_history(0., true);
+            self.opening_history = false;
+        }
+        if global.get_window_active()
+            && !global.get_modal_open()
+            && !ui.get_history_dragging()
+            && !global.get_history_interacting()
+            && (!global.get_narrow() || ui.get_show_conversation())
+            && self.state.connection == Connection::Online
+            && let Some(chat) = self.state.selected.clone()
+        {
+            let top = -ui.get_history_y() + global.get_history_visible_top();
+            let bottom = -ui.get_history_y() + global.get_history_viewport_height()
+                - global.get_history_pill_height();
+            let marker = self
+                .state
+                .rows()
+                .iter()
+                .filter(|m| {
+                    self.geometry
+                        .borrow()
+                        .get(&m.key)
+                        .is_some_and(|(y, h)| *y >= top && y + h <= bottom)
+                })
+                .filter_map(|m| m.server_id.clone())
+                .max_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)));
+            if let Some(id) = marker
+                && self
+                    .state
+                    .chats
+                    .get(&chat)
+                    .is_some_and(|c| c.chat.unread_count > 0)
+                && self.exposed.get(&chat) != Some(&id)
+            {
+                self.exposed.insert(chat.clone(), id.clone());
+                self.sender.send(Intent::MarkRead { chat, id });
+            }
+        }
+        if self.restore_ready
+            && let Some((key, offset)) = self.restore_anchor
+            && let Some((top, _)) = self.geometry.borrow().get(&key)
+        {
+            ui.invoke_history_jump(offset - top);
+            self.restore_anchor = None;
+            self.restore_ready = false;
+        }
+    }
+    fn drain_notifications(&mut self, ui: &AppWindow) {
+        if let Some(n) = &self.notifications {
+            n.drain(ui, &mut self.state, &self.sender);
+        }
+    }
+    fn render(&mut self, ui: &AppWindow) {
+        // Text typed or set without an edit event stays; only engine changes replace it.
+        if self.state.composer == self.shown_composer {
+            self.state.composer = ui.get_draft().to_string();
+        }
+        self.shown_composer = self.state.composer.clone();
+        for asset in self
+            .state
+            .chats
+            .values()
+            .filter_map(|c| c.chat.avatar.as_ref())
+            .filter_map(|s| {
+                serde_json::from_str::<line_wasm_poc::client::desktop::assets::Asset>(s).ok()
+            })
+            .chain(self.state.friends.iter().filter_map(|f| f.avatar.clone()))
+            .chain(
+                self.state
+                    .members
+                    .iter()
+                    .filter_map(|m| m.contact.avatar.clone()),
+            )
+        {
+            if self.requested_assets.insert(asset.key()) {
+                self.sender.send(Intent::Asset(asset));
+            }
+        }
+
+        *self.reading.borrow_mut() = self.state.selected.clone().zip(
+            self.state
+                .rows()
+                .iter()
+                .find(|m| m.server_id.is_some())
+                .map(|m| m.sort.clone()),
+        );
+        self.background.apply(ui);
+        if let Some(notifications) = &self.notifications {
+            notifications.drain(ui, &mut self.state, &self.sender);
+            notifications.service.set_unread_count(
+                self.state
+                    .chats
+                    .values()
+                    .filter(|c| c.chat.unread_count > 0)
+                    .count() as u64,
+            );
+        }
+
+        for m in self
+            .state
+            .messages
+            .values()
+            .chain(self.state.chats.values().filter_map(|c| c.preview.as_ref()))
+        {
+            if let Ok(raw) =
+                serde_json::from_value::<line_wasm_poc::client::desktop::Message>(m.body.clone())
+            {
+                for asset in
+                    raw.image
+                        .into_iter()
+                        .chain(raw.sender_avatar)
+                        .chain(raw.reactions.into_iter().filter_map(|r| r.asset))
+                        .chain(raw.rich.emoji.iter().filter_map(
+                            line_wasm_poc::client::desktop::assets::Asset::inline_emoji,
+                        ))
+                {
+                    if self.requested_assets.insert(asset.key()) {
+                        self.sender.send(Intent::Asset(asset));
+                    }
+                }
+            }
+        }
+        self.presenter
+            .present(ui, &self.state, &self.query, self.category);
+        // A chat opened from a profile is revealed once its row exists.
+        if let Some(index) = self
+            .reveal
+            .as_ref()
+            .and_then(|id| self.state.chat_order.iter().position(|c| c == id))
+        {
+            let chats = ui.get_chats();
+            if let Some(position) =
+                (0..chats.row_count()).find(|&i| chats.row_data(i).unwrap().index == index as i32)
+            {
+                ui.set_result_focus(position as i32);
+                ui.invoke_reveal_chat(position as i32);
+                self.reveal = None;
+            }
+        }
+    }
+    fn select(&mut self, ui: &AppWindow, index: usize) {
+        if let Some(id) = self.state.chat_order.get(index).cloned() {
+            if let Some(n) = &self.notifications {
+                n.service.withdraw(&id.0);
+            }
+            self.capture_draft(ui);
+            self.latest_requested = false;
+            self.opening_history = true;
+            self.divider_top.set(None);
+            self.return_anchor = None;
+            ui.global::<State>().set_return_visible(false);
+            ui.global::<State>().set_highlight_message("".into());
+            self.restore_anchor = None;
+            self.geometry.borrow_mut().clear();
+            self.gap_geometry.borrow_mut().clear();
+            self.requested_gaps.clear();
+            self.paging_anchor = None;
+            let intent = self.state.select(id);
+            self.sender.send(intent);
+            ui.set_show_conversation(true);
+            ui.invoke_show_history(0., false);
+            self.render(ui);
+        }
+    }
+    fn open_photo(&mut self, ui: &AppWindow, key: &str) {
+        let asset = self
+            .state
+            .rows()
+            .iter()
+            .filter_map(|m| {
+                serde_json::from_value::<line_wasm_poc::client::desktop::Message>(m.body.clone())
+                    .ok()
+            })
+            .filter_map(|m| m.image)
+            .find(|a| a.key() == key)
+            .and_then(|a| a.original());
+        if let Some(asset) = asset {
+            let photos = self
+                .state
+                .rows()
+                .iter()
+                .filter_map(|m| {
+                    serde_json::from_value::<line_wasm_poc::client::desktop::Message>(
+                        m.body.clone(),
+                    )
+                    .ok()
+                })
+                .filter(|m| m.rich.content_type == 1)
+                .filter_map(|m| m.image)
+                .map(|a| a.key())
+                .collect::<Vec<_>>();
+            let index = photos.iter().position(|k| k == key);
+            ui.global::<State>()
+                .set_viewer_has_previous(index.is_some_and(|i| i > 0));
+            ui.global::<State>()
+                .set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
+            self.viewer_asset = Some(asset.key());
+            if let Some(preview) = self.presenter.images.get(key) {
+                ui.set_viewer_image(preview.clone());
+            }
+            ui.set_viewer_status("Preview · loading original…".into());
+            ui.set_viewer_loading(true);
+            ui.set_viewer_error("".into());
+            if !ui.get_viewer_open() {
+                ui.invoke_show_viewer(key.into());
+            }
+            self.sender.send(Intent::Original(asset));
+        }
+    }
+    fn capture_draft(&mut self, ui: &AppWindow) {
+        self.state.composer = ui.get_draft().to_string();
+        if let Some(chat) = &self.state.selected {
+            self.sender.send(Intent::Draft {
+                chat: chat.clone(),
+                draft: Draft {
+                    text: self.state.composer.clone(),
+                    cursor: ui.get_editor_caret() as usize,
+                    anchor: ui.get_editor_anchor() as usize,
+                    updated: line_wasm_poc::engine::now_ms(),
+                },
+            });
+        }
+    }
+    fn apply(&mut self, ui: &AppWindow, d: Delta) {
+        match &d {
+            Delta::Pair(event) => {
+                use line_wasm_poc::backend::PairEvent;
+                match event {
+                    PairEvent::Stage(stage) => ui.set_auth_stage(stage.into()),
+                    PairEvent::Qr(p) => ui.set_auth_qr(slint::Image::from_rgba8(
+                        slint::SharedPixelBuffer::clone_from_slice(&p.rgba, p.width, p.height),
+                    )),
+                    PairEvent::Pin(pin) => ui.set_auth_pin(pin.into()),
+                    PairEvent::Scanned => ui.set_auth_stage("Phone scanned the code".into()),
+                }
+            }
+            Delta::PairFailed { cancelled } => {
+                if *cancelled {
+                    self.state.panel = Panel::Chats;
+                }
+                ui.set_auth_error(
+                    "Sign-in did not finish. Your cached conversations are still available.".into(),
+                );
+            }
+            Delta::Connection(Connection::Online) if ui.get_auth_busy() => {
+                self.state.panel = Panel::Chats;
+            }
+            Delta::Notify(m) => {
+                if self.state.selected.as_ref() == Some(&m.chat_id) && !ui.get_following() {
+                    ui.set_new_count(ui.get_new_count() + 1);
+                }
+                if let Some(notifications) = &self.notifications {
+                    notifications.incoming(ui, &self.state, m);
+                }
+            }
+            Delta::MoreChats(more) => ui.set_more_chats(*more),
+            Delta::MediaFailed { key, failure } => {
+                self.presenter.failures.insert(key.clone(), *failure);
+                self.presenter.invalidate_assets();
+                if self.viewer_asset.as_ref() == Some(key) {
+                    ui.set_viewer_loading(false);
+                    ui.set_viewer_error(failure.to_string().into());
+                }
+            }
+            Delta::File { name, bytes } => {
+                let weak = ui.as_weak();
+                let name = name.clone();
+                let bytes = bytes.clone();
+                let destination = self.destination.clone();
+                std::thread::spawn(move || {
+                    let result = viewer::save_bytes(&bytes, &name, destination);
+                    let _ = weak.upgrade_in_event_loop(move |ui| {
+                        ui.global::<State>().set_file_saving(false);
+                        ui.global::<State>().set_file_save_status(
+                            result.err().unwrap_or_else(|| "Saved".into()).into(),
+                        );
+                    });
+                });
+            }
+            Delta::Asset { key, pixels } => {
+                self.presenter.failures.remove(key);
+                self.presenter.images.insert(
+                    key.clone(),
+                    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+                        &pixels.rgba,
+                        pixels.width,
+                        pixels.height,
+                    )),
+                );
+                self.presenter.invalidate_assets();
+                if self.viewer_asset.as_ref() == Some(key) {
+                    ui.set_viewer_image(self.presenter.images[key].clone());
+                    ui.set_viewer_loading(false);
+                    ui.set_viewer_status(
+                        format!(
+                            "{}{} × {}",
+                            if ui.get_demo() {
+                                "Synthetic original · "
+                            } else {
+                                ""
+                            },
+                            pixels.width,
+                            pixels.height
+                        )
+                        .into(),
+                    );
+                }
+            }
+            Delta::Pref { key, value } => match key.as_str() {
+                "text_size" => ui.set_text_size(value.as_i64().unwrap() as i32),
+                "enter_sends" => ui.set_enter_sends(value.as_bool().unwrap()),
+                "desktop" => {
+                    let s = ui.global::<State>();
+                    s.set_background_mode(value["background"].as_bool().unwrap_or(false));
+                    s.set_autostart(value["autostart"].as_bool().unwrap_or(false));
+                    s.set_notifications_enabled(value["notifications"].as_bool().unwrap_or(false));
+                    s.set_notification_preview(value["preview"].as_i64().unwrap_or(1) as i32);
+                    s.set_notification_sound(value["sound"].as_bool().unwrap_or(false));
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+        let window = matches!(d,Delta::Window {sub,..} if sub==self.state.window_sub);
+        if window {
+            self.restore_ready = true;
+        }
+        if matches!(d, Delta::Connection(Connection::Online)) {
+            self.requested_gaps.clear();
+        }
+        let editor = match &d {
+            Delta::Draft { chat, draft } if self.state.selected.as_ref() == Some(chat) => Some(
+                draft
+                    .as_ref()
+                    .map(|d| (d.anchor as i32, d.cursor as i32))
+                    .unwrap_or((0, 0)),
+            ),
+            _ => None,
+        };
+        self.state.apply(d);
+        if self.state.selected.is_none() && !self.state.chat_order.is_empty() {
+            self.select(ui, 0);
+        } else {
+            self.render(ui);
+            if let Some((anchor, caret)) = editor {
+                ui.invoke_restore_editor(anchor, caret);
+            }
+            if window && self.latest_requested && self.state.reaches_end {
+                self.latest_requested = false;
+                ui.set_following(true);
+                ui.invoke_latest();
+            } else if window && !self.opening_history && ui.get_following() {
+                ui.invoke_latest();
+            }
+        }
+    }
+}
+fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
+    macro_rules! callback {($name:ident, |$u:ident,$d:ident $(,$arg:ident)*| $body:block)=>{{
+        let weak=ui.as_weak(); let actions=actions.clone();
+        ui.$name(move |$($arg),*| {let weak=weak.clone(); actions.push(move |$d|{if let Some($u)=weak.upgrade() {$body}});});
+    }};}
+    macro_rules! global_callback {($name:ident, |$u:ident,$d:ident $(,$arg:ident)*| $body:block)=>{{
+        let weak=ui.as_weak(); let actions=actions.clone();
+        ui.global::<State>().$name(move |$($arg),*| {let weak=weak.clone(); actions.push(move |$d|{if let Some($u)=weak.upgrade() {$body}});});
+    }};}
+    macro_rules! focus_bridge {
+        ($on:ident,$invoke:ident) => {
+            global_callback!($on, |ui, _d| {
+                ui.$invoke();
+            });
+        };
+    }
+    global_callback!(on_read_state_changed, |ui, d| {
+        d.observe_reading(&ui);
+    });
+    focus_bridge!(on_focus_cycle_end, invoke_focus_cycle_end);
+    focus_bridge!(on_focus_after_browser, invoke_focus_after_browser);
+    focus_bridge!(on_focus_after_conversation, invoke_focus_after_conversation);
+    focus_bridge!(on_focus_before_layer, invoke_focus_before_layer);
+    focus_bridge!(on_focus_after_layer, invoke_focus_after_layer);
+    focus_bridge!(on_focus_friend_list, invoke_focus_friend_list);
+    focus_bridge!(on_focus_chat_list, invoke_focus_chat_list);
+    focus_bridge!(on_focus_search, invoke_focus_search);
+    focus_bridge!(on_focus_friend_search, invoke_focus_friend_search);
+    focus_bridge!(on_focus_settings_opener, invoke_focus_settings_opener);
+    focus_bridge!(on_focus_settings_close, invoke_focus_settings_close);
+    focus_bridge!(on_focus_profile_close, invoke_focus_profile_close);
+    focus_bridge!(on_focus_auth_start, invoke_focus_auth_start);
+    focus_bridge!(on_focus_connection_first, invoke_focus_connection_first);
+    focus_bridge!(on_focus_sign_in_opener, invoke_focus_sign_in_opener);
+    focus_bridge!(on_focus_viewer_close, invoke_focus_viewer_close);
+    focus_bridge!(on_focus_history, invoke_focus_history);
+    focus_bridge!(on_focus_composer, invoke_focus_composer);
+    focus_bridge!(
+        on_focus_reading_before_editor,
+        invoke_focus_reading_before_editor
+    );
+    global_callback!(on_request_panel, |ui, d, panel| {
+        let member_profile = matches!(d.state.panel, Panel::MemberProfile(_));
+        let members = matches!(d.state.panel, Panel::Members | Panel::MemberProfile(_));
+        d.state.panel = match panel {
+            PanelState::None => {
+                if ui.get_section() == 1 {
+                    Panel::Friends
+                } else {
+                    Panel::Chats
+                }
+            }
+            PanelState::Settings => Panel::Settings,
+            PanelState::Profile => Panel::Profile(ui.get_profile_id().to_string()),
+            PanelState::Members => Panel::Members,
+            PanelState::MemberProfile => Panel::MemberProfile(ui.get_profile_id().to_string()),
+            PanelState::Viewer => Panel::Viewer,
+            PanelState::SignIn => Panel::SignIn,
+        };
+        d.render(&ui);
+        match panel {
+            PanelState::Settings => ui.invoke_focus_settings_close(),
+            PanelState::SignIn => ui.invoke_focus_auth_start(),
+            PanelState::Members if member_profile => ui.invoke_focus_member_list(),
+            PanelState::Members | PanelState::MemberProfile | PanelState::Profile => {
+                ui.invoke_focus_profile_close()
+            }
+            PanelState::None if members => ui.invoke_focus_members_header(),
+            _ => {}
+        }
+    });
+    callback!(on_select_chat, |ui, d, index| {
+        d.select(&ui, index as usize);
+    });
+    callback!(on_switch_chat, |ui, d, delta| {
+        let i = ui.get_selected_chat() + delta;
+        if i >= 0 && (i as usize) < d.state.chat_order.len() {
+            d.select(&ui, i as usize);
+        }
+    });
+    callback!(on_search_changed, |ui, d, query| {
+        d.query = query.to_lowercase();
+        d.render(&ui);
+    });
+    callback!(on_filter_category, |ui, d| {
+        d.category = ui.get_category();
+        d.render(&ui);
+    });
+    callback!(on_draft_edited, |ui, d| {
+        d.capture_draft(&ui);
+        d.render(&ui);
+    });
+    callback!(on_send, |ui, d| {
+        d.state.composer = ui.get_draft().to_string();
+        if let Some(intent) = d.state.submit() {
+            d.sender.send(intent);
+            d.render(&ui);
+        }
+    });
+    callback!(on_retry_message, |ui, d, id| {
+        let key = Key(id.parse().unwrap());
+        if d.state.messages[&key].delivery == Delivery::Uncertain {
+            ui.set_recovery_id(id);
+            ui.set_recovery_kind("resend".into());
+        } else {
+            d.sender.send(Intent::Retry(key));
+        }
+    });
+    callback!(on_resolve_recovery, |ui, d, action| {
+        let id = ui.get_recovery_id();
+        let kind = ui.get_recovery_kind();
+        ui.set_recovery_kind("".into());
+        if action == "cancel" || kind == "resend" {
+            ui.invoke_focus_history();
+            ui.set_recovery_focus_id(id.clone());
+            ui.set_recovery_focus_action(kind);
+        }
+        if action == "resend" {
+            d.sender.send(Intent::Resend(Key(id.parse().unwrap())));
+        }
+        if action == "replace" {
+            d.sender.send(Intent::Copy(Key(id.parse().unwrap())));
+            ui.invoke_focus_composer();
+        }
+        if action == "append" {
+            let m = &d.state.messages[&Key(id.parse().unwrap())];
+            d.state.composer = format!("{}\n{}", ui.get_draft(), m.body["body"].as_str().unwrap());
+            ui.set_draft(d.state.composer.clone().into());
+            d.capture_draft(&ui);
+            ui.invoke_restore_editor(d.state.composer.len() as i32, d.state.composer.len() as i32);
+            ui.invoke_focus_composer();
+        }
+    });
+    callback!(on_recover_message, |ui, d, id| {
+        if ui.get_draft().is_empty() {
+            d.sender.send(Intent::Copy(Key(id.parse().unwrap())));
+        } else {
+            ui.set_recovery_id(id);
+            ui.set_recovery_kind("edit".into());
+        }
+    });
+    callback!(on_start_sign_in, |ui, d| {
+        ui.set_auth_error("".into());
+        d.sender.send(Intent::SignIn);
+    });
+    callback!(on_cancel_sign_in, |ui, d| {
+        d.sender.cancel_sign_in();
+        ui.set_auth_stage("Cancelling sign-in…".into());
+    });
+    callback!(on_more, |_ui, d| {
+        d.sender.send(Intent::MoreChats);
+    });
+    callback!(on_settings_changed, |ui, d| {
+        if !ui.global::<State>().get_notifications_enabled()
+            && let Some(n) = &d.notifications
+        {
+            n.service.withdraw_notifications();
+        }
+        let s = ui.global::<State>();
+        d.sender.send(Intent::Pref {key:"desktop".into(),value:serde_json::json!({"background":s.get_background_mode(),"autostart":s.get_autostart(),"notifications":s.get_notifications_enabled(),"preview":s.get_notification_preview(),"sound":s.get_notification_sound(),"mention_exception":s.get_notification_mention_exception(),"group_events":s.get_notification_group_events()})});
+        d.sender.send(Intent::Pref {
+            key: "text_size".into(),
+            value: ui.get_text_size().into(),
+        });
+        d.sender.send(Intent::Pref {
+            key: "enter_sends".into(),
+            value: ui.get_enter_sends().into(),
+        });
+    });
+    callback!(on_browse, |ui, d, section| {
+        d.state.panel = if section == 1 {
+            Panel::Friends
+        } else {
+            Panel::Chats
+        };
+        ui.set_section(section);
+        if section == 1 {
+            d.sender.send(Intent::Friends);
+        }
+        d.render(&ui);
+    });
+    callback!(on_refresh_friends, |_ui, d| {
+        d.sender.send(Intent::Friends);
+    });
+    callback!(on_filter_friends, |ui, d| {
+        d.render(&ui);
+    });
+    callback!(on_open_members, |ui, d| {
+        if let Some(chat) = &d.state.selected {
+            if !matches!(d.state.panel, Panel::Members | Panel::MemberProfile(_)) {
+                ui.set_member_query("".into());
+            }
+            d.state.panel = Panel::Members;
+            d.sender.send(Intent::Members(chat.clone()));
+            d.render(&ui);
+            ui.invoke_focus_profile_close();
+        }
+    });
+    callback!(on_filter_members, |ui, d| {
+        d.render(&ui);
+    });
+    callback!(on_open_profile, |ui, d, id| {
+        d.state.panel = Panel::Profile(id.to_string());
+        d.render(&ui);
+        ui.invoke_show_profile();
+    });
+    callback!(on_open_member, |ui, d, id| {
+        d.state.panel = Panel::MemberProfile(id.to_string());
+        d.render(&ui);
+        ui.invoke_focus_profile_close();
+    });
+    callback!(on_start_friend_chat, |ui, d| {
+        if let Panel::Profile(id) | Panel::MemberProfile(id) = &d.state.panel {
+            let id = ChatId(id.clone());
+            d.reveal = Some(id.clone());
+            let intent = d.state.select(id);
+            d.sender.send(intent);
+            d.state.panel = Panel::Chats;
+            ui.set_section(0);
+            ui.set_show_conversation(true);
+            d.render(&ui);
+            ui.invoke_focus_composer();
+        }
+    });
+    callback!(on_open_photo, |ui, d, key| {
+        d.open_photo(&ui, key.as_str());
+    });
+    callback!(on_retry_image, |ui, d, key| {
+        d.sender.send(Intent::RetryAsset(key.to_string()));
+        ui.invoke_focus_history();
+    });
+    global_callback!(on_discard_message, |_ui, d, id| {
+        d.sender.send(Intent::Discard(Key(id.parse().unwrap())));
+    });
+    global_callback!(on_test_notification, |ui, d| {
+        if let Some(n) = &d.notifications {
+            n.test(&ui);
+        } else {
+            ui.global::<State>()
+                .set_notification_status("Notification service not available".into());
+        }
+    });
+    global_callback!(on_jump_message, |ui, d, id| {
+        let target = d
+            .state
+            .reply_targets
+            .get(&ServerId(id.to_string()))
+            .map(|m| m.key);
+        if let Some(key) = target {
+            let top = -ui.get_history_y() + ui.global::<State>().get_history_visible_top();
+            let origin = d.state.rows().into_iter().find_map(|m| {
+                d.geometry
+                    .borrow()
+                    .get(&m.key)
+                    .filter(|(y, h)| y + h > top)
+                    .map(|(y, _)| {
+                        let inset = ui.global::<State>().get_history_visible_top();
+                        (m.key, y + ui.get_history_y() + inset, ui.get_following())
+                    })
+            });
+            d.return_anchor = origin;
+            d.opening_history = false;
+            d.restore_anchor = Some((key, ui.global::<State>().get_history_visible_top()));
+            // A target already laid out is scrolled to at once; the window may not change.
+            let known = d.geometry.borrow().contains_key(&key);
+            d.restore_ready = known;
+            if !known {
+                d.geometry.borrow_mut().clear();
+            }
+            ui.set_following(false);
+            ui.global::<State>().set_return_visible(origin.is_some());
+            ui.global::<State>()
+                .set_highlight_message(key.0.to_string().into());
+            let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
+            d.sender.send(intent);
+        }
+    });
+    global_callback!(on_return_to_message, |ui, d| {
+        if let Some((key, offset, _)) = d.return_anchor.take() {
+            // The origin is kept below the top cover, which may have changed.
+            d.restore_anchor = Some((key, offset - ui.global::<State>().get_history_visible_top()));
+            let known = d.geometry.borrow().contains_key(&key);
+            d.restore_ready = known;
+            if !known {
+                d.geometry.borrow_mut().clear();
+            }
+            ui.set_following(false);
+            ui.global::<State>().set_return_visible(false);
+            ui.global::<State>().set_highlight_message("".into());
+            let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
+            d.sender.send(intent);
+        }
+    });
+    global_callback!(on_viewer_step, |ui, d, direction| {
+        let photos = d
+            .state
+            .rows()
+            .iter()
+            .filter_map(|m| {
+                serde_json::from_value::<line_wasm_poc::client::desktop::Message>(m.body.clone())
+                    .ok()
+            })
+            .filter(|m| m.rich.content_type == 1)
+            .filter_map(|m| m.image)
+            .map(|a| a.key())
+            .collect::<Vec<_>>();
+        if let Some(i) = photos
+            .iter()
+            .position(|k| k == ui.get_viewer_key().as_str())
+        {
+            let next = i as i32 + direction.signum();
+            if next >= 0 && (next as usize) < photos.len() {
+                let key = &photos[next as usize];
+                ui.set_viewer_key(key.into());
+                d.open_photo(&ui, key);
+            }
+        }
+    });
+    global_callback!(on_save_file, |ui, d, id| {
+        let m = &d.state.messages[&Key(id.parse().unwrap())];
+        let raw: line_wasm_poc::client::desktop::Message =
+            serde_json::from_value(m.body.clone()).unwrap();
+        if let Some(asset) = raw.attachment {
+            ui.global::<State>().set_file_save_id(id.clone());
+            ui.global::<State>().set_file_save_status("".into());
+            ui.global::<State>().set_file_saving(true);
+            d.sender.send(Intent::File {
+                asset,
+                name: raw.rich.file_name.unwrap_or_else(|| "attachment".into()),
+            });
+        }
+    });
+    global_callback!(on_save_photo, |ui, d| {
+        viewer::save_photo(&ui, d.destination.clone());
+    });
+    global_callback!(on_latest_request, |ui, d| {
+        ui.global::<State>().set_return_visible(false);
+        ui.global::<State>().set_highlight_message("".into());
+        d.return_anchor = None;
+        d.opening_history = false;
+        if !matches!(d.state.window_anchor, Anchor::Latest) {
+            d.latest_requested = true;
+            d.restore_anchor = None;
+            d.paging_anchor = None;
+            d.requested_gaps.clear();
+            let intent = d.state.subscribe_window(Anchor::Latest, 80, 0);
+            d.sender.send(intent);
+            ui.set_following(true);
+        }
+    });
+    global_callback!(on_row_geometry, |ui, d, id, top, height| {
+        if id == "unread" {
+            d.divider_top.set(Some(top));
+        } else if let Some(key) = id.strip_prefix("gap-") {
+            d.gap_geometry
+                .borrow_mut()
+                .insert(Key(key.parse().unwrap()), (top, height));
+        } else {
+            d.geometry
+                .borrow_mut()
+                .insert(Key(id.parse().unwrap()), (top, height));
+        }
+        d.observe_reading(&ui);
+    });
+    global_callback!(on_history_scrolled, |ui, d| {
+        d.observe_reading(&ui);
+        if ui.get_history_y() >= -30.
+            && !ui.global::<State>().get_older_start_known()
+            && let Some((chat, before)) = d.reading.borrow().clone()
+        {
+            d.sender.send(Intent::Page {
+                chat,
+                kind: PageKind::Older { before },
+            });
+            if let Some(key) = d
+                .state
+                .rows()
+                .into_iter()
+                .find(|m| m.server_id.is_some())
+                .map(|m| m.key)
+                && d.paging_anchor != Some(key)
+            {
+                let offset = d
+                    .geometry
+                    .borrow()
+                    .get(&key)
+                    .map(|(y, _)| y + ui.get_history_y())
+                    .unwrap_or(0.);
+                d.paging_anchor = Some(key);
+                d.restore_anchor = Some((key, offset));
+                d.restore_ready = false;
+                d.requested_gaps.clear();
+                let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
+                d.sender.send(intent);
+            }
+        }
+    });
+    let link_actions = actions.clone();
+    ui.global::<State>().on_open_link(move |url| {
+        link_actions.push(move |_| links::open(url.to_string()));
+    });
+    if let Some(fake) = fake {
+        demo::install(ui, actions, fake);
+    }
+    rich_content::install(ui);
+}
+
+#[derive(Clone)]
+struct Runtime {
+    desktop: Rc<RefCell<Option<Desktop>>>,
+    actions: ActionQueue<Desktop>,
+    draining: Rc<std::cell::Cell<bool>>,
+}
+impl Runtime {
+    fn push(&self, action: impl FnOnce(&mut Desktop) + 'static) {
+        self.actions.push(action);
+        if self.draining.get() {
+            return;
+        }
+        let available = self.desktop.borrow().is_some();
+        if available {
+            self.update(|_| {});
+        }
+    }
+    fn update<R>(&self, f: impl FnOnce(&mut Desktop) -> R) -> R {
+        self.draining.set(true);
+        let mut desktop = self.desktop.borrow_mut().take().unwrap();
+        let result = f(&mut desktop);
+        self.actions.drain(&mut desktop);
+        *self.desktop.borrow_mut() = Some(desktop);
+        self.draining.set(false);
+        result
+    }
+}
+
+fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let mut demo = false;
+    let mut snapshot_path = None;
+    let mut size = (980, 720);
+    let mut text_size = 15;
+    let mut scene = String::new();
+    let mut case = None;
+    let mut dark = false;
+    let mut snapshot_profile = false;
+    let mut background = false;
+    let mut locations = line_wasm_poc::locations::Locations::from_environment()?;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -498,167 +1295,83 @@ fn options() -> Result<Options, Box<dyn std::error::Error>> {
                     "{{\"mcp_debug\":{},\"renderer\":\"software\"}}",
                     cfg!(feature = "ui-debug")
                 );
-                std::process::exit(0);
+                return Ok(());
             }
-            "--demo" => out.demo = true,
+            "--demo" => demo = true,
+            "--demo-paging" => {
+                demo = true;
+                scene = "paging".into();
+            }
             "--demo-previews" => {
-                out.demo = true;
-                out.demo_previews = true;
-            }
-            "--debug-background" => out.debug_background = true,
-            "--demo-notify" => {
-                out.demo = true;
-                out.demo_notify = true;
-            }
-            "--demo-rich" => {
-                out.demo = true;
-                out.demo_rich = true;
-            }
-            "--demo-friends" => {
-                out.demo = true;
-                out.demo_friends = true;
-            }
-            "--demo-photos" => {
-                out.demo = true;
-                out.demo_photos = true;
-            }
-            "--demo-groups" => {
-                out.demo = true;
-                out.demo_groups = true;
-            }
-            "--check-live" => out.check = true,
-            "--state" => {
-                out.paths.state = args.next().ok_or("missing state path")?.into();
-                out.explicit_paths = true;
-            }
-            "--wasm" => {
-                out.paths.wasm = args.next().ok_or("missing WASM path")?.into();
-                out.explicit_paths = true;
-            }
-            "--cache-dir" => out.paths.cache = args.next().ok_or("missing cache path")?.into(),
-            "--snapshot-size" | "--demo-size" => {
-                let size = args.next().ok_or("missing WIDTHxHEIGHT")?;
-                let (width, height) = size.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
-                out.snapshot_size = (width.parse()?, height.parse()?);
-                if !(360..=3840).contains(&out.snapshot_size.0)
-                    || !(520..=2160).contains(&out.snapshot_size.1)
-                {
-                    return Err("size outside supported bounds".into());
-                }
-                if arg == "--demo-size" {
-                    out.demo = true;
-                    out.demo_size = Some(out.snapshot_size);
-                }
+                demo = true;
+                scene = "previews".into();
             }
             "--demo-dark" => {
-                out.demo = true;
-                out.demo_dark = Some(true);
+                demo = true;
+                dark = true;
             }
-            "--demo-color-scheme" => {
-                out.demo_dark = Some(match args.next().as_deref() {
-                    Some("light") => false,
-                    Some("dark") => true,
-                    _ => return Err("demo color scheme must be light or dark".into()),
-                });
-                out.demo = true;
-            }
-            "--snapshot-text-size" | "--demo-text-size" => {
-                out.snapshot_text_size = args.next().ok_or("missing text size")?.parse()?;
-                if !(12..=24).contains(&out.snapshot_text_size) {
-                    return Err("text size must be 12–24".into());
-                }
-                if arg == "--demo-text-size" {
-                    out.demo = true;
-                }
-            }
-            "--snapshot-scene" => {
-                out.snapshot_scene = args.next().ok_or("missing snapshot scene")?;
-                if ![
-                    "group-header",
-                    "room-header",
-                    "direct-header",
-                    "members",
-                    "member-profile",
-                    "members-offline",
-                    "member-profile-offline",
-                    "chats",
-                    "chats-hover",
-                    "chats-unread",
-                    "message-selected-incoming",
-                    "message-selected-outgoing",
-                    "session-expired",
-                    "friends-offline",
-                    "conversation",
-                    "failed-send",
-                    "chats-query",
-                    "chats-query-offline",
-                    "friends",
-                    "friends-query",
-                    "friends-empty-group",
-                    "chats-long-query",
-                    "chats-long-query-blurred",
-                    "friends-long-query",
-                    "friends-long-query-blurred",
-                    "settings",
-                    "composer",
-                    "composer-reason",
-                    "latest",
-                    "return",
-                    "return-offline",
-                ]
-                .contains(&out.snapshot_scene.as_str())
-                {
-                    return Err("unknown snapshot scene".into());
-                }
-                out.demo = true;
-            }
-            "--snapshot-profile" => {
-                out.snapshot_profile = true;
-                out.demo = true;
-            }
-            "--snapshot-case" => {
-                out.snapshot_case = Some(args.next().ok_or("missing snapshot case")?);
-                out.demo = true;
-            }
+            "--demo-light" => demo = true,
+            "--snapshot-profile" => snapshot_profile = true,
+            "--snapshot-case" => case = Some(args.next().ok_or("missing snapshot case")?),
+            "--debug-background" => background = true,
             "--snapshot" => {
-                out.snapshot = Some(args.next().ok_or("missing snapshot path")?);
-                out.demo = true;
+                snapshot_path = Some(args.next().ok_or("missing snapshot path")?);
+                demo = true;
             }
-            "--help" | "-h" => {
-                println!(
-                    "Usage: line-desktop [--demo | --demo-previews | --demo-rich | --demo-photos | --demo-groups | --demo-friends | --demo-notify] [--state FILE] [--wasm FILE] [--cache-dir DIR]\n       line-desktop --snapshot FILE.ppm [--snapshot-size WIDTHxHEIGHT] [--snapshot-text-size 12..24] [--snapshot-profile] [--snapshot-case long-url|mixed|cjk|emoji] [--snapshot-scene SCENE]\n       line-desktop --check-live [--state FILE] [--wasm FILE] [--cache-dir DIR]\n--demo-size WIDTHxHEIGHT and --demo-text-size 12..24 set offline preview geometry.\n--demo-color-scheme light|dark selects an offline preview theme; --demo-dark is an alias for dark.\n--debug-background disables desktop integration for automation. --build-info reports the build capabilities. --help (-h) shows this help.\nDefault: use saved account. --demo and --snapshot are offline. --check-live reports counts only and never sends messages."
-                );
-                std::process::exit(0);
+            "--snapshot-size" | "--demo-size" => {
+                let v = args.next().ok_or("missing size")?;
+                let (w, h) = v.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
+                size = (w.parse()?, h.parse()?);
+            }
+            "--snapshot-text-size" => {
+                text_size = args.next().ok_or("missing text size")?.parse()?
+            }
+            "--snapshot-scene" => scene = args.next().ok_or("missing scene")?,
+            "--state" => locations.session = args.next().ok_or("missing state")?.into(),
+            "--wasm" => locations.wasm = args.next().ok_or("missing wasm")?.into(),
+            "--cache-dir" => locations.cache = args.next().ok_or("missing cache directory")?.into(),
+            "--demo-rich" | "--demo-photos" | "--demo-groups" | "--demo-friends" => {
+                demo = true;
+                scene = arg.trim_start_matches("--demo-").into();
             }
             _ => return Err(format!("unknown option {arg}").into()),
         }
     }
-    if out.snapshot_case.is_some() && out.snapshot.is_none() {
-        return Err("--snapshot-case requires --snapshot".into());
-    }
-    if !out.explicit_paths && !out.demo {
-        out.configured_paths = out.locations.load_existing()?;
-        out.paths.state = out.locations.session.clone();
-        out.paths.wasm = out.locations.wasm.clone();
-    }
-    if out.check && out.demo {
-        return Err("--check-live cannot be combined with offline modes".into());
-    }
-    Ok(out)
-}
-
-fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let options = options()?;
     let automation = debug_launch::intent(
-        options.debug_background,
+        background,
         cfg!(feature = "ui-debug"),
-        options.demo,
+        demo,
         std::env::var("LINE_DESKTOP_AUTOMATION_SOCKET")
             .ok()
             .as_deref(),
-        std::env::var("WAYLAND_DISPLAY").ok().as_deref(),
     )? == debug_launch::Intent::VirtualAutomation;
-    let instance = if options.snapshot.is_none() {
+    let snapshot = if snapshot_path.is_some() {
+        Some(snapshot::install()?)
+    } else {
+        if automation {
+            // Slint 1.18.1 supports headless in create_backend(), but not BackendSelector.
+            // The owned launcher selects it before any platform initialization.
+            if std::env::var("SLINT_BACKEND").as_deref() != Ok("headless-software") {
+                return Err("headless automation requires the private launcher".into());
+            }
+            #[cfg(feature = "ui-debug")]
+            {
+                slint::platform::set_platform(i_slint_backend_selector::create_backend()?)?;
+                i_slint_backend_selector::init_testing_backends();
+            }
+        } else {
+            slint::BackendSelector::new()
+                .backend_name("winit".into())
+                .renderer_name("software".into())
+                .select()?;
+        }
+        None
+    };
+    slint::set_xdg_app_id("org.lineclient.Desktop")?;
+    if snapshot.is_some() {
+        fix_snapshot_clock();
+    }
+    let instance = if snapshot.is_none() {
         match desktop_integration::Instance::acquire_with_activation(!automation)? {
             desktop_integration::Launch::Forwarded => return Ok(()),
             desktop_integration::Launch::Primary(instance) => Some(instance),
@@ -666,78 +1379,46 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         None
     };
-    if options.check {
-        return account::check(&options.paths);
+    let activations = instance.as_ref().map(|i| i.take_events());
+    let fake = demo.then(FakeBackend::canned);
+    if let Some(fake) = &fake {
+        demo::configure(fake, &scene, case.as_deref());
     }
-    let snapshot = if options.snapshot.is_some() {
-        Some(snapshot::install()?)
+    let worker = if let Some(fake) = &fake {
+        Worker::start(fake.clone(), StoreLocation::Memory)
     } else {
-        None
+        Worker::start_with(move || {
+            let backend =
+                LineBackend::open_local(&locations.session, &locations.wasm, &locations.cache)?;
+            let mid = backend.local_mid();
+            let root = locations.session.parent().unwrap().join("accounts");
+            Ok((backend, StoreLocation::Account { root, mid }))
+        })
     };
-    if snapshot.is_none() {
-        let mut backend = slint::BackendSelector::new()
-            .backend_name("winit".into())
-            .renderer_name("software".into());
-        if automation {
-            backend = backend
-                .with_winit_window_attributes_hook(|attributes| attributes.with_active(false));
-        }
-        backend.select()?;
-    }
-    slint::set_xdg_app_id("org.lineclient.Desktop")?;
-    if options.snapshot.is_some() {
-        fix_snapshot_clock();
-    }
     let ui = create_app_window()?;
-    ui.global::<State>().set_automation_background(automation);
-    background::install(&ui);
+    ui.set_demo(demo);
+    ui.global::<State>().set_preview_demo(scene == "previews");
+    if dark {
+        ui.invoke_preview_dark(true);
+    }
     if let Some(warning) = instance.as_ref().and_then(|i| i.warning.as_ref()) {
         ui.set_desktop_warning(warning.into());
     }
-    let legacy_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .parent()
-        .ok_or("missing repository root")?
-        .to_path_buf();
-    let migration = !options.demo
-        && !options.explicit_paths
-        && !options.configured_paths
-        && desktop_integration::Locations::legacy_available(&legacy_root);
-    ui.set_migration_needed(migration);
-
-    if snapshot.is_none() {
+    ui.set_text_size(text_size);
+    ui.global::<State>().set_automation_background(automation);
+    if snapshot.is_none() && !automation {
         use slint::winit_030::{
             EventResult, WinitWindowAccessor,
-            winit::event::{ElementState, Ime, MouseButton, WindowEvent},
+            winit::event::{Ime, WindowEvent},
         };
         let weak = ui.as_weak();
-        // Observe IME state without intercepting native composition or editing.
-        // TextEdit does not expose its internal preedit state to Slint callers.
-        let mut focused = false;
-        let mut occluded = false;
         ui.window().on_winit_window_event(move |_, event| {
             if let Some(ui) = weak.upgrade() {
                 match event {
-                    WindowEvent::MouseInput {
-                        state: ElementState::Pressed,
-                        button: MouseButton::Back,
-                        ..
-                    } if !ui.get_ime_active() => ui.invoke_go_back(),
+                    WindowEvent::Focused(active) => ui.global::<State>().set_window_active(*active),
                     WindowEvent::Ime(Ime::Preedit(text, _)) => ui.set_ime_active(!text.is_empty()),
-                    WindowEvent::Ime(Ime::Commit(_) | Ime::Disabled) => ui.set_ime_active(false),
-                    WindowEvent::Focused(active) => {
-                        focused = *active;
-                        if !focused {
-                            unread::revoke_now();
-                            ui.set_ime_active(false);
-                        }
-                        ui.global::<State>().set_window_active(focused && !occluded);
-                    }
-                    WindowEvent::Occluded(hidden) => {
-                        occluded = *hidden;
-                        if occluded {
-                            unread::revoke_now();
-                        }
-                        ui.global::<State>().set_window_active(focused && !occluded);
+                    WindowEvent::Ime(Ime::Commit(_)) | WindowEvent::Ime(Ime::Disabled) => {
+                        ui.set_ime_active(false)
                     }
                     _ => {}
                 }
@@ -745,652 +1426,173 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             EventResult::Propagate
         });
     }
-    let view = View {
-        demo: options.demo,
-        attention: if options.snapshot.is_none() {
-            Some(attention::Attention::start())
+    let desktop = Desktop {
+        requested_assets: Default::default(),
+        gap_geometry: Default::default(),
+        requested_gaps: Default::default(),
+        restore_ready: false,
+        latest_requested: false,
+        opening_history: true,
+        divider_top: Default::default(),
+        return_anchor: None,
+        geometry: Default::default(),
+        exposed: Default::default(),
+        paging_anchor: None,
+        restore_anchor: None,
+        reading: Default::default(),
+        shown_composer: String::new(),
+        reveal: None,
+        viewer_asset: None,
+        destination: if demo {
+            viewer::Destination::Directory(std::env::temp_dir().join("line-desktop-demo-exports"))
+        } else {
+            viewer::Destination::Dialog
+        },
+        notifications: if snapshot.is_none() {
+            Some(notifications::Notifications::start())
         } else {
             None
         },
-        ..Default::default()
+        background: Default::default(),
+        state: AppState::default(),
+        presenter: Default::default(),
+        sender: worker.sender.clone(),
+        query: String::new(),
+        category: 0,
     };
-    let state = Rc::new(RefCell::new(view));
-    notifications::install(&ui, state.clone());
-    ui.global::<State>()
-        .set_demo_notifications(options.demo_notify);
-    if options.demo_notify {
-        ui.global::<State>().set_notifications_enabled(true);
-    }
-    rich_content::install(&ui, state.clone());
-    UI_STATE.with(|slot| *slot.borrow_mut() = Some(state.clone()));
-    let worker = Rc::new(RefCell::new(None));
-    if options.demo {
-        ui.set_demo(true);
-        ui.set_connected(true);
-        let weak = ui.as_weak();
-        let demo_worker = account::start_demo(
-            state.borrow().demo_send_failure.clone(),
-            if options.demo_previews {
-                demo::preview_assets()
-            } else {
-                HashMap::new()
-            },
-            move |event| {
-                let _ = weak.upgrade_in_event_loop(move |ui| {
-                    UI_STATE.with(|slot| {
-                        if let Some(state) = slot.borrow().as_ref() {
-                            state.borrow_mut().update(&ui, event);
-                        }
-                    });
-                });
-            },
-        );
-        state.borrow_mut().commands = Some(demo_worker.commands.clone());
-        *worker.borrow_mut() = Some(demo_worker);
-        if let Some(dark) = options.demo_dark {
-            ui.invoke_preview_dark(dark);
-        }
-        ui.set_text_size(options.snapshot_text_size);
-        ui.set_account_name("Offline preview".into());
-        state.borrow_mut().demo_previews = options.demo_previews;
-        ui.global::<State>().set_preview_demo(options.demo_previews);
-        let examples = if options.demo_previews {
-            demo::preview_examples()
-        } else {
-            demo::examples()
-        };
-        for (index, chat) in examples.into_iter().enumerate() {
-            let mut view = state.borrow_mut();
-            view.ids.push(index.to_string());
-            if options.demo_previews {
-                view.unread.server(&index.to_string(), Some(0), None);
-            }
-            let mut preview_row = ChatRow::default();
-            if let Some(last) = chat.messages.last() {
-                preview::set(&mut preview_row, last, ui.get_text_size());
-            }
-            view.rows.push(ChatRow {
-                preview_runs: preview_row.preview_runs,
-                index: index as i32,
-                group: index == 1,
-                member_count: if index == 1 { 25 } else { 0 },
-                outgoing_preview: chat.messages.last().is_some_and(|m| m.outgoing),
-                time: chat
-                    .messages
-                    .last()
-                    .map(|m| list_time(m.sort_key.parse().unwrap_or(0)))
-                    .unwrap_or_default()
-                    .into(),
-                title: chat.title.into(),
-                preview: if options.demo_previews {
-                    preview_row.preview
-                } else {
-                    single_line(chat.preview).into()
-                },
-                activity: chat
-                    .messages
-                    .last()
-                    .map(|m| m.sort_key.clone())
-                    .unwrap_or_default(),
-                initial: chat.initial.into(),
-                avatar: demo::avatar(index),
-                ..Default::default()
-            });
-        }
+    let weak = ui.as_weak();
+    ui.window().on_close_requested(move || {
+        if let Some(ui) = weak.upgrade()
+            && ui.global::<State>().get_background_mode()
+            && ui.global::<State>().get_tray_available()
         {
-            let mut view = state.borrow_mut();
-            view.friends = view
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(i, row)| FriendRow {
-                    id: i.to_string().into(),
-                    name: row.title.clone(),
-                    initial: name_initial(&row.title),
-                    status: [
-                        "散歩とコーヒーが好き 🌿",
-                        "Saturday by the river",
-                        "Ideas for a quiet afternoon",
-                    ][i % 3]
-                        .into(),
-                    group: i == 1,
-                    avatar: row.avatar.clone(),
-                    ..Default::default()
-                })
-                .collect();
-            view.friends.push(FriendRow {
-                id: "new-friend".into(),
-                name: "新しい友だち 🌸".into(),
-                initial: name_initial("新しい友だち 🌸"),
-                status: "まだ会話のない友だち".into(),
-                ..Default::default()
-            });
-            view.friends_loaded = true;
-            view.filter_friends(&ui);
+            let _ = ui.hide();
+            slint::CloseRequestResponse::KeepWindowShown
+        } else {
+            let _ = slint::quit_event_loop();
+            slint::CloseRequestResponse::HideWindow
         }
-        state.borrow().filter(&ui);
-        state.borrow_mut().select(&ui, 0);
-    } else if !migration {
-        *worker.borrow_mut() = Some(start_saved_account(&ui, &state, options.paths.clone()));
+    });
+    desktop.presenter.install(&ui);
+    let desktop = Runtime {
+        desktop: Rc::new(RefCell::new(Some(desktop))),
+        actions: ActionQueue::default(),
+        draining: Default::default(),
+    };
+    install(&ui, desktop.clone(), fake.clone());
+    // Initial synthetic rendering uses the same FIFO as interactive rendering.
+    if snapshot.is_some() {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while desktop.update(|d| d.state.messages.is_empty()) {
+            let delta = worker
+                .deltas
+                .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))?;
+            desktop.update(|d| d.apply(&ui, delta));
+        }
     }
-    {
-        let weak = ui.as_weak();
-        let state = state.clone();
-        let worker = worker.clone();
-        let paths = RefCell::new(options.locations.clone());
-        let cache = options.paths.cache.clone();
-        ui.on_migration_choice(move |existing| {
-            let Some(ui) = weak.upgrade() else { return; };
-            if !ui.get_migration_needed() { return; }
-            let mut paths = paths.borrow_mut();
-            match paths.choose(&legacy_root, existing) {
-                Ok(()) => {
-                    ui.set_migration_needed(false);
-                    let account_paths = account::Paths { state: paths.session.clone(), wasm: paths.wasm.clone(), cache: cache.clone() };
-                    *worker.borrow_mut() = Some(start_saved_account(&ui, &state, account_paths));
+    let weak = ui.as_weak();
+    let d = desktop.clone();
+    let worker = Rc::new(worker);
+    let w = worker.clone();
+    worker.on_deltas(event_loop::wake);
+    event_loop::install(move || {
+        if let Some(ui) = weak.upgrade() {
+            if let Some(events) = &activations {
+                for e in events.try_iter() {
+                    let _ = ui.show();
+                    if let desktop_integration::Activation::OpenChat(chat) = e {
+                        d.update(|d| {
+                            let intent = d.state.select(ChatId(chat));
+                            d.sender.send(intent);
+                            d.render(&ui);
+                            ui.set_show_conversation(true);
+                        });
+                    }
                 }
-                Err(_) => ui.set_migration_error("Could not save the folder choice. Check local folder permissions and try again.".into()),
             }
+            for delta in w.deltas.try_iter() {
+                d.update(|d| d.apply(&ui, delta));
+            }
+            d.update(|d| {
+                d.background.apply(&ui);
+                d.observe_reading(&ui);
+                d.drain_notifications(&ui);
+            });
+        }
+    });
+    ui.window()
+        .set_size(slint::LogicalSize::new(size.0 as f32, size.1 as f32));
+    ui.set_show_conversation(scene != "chats" && !scene.starts_with("friends"));
+    if scene == "settings" {
+        desktop.update(|d| {
+            d.state.panel = Panel::Settings;
+            d.render(&ui);
         });
     }
-    if let Some(instance) = instance.as_ref() {
-        let events = instance.take_events();
-        let weak = ui.as_weak();
-        std::thread::Builder::new().name("desktop-activation".into()).spawn(move || {
-            while let Ok(event) = events.recv() {
-                // Fold a burst to one raise, keeping the newest chat action.
-                let event = events.try_iter().fold(event, |previous, next| match next {
-                    desktop_integration::Activation::OpenChat(_) => next,
-                    desktop_integration::Activation::Show => previous,
-                });
-                let (completed, completion) = std::sync::mpsc::sync_channel(1);
-                if weak.upgrade_in_event_loop(move |ui| {
-                    let _ = ui.show();
-                    use slint::winit_030::WinitWindowAccessor;
-                    if !ui.global::<State>().get_automation_background() { ui.window().with_winit_window(|window| {
-                        window.set_minimized(false);
-                        window.focus_window();
-                        window.request_user_attention(Some(slint::winit_030::winit::window::UserAttentionType::Informational));
-                    }); }
-                    if let desktop_integration::Activation::OpenChat(id) = event {
-                        UI_STATE.with(|slot| {
-                            if let Some(state) = slot.borrow().as_ref() {
-                                let index = state.borrow().ids.iter().position(|candidate| candidate == &id);
-                                if let Some(index) = index { state.borrow_mut().select(&ui, index); ui.set_show_conversation(true); }
-                            }
-                        });
-                    }
-                    let _ = completed.send(());
-                }).is_err() { break; }
-                // Keep at most one callback queued on the UI thread.
-                if completion.recv().is_err() { break; }
+    if scene == "friends" {
+        ui.invoke_browse(1);
+    }
+    if matches!(
+        scene.as_str(),
+        "members" | "member-profile" | "group-header" | "room-header"
+    ) {
+        desktop.update(|d| d.select(&ui, 1));
+    }
+    if scene.starts_with("members") || scene.starts_with("member-profile") {
+        ui.invoke_open_members();
+    }
+    if snapshot_profile || scene == "member-profile" {
+        ui.invoke_browse(1);
+    }
+    if scene.starts_with("message-selected")
+        && let Some(key) = desktop.update(|d| d.state.rows().first().map(|m| m.key))
+    {
+        ui.global::<State>()
+            .set_highlight_message(key.0.to_string().into());
+    }
+    if scene == "session-expired"
+        && let Some(fake) = &fake
+    {
+        fake.auth_expired();
+    }
+    if scene.ends_with("offline")
+        && let Some(fake) = &fake
+    {
+        fake.offline(true);
+    }
+    if scene == "failed-send"
+        && let Some(fake) = &fake
+    {
+        fake.fail_send();
+        ui.set_draft("See you soon! 🐈".into());
+        ui.invoke_send();
+    }
+    if snapshot_path.is_some() {
+        for _ in 0..20 {
+            desktop.update(|_| {});
+            while let Ok(delta) = worker.deltas.try_recv() {
+                desktop.update(|d| d.apply(&ui, delta));
             }
-        })?;
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
     }
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_photo_closed(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().viewer_request = 0;
-            ui.set_viewer_image(Default::default());
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_open_photo(move |key| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().open_viewer_photo(&ui, &key);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_reconnect(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().reconnect(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_start_sign_in(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().begin_sign_in(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_cancel_sign_in(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().cancel_sign_in(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_browse(move |section| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().browse(&ui, section);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_refresh_friends(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow().load_friends(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_filter_friends(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().filter_friends(&ui);
-        }
-    });
-    members::install(&ui, &state);
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_open_profile(move |id| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().open_profile(&ui, &id);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_start_friend_chat(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().start_friend_chat(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_select_chat(move |index| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().select(&ui, index as usize);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_filter_category(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow().filter(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_switch_chat(move |delta| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().switch_visible_chat(&ui, delta);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_search_changed(move |query| {
-        if let Some(ui) = weak.upgrade() {
-            let mut view = view.borrow_mut();
-            view.query = query.to_lowercase();
-            view.filter(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_draft_edited(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().persist(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_settings_changed(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().persist(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_retry_image(move |key| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().retry_image(&ui, &key);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_retry_history(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow().load(&ui, true);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_retry_storage(move || {
-        if let Some(ui) = weak.upgrade() {
-            let mut view = view.borrow_mut();
-            view.capture(&ui);
-            if view
-                .storage
-                .as_ref()
-                .is_some_and(|storage| storage.flush(view.saved.clone()))
-            {
-                ui.set_storage_error("".into());
-            }
-            view.send_availability(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_retry_list(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow().retry_list(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_more(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.set_loading_chats(
-                view.borrow()
-                    .request(&ui, account::Command::Chats { next: true }),
-            );
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_send(move || {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().submit(&ui);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_recover_message(move |id| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().recover_outgoing(&ui, &id);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_retry_message(move |id| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().retry_outgoing(&ui, &id, false);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_resolve_recovery(move |action| {
-        if let Some(ui) = weak.upgrade() {
-            view.borrow_mut().resolve_recovery(&ui, &action);
-        }
-    });
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_demo_event(move |kind| {
-        if let Some(ui) = weak.upgrade() {
-            if kind == 11 {
-                view.borrow_mut().demo_paged_history(&ui);
-            } else {
-                demo::scenario(&view, &ui, kind);
-            }
-        }
-    });
-    // Model changes wait until the thumb is released, without an idle timer.
-    let weak = ui.as_weak();
-    let view = state.clone();
-    ui.on_release_deferred(move || {
-        if let Some(ui) = weak.upgrade() {
-            let mut view = view.borrow_mut();
-            let events = std::mem::take(&mut view.deferred);
-            for event in events {
-                view.update_render(&ui, event);
-            }
-        }
-    });
-    if options.demo_rich {
-        demo::scenario(&state, &ui, 12);
+    if snapshot_profile || scene == "member-profile" {
+        ui.invoke_open_profile("alice".into());
     }
-    if options.demo_photos {
-        demo::scenario(&state, &ui, 5);
-    }
-    if options.demo_groups {
-        demo::scenario(&state, &ui, 7);
-    }
-    if options.demo_friends {
-        state.borrow_mut().browse(&ui, 1);
-    }
-    if let Some(case) = &options.snapshot_case {
-        let mut view = state.borrow_mut();
-        view.messages = snapshot::message_case(case)?;
-        view.render(&ui);
-        ui.invoke_show_history(0., case.starts_with("media-"));
-    }
-    state.borrow().send_availability(&ui);
-    if let (Some(window), Some(path)) = (snapshot, options.snapshot) {
+    if let (Some(window), Some(path)) = (snapshot, snapshot_path) {
         ui.show()?;
-        ui.set_text_size(options.snapshot_text_size);
-        ui.set_show_conversation(!options.demo_friends);
-        if options.snapshot_profile {
-            state.borrow_mut().open_profile(&ui, "0");
-        }
-        if options.snapshot_scene.ends_with("-offline") {
-            state.borrow_mut().update(
-                &ui,
-                account::Update::Sync(line_wasm_poc::client::desktop::sync::SyncState::Offline),
-            );
-        }
-        match options.snapshot_scene.as_str() {
-            "group-header" | "room-header" | "direct-header" => {
-                let mut view = state.borrow_mut();
-                view.select(
-                    &ui,
-                    if options.snapshot_scene == "direct-header" {
-                        0
-                    } else {
-                        1
-                    },
-                );
-                ui.set_show_conversation(true);
-                if options.snapshot_scene == "room-header" {
-                    ui.set_chat_title("Weekend room".into());
-                }
-            }
-            "members" | "member-profile" | "members-offline" | "member-profile-offline" => {
-                let mut view = state.borrow_mut();
-                view.select(&ui, 1);
-                ui.set_show_conversation(true);
-                view.open_members(&ui);
-                if options.snapshot_scene.starts_with("member-profile") {
-                    view.open_member(&ui, "member-2");
-                }
-            }
-            "chats" => ui.set_show_conversation(false),
-            "chats-hover" | "chats-unread" => {
-                ui.set_show_conversation(false);
-                if options.snapshot_scene == "chats-hover" {
-                    snapshot::render(&window, options.snapshot_size)?;
-                    let row = ui.invoke_connection_first_row();
-                    ui.window()
-                        .dispatch_event(slint::platform::WindowEvent::PointerMoved {
-                            position: slint::LogicalPosition::new(
-                                row.x + 20.,
-                                row.y + row.height * 1.5,
-                            ),
-                        });
-                }
-            }
-            "message-selected-incoming" | "message-selected-outgoing" => {
-                let mut view = state.borrow_mut();
-                view.messages = vec![MessageRow {
-                    id: "selected-bubble".into(),
-                    body: "選択したメッセージ\nSelected message".into(),
-                    outgoing: options.snapshot_scene.ends_with("-outgoing"),
-                    ..Default::default()
-                }];
-                view.render(&ui);
-                ui.global::<State>()
-                    .set_highlight_message("selected-bubble".into());
-                ui.invoke_show_history(0., false);
-            }
-            "session-expired" => {
-                state.borrow_mut().update(
-                    &ui,
-                    account::Update::Sync(
-                        line_wasm_poc::client::desktop::sync::SyncState::AuthExpired,
-                    ),
-                );
-            }
-            "friends-offline" => {
-                state.borrow_mut().browse(&ui, 1);
-                ui.set_friend_result(2);
-                ui.invoke_focus_friend_list();
-            }
-            "conversation" => {
-                snapshot::render(&window, options.snapshot_size)?;
-                ui.invoke_show_history(0., false);
-            }
-            "failed-send" => {
-                let mut view = state.borrow_mut();
-                let chat = view.current.clone();
-                view.saved.outbox.push(storage::Outgoing {
-                    local_id: "snapshot-failed".into(),
-                    request_seq: Some(1),
-                    timestamp_ms: now_millis(),
-                    chat,
-                    text: "駅に着いたら連絡してね。See you soon! 🐈".into(),
-                    status: "The message may have arrived. Check before sending again.".into(),
-                    server_id: String::new(),
-                });
-                view.render(&ui);
-                ui.invoke_latest();
-            }
-            "chats-query" | "chats-query-offline" => {
-                ui.set_show_conversation(false);
-                snapshot::render(&window, options.snapshot_size)?;
-                ui.set_query("Weekend".into());
-                ui.global::<State>().invoke_search_changed("Weekend".into());
-                ui.invoke_focus_chat_list();
-            }
-            "friends-query" => {
-                state.borrow_mut().browse(&ui, 1);
-                ui.set_friend_query("新しい".into());
-                state.borrow_mut().filter_friends(&ui);
-                ui.invoke_focus_friend_list();
-            }
-            "chats-long-query"
-            | "chats-long-query-blurred"
-            | "friends-long-query"
-            | "friends-long-query-blurred" => {
-                ui.window().set_size(slint::LogicalSize::new(
-                    options.snapshot_size.0 as f32,
-                    options.snapshot_size.1 as f32,
-                ));
-                let friends = options.snapshot_scene.starts_with("friends");
-                if friends {
-                    state.borrow_mut().browse(&ui, 1);
-                    ui.invoke_focus_friend_search();
-                } else {
-                    ui.set_show_conversation(false);
-                    ui.invoke_focus_search();
-                }
-                let query = "012345678901234567890123456789012345678901234567890123456789TAIL66";
-                ui.window()
-                    .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-                        text: query.into(),
-                    });
-                ui.window()
-                    .dispatch_event(slint::platform::WindowEvent::KeyReleased {
-                        text: query.into(),
-                    });
-                if options.snapshot_scene.ends_with("blurred") {
-                    if friends {
-                        ui.invoke_focus_friend_list();
-                    } else {
-                        ui.invoke_focus_chat_list();
-                    }
-                }
-            }
-            "friends" | "friends-empty-group" => {
-                state.borrow_mut().browse(&ui, 1);
-                if options.snapshot_scene == "friends-empty-group" {
-                    state.borrow_mut().friends.retain(|row| !row.group);
-                    state.borrow_mut().filter_friends(&ui);
-                }
-            }
-            "settings" => {
-                ui.set_settings_open(true);
-                ui.invoke_focus_settings_close();
-            }
-            "composer" => ui.set_send_reason("".into()),
-            "composer-reason" => {
-                ui.set_send_reason("Offline preview — messages are not sent".into())
-            }
-            "latest" | "return" | "return-offline" => {
-                ui.set_new_count(if options.snapshot_scene.starts_with("return") {
-                    3
-                } else {
-                    0
-                });
-                ui.set_following(false);
-                ui.set_history_y(0.);
-                ui.set_send_reason("".into());
-                ui.global::<State>()
-                    .set_return_visible(options.snapshot_scene.starts_with("return"));
-            }
-            _ => {}
-        }
-        snapshot::save(&window, &path, options.snapshot_size)?;
+        snapshot::save(&window, &path, size)?;
         ui.hide()?;
     } else {
-        if options.demo {
-            ui.set_text_size(options.snapshot_text_size);
-        }
-        if let Some((width, height)) = options.demo_size {
-            ui.window()
-                .set_size(slint::LogicalSize::new(width as f32, height as f32));
-        }
         ui.show()?;
         slint::run_event_loop_until_quit()?;
         ui.hide()?;
     }
-    let mut view = state.borrow_mut();
-    view.capture(&ui);
-    if let Some(storage) = &view.storage {
-        storage.flush(view.saved.clone());
-    }
-    worker.borrow_mut().take();
-    view.background.shutdown();
-    if let Some(attention) = view.attention.take() {
-        attention.withdraw_all();
-        drop(attention);
-    }
-    UI_STATE.with(|slot| slot.borrow_mut().take());
+    desktop.update(|d| d.capture_draft(&ui));
+    event_loop::clear();
+    drop(worker);
     Ok(())
 }
-fn start_saved_account(
-    ui: &AppWindow,
-    state: &Rc<RefCell<View>>,
-    paths: account::Paths,
-) -> account::Worker {
-    {
-        let mut view = state.borrow_mut();
-        view.open_storage(ui, &paths);
-        view.paths = Some(paths.clone());
-    }
-    ui.set_chat_title("Your conversations".into());
-    let weak = ui.as_weak();
-    let worker = account::start(paths, move |event| {
-        let _ = weak.upgrade_in_event_loop(move |ui| {
-            UI_STATE.with(|slot| {
-                if let Some(state) = slot.borrow().as_ref() {
-                    state.borrow_mut().update(&ui, event);
-                }
-            });
-        });
-    });
-    state.borrow_mut().commands = Some(worker.commands.clone());
-    state.borrow_mut().read_gate = Some(worker.read_gate.clone());
-    state.borrow_mut().asset_priority = Some(worker.asset_priority.clone());
-    unread::set_gate(worker.read_gate.clone());
-    state.borrow_mut().retain_send_requests();
-    state.borrow_mut().pairing_cancel = Some(worker.pairing_cancel.clone());
-    worker
-}
-thread_local! {static UI_STATE:RefCell<Option<Rc<RefCell<View>>>>=const{RefCell::new(None)};}
 
 #[cfg(test)]
 mod tests;

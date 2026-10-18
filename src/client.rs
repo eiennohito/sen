@@ -1,11 +1,13 @@
 //! Debug QR pairing against the same endpoints as LINE Chrome.
 //! Rust owns protocol/state/WASM, all HTTPS (RPC, SSE, media) and QR encoding.
+pub mod error;
 use crate::{HASH, VERSION, locations::Locations, runtime::Runtime, sign};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
 };
+pub use error::Error;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
@@ -140,10 +142,10 @@ impl Progress {
     }
 }
 #[derive(Debug)]
-struct RpcError {
+pub(crate) struct RpcError {
     method: String,
-    http: u16,
-    code: i64,
+    pub(crate) http: u16,
+    pub(crate) code: i64,
     status: i64,
 }
 impl fmt::Display for RpcError {

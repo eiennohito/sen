@@ -154,9 +154,7 @@ for chat[i] in State.chats: Rectangle {
 
                 }
                 }
-                if State.more-chats: Button { text: State.loading-chats ? "Loading…" : "Load more"; enabled: !State.loading-chats; clicked => { State.more(); } }
-                if State.loading-chats: Text { text: "Loading conversations…"; color: Tokens.secondary; }
-                if State.list-error != "": HorizontalLayout { Text { text: State.list-error; color: Tokens.danger; wrap: word-wrap; } Button { text: "Retry"; accessible-label: "Retry conversations"; enabled: !State.loading-chats; clicked => { State.retry-list(); } } }
+                if State.more-chats: Button { text: "Load more"; clicked => { State.more(); } }
 
             }
     public function focus-search() { search.focus(); }

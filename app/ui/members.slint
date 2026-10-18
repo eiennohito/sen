@@ -9,7 +9,7 @@ export component Members inherits FocusScope {
     in-out property <int> selected <=> State.member-result;
     property <length> row-height: max(64px, Tokens.base * 2.8 + 16px);
     public function focus-first() { close.focus(); }
-    public function focus-last() { if list.visible { list.focus(); } else if State.members-failed { retry.focus(); } else { search.focus-last(); } }
+    public function focus-last() { if list.visible { list.focus(); } else { search.focus-last(); } }
     public function focus-list() { list.focus(); }
     function reveal() { if root.selected * root.row-height < -pane.offset { pane.jump(-root.selected * root.row-height); } else if (root.selected + 1) * root.row-height > -pane.offset + pane.visible-height { pane.jump(pane.visible-height - (root.selected + 1) * root.row-height); } }
     capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
@@ -19,9 +19,8 @@ export component Members inherits FocusScope {
         if event.text == Key.Escape { State.close-profile(); return accept; }
         if event.text == Key.Tab {
             if event.modifiers.shift && close.has-focus { State.focus-before-layer(); return accept; }
-            if !event.modifiers.shift && (list.has-focus || (retry.has-focus && !list.visible)) { State.focus-after-layer(); return accept; }
-            if event.modifiers.shift && list.has-focus { if State.members-failed { retry.focus(); } else { search.focus-last(); } return accept; }
-            if event.modifiers.shift && retry.has-focus { search.focus-last(); return accept; }
+            if !event.modifiers.shift && (list.has-focus) { State.focus-after-layer(); return accept; }
+            if event.modifiers.shift && list.has-focus { search.focus-last(); return accept; }
         }
         reject
     }
@@ -35,20 +34,13 @@ export component Members inherits FocusScope {
             clear => { State.member-query = ""; root.selected = 0; State.filter-members(); pane.jump(0px); }
             key-pressed(event) => {
                 if event.text == Key.Escape { State.close-profile(); return accept; }
-                if event.text == Key.Tab { if event.modifiers.shift { close.focus(); } else if State.members-failed { retry.focus(); } else if State.members-loading { State.focus-after-layer(); } else { list.focus(); } return accept; }
+                if event.text == Key.Tab { if event.modifiers.shift { close.focus(); } else { list.focus(); } return accept; }
                 if event.text == Key.DownArrow { list.focus(); return accept; }
                 reject
             }
         }
-        if State.members-loading: Text { text: "Loading members…"; color: Tokens.secondary; }
-        VerticalLayout {
-            visible: State.members-failed; height: self.visible ? self.preferred-height : 0px;
-            Text { text: "Couldn’t get members. Retry."; wrap: word-wrap; color: Tokens.danger; }
-            retry := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Retry"; clicked => { State.open-members(); } }
-        }
-        if !State.members-loading && !State.members-failed && State.members.length == 0: Text { text: State.member-query == "" ? "No members" : "No members match your search"; wrap: word-wrap; color: Tokens.secondary; }
+        if State.members.length == 0: Text { text: State.member-query == "" ? "No members" : "No members match your search"; wrap: word-wrap; color: Tokens.secondary; }
         list := FocusScope {
-            visible: !State.members-loading && (!State.members-failed || State.members.length > 0);
             accessible-role: AccessibleRole.list; accessible-label: "Group members";
             accessible-description: self.has-focus ? "Focused" : "";
             key-pressed(event) => {

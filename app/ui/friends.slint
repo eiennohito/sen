@@ -101,7 +101,5 @@ export component Friends inherits Rectangle {
                 }
             }
         }
-        if State.loading-friends: Text { text: "Loading friends and groups…"; color: Tokens.secondary; }
-        if State.friends-error != "": HorizontalLayout { Text { text: State.friends-error; color: Tokens.danger; wrap: word-wrap; } Button { text: "Retry"; clicked => { State.refresh-friends(); } } }
     }
 }

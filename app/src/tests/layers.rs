@@ -5,19 +5,20 @@ fn resizing_layers_keeps_focus_on_visible_content() {
     std::thread::spawn(|| {
         use slint::private_unstable_api::re_exports::WindowInner;
         let window = snapshot::install().unwrap();
-        let ui = create_app_window().unwrap();
+        let ui = test_window();
         ui.show().unwrap();
         for layer in ["profile", "members", "member-profile", "settings"] {
-            ui.set_settings_open(false);
-            ui.set_profile_open(false);
+            ui.global::<State>().set_panel(PanelState::None);
             snapshot::render(&window, (980, 720)).unwrap();
             if layer == "settings" {
-                ui.set_settings_open(true);
+                ui.global::<State>().set_panel(PanelState::Settings);
                 ui.invoke_focus_settings_close();
             } else {
-                ui.set_profile_open(true);
-                ui.set_members_open(layer != "profile");
-                ui.set_member_profile(layer == "member-profile");
+                ui.global::<State>().set_panel(match layer {
+                    "profile" => PanelState::Profile,
+                    "members" => PanelState::Members,
+                    _ => PanelState::MemberProfile,
+                });
                 ui.invoke_focus_profile_close();
             }
             snapshot::render(&window, (980, 720)).unwrap();
@@ -48,7 +49,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
     std::thread::spawn(|| {
         use slint::platform::WindowEvent;
         let _platform = snapshot::install().unwrap();
-        let ui = create_app_window().unwrap();
+        let ui = test_window();
         let events = Rc::new(RefCell::new(Vec::new()));
         let captured = events.clone();
         let weak = ui.as_weak();
@@ -62,10 +63,6 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             );
             captured.borrow_mut().push(kind);
         });
-        let notifications = Rc::new(RefCell::new(Vec::new()));
-        let captured = notifications.clone();
-        ui.global::<State>()
-            .on_demo_notification(move |kind| captured.borrow_mut().push(kind));
         let key = |text: &str| {
             ui.window()
                 .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
@@ -81,7 +78,6 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             key("\u{f70f}"); // F12 is unavailable in account windows.
             assert!(!ui.global::<State>().get_demo_scenarios_open());
             ui.set_demo(true);
-            ui.global::<State>().set_demo_notifications(true);
             key("\u{f70f}");
             assert!(ui.global::<State>().get_demo_scenarios_open());
             assert!(ui.global::<State>().get_modal_open());
@@ -97,8 +93,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             key("\n");
             assert!(!ui.global::<State>().get_modal_open());
             events.borrow_mut().clear();
-            notifications.borrow_mut().clear();
-            for index in 0..27 {
+            for index in 0..16 {
                 key("\u{f70f}");
                 for _ in 0..=index {
                     key("\t");
@@ -108,7 +103,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
                     // Media failures has a separate bounded scenario list.
                     assert!(ui.global::<State>().get_demo_scenarios_open());
                     key("\t"); // Back
-                    key("\t"); // Load media
+                    key("\t"); // First failure fixture
                     key("\n");
                 }
                 assert!(
@@ -119,11 +114,8 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             }
             assert_eq!(
                 *events.borrow(),
-                [
-                    0, 1, 2, 10, 30, 31, 3, 11, 5, 6, 7, 8, 9, 14, 12, 15, 4, 16, 17, 19, 32, 18
-                ]
+                [0, 1, 20, 10, 31, 3, 8, 12, 5, 6, 15, 7, 14, 19, 16, 17]
             );
-            assert_eq!(*notifications.borrow(), [0, 1, 2, 3, 4]);
             ui.invoke_focus_search();
             key("\u{f70f}");
             assert!(ui.global::<State>().get_demo_scenarios_open());
@@ -144,13 +136,14 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
 fn escape_busy_sign_in_requires_a_decision() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
-        let ui = create_app_window().unwrap();
+        let ui = test_window();
         let cancelled = Rc::new(std::cell::Cell::new(0));
         let count = cancelled.clone();
         ui.on_cancel_sign_in(move || count.set(count.get() + 1));
-        ui.set_auth_busy(true);
-        ui.set_auth_expired(true);
-        ui.invoke_open_sign_in();
+        ui.global::<State>().set_panel(PanelState::SignIn);
+        ui.global::<State>()
+            .set_connection(ConnectionState::SigningIn);
+        ui.invoke_focus_auth_start();
         ui.show().unwrap();
         let key = |text: &str| {
             ui.window()
@@ -180,7 +173,7 @@ fn escape_busy_sign_in_requires_a_decision() {
 fn profile_panel_preserves_reading_at_wide_boundaries() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
-        let ui = create_app_window().unwrap();
+        let ui = test_window();
         ui.set_demo(true);
         ui.set_has_chat(true);
         ui.set_show_conversation(true);
@@ -193,9 +186,15 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
             ..Default::default()
         }]))));
         let draft = "日本語の下書き 🐈";
+        ui.global::<State>().set_connection(ConnectionState::Online);
         ui.set_draft(draft.into());
+        assert!(ui.get_can_send());
+        ui.set_draft("".into());
+        assert!(!ui.get_can_send());
+        ui.set_draft(draft.into()); // Programmatic restoration emits no typing event.
+        assert!(ui.get_can_send());
         ui.show().unwrap();
-        ui.set_profile_open(true);
+        ui.global::<State>().set_panel(PanelState::Profile);
         for width in [740, 800] {
             ui.window()
                 .set_size(slint::LogicalSize::new(width as f32, 720.));
@@ -210,162 +209,16 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
         ui.invoke_close_profile();
         assert!(!ui.get_profile_open());
         assert_eq!(ui.get_draft(), draft);
-        ui.hide().unwrap();
-    })
-    .join()
-    .unwrap();
-}
-
-#[test]
-fn deferred_incoming_attention_runs_once_before_rendering() {
-    std::thread::spawn(|| {
-        let _platform = snapshot::install().unwrap();
-        let ui = create_app_window().unwrap();
-        ui.global::<State>().set_demo_notifications(true);
-        ui.global::<State>().set_window_active(true);
-        ui.set_list_pressed(true);
-        let mut view = View {
-            demo: true,
-            current: "0".into(),
-            ..Default::default()
-        };
-        let mut incoming = message("100", "mention before delayed rendering");
-        incoming.mentioned = true;
-        view.update(
-            &ui,
-            account::Update::Incoming {
-                chat: "1".into(),
-                messages: vec![incoming],
-                replay: false,
-            },
-        );
-        assert!(
-            !ui.global::<State>().get_transient_notice().is_empty(),
-            "attention was delayed behind rendering"
-        );
-        assert!(view.messages.is_empty());
-        assert_eq!(
-            view.notification_through.get("1").map(String::as_str),
-            Some("100")
-        );
-        ui.global::<State>().set_transient_notice("".into());
-        let mut incoming = message("100", "reaction updates the same message");
-        incoming.mentioned = true;
-        view.update(
-            &ui,
-            account::Update::Incoming {
-                chat: "1".into(),
-                messages: vec![incoming],
-                replay: false,
-            },
-        );
-        assert!(
-            ui.global::<State>().get_transient_notice().is_empty(),
-            "duplicate deferred row alerted again"
-        );
-        ui.set_list_pressed(false);
-        for event in std::mem::take(&mut view.deferred) {
-            view.update_render(&ui, event);
-        }
-        assert!(
-            ui.global::<State>().get_transient_notice().is_empty(),
-            "draining replayed attention"
-        );
-    })
-    .join()
-    .unwrap();
-}
-
-#[test]
-fn profile_sheet_scopes_browser_shortcuts_and_escape() {
-    std::thread::spawn(|| {
-        let window = snapshot::install().unwrap();
-        let ui = create_app_window().unwrap();
-        let state = Rc::new(RefCell::new(View {
-            demo: true,
-            friends_loaded: true,
-            ..Default::default()
-        }));
-        for (index, chat) in demo::examples().into_iter().enumerate() {
-            let mut view = state.borrow_mut();
-            view.ids.push(index.to_string());
-            view.rows.push(ChatRow {
-                index: index as i32,
-                title: chat.title.into(),
-                activity: order_key(3 - index as i64).into(),
-                ..Default::default()
-            });
-            view.friends.push(FriendRow {
-                id: index.to_string().into(),
-                name: chat.title.into(),
-                ..Default::default()
-            });
-        }
-        state.borrow().filter(&ui);
-        state.borrow_mut().select(&ui, 0);
-        let weak = ui.as_weak();
-        let view = state.clone();
-        ui.on_browse(move |section| view.borrow_mut().browse(&weak.upgrade().unwrap(), section));
-        let weak = ui.as_weak();
-        let view = state.clone();
-        ui.on_switch_chat(move |delta| {
-            view.borrow_mut()
-                .switch_visible_chat(&weak.upgrade().unwrap(), delta)
-        });
-        ui.show().unwrap();
-        window.set_size(slint::PhysicalSize::new(980, 720));
-        slint::platform::update_timers_and_animations();
-        let key = |text: &str, pressed: bool| {
-            ui.window().dispatch_event(if pressed {
-                slint::platform::WindowEvent::KeyPressed { text: text.into() }
-            } else {
-                slint::platform::WindowEvent::KeyReleased { text: text.into() }
-            });
-        };
-        let modified = |modifier: &str, text: &str| {
-            key(modifier, true);
-            key(text, true);
-            key(text, false);
-            key(modifier, false);
-        };
-        state.borrow_mut().browse(&ui, 1);
-        state.borrow_mut().open_profile(&ui, "0");
-        ui.invoke_focus_friend_search();
-        modified("\u{11}", "2");
-        assert_eq!(ui.get_section(), 0);
-        assert!(!ui.get_profile_open());
-        state.borrow_mut().browse(&ui, 1);
-        ui.set_friend_query("Keep query".into());
-        state.borrow_mut().open_profile(&ui, "0");
-        ui.invoke_focus_friend_search();
-        key("\u{1b}", true);
-        key("\u{1b}", false);
-        assert!(!ui.get_profile_open());
-        assert_eq!(ui.get_friend_query(), "Keep query");
-        state.borrow_mut().open_profile(&ui, "0");
-        ui.invoke_focus_friend_search();
-        modified("\u{12}", "\u{f701}");
-        assert_eq!(ui.get_selected_chat(), 1);
-        assert!(!ui.get_profile_open());
-        state.borrow_mut().open_profile(&ui, "1");
-        window.set_size(slint::PhysicalSize::new(360, 520));
-        slint::platform::update_timers_and_animations();
+        ui.global::<State>().set_panel(PanelState::MemberProfile);
         ui.invoke_focus_profile_close();
-        modified("\u{11}", "2");
-        assert_eq!(
-            ui.get_section(),
-            1,
-            "full-window sheet must block browser shortcuts"
-        );
-        assert!(ui.get_profile_open());
-        modified("\u{11}", "\n");
-        assert!(
-            ui.get_profile_open(),
-            "Ctrl+Enter must not activate the sheet's close button"
-        );
-        key("\u{1b}", true);
-        key("\u{1b}", false);
-        assert!(!ui.get_profile_open());
+        assert!(ui.get_member_profile());
+        use slint::private_unstable_api::re_exports::WindowInner;
+        let focused = WindowInner::from_pub(ui.window())
+            .focus_item
+            .borrow()
+            .upgrade()
+            .expect("member profile has no focus");
+        assert!(focused.is_visible(), "member profile focus is hidden");
         ui.hide().unwrap();
     })
     .join()

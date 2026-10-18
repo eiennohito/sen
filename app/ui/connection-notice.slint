@@ -42,15 +42,14 @@ export component ConnectionNotice inherits Rectangle {
     visible: State.connection-feedback-visible;
     background: Tokens.surface; border-width: 1px; border-color: Tokens.secondary;
     property <string> status: !State.connection-failed ? "Reconnected" : State.retrying-connection ? "Retrying…" : State.connection-status;
-    property <length> status-width: max(0px, root.width - 8px - (retry.visible ? retry.preferred-width + 2px : 0px) - (sign-in.visible ? sign-in.preferred-width + 2px : 0px));
+    property <length> status-width: max(0px, root.width - 8px - (sign-in.visible ? sign-in.preferred-width + 2px : 0px));
     out property <string> compact-status: full-status.preferred-width > root.status-width && State.connection-failed && !State.retrying-connection && State.sign-in-available ? (State.auth-expired ? "Expired" : "Signed out") : root.status;
     full-status := Text { visible: false; text: root.status; font-size: Tokens.base; }
     accessible-role: banner; accessible-label: State.connection-failed ? "Connection needs attention" : "Connection restored";
-    public function focus-first() { retry.focus-action(); }
-    public function focus-action() { if State.sign-in-available { sign-in.focus-action(); } else { retry.focus-action(); } }
+    public function focus-first() { sign-in.focus-action(); }
+    public function focus-action() { sign-in.focus-action(); }
     public function actions-fit() -> bool {
-        return (!retry.visible || retry.absolute-position.x + retry.width <= root.absolute-position.x + root.width + 0.5px)
-            && (!sign-in.visible || sign-in.absolute-position.x + sign-in.width <= root.absolute-position.x + root.width + 0.5px);
+        return (!sign-in.visible || sign-in.absolute-position.x + sign-in.width <= root.absolute-position.x + root.width + 0.5px);
     }
     TouchArea { scroll-event(event) => { accept } }
     FocusScope {
@@ -59,19 +58,12 @@ export component ConnectionNotice inherits Rectangle {
         HorizontalLayout {
             padding: 4px; spacing: 2px; alignment: start;
             Text { max-width: root.status-width; text: root.compact-status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; min-width: 0px; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
-            retry := Action {
-                visible: State.connection-failed; width: self.visible ? self.preferred-width : 0px;
-                label: "Retry"; description: "Retry connection";
-                enabled: !State.retrying-connection && !State.auth-busy;
-                activated => { State.reconnect(); }
-                tab(back) => { if !back && State.sign-in-available { sign-in.focus-action(); } else { root.leave(back); } }
-            }
             sign-in := Action {
                 visible: State.connection-failed && State.sign-in-available; width: self.visible ? self.preferred-width : 0px;
                 label: "Sign in again"; description: "Sign in again";
                 enabled: State.sign-in-available && !State.retrying-connection && !State.auth-busy;
                 activated => { State.open-sign-in(); }
-                tab(back) => { if back { retry.focus-action(); } else { root.leave(back); } }
+                tab(back) => { root.leave(back); }
             }
         }
     }

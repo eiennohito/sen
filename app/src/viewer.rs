@@ -1,5 +1,5 @@
 //! Photo navigation and deliberate local exports. No network operations here.
-use crate::{AppWindow, State, view::View};
+use crate::{AppWindow, State};
 use image::ImageEncoder;
 use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer};
 use std::{
@@ -10,41 +10,12 @@ use std::{
 };
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
 
-impl View {
-    pub(crate) fn open_viewer_photo(&mut self, ui: &AppWindow, key: &str) {
-        self.open_photo(ui, key);
-        let photos: Vec<_> = self
-            .messages
-            .iter()
-            .filter(|m| m.photo && !m.image_key.is_empty())
-            .collect();
-        let index = photos.iter().position(|m| m.image_key == key);
-        ui.global::<State>()
-            .set_viewer_has_previous(index.is_some_and(|i| i > 0));
-        ui.global::<State>()
-            .set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
-    }
-    pub(crate) fn step_photo(&mut self, ui: &AppWindow, direction: i32) {
-        let photos: Vec<_> = self
-            .messages
-            .iter()
-            .filter(|m| m.photo && !m.image_key.is_empty())
-            .map(|m| m.image_key.to_string())
-            .collect();
-        let Some(index) = photos
-            .iter()
-            .position(|key| key == ui.get_viewer_key().as_str())
-        else {
-            return;
-        };
-        let next = index as i64 + i64::from(direction.signum());
-        if let Some(key) = usize::try_from(next).ok().and_then(|i| photos.get(i)) {
-            self.open_viewer_photo(ui, key);
-        }
-    }
+#[derive(Clone)]
+pub(crate) enum Destination {
+    Dialog,
+    Directory(PathBuf),
 }
-
-pub(crate) fn save_photo(ui: &AppWindow) {
+pub(crate) fn save_photo(ui: &AppWindow, destination: Destination) {
     if ui.global::<State>().get_viewer_saving()
         || ui.get_viewer_loading()
         || !ui.get_viewer_error().is_empty()
@@ -56,12 +27,11 @@ pub(crate) fn save_photo(ui: &AppWindow) {
     };
     ui.global::<State>().set_viewer_saving(true);
     ui.global::<State>().set_viewer_save_status("".into());
-    let demo = ui.get_demo();
     let key = ui.get_viewer_key();
     let weak = ui.as_weak();
     std::thread::spawn(move || {
         let result =
-            encode_png(&pixels).and_then(|bytes| save_bytes(&bytes, "LINE photo.png", demo));
+            encode_png(&pixels).and_then(|bytes| save_bytes(&bytes, "LINE photo.png", destination));
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ui.global::<State>().set_viewer_saving(false);
             if !ui.get_viewer_open() || ui.get_viewer_key() != key {
@@ -96,14 +66,14 @@ fn encode_png(pixels: &SharedPixelBuffer<Rgba8Pixel>) -> Result<Vec<u8>, String>
 pub(crate) fn save_bytes(
     bytes: &[u8],
     suggested_name: &str,
-    demo: bool,
+    destination: Destination,
 ) -> Result<Option<PathBuf>, String> {
     let name = Path::new(suggested_name)
         .file_name()
         .and_then(|v| v.to_str())
         .filter(|name| !name.is_empty() && !name.contains(['\r', '\n']))
         .unwrap_or("LINE attachment");
-    if !demo {
+    if matches!(destination, Destination::Dialog) {
         match portal_destination(name) {
             Ok(Some(path)) => {
                 use std::os::unix::fs::OpenOptionsExt;
@@ -123,10 +93,9 @@ pub(crate) fn save_bytes(
             Err(_) => {}
         }
     }
-    let directory = if demo {
-        std::env::temp_dir().join("line-desktop-demo-exports")
-    } else {
-        downloads_directory()?
+    let directory = match destination {
+        Destination::Dialog => downloads_directory()?,
+        Destination::Directory(path) => path,
     };
     write_unique(&directory, name, bytes).map(Some)
 }
@@ -251,11 +220,11 @@ mod tests {
                 SharedPixelBuffer::<Rgba8Pixel>::new(1, 1),
             ));
             ui.set_viewer_loading(true);
-            save_photo(&ui);
+            save_photo(&ui, Destination::Directory(std::env::temp_dir()));
             assert!(!ui.global::<State>().get_viewer_saving());
             ui.set_viewer_loading(false);
             ui.set_viewer_error("Original unavailable".into());
-            save_photo(&ui);
+            save_photo(&ui, Destination::Directory(std::env::temp_dir()));
             assert!(!ui.global::<State>().get_viewer_saving());
         })
         .join()

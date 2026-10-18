@@ -11,15 +11,6 @@ pub(crate) fn now_millis() -> i64 {
     })
 }
 
-pub(crate) fn fixed_now() -> Option<i64> {
-    FIXED_NOW.with(std::cell::Cell::get)
-}
-
-#[cfg(test)]
-pub(crate) fn set_test_clock(now: i64) {
-    FIXED_NOW.with(|clock| clock.set(Some(now)));
-}
-
 pub(crate) fn fix_snapshot_clock() {
     use chrono::TimeZone;
     FIXED_NOW.with(|now| {
@@ -34,14 +25,6 @@ pub(crate) fn fix_snapshot_clock() {
 
 pub(crate) fn name_initial(name: &str) -> slint::SharedString {
     name.chars().next().unwrap_or('·').to_string().into()
-}
-
-pub(crate) fn chat_subtitle(row: &ChatRow) -> String {
-    if row.group && row.member_count > 0 {
-        format!("{} members", row.member_count)
-    } else {
-        String::new()
-    }
 }
 
 pub(crate) fn single_line(text: &str) -> String {
@@ -163,19 +146,6 @@ fn calendar_pair(
     ))
 }
 
-pub(crate) fn outgoing_timestamp(item: &storage::Outgoing) -> i64 {
-    if item.timestamp_ms > 0 {
-        item.timestamp_ms
-    } else {
-        item.local_id
-            .strip_prefix("local-")
-            .and_then(|id| id.split('-').next())
-            .and_then(|timestamp| timestamp.parse::<i64>().ok())
-            .map(|micros| micros / 1000)
-            .unwrap_or(i64::MAX)
-    }
-}
-
 pub(crate) fn message_text(m: &account::MessageView) -> String {
     let kind = crate::links::kind(m.rich.content_type, m.rich.withdrawn, m.decryption_failed);
     let mut body = crate::links::placeholder(kind)
@@ -244,7 +214,7 @@ pub(crate) fn message_row(m: account::MessageView) -> MessageRow {
             && rich_runs.row_count() == 0,
         rich_runs,
         reply_id: reply_id.into(),
-        reply_preview: "Reply to message".into(),
+        reply_preview: "Message unavailable".into(),
         detail: detail.into(),
         kind,
         delivered_time: order_key(m.delivered_time).into(),

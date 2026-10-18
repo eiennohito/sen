@@ -107,14 +107,13 @@ python3 tools/run-ui-debug.py --binary /tmp/line-ui-debug-9447 --port 9447 --log
 python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery --reading --layers --rich --focus
 ```
 
-Agent-started GUI previews must use `tools/run-ui-debug.py`: it uses a private
-D-Bus session and virtual KWin output, with no host desktop window or focus
-request. It requires `kwin_wayland`, `dbus-run-session`, and a `ui-debug` build;
-it refuses to fall back to the host display. The guarded `--debug-background`
-flag is supplied by the wrapper, not ordinary launches. Use a unique port and
-binary copy per session; the wrapper reports its owned app/scope PIDs and a
-unique PID file. Stop only that owned scope. Normal user launches remain
-foreground. Headless `--snapshot` does not map a GUI window.
+Agent-started GUI previews must use `tools/run-ui-debug.py` with a `ui-debug`
+build and `dbus-run-session`: Slint's headless software backend runs in private
+0700 XDG directories and a D-Bus session with no activation service directories.
+Use a unique port and binary copy per session; the wrapper reports owned
+app/scope PIDs, removes its PID file and temporary directories on exit, and
+supplies guarded `--debug-background`. Stop only that owned scope. Normal
+launches keep winit and foreground startup.
 
 Snapshots, offline demos, tests, and synthetic WASM benchmarks are safe.
 Physical IME, compositor input, scaling, and notification checks remain the

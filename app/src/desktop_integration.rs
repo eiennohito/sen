@@ -20,9 +20,11 @@ struct Application(mpsc::SyncSender<Activation>);
 impl Application {
     fn activate(&self, _platform_data: HashMap<String, OwnedValue>) {
         let _ = self.0.try_send(Activation::Show);
+        crate::event_loop::wake();
     }
     fn open(&self, _uris: Vec<String>, _platform_data: HashMap<String, OwnedValue>) {
         let _ = self.0.try_send(Activation::Show);
+        crate::event_loop::wake();
     }
     fn activate_action(
         &self,
@@ -46,6 +48,7 @@ impl Application {
             Activation::Show
         };
         let _ = self.0.try_send(event);
+        crate::event_loop::wake();
     }
 }
 pub struct Instance {
@@ -154,21 +157,6 @@ fn lock_file(path: &Path) -> std::io::Result<Option<File>> {
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),
         Err(std::fs::TryLockError::Error(error)) => Err(error),
     }
-}
-
-pub use line_wasm_poc::locations::Locations;
-
-pub fn storage_directory(session: &Path) -> PathBuf {
-    if let Ok(mut paths) = Locations::from_environment() {
-        let _ = paths.load_existing();
-        if session == paths.session {
-            return paths.state;
-        }
-    }
-    session
-        .parent()
-        .unwrap_or(Path::new("."))
-        .join("desktop-state")
 }
 
 #[cfg(test)]

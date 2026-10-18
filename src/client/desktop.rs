@@ -5,12 +5,11 @@ use std::{collections::HashMap, sync::Arc};
 pub mod assets;
 #[cfg(test)]
 mod members_tests;
-mod messages;
+
 pub mod read;
 pub mod rich;
 pub mod sync;
 use assets::{Asset, ImageCache};
-pub use messages::LocalStateStore;
 
 #[derive(Clone)]
 pub struct Chat {
@@ -30,7 +29,7 @@ pub struct Chat {
 }
 
 /// Read-only friend/group identity, independent of the loaded conversation list.
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Friend {
     pub id: String,
     pub name: String,
@@ -40,7 +39,7 @@ pub struct Friend {
     pub member_count: Option<usize>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
 pub struct Member {
     pub contact: Friend,
     pub is_self: bool,
@@ -132,10 +131,10 @@ pub fn set_cancellation_token(cancel: std::sync::Arc<std::sync::atomic::AtomicBo
     set_request_cancel(cancel);
 }
 
-type ResyncPages = (Vec<Chat>, Vec<(String, Vec<Message>)>);
-
 pub struct Client {
     api: Api,
+    session_path: PathBuf,
+    cache_root: PathBuf,
     wasm: Vec<u8>,
     state: Value,
     my_mid: String,
@@ -149,15 +148,17 @@ pub struct Client {
     sequence: u64,
     request_seq: u32,
     cache: Arc<std::sync::Mutex<ImageCache>>,
-    messages: messages::MessageCache,
-    detail_boxes: Vec<Value>,
-    loaded_chats: Vec<String>,
-    live_ids: std::collections::VecDeque<String>,
+    requests: HashMap<u32, Value>,
 }
 
 impl Client {
-    pub fn open(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
-        let state = crate::credentials::load_migrating(state_path)?;
+    pub fn open_local(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
+        let has_session = state_path.exists();
+        let state = if has_session {
+            crate::credentials::load_migrating(state_path)?
+        } else {
+            json!({"wasm_sha256":HASH})
+        };
         ensure!(
             state["wasm_sha256"] == HASH,
             "saved session WASM version mismatch"
@@ -168,17 +169,24 @@ impl Client {
             "unsupported WASM release"
         );
         let mut api = Api::new(&wasm)?;
-        validate_keys(&mut api.rt, &state)?;
-        let profile = api.profile(access(&state)?)?;
-        let my_mid = required(&profile, "mid")?.to_owned();
-        let cache = ImageCache::new(cache_root, &my_mid)?;
-        let messages = messages::MessageCache::new(
-            cache.directory(),
-            &decode(required(&state, "login_key")?)?,
+        if has_session {
+            validate_keys(&mut api.rt, &state)?;
+        }
+        let my_mid = state["profile"]["mid"]
+            .as_str()
+            .or_else(|| state["mid"].as_str())
+            .unwrap_or_default()
+            .to_owned();
+        let profile = json!({"mid":my_mid});
+        let cache = ImageCache::new(
+            cache_root,
+            if my_mid.is_empty() { "local" } else { &my_mid },
         )?;
         let sequence = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         Ok(Self {
             api,
+            session_path: state_path.into(),
+            cache_root: cache_root.into(),
             wasm,
             state,
             my_mid: my_mid.clone(),
@@ -195,10 +203,7 @@ impl Client {
             sequence,
             request_seq: (sequence % 1_000_000_000) as u32,
             cache: Arc::new(std::sync::Mutex::new(cache)),
-            messages,
-            detail_boxes: Vec::new(),
-            loaded_chats: Vec::new(),
-            live_ids: std::collections::VecDeque::new(),
+            requests: HashMap::new(),
         })
     }
 
@@ -206,11 +211,65 @@ impl Client {
         chat::talk(&mut self.api, access(&self.state)?, method, args)
     }
 
-    pub fn retain_send_requests(&mut self, sequences: &[u32]) -> Result<()> {
-        self.messages.retain_requests(sequences)
+    pub fn open(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
+        let mut client = Self::open_local(state_path, wasm_path, cache_root)?;
+        client.online_profile()?;
+        Ok(client)
     }
-    pub fn withdraw(&mut self, message: &str) -> Result<()> {
-        self.messages.withdraw(message)
+    pub fn local_mid(&self) -> &str {
+        &self.my_mid
+    }
+    pub fn online_profile(&mut self) -> Result<Value> {
+        let token = access(&self.state).map_err(|_| crate::client::Error::Auth)?;
+        let profile = match self.api.profile(token) {
+            Ok(profile) => profile,
+            Err(error)
+                if error.downcast_ref::<RpcError>().is_some_and(|e| {
+                    matches!(e.http, 401 | 403) || matches!(e.code, 1 | 7 | 8 | 119)
+                }) =>
+            {
+                let cancel = REQUEST_CANCEL
+                    .with(|slot| slot.borrow().clone())
+                    .unwrap_or_default();
+                match sync::refresh(
+                    &mut self.api,
+                    &mut self.state,
+                    &self.session_path,
+                    &cancel,
+                    &mut |_| true,
+                ) {
+                    Ok(()) => {}
+                    Err(error) if sync::expired_refresh(&error) => {
+                        return Err(crate::client::Error::Auth.into());
+                    }
+                    Err(error) => return Err(error),
+                }
+                self.api.profile(access(&self.state)?)?
+            }
+            Err(error) => return Err(error),
+        };
+        let mid = required(&profile, "mid")?;
+        if !self.my_mid.is_empty() && mid != self.my_mid {
+            return Err(crate::backend::Error::SessionInvalid.into());
+        }
+        if self.my_mid.is_empty() {
+            self.my_mid = mid.into();
+            self.cache = Arc::new(std::sync::Mutex::new(ImageCache::new(
+                &self.cache_root,
+                mid,
+            )?));
+        }
+        self.state["profile"] = profile.clone();
+        self.contacts.insert(self.my_mid.clone(), profile.clone());
+        save_state(&self.session_path, &self.state)?;
+        self.account_name = profile["displayName"].as_str().unwrap_or_default().into();
+        Ok(profile)
+    }
+    pub fn latest_revision(&mut self) -> Result<i64> {
+        let v = self.talk("getLastOpRevision", json!([]))?;
+        v.as_i64()
+            .or_else(|| v.as_str()?.parse().ok())
+            .context("missing operation revision")
     }
     pub fn mark_read(&mut self, chat: &str, message: &str) -> Result<()> {
         self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
@@ -227,41 +286,11 @@ impl Client {
             .filter(|range| range.reader != self.my_mid)
             .collect())
     }
-    pub fn own_echo(&self, operation: &Value) -> Option<(String, u32, String)> {
-        if operation["type"].as_u64() != Some(25)
-            || operation["message"]["from"].as_str() != Some(self.my_mid.as_str())
-        {
-            return None;
-        }
-        let request = operation["reqSeq"]
-            .as_u64()
-            .or_else(|| operation["reqSeq"].as_str()?.parse().ok())?;
-        let request = u32::try_from(request).ok()?;
-        if !self
-            .messages
-            .request_matches(request, &operation["message"])
-        {
-            return None;
-        }
-        Some((
-            operation["message"]["to"].as_str()?.into(),
-            request,
-            operation["message"]["id"].as_str()?.into(),
-        ))
-    }
     pub fn operation(&mut self, operation: &Value) -> Option<(String, Message)> {
         if !matches!(operation["type"].as_u64(), Some(25 | 26 | 43)) {
             return None;
         }
         let raw = &operation["message"];
-        let message_id = raw["id"].as_str()?;
-        if self.live_ids.iter().any(|id| id == message_id) {
-            return None;
-        }
-        self.live_ids.push_back(message_id.into());
-        if self.live_ids.len() > 2048 {
-            self.live_ids.pop_front();
-        }
         let from = raw["from"].as_str()?;
         let to = raw["to"].as_str()?;
         let chat = if is_user(to) && from != self.my_mid {
@@ -303,53 +332,31 @@ impl Client {
             .last()
             .and_then(|c| c["id"].as_str())
             .map(str::to_owned);
-        self.detail_boxes = boxes.clone();
         let chats = self.build_chats(boxes, &HashMap::new())?;
         self.more_chats = more_chats;
         self.chat_cursor = chat_cursor;
         Ok(chats)
     }
-    /// Follow-up metadata work yields to queued Send/Messages commands first.
-    pub fn chat_details(&mut self) -> Result<Vec<Chat>> {
-        let boxes = self.detail_boxes.clone();
-        let users: Vec<_> = boxes
-            .iter()
-            .filter_map(|c| c["id"].as_str())
-            .filter(|id| is_user(id))
-            .collect();
-        if !users.is_empty() {
+    pub fn chat_detail(&mut self, id: &str) -> Result<Vec<Chat>> {
+        let mut group_info = HashMap::new();
+        if is_user(id) {
             let response = self.talk(
                 "getContactsV2",
-                json!([{"targetUserMids":users,"neededContactCalendarEvents":[]}, 0]),
+                json!([{"targetUserMids":[id],"neededContactCalendarEvents":[]},0]),
             )?;
-            if let Some(contacts) = response["contacts"].as_object() {
-                for (mid, contact) in contacts {
-                    self.contacts
-                        .insert(mid.clone(), contact["contact"].clone());
-                }
-            }
-        }
-        let groups: Vec<_> = boxes
-            .iter()
-            .filter_map(|c| c["id"].as_str())
-            .filter(|id| !is_user(id))
-            .collect();
-        let mut group_info = HashMap::new();
-        if !groups.is_empty() {
+            self.contacts
+                .insert(id.into(), response["contacts"][id]["contact"].clone());
+        } else {
             let response = self.talk(
                 "getChats",
-                json!([{"chatMids":groups,"withMembers":true,"withInvitees":false},0]),
+                json!([{"chatMids":[id],"withMembers":true,"withInvitees":false},0]),
             )?;
-            if let Some(chats) = response["chats"].as_array() {
-                for chat in chats {
-                    if let Some(id) = chat["chatMid"].as_str() {
-                        self.remember_members(chat);
-                        group_info.insert(id.to_owned(), chat.clone());
-                    }
-                }
+            for chat in response["chats"].as_array().context("missing chats")? {
+                self.remember_members(chat);
+                group_info.insert(id.into(), chat.clone());
             }
         }
-        self.build_chats(&boxes, &group_info)
+        self.build_chats(&[json!({"id":id})], &group_info)
     }
     fn build_chats(
         &mut self,
@@ -554,33 +561,7 @@ impl Client {
         ))
     }
 
-    pub fn resync(&mut self) -> Result<ResyncPages> {
-        self.chats(false)?;
-        let chats = self.chat_details()?;
-        let mut pages = Vec::new();
-        for chat in self.loaded_chats.clone() {
-            pages.push((chat.clone(), self.refresh_messages(&chat)?));
-        }
-        Ok((chats, pages))
-    }
     pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
-        self.loaded_chats.retain(|id| id != chat_mid);
-        self.loaded_chats.push(chat_mid.into());
-        if self.loaded_chats.len() > 8 {
-            self.loaded_chats.remove(0);
-        }
-        if let Ok(Some(mut messages)) = self.messages.page(chat_mid) {
-            // Old cache pages predate sender identity. Refresh these rather
-            // than silently showing anonymous group messages indefinitely.
-            let needs_refresh = messages.iter().any(|m| m.metadata_version < 2)
-                || (!is_user(chat_mid) && messages.iter().any(|m| m.sender_id.is_empty()));
-            if needs_refresh {
-                messages = cached_or_refreshed(messages, || self.refresh_messages(chat_mid));
-            }
-            self.resolve_senders(chat_mid, &mut messages);
-            sort_messages(&mut messages);
-            return Ok(messages);
-        }
         self.refresh_messages(chat_mid)
     }
 
@@ -594,9 +575,6 @@ impl Client {
             !before.is_empty() && delivered_time > 0,
             "invalid history cursor"
         );
-        if let Ok(Some(page)) = self.messages.range(chat, before, delivered_time) {
-            return Ok(page);
-        }
         let data = self.talk("getPreviousMessagesV2WithRequest", json!([{
             "messageBoxId":chat,"endMessageId":{"deliveredTime":delivered_time.to_string(),"messageId":before},"messagesCount":50
         },0]))?;
@@ -605,21 +583,14 @@ impl Client {
         let messages: Vec<_> = raw.iter().take(50).map(|m| self.message(m)).collect();
         let mut messages = normalize_older(before, messages);
         self.resolve_senders(chat, &mut messages);
-        let _ =
-            self.messages
-                .store_range(chat, before, delivered_time, &messages, reached_beginning);
         Ok((messages, reached_beginning))
     }
     pub fn refresh_messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
-        // Prime fingerprints from valid persisted history before fetching updates.
-        let _ = self.messages.page(chat_mid);
         let data = self.talk("getRecentMessagesV2", json!([chat_mid, 50]))?;
         let messages = data.as_array().context("missing recent messages")?;
         let mut messages: Vec<_> = messages.iter().take(50).map(|m| self.message(m)).collect();
         self.resolve_senders(chat_mid, &mut messages);
         sort_messages(&mut messages);
-        // A cache write failure must not hide successfully fetched messages.
-        let _ = self.messages.store_page(chat_mid, &messages);
         Ok(messages)
     }
 
@@ -687,10 +658,7 @@ impl Client {
     }
 
     fn message(&mut self, raw: &Value) -> Message {
-        let fingerprint = messages::fingerprint(raw);
-        if let Some(message) = self.messages.lookup(&fingerprint) {
-            return message;
-        }
+        let fingerprint = format!("{:x}", Sha256::digest(raw.to_string()));
         let mut data = raw.clone();
         let encrypted = raw["chunks"].as_array().is_some_and(|c| !c.is_empty());
         let mut failed = false;
@@ -757,7 +725,11 @@ impl Client {
             reactions: reactions(&data["reactions"]),
             encrypted,
             decryption_failed: failed,
-            request_seq: self.messages.matching_request(raw),
+            request_seq: self
+                .requests
+                .iter()
+                .find(|(_, v)| v["chunks"] == raw["chunks"] && v["to"] == raw["to"])
+                .map(|(s, _)| *s),
             mentioned: mentioned(&data["contentMetadata"], &self.my_mid),
             skip_badge: data["contentMetadata"]["SKIP_BADGE_COUNT"].as_str() == Some("true"),
             metadata_version: 2,
@@ -766,22 +738,13 @@ impl Client {
             } else {
                 Asset::attachment(&data)
             },
-            rich: {
-                let mut rich = rich::parse(&data);
-                rich.withdrawn |= self
-                    .messages
-                    .is_withdrawn(data["id"].as_str().unwrap_or_default());
-                rich
-            },
+            rich: rich::parse(&data),
         };
         if message.rich.withdrawn {
             message.body.clear();
             message.image = None;
             message.reactions.clear();
             message.rich.content_type = 18;
-        }
-        if !message.decryption_failed {
-            self.messages.remember(fingerprint, message.clone());
         }
         message
     }
@@ -841,15 +804,11 @@ impl Client {
     }
 
     pub fn file_asset(&mut self, chat: &str, message: &str) -> Result<(String, Asset)> {
-        let item = match self.messages.cached_message(message)? {
-            Some(message) => message,
-            None => self
-                .messages(chat)
-                .map_err(|error| assets::Failure::from_error(&error))?
-                .into_iter()
-                .find(|m| m.id == message)
-                .ok_or(assets::Failure::Http(404))?,
-        };
+        let item = self
+            .messages(chat)?
+            .into_iter()
+            .find(|m| m.id == message)
+            .ok_or(assets::Failure::Http(404))?;
         ensure!(!item.rich.withdrawn, assets::Failure::Http(404));
         ensure!(
             item.rich
@@ -895,9 +854,7 @@ impl Client {
                 return Err(error.context(SendFailure::Rejected));
             }
         };
-        self.messages
-            .record_request(request_seq, &message)
-            .map_err(|error| error.context(SendFailure::Rejected))?;
+        self.requests.insert(request_seq, message.clone());
         // Never automatically retry this RPC: a timeout can mean it was sent.
         let result = self.talk("sendMessage", json!([request_seq, message]))?;
         Ok(self.message(&result))
@@ -1247,32 +1204,5 @@ mod decrypted_metadata_tests {
         assert_eq!(rich.emoji[0].fallback, "[笑]");
         assert_eq!(raw["contentMetadata"]["ENC_KM"], "synthetic-key");
         assert_eq!(raw["contentMetadata"]["FILE_NAME"], "example.txt");
-    }
-}
-
-// A metadata upgrade must not turn a transient outage into lost offline history.
-fn cached_or_refreshed(
-    cached: Vec<Message>,
-    refresh: impl FnOnce() -> Result<Vec<Message>>,
-) -> Vec<Message> {
-    refresh().unwrap_or(cached)
-}
-#[cfg(test)]
-mod offline_metadata_tests {
-    use super::*;
-    #[test]
-    fn failed_metadata_refresh_preserves_cached_history() {
-        let old: Message = serde_json::from_value(serde_json::json!({
-            "id":"123","body":"offline cached history","timestamp_ms":1,
-            "outgoing":false,"image":null,"reactions":[],"encrypted":false,
-            "decryption_failed":false
-        }))
-        .unwrap();
-        let rows = cached_or_refreshed(vec![old], || {
-            Err(anyhow::anyhow!("synthetic transport outage"))
-        });
-        assert_eq!(rows[0].body, "offline cached history");
-        assert_eq!(rows[0].metadata_version, 0);
-        assert!(!rows[0].skip_badge);
     }
 }
