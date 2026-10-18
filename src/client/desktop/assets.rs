@@ -300,18 +300,10 @@ pub struct Pixels {
     pub rgba: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Default)]
-pub struct CacheStats {
-    pub hits: usize,
-    pub misses: usize,
-    pub downloads: usize,
-}
-
 pub struct ImageCache {
     directory: PathBuf,
     memory: HashMap<String, (Arc<Pixels>, u64)>,
     tick: u64,
-    stats: CacheStats,
 }
 
 impl ImageCache {
@@ -327,20 +319,14 @@ impl ImageCache {
             directory,
             memory: HashMap::new(),
             tick: 0,
-            stats: CacheStats::default(),
         };
         cache.prune(0)?;
         Ok(cache)
     }
-    pub fn stats(&self) -> CacheStats {
-        self.stats
-    }
-
     fn memory(&mut self, key: &str) -> Option<Arc<Pixels>> {
         self.tick += 1;
         let (pixels, used) = self.memory.get_mut(key)?;
         *used = self.tick;
-        self.stats.hits += 1;
         Some(pixels.clone())
     }
 
@@ -349,16 +335,14 @@ impl ImageCache {
         match disk {
             DiskImage::Pixels(pixels) => {
                 if let Ok(file) = OpenOptions::new().write(true).open(&path) {
-                    let _ = file.set_times(fs::FileTimes::new().set_accessed(SystemTime::now()));
+                    let _ = file.set_times(fs::FileTimes::new().set_modified(SystemTime::now()));
                 }
-                self.stats.hits += 1;
                 Ok(Some(self.remember(key, pixels)))
             }
             disk => {
                 if matches!(disk, DiskImage::Invalid) {
                     let _ = fs::remove_file(path);
                 }
-                self.stats.misses += 1;
                 Ok(None)
             }
         }
@@ -410,7 +394,6 @@ impl ImageCache {
         self.prune(png.len() as u64)?;
         let key = asset.key();
         private_write(&self.directory.join(format!("{key}.png")), &png)?;
-        self.stats.downloads += 1;
         Ok(self.remember(key, pixels))
     }
 
@@ -447,23 +430,13 @@ impl ImageCache {
                 continue;
             }
             let metadata = entry.metadata()?;
-            if metadata.modified()?.elapsed().unwrap_or_default()
-                > Duration::from_secs(30 * 24 * 3600)
-            {
-                fs::remove_file(entry.path())?;
-                continue;
-            }
-            entries.push((
-                metadata.accessed().or_else(|_| metadata.modified())?,
-                metadata.len(),
-                entry.path(),
-            ));
+            entries.push((metadata.modified()?, metadata.len(), entry.path()));
         }
         entries.sort_by_key(|entry| entry.0);
         let mut total: u64 = entries.iter().map(|entry| entry.1).sum();
         let mut count = entries.len();
         for (_, size, path) in entries {
-            if total + incoming <= DISK_LIMIT && count < 4096 {
+            if total + incoming <= DISK_LIMIT && count + usize::from(incoming > 0) <= 4096 {
                 break;
             }
             fs::remove_file(path)?;
@@ -482,7 +455,6 @@ enum DiskImage {
 fn disk_image(path: &Path, dimension: u32) -> Result<DiskImage> {
     if let Ok(metadata) = path.metadata()
         && metadata.len() <= MAX_DOWNLOAD as u64
-        && metadata.modified()?.elapsed().unwrap_or_default() < Duration::from_secs(30 * 24 * 3600)
     {
         return Ok(
             match fs::read(path).ok().and_then(|v| pixels(&v, dimension).ok()) {
@@ -567,6 +539,44 @@ pub fn circular_avatar(pixels: &Pixels) -> Pixels {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn recently_read_old_media_survives_prune() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("line-cache-lru-{}", std::process::id()));
+        let mut cache = ImageCache::new(&root, "synthetic-account")?;
+        let read = Asset::avatar("/read").unwrap();
+        let unread = Asset::avatar("/unread").unwrap();
+        let mut png = Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 3, image::Rgba([1, 2, 3, 255]))
+            .write_to(&mut png, ImageFormat::Png)?;
+        let old = SystemTime::now() - Duration::from_secs(60 * 24 * 3600);
+        for asset in [&read, &unread] {
+            let path = cache.directory.join(format!("{}.png", asset.key()));
+            private_write(&path, png.get_ref())?;
+            OpenOptions::new()
+                .write(true)
+                .open(path)?
+                .set_times(fs::FileTimes::new().set_modified(old))?;
+        }
+        // Reopening must not expire old files, and a disk hit must refresh mtime.
+        cache = ImageCache::new(&root, "synthetic-account")?;
+        assert!(cache.read(&read)?.is_some());
+        assert!(
+            cache
+                .directory
+                .join(format!("{}.png", unread.key()))
+                .exists()
+        );
+        cache.prune(DISK_LIMIT - png.get_ref().len() as u64)?;
+        assert!(cache.directory.join(format!("{}.png", read.key())).exists());
+        assert!(
+            !cache
+                .directory
+                .join(format!("{}.png", unread.key()))
+                .exists()
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
     #[test]
     fn original_photo_uses_source_object_and_avatar_is_a_centered_circle() -> Result<()> {
         let encrypted = Asset::photo(

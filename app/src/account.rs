@@ -3,12 +3,10 @@ pub struct ReactionView {
     pub label: String,
     pub image_key: String,
 }
-#[allow(dead_code)]
 pub struct EmojiView {
     pub span: line_wasm_poc::client::desktop::rich::InlineEmoji,
     pub image_key: String,
 }
-#[allow(dead_code)]
 #[derive(Default)]
 pub struct MessageView {
     pub id: String,
@@ -26,6 +24,5 @@ pub struct MessageView {
     pub rich: line_wasm_poc::client::desktop::rich::RichContent,
     pub decryption_failed: bool,
     pub emoji: Vec<EmojiView>,
-    pub mentioned: bool,
     pub skip_badge: bool,
 }

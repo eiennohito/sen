@@ -705,7 +705,6 @@ mod tests {
         let mut locations = Locations {
             session: root.join("data/session.json"),
             wasm: root.join("data/ltsm.wasm"),
-            state: root.join("state"),
             cache: root.join("cache"),
             config: root.join("config/paths.json"),
         };

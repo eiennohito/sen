@@ -19,20 +19,13 @@ Updated 2026-10-18. Workspace: `/home/eien/work/misc/line-app`.
    and U0 reference screenshots are local in `artifacts/captures/`. Still
    untraced: others' reactions (op 140), invite/remove/accept/reject, block.
 
-3. **Local data is a durable store, and at-rest encryption of local data is
-   not a goal** (only the session stays sealed). New groups recorded from the
-   user's report and a source audit, to be implemented together later:
-   D0 (the message model itself: seven unowned copies of each chat's
-   messages, updated by whole-list replacement — redesign around one store
-   before fixing individual symptoms), D1–D8 (durable history and account state, offline-first startup, sync
-   resume, removal of local encryption), M13 (sent message vanishes after a
-   chat switch) and M14 (new messages in preview and badge but not in the
-   chat), both fixed by D2 plus a merge and staleness refresh on open, C6/C7 (placeholder and "secondary" text drawn
-   at full text colour), U1–U6 (profile/members/group surfaces to redesign),
-   P6 (profile action traces, added to the capture list).
+3. **Local data uses a durable, unencrypted SQLite store; only the session
+   stays sealed.** Core model phases 1–3 implement the store, engine,
+   controller and presenter, resolve D0–D8 and M13/M14, and use FakeBackend for
+   demos and snapshots. See [docs/core-model.md](docs/core-model.md).
+   C6/C7 and U0–U6 remain open; protocol work is tracked separately.
 
-Order: D first. Items ready without a decision are in
-[docs/ux-sessions.md](docs/ux-sessions.md) (e.g. D, M13, C6, C7, U2–U6, P4, S23, S24).
+Next work is listed in [docs/ux-sessions.md](docs/ux-sessions.md).
 
 ## Session workflow
 
@@ -73,10 +66,10 @@ sessions and then has independent reviewers check the result.
 
 The implementation and verification record is [docs/ux-acceptance.md](docs/ux-acceptance.md),
 with the audited list of open problems in [docs/ux-sessions.md](docs/ux-sessions.md). The current
-implementation is committed as `d1e5db5`, with browser keyboard/metadata, native
-composer state and failure handling, reading and rich content, layered surfaces,
-unread eligibility, attention services, and bounded older-history work. Read the
-individual acceptance rows for partial behavior and tested builds; this remains
+implementation includes core model phase 3: SQLite owns messages and account
+state; the engine merges every input, the controller applies FIFO deltas, and
+the presenter updates keyed Slint models. Messages have no retention limit.
+Read the acceptance rows for partial behavior and verification; this remains
 a PoC, not a daily-use or live-compatibility claim.
 
 [docs/ux-model.md](docs/ux-model.md) defines behavior;
@@ -104,7 +97,10 @@ cargo build --release --offline -p line-desktop --features ui-debug
 cp target/release/line-desktop /tmp/line-ui-debug-9447
 python3 tools/run-ui-debug.py --binary /tmp/line-ui-debug-9447 --port 9447 --log /tmp/line-ui-9447.log -- --demo
 # In another terminal:
-python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery --reading --layers --rich --focus
+# Run each group on a fresh instance (the helper invokes run-ui-debug.py):
+python3 tools/check-ui-mcp.py --launch --port 9448 --scenarios
+# Repeat separately for --reading --rich --layers --friends --focus
+# --layout-photos --media --unread --auth-recovery, one flag per fresh launch.
 ```
 
 Agent-started GUI previews must use `tools/run-ui-debug.py` with a `ui-debug`
@@ -146,9 +142,14 @@ explicitly assigns its device slot; no historical authorization carries forward.
 
 ## Existing app and tooling
 
-The app uses Slint 1.18.1 Winit/software renderer. The account worker owns crypto
-and RPC/media work; a separate cancellable SSE thread supplies operations through a
-bounded queue. UI models stay on the UI thread; desktop bus work is separate.
+The app uses Slint 1.18.1 Winit/software renderer. One engine worker owns the
+SQLite store and LineBackend's crypto/RPC work. A cancellable SSE thread feeds
+bounded live operations to the scheduler. The UI controller owns AppState and
+drains FIFO deltas on a 16 ms timer; the presenter alone updates keyed Slint
+models. FakeBackend runs demos and snapshots through this same path with an
+in-memory SQLite store. Account stores are MID-scoped databases under XDG data;
+validated sessions can open stored content before connecting. Asset fetchers
+and desktop bus work run separately.
 Normal builds omit MCP;
 `--features ui-debug` enables loopback inspection through the guarded private
 `tools/run-ui-debug.py` scope above; use a unique port for each owner.
@@ -163,7 +164,8 @@ Build with `cargo build --release -p line-desktop`, then
 rejects MCP debug builds. Do not launch the native account during the audit.
 
 Private static image caching already covers avatars, photos, stickers, and paid
-reaction frames (128 MiB / 4096 files disk, 24 MiB decoded memory). Standard
+reaction frames (128 MiB / 4096 files disk LRU by mtime, refreshed on disk
+hits with no age expiry; 24 MiB decoded memory). Standard
 reactions still use Unicode substitutes; animations and custom sticker variants
 are missing. Encrypted sends are wired but no automated real send was performed.
 
@@ -258,7 +260,10 @@ timestamps only; consult it for the latest run's stage.
 - `src/client/desktop.rs`: account operations used by the desktop worker.
 - `src/client/desktop/assets.rs`: authenticated media retrieval, decryption, and
   private disk/decoded-image caches.
-- `app/`: Slint GUI, worker, original app icon, offline demo, headless snapshots.
+- `src/store/`, `src/engine.rs`, `src/backend.rs`: durable SQLite data, engine
+  scheduler and LineBackend/FakeBackend.
+- `src/controller.rs`, `app/src/presenter.rs`: AppState projection and keyed Slint models.
+- `app/`: Slint GUI, original app icon, FakeBackend demo, headless snapshots.
 - `tools/check-ui-mcp.py`, `tools/install-desktop.py`: UI checks and local install.
 - `fixtures/letter-sealing-v2.json`: synthetic independent crypto fixture.
 - `tools/fetch-extension.sh`, `tools/extract_extension.py`: extension acquisition.

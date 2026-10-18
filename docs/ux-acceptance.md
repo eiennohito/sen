@@ -1,9 +1,9 @@
 # Native client UX acceptance
 
-Status as of 2026-10-17, implementation commit `d1e5db5`.
+Status as of 2026-10-18, implementation commit "core model phase 3".
 Requirements derive from [ux-model.md](ux-model.md); section numbers refer to
 it. Open problems and their fix order live in [ux-sessions.md](ux-sessions.md);
-several rows below are marked `yes` over defects listed there (see its V6).
+V6 rows now point to resolved defects or carry `part` with the remaining defect IDs.
 
 ## How to read and update this file
 
@@ -21,7 +21,7 @@ Implemented is not verified. A session that cannot run a verification kind
 writes `—` and says why in its hand-off. Account-dependent checks stay
 blocked while Chrome holds the device slot (see Blockers).
 
-Current totals: 120 requirements. Impl `yes` 91, `part` 27, `no` 2.
+Current totals: 120 requirements. Impl `yes` 92, `part` 26, `no` 2.
 Current changes have no physical or account verification; historical account
 observations below do not verify the current build.
 
@@ -49,7 +49,7 @@ observations below do not verify the current build.
 | SH5 | Window and pane resizing keep selected chat, draft, focus, and reading anchor | part | S |
 | SH6 | Narrow layout below 740 px: Back in header returns to the browser at its previous offset; unread reachable from the conversation pane | yes (Back icon, guarded Alt+Left and mouse Back; S8 unread badge) | S M |
 | SH7 | Minimum 360×520 at the largest text size has no overlapping controls | part (verified at 24 px only by snapshot) | M |
-| SH8 | Settings is a dialog in wide layout; profile and members are panels; only sign-in and the viewer are sheets in wide layout | part (Settings dialog and wide profile panel; members surface unavailable) | M (private virtual-KWin --layers) |
+| SH8 | Settings is a dialog in wide layout; profile and members are panels; only sign-in and the viewer are sheets in wide layout | yes ([S1, S6, P5a resolved](ux-sessions.md#resolved)) | M (private virtual-KWin --layers) |
 | SH9 | Window title is "LINE" (optionally with unread count), never the account name | yes | S M |
 
 ## NAV — Conversation list, friends, search (model §3, §4.2, §9)
@@ -78,7 +78,7 @@ observations below do not verify the current build.
 | --- | --- | --- | --- |
 | RD1 | First open of a read chat shows the bottom; first open of an unread chat shows the unread divider with context | yes (bounded unread-boundary discovery; unknown stays explicit) | S |
 | RD2 | Reopening within the session restores the previous anchor and at-latest state | yes | S M |
-| RD3 | Incoming messages move the view only while at latest; receipts, reactions, media, and previews never move it | yes | S M |
+| RD3 | Incoming messages move the view only while at latest; receipts, reactions, media, and previews never move it | part ([T5](ux-sessions.md#t--transport-and-worker): live reaction decoding remains open) | S M |
 | RD4 | Away from latest, a Latest control shows the count of incoming messages appended below the viewport; older loaded messages do not count | yes | M |
 | RD5 | Latest and Send go to the bottom and resume following; typing, confirmations, and receipts do not | yes | M |
 | RD6 | Older history loads before the top is reached, one request per boundary, stops at the beginning | yes (S10) | S M |
@@ -99,7 +99,7 @@ observations below do not verify the current build.
 | MSG2 | Copy yields visible text with line breaks and emoji fallback, no timestamps or labels | yes (rich Copy message and Select text retain the original fallback text) | S M |
 | MSG3 | Right click keeps an existing selection and targets the message; incoming updates keep selection and menu | part (stable message identity preserves unchanged selection/menu; native menu has no open-state callback for full mutation deferral) | S M (unchanged-row and selected-body chat-switch scenarios) |
 | MSG4 | Context menu offers Copy selection, Copy message, Copy link, Open photo as applicable; menus stay on screen | part (S5 URL actions add full address, Open link and Copy link; body copy unchanged) | M |
-| MSG5 | Links are detected, shown distinctly, inspectable (full URL), and opened only on deliberate activation | part (S5 actionable underlined URL runs below selectable body; inline link styling remains deferred; dragging an action run selects the whole original message) | S M |
+| MSG5 | Links are detected, shown distinctly, inspectable (full URL), and opened only on deliberate activation | part ([P4](ux-sessions.md#p--protocol-gaps): bare domains, uppercase schemes and links across emoji runs) | S M |
 | MSG6 | Reply previews jump to the referenced message with highlight and a return path | yes (within retained history; absent targets show local unavailable feedback) | S M (retained replies) |
 | MSG7 | Photo, video, voice, file, location, contact, sticker, system, withdrawn, undecryptable, and unknown content each have a distinct placeholder or presentation; one bad message hides nothing | yes (typed rows; file name/size/Save, video/voice duration, contact name, literal system text, withdrawal; no playback) | S M |
 | MSG8 | Inline LINE emoji render as runs within text | part (native measured grapheme/image flow; cross-run ligatures/contextual shaping unavailable; static bitmap fallback for animated emoji; Select text switches to the intact fallback body for selection; bodies over 2048 runs use plain fallback) | S M (partial implementation as listed) |
@@ -116,7 +116,7 @@ observations below do not verify the current build.
 | CMP4 | Send is disabled for whitespace or no chat without instructional captions; offline, storage failure and over-size show actionable feedback | yes | S |
 | CMP5 | Switching chats keeps text, caret, selection, and scroll per chat; clicking the open chat changes nothing | yes (text, byte-offset caret/selection, scroll; unchanged-chat guard) | S M |
 | CMP6 | Drafts survive restart in private storage; nothing moves between chats or accounts | yes | S |
-| CMP7 | After submit the composer is empty, focused, and a late result cannot alter newer text | yes | S M |
+| CMP7 | After submit the composer is empty, focused, and a late result cannot alter newer text | part ([S24](ux-sessions.md#s--shell-and-layout): focus on disabled/hidden controls) | S M |
 | CMP8 | Pasting text keeps line breaks; pasting or dropping media opens the attachment preview | part (multiline text preserved; media preview absent) | S M |
 | CMP9 | Attachment selection shows a preview with destination, remove, cancel, Send; nothing transmits on selection or drop | no | — |
 | CMP10 | Shortcut help is in Settings, not a permanent caption under the composer | yes | S M |
@@ -126,7 +126,7 @@ observations below do not verify the current build.
 | ID | Requirement | Impl | Verified |
 | --- | --- | --- | --- |
 | OUT1 | Submit creates a durable Pending item before any network call | yes | S |
-| OUT2 | Pending, Confirmed, Read, Rejected, Uncertain are visually and accessibly distinct in a fixed slot | part (five fixed-slot icons/labels implemented; precise Read integration verified with S8) | S M (Sending, Sent, Not sent, Unconfirmed) |
+| OUT2 | Pending, Confirmed, Read, Rejected, Uncertain are visually and accessibly distinct in a fixed slot | yes ([M6–M8 resolved](ux-sessions.md#resolved): fixed delivery slot) | S M (Sending, Sent, Not sent, Unconfirmed) |
 | OUT3 | Confirmation updates the same item; refresh, reconnect, restart never duplicate it; Confirmed never implies Read | yes | S |
 | OUT4 | The user can keep composing while sends are pending | yes | S |
 | OUT5 | Definite rejection is classified separately from an uncertain result | yes | S M |
@@ -167,7 +167,7 @@ observations below do not verify the current build.
 | IN2 | Selection and focus are visually distinct | yes | M |
 | IN3 | Escape closes only the topmost layer; never the window; never cancels an in-flight pairing without confirmation | yes (top layer only; busy sign-in requires confirmation) | S M (layer escape/focus checks); physical input P— |
 | IN4 | Layers restore focus to their opener | yes | M |
-| IN5 | Modal layers block shortcuts, read markers, and input beneath them; panels do not | yes (shared modal guard; wide profile panel remains non-modal) | S M (private virtual-KWin --layers) |
+| IN5 | Modal layers block shortcuts, read markers, and input beneath them; panels do not | yes ([C1 resolved](ux-sessions.md#resolved)) | S M (private virtual-KWin --layers) |
 | IN6 | Incoming data and send completion never move focus | yes | S |
 | IN7 | Global shortcut table from model §8.1 is implemented and listed in Settings | part (browser/composer/history shortcuts and help implemented; Ctrl+F uses browser search, in-chat search remains unavailable) | S M; physical IME P— |
 | IN8 | Scrollbar drag keeps the thumb under the pointer with physical input | part | M P— |
@@ -176,9 +176,9 @@ observations below do not verify the current build.
 
 | ID | Requirement | Impl | Verified |
 | --- | --- | --- | --- |
-| FB1 | No general status line; each failure appears at its model §9.1 location | yes (local list/history/message feedback and Settings storage-error with Retry saving preferences) | S M (history/local feedback; Settings recovery compiled and synthetic) |
+| FB1 | No general status line; each failure appears at its model §9.1 location | yes ([C2 resolved](ux-sessions.md#resolved)) | S M (history/local feedback; Settings recovery compiled and synthetic) |
 | FB2 | Connection and authentication use one header strip with Retry and Sign in again; it never starts pairing by itself | yes | S M |
-| FB3 | No permanent explanatory captions; no implementation vocabulary in production UI | yes | S M |
+| FB3 | No permanent explanatory captions; no implementation vocabulary in production UI | yes ([C3/C4 resolved](ux-sessions.md#resolved)) | S M |
 | FB4 | Button labels are verbs of at most three words | yes (short action labels including Retry/Edit/Resend/Replace/Append) | S M (S6 recovery flows) |
 | FB5 | Technical diagnostics never appear in message content | yes | S |
 
@@ -188,7 +188,7 @@ observations below do not verify the current build.
 | --- | --- | --- | --- |
 | VIS1 | Type scale derives from the text-size setting; no hard-coded text sizes except the two minimums | yes (S1) | S M |
 | VIS2 | Colours come from the system palette and follow light/dark | yes (S1, Palette roles) | S M; dark desktop screenshot, physical scale/theme V pending |
-| VIS3 | Hover, selected, focused, pressed, disabled are distinct and not colour-only | part | M |
+| VIS3 | Hover, selected, focused, pressed, disabled are distinct and not colour-only | yes ([S5/S9/M9 resolved](ux-sessions.md#resolved)) | M |
 | VIS4 | One icon family; rail and markers use icons, not text glyphs | yes (shared SVG rail, row and delivery icons) | S M |
 | VIS5 | 100 %, 150 %, 200 % scale with long names, unbroken links, Japanese and emoji text remain usable | part | M (1.5 only) P— |
 | VIS6 | Avatars 40 px in lists, 32 px in groups, circular; bubble widths per model | yes | M |
@@ -206,7 +206,7 @@ observations below do not verify the current build.
 | OS6 | State, data, and cache in XDG directories; nothing under the repository by default | yes (explicit legacy-file choice retained) | S |
 | OS7 | Background mode and autostart are off by default and explicit preferences | yes (explicit opt-in preferences, verified tray host, managed autostart) | S (private tray host/lifecycle/autostart); physical tray P— |
 | OS8 | System theme, accent, font, and per-monitor scale are followed | yes (Palette roles, default font and toolkit scale) | S M; physical per-monitor checks P— |
-| OS9 | Links open through the default handler after activation | yes (S5 xdg-open helper thread; demo records URL without launching browser) | S M (demo stub); P— |
+| OS9 | Links open through the default handler after activation | yes ([T8 resolved at 05cd26d](ux-sessions.md#resolved)) | S M (demo stub); P— |
 | OS10 | File picking and drops use the portal file chooser and `text/uri-list` | no | — |
 | OS11 | Accessibility tree exposes roles, labels, and states for every control | part | M |
 | OS12 | Quit flushes drafts and stops sync; logout withdraws notifications and badge | part (Quit flushes state, joins sync and withdraws attention; logout flow unavailable) | S; desktop withdrawal P— |
@@ -218,7 +218,7 @@ observations below do not verify the current build.
 | WIN1 | Settings applies local changes immediately; account edits use Save/Cancel with states | part (local text/composer/notification preferences; account edits unavailable) | S M (text/composer and private notification/background harnesses); host desktop P— |
 | WIN2 | Unsupported settings are absent, not disabled-looking-saved | yes | M |
 | WIN3 | Restart restores selected chat and drafts without opening a modal or marking anything read | yes | S |
-| WIN4 | Reconnecting, offline, and expired authentication are distinct states with history and drafts available | yes (sync-owned header states retain loaded data and drafts) | S; live A— |
+| WIN4 | Reconnecting, offline, and expired authentication are distinct states with history and drafts available | yes ([T6, D4 resolved](ux-sessions.md#resolved); core model phase 2) | S; live A— |
 | WIN5 | Logout explains the fate of drafts and cache; account switching never shows another account's data | part (switch isolation yes; no logout) | S |
 | WIN6 | Media viewer: Escape returns focus to the originating item; wheel and keyboard zoom; drag pan; Save; prev/next scope | yes (viewer keys/wheel/pan, Save and loaded-photo navigation) | M (expanded private virtual-KWin 9452 --layers); physical chooser P— |
 | WIN7 | Group and member surfaces identify their conversation; reopening focuses the existing one | part (identified friend/group profile; members surface unavailable) | S M (private virtual-KWin --layers) |
@@ -253,6 +253,7 @@ Keep account contents and private screenshots out of Git. Newest first.
 
 | Date | Build | Covered | Environment | Result |
 | --- | --- | --- | --- | --- |
+| 2026-10-18 | core model phase 3 | Media LRU, cleanup, all ten UI check groups | Offline release workspace; ui-debug headless software, fresh private instance per group via run-ui-debug.py | fmt and all-target clippy (`-D warnings`, including ui-debug) pass; 194 tests pass, 6 ignored. scenarios, reading, rich, layers, friends, focus, layout-photos, media, unread and auth-recovery all pass. Synthetic data only. |
 | 2026-10-18 | T11 working tree after `d0097e7` | Session credentials sealed with a Secret Service key; plaintext development store | Offline synthetic Rust tests; `dbus-run-session` with a synthetic org.freedesktop.secrets (`LINE_DESKTOP_TEST_BUS=1 ... -- --ignored`) | PASS: formatting, all-target Clippy with warnings denied, workspace tests (136 desktop, 121 library; ignored prerequisites unchanged plus the new private-bus test). Four credential tests (sealing hides tokens, key reuse, tamper rejection, verified one-time migration, no downgrade, refresh kept without a keyring, development store) and the private-bus contract (locked collection prompts, item attributes, relock) pass. Host keyring and the account `session.json` not touched. |
 | 2026-10-17 | V1 review fixes; debug `fddbc0c9cf7c` | Scenario access, modal focus/closing, rich tree bound, file-free layer tests | Private virtual KWin MCP port 9481; a fresh owned scope for each check; software snapshots at 980×720 and 360×520 | PASS: base and each UI flag separately (`--unread`, `--paging`, `--scenarios`, `--friends`, `--auth-recovery`, `--layout-photos`, `--reading`, `--rich`, `--layers`), browser and composer scripts. F12/title hint replaces the floating opener; Close/Escape restores the prior focused item; scenarios close before running and start with persistent shell focus. No scenario-dialog PPM writes during tests. Formatting, normal release build, workspace tests (74 desktop + 32 library; 4 prerequisite tests ignored) and all-target Clippy with warnings denied pass. Inspected profile, conversation and connection-notice MCP snapshots plus a headless transient-notice snapshot under `target/v1-review-snapshots/`; profile Close click and Ctrl+Q after dialog Escape pass. Only wrapper-reported scopes stopped; port released. Physical/account gates unchanged. |
 | 2026-10-17 | `d1e5db5` source; earlier runtime; debug `35cd9f05ef21` | S7 layers, S9 attention, S12 background; final source gates | Offline software renderer; private D-Bus daemon contracts and private virtual KWin scopes 9452/9472 | Formatting and Clippy pass. Workspace: 73 desktop and 32 library tests pass (3 desktop private-bus tests and 1 library WASM test ignored in normal suite); all three desktop private-bus tests pass separately. Expanded layers MCP passes viewer/profile/focus/draft checks. Attention matrix, privacy, daemon availability, exact-once deferred events, tray host loss, close/Open/draft/Quit and managed autostart tests pass. Background wrapper isolates host display/bus, cleans owned processes and refuses stale ownership. Physical IME, compositor activation, sound/DND/lock-screen/tray and account gates remain unverified. |

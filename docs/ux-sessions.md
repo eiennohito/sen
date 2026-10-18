@@ -22,27 +22,8 @@ Recorded 2026-10-18 from a source audit (nothing run against the account).
 Decision from the user: local history is a durable store, not a cache, and
 at-rest encryption of local data (history, drafts, images) is not a goal: anyone
 who can read the data directory also holds the session. Only the session
-credentials stay sealed (T11). Today's model: drafts/outbox/unread in one
-encrypted file (`LocalStateStore`, `src/client/desktop/messages.rs:12-52`); the
-latest 50 messages per chat plus older pages as encrypted files in a 32 MiB /
-256-file / 30-day evicting cache under the image cache (`messages.rs:7-10`,
-`:415-447`); decoded images 128 MiB / 4096 files with a 30-day hard expiry even
-on hits (`src/client/desktop/assets.rs:446,481`). Everything else is refetched
-every start, and nothing renders until `Client::open`'s network `getProfile`
-succeeds (`src/client/desktop.rs:172`; `docs/app-design.md:326` "offline account
-startup is still unavailable").
-
-| ID | Problem | Where | Fix |
-| --- | --- | --- | --- |
-| D0 | The message model is broken by design, not by individual bugs: M13 and M14 are symptoms. A chat's messages live in up to seven copies with no owner — the worker's stored page and decoded memo (`src/client/desktop/messages.rs`), the open chat's `View::messages`, a per-chat `history[chat].messages` (`Reading`) and `recent[chat]` (`app/src/view.rs:32-52`), the persisted outbox, and the `aliases` local↔server id map — while the chat-list preview and unread counts are derived separately. Every source (stored page, server page, live operation, send result, echo, older page) assigns a whole list (`view.rs:205,698,710,1330,1341`, `paging.rs:656`), so whichever arrives last wins and anything only one copy knew is lost. The preview and the chat disagree because they are fed by different copies. | as cited | One owner: the worker's durable store (D1) is the only source of truth for messages and chat rows. Every input — server page, older page, live operation, send/echo, edit, unsend — is a merge into the store keyed by server id (local id for pending sends, linked on echo), never a replacement. The UI holds only a window (range query) of the open chat plus chat-list rows, both projections re-read after a "chat changed" notification; preview, unread and history come from the same rows. Remove `history`/`recent` message copies, list-assignment updates and `aliases`; the outbox becomes pending rows in the store. Write the model (ownership, merge rules, ordering, pending→sent identity) into app-design.md first; D1–D5, M13, M14 are implemented on it. |
-| D1 | History is an evicting cache: deep scrolling in one chat (older pages share the 256-file bound) or 30 days without a refetch deletes other chats' history. A chat app must not lose history it has shown. | `messages.rs:7-10,415-447,473` | A durable per-account message store (SQLite or equivalent; check offline crate availability first) keyed by chat and server order/time, unbounded for messages, with merge of recent pages, older pages, live operations, sends, edits and unsends. Replaces `MessageCache` pages and `protocol.state`. Plain storage, mode 0700 directory. |
-| D2 | Live operations and send results are never written to storage: only `refresh_messages` and older-range loads write pages (`desktop.rs:610,622`); `operation()`, `own_echo` and `send_text_with_request` don't (`desktop.rs:230,252-276,877-904`). Root of M13; a received message in an unopened chat is also lost on open. | `src/client/desktop.rs`, `app/src/account.rs:688-698` | Write every incoming message, own echo, accepted send, withdrawal and edit into D1 as it is applied, before publishing to the UI. |
-| D3 | Account state is not persisted: profile and own MID, chat list and previews, friends, groups and members (in memory only, `desktop.rs:144-146,417-555`), read receipts, sync revision (`getLastOpRevision` every start, `sync.rs:119-124`). | as listed | Store them in D1's database with a schema version; update on every change. |
-| D4 | Startup is network-first: failure of `Client::open` ends at a session error screen with no chats (`account.rs:571,1098`). | `src/client/desktop.rs:159-200`, `app/src/account.rs` | Split open into offline (open store, publish chats, friends, account name, last open chat and its history, stale unread marked per ux-model §150-155) and online (profile check; MID mismatch discards the store's view, never the data). The UI shows "Connecting…" over cached content. |
-| D5 | Sync cannot resume: it always starts from `getLastOpRevision`, and marks a revision done when handed to the channel, not when applied (`sync.rs:279-283`). | `src/client/desktop/sync.rs` | Persist the revision in D1 only after the operation is applied; seed `localRev` from it (`stream()` already sends it, `:381`); fall back to the existing fullSync/partialFullSync and then `getLastOpRevision`; mark replayed operations so notifications and unread increments are not repeated. |
-| D6 | Re-pairing the same account probably breaks startup: the message-cache directory is keyed by MID but its key by the new `login_key`; pages fail HMAC and are silently dropped, and `protocol.state` failing HMAC makes `Client::open` fail every time (`messages.rs:100,113,309-313`, `client.rs:629`). Inferred from source, not reproduced. | `messages.rs` | Removed by D1/D7 (no login-key-derived encryption). Until then, add a re-pairing test. |
-| D7 | Local encryption to remove: `LocalStateStore` and `MessageCache` AES-CTR+HMAC keyed by HKDF(login_key); drafts directory named by sha256(login_key), so a new pairing orphans drafts. | `messages.rs:12-52,84-103`, `app/src/storage.rs` | Move drafts, outbox, preferences and unread into D1, keyed by account MID; one-time import of the existing encrypted files while the current `login_key` is readable; then delete the encryption code. |
-| D8 | Media cache: 30-day hard expiry even for items still in use; recent history pages and images share eviction concerns. | `assets.rs:446,481` | Keep media a bounded LRU (size bound only, refreshed on read); no age expiry for used items. Avatars may live in D1 or the media cache. |
+credentials stay sealed (T11). The implemented ownership and storage model is described in
+[core-model.md](core-model.md). D0–D8 are resolved below.
 
 ## T — Transport and worker
 
@@ -106,8 +87,7 @@ shared media.
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| M14 | Reported by the user (live): two new messages appear in the chat-list preview and the dock badge but not in the chat. Same mechanism as M13, from source: a live message for a chat that isn't open goes only into the view's per-chat copy (`app/src/view.rs:699-707`) and the preview/unread; it is never written to the stored page (D2). Opening the chat calls `load(ui,false)` (`view.rs:241`); `Client::messages` returns the stored page with no network call unless it predates sender metadata (`src/client/desktop.rs:566-584`), even when the chat row's last message is newer than the page; `Update::Messages` then replaces the rows, so the new messages disappear and stay missing until a resync, a send or Retry. Not reproduced (demo skips `load`). | as cited | D2 write-through, plus M13's merge rule; additionally, when the chat row's last message id/time is newer than the stored page's newest row, refresh from the server on open (stale-while-revalidate) — this also covers messages missed while offline. Controller test: incoming for a closed chat, open, stale page arrives, rows kept; library test: page older than the chat row triggers a refresh. |
-| M13 | Reported by the user: send a message, open another chat, come back: the sent message is gone from the history, though the chat-list preview still shows it. Diagnosed from source (the demo skips `load()` and does not reproduce it; live not run). (1) `select` restores the remembered rows, then `load(ui,false)` (`app/src/view.rs:241`) returns the stored page without a network call (`src/client/desktop.rs:566-584`); (2) that page never received the message (D2); (3) the post-send `Messages{refresh:true}` is held in the single `pending` slot (`app/src/account.rs:804`) and overwritten by the own-echo push's `Chats` refresh (`:696-698`) — inferred ordering; (4) `Update::Messages` replaces `self.messages` with the stale page (`view.rs:1244-1349`) and the outbox entry was already dropped once the server id arrived (`view.rs:684-688,1317-1321`). The preview survives because `refresh_preview` ignores an older page (`view.rs:71`). Received live messages in an unopened chat vanish the same way. | as cited | D2 (write-through) is the fix; also make `pending` a queue or never let a push displace a `Messages` refresh, and merge an arriving page with retained newer rows instead of replacing them. Add a live-path controller test: send, switch, return, stale page arrives, row kept. |
+M13 and M14 are resolved by the core model; see the resolution rows below.
 
 ## C — Composer, input, feedback
 
@@ -121,12 +101,23 @@ shared media.
 | ID | Problem | Fix |
 | --- | --- | --- |
 | V5 | No physical verification at all (Fcitx, scrollbar drag, 100/150/200 % scale, dark theme, notifications, tray, single-instance raise) and no account verification. | A person at the desktop, then assign the device slot. |
-| V6 | `ux-acceptance.md` rows marked `yes` over the problems above: VIS3, FB1, FB3, WIN4, IN5, MSG5, RD3 (live), CMP7 (M), OS9, OUT2 (fixed slot), SH8. | Reset those rows when their fix lands; do not pre-emptively edit the history. |
+| V6 | Acceptance rows reconciled on 2026-10-18 (core model phase 3): resolved defects point to their resolution; remaining defects are `part` with their IDs. | Keep Impl separate from verification; physical and account checks remain pending (V5). |
 
 ## Resolved
 
 | ID | Resolution |
 | --- | --- |
+| D0 | Phases 1–2: SQLite is the sole message owner; controller projections and keyed presenter consume engine deltas. |
+| D1 | Phase 1: durable per-account SQLite history, unbounded messages. |
+| D2 | Phases 1–2: pages, live operations, echoes and send results merge into the store before deltas. |
+| D3 | Phases 1–2: account identity, chats, contacts, members, receipts and sync revision persist in SQLite. |
+| D4 | Phase 2: local open precedes connection; validated identity selects the stored account offline. |
+| D5 | Phase 2: applied revisions persist transactionally and seed reconnect; replay suppresses duplicate attention. |
+| D6 | Resolved by removal in phase 2: no login-key-derived local state or message-page encryption remains. |
+| D7 | Phase 2 removed LocalStateStore, MessageCache and encrypted pages; drafts, outbox and preferences use the MID-scoped store. Phase 3 removes unused paths. No legacy import or deletion. |
+| D8 | Phase 3: media is a 128 MiB / 4096-file LRU; disk hits refresh mtime, pruning evicts oldest mtime, no age expiry. Decoded cache: 24 MiB. |
+| M13 | Phases 1–2: stable message keys and monotonic store merges retain sends across chat switches and stale pages; engine/controller regression coverage. |
+| M14 | Phases 1–2: closed-chat arrivals persist; opening reads the same rows and schedules refresh when the store is behind; engine/controller regression coverage. |
 | T1 | RPCs go through one pooled `ureq` 3 agent per `Api` (rustls, HTTP/1.1, no async runtime) with the curl path's safety properties, prompt cancellation including DNS, and a single pre-body retry on stale reused connections. Live account unverified. |
 | T7 | QR encoded in-process with `qrcodegen` (PNG for the app and `--qr-file`, black-on-white ANSI or plain text in the CLI); kitty output removed. Verified by independent zxing decode. |
 | T8 | Already correct at `05cd26d`: `app/src/links.rs` spawns `xdg-open` on a helper thread and waits on it. The audit row was stale. |

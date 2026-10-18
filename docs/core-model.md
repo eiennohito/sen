@@ -1,37 +1,10 @@
 # Core model: store, worker, projection
 
-Status: accepted 2026-10-18 (full rewrite, SQLite, FakeBackend demo, no legacy import). Replaces the PoC message model (D0)
-and the worker/controller artifacts found in the 2026-10-18 audits. Behaviour
-stays [ux-model.md](ux-model.md); engineering constraints not overridden here
-stay in [app-design.md](app-design.md). Phase 1 of the Store library is
-implemented; the worker and projection below remain planned.
-
-## Why a rewrite, not fixes
-
-The PoC keeps up to seven unowned copies of a chat's messages (worker page
-files and memo, `View.messages`, `history[chat]`, `recent[chat]`, the outbox,
-`aliases`), and each source assigns a whole list, so the last arrival wins
-(M13, M14). Around it, the main flows are held together by mechanisms that
-lose work silently:
-
-| Artifact | Failure |
-| --- | --- |
-| Worker `pending: Option<Command>` slot (`account.rs:580…804`) | Any push overwrites the post-send refresh, `ChatDetails` or `Receipts`. |
-| `pending = Chats` after every live operation | Three RPCs per operation; resets chat-list pagination (`desktop.rs:290`). |
-| `connect()` drops unknown commands (`account.rs:1121`) | A chat opened while offline stays "loading" forever. |
-| `Client::open` requires the network; every failure becomes `ConnectionFailure::Session` | Offline start shows "Signed out" and offers re-pairing. |
-| Deferred updates while the pointer is down (`deferred.rs`) | Drops and reorders updates; `[Messages, Incoming, Messages]` loses the incoming row. |
-| `Update::Chats` assigns preview/activity unconditionally, never removes rows | Stale responses regress previews; left chats stay forever. |
-| Three different ordering tiebreaks (`view.rs:675,1268`, `paging.rs:5`) | Same-millisecond messages reorder between paths. |
-| Outbox: string statuses, no discard, 256 cap | Failed items accumulate until Send is disabled. |
-| SSE thread exits on credential/IO errors; pump threads exit after one 2 s UI stall | Live sync, tray and notification actions die until restart. |
-| All worker errors reduced to `Err(_)` or UI strings | Auth expiry, offline, server and decode failures are indistinguishable. |
-| `start_demo` reimplements the worker protocol; 66 `demo` branches in production code | The demo cannot reproduce M13/M14 because it skips `load()`. |
-| `View`: ~55 fields, a 1,050-line `update` match, Slint properties read as state | Every flow above is entangled in it. |
-
-None of these is fixed by patching one site, because the defects come from
-having no owner and no typed state. The rewrite below gives each piece of
-state exactly one owner.
+Status: implemented through core model phase 3, 2026-10-18. SQLite stores
+account data; FakeBackend drives offline demos and snapshots through the same
+engine, controller and presenter as the account backend. Behavior is defined
+in [ux-model.md](ux-model.md); engineering constraints are in
+[app-design.md](app-design.md).
 
 ## Ownership
 
@@ -71,9 +44,8 @@ directory with mode 0700, WAL mode, `synchronous=NORMAL`. It is not encrypted
 (user decision 2026-10-18). Migrations are numbered SQL scripts recorded in
 `PRAGMA user_version`.
 
-The 2026-10-15 rule in app-design.md, "no database to draw the window", is
-narrowed: the UI never queries the database and never waits on it. Drawing
-depends only on `AppState`.
+The UI never queries the database or waits on it. Drawing depends only on
+`AppState`.
 
 Tables (columns abbreviated):
 
@@ -95,8 +67,7 @@ Tables (columns abbreviated):
 
 `key` is the row identity for the life of the row. It does not change when a
 pending send gets its server id. The UI keys every row by `key` and never by
-server or local id, which removes `aliases`, `canonical_history_id` and
-`displayed_history_id`.
+server or local id.
 
 ### Order
 
@@ -121,12 +92,12 @@ There is one total order everywhere: `(sort_ts, sort_id)`.
 | Reaction op 139/140 | Replace `reactions_json` if the op's revision is newer. |
 | Receipt op 55 / read ranges | Advance `delivery` to Read for outgoing rows up to the marker. |
 | Read elsewhere op 40 | Advance `chat.last_read_server_id`; recompute unread. |
-| Chat list page | Upsert `chat` rows. Preview and activity come from the chat's newest message row, never from the list payload, unless the list's last message is newer than anything stored. In Phase 1 the list input carries only the last server id/time, so persist that hint and report `needs_refresh` until a page/live row catches up (M14); do not fabricate a message body. Chats absent from a *complete* list sweep are marked `left`. |
+| Chat list page | Upsert `chat` rows. Preview and activity come from the chat's newest message row, never from the list payload, unless the list's last message is newer than anything stored. The list input carries only the last server id/time, so persist that hint and report `needs_refresh` until a page/live row catches up (M14); do not fabricate a message body. Chats absent from a *complete* list sweep are marked `left`. |
 
 Preview, activity, unread and history are all read from the same rows, so
 they cannot disagree.
 
-The Phase 1 API accepts canonical decimal server ids (up to 20 digits, no
+The store API accepts canonical decimal server ids (up to 20 digits, no
 leading zeros except `0`). Zero padding then exactly preserves the existing
 `(length, lexicographic)` comparison. Invalid ids fail the entire transaction.
 `MessageInput.created_ms <= 0` falls back to a positive `delivered_ms`, then zero.
@@ -179,37 +150,33 @@ The actions on failed rows are Retry (same row, new `request_seq`), Discard
 row and discards the old one after a duplicate-risk confirmation. There is no
 count cap; a chat's failed rows are listed in its row badge until resolved.
 
-### Legacy import
+### Existing files
 
-Nothing is imported (user decision 2026-10-18). The store starts empty and
-the app contains no code that reads, migrates or deletes the old files. Once
-phase 3 has removed the encryption code (D7, D6), a one-off subagent lists the
-old `desktop.state`, encrypted message pages and `protocol.state` and deletes
-them after the user confirms. The session file and the media cache are not
-legacy and stay.
+The store starts empty; there is no legacy file reader, migration or deletion.
+The session file remains sealed; LINE media decryption remains part of the
+protocol. Media is a 128 MiB / 4096-file LRU ordered by mtime, refreshed on disk
+hits, without age expiry; decoded images have a 24 MiB budget.
 
 ## Worker
 
-### Scheduler (replaces `pending` and the shared 8-slot queue)
+### Scheduler
 
 The worker has one `Inbox` (a `Mutex` plus `Condvar`) with three lanes, served
 in this order:
 
 1. **User intents**: open chat, send, older/newer, mark read, retry, discard,
    friends, members, sign-in. FIFO and unbounded, because the UI produces them
-   at human rate. They are never dropped, so "Account is busy" disappears.
+   at human rate. They are never dropped.
 2. **Live operations** from the SSE thread: FIFO, bounded at 256. The SSE
    thread blocks when the lane is full (backpressure, no drops).
 3. **Refresh intents**: a *set* (`ChatList`, `ChatDetails(chat)`,
    `Recent(chat)`, `Receipts(chat)`, `Friends`, `Members(chat)`). Inserting an
-   intent that is already present is a no-op, so nothing overwrites anything.
+   intent that is already present is a no-op, so duplicate refreshes are coalesced.
    Each intent records its reason only for logging.
 
 Refresh intents are internal and have no UI. Freshness is the app's job: it
 refreshes on open, on reconnect and when the store knows it is behind. No
-surface gets a Refresh or Reload control. The PoC's Retry buttons for history
-loading, the chat list and the connection banner go away. The only
-user-initiated retries left are on things the user did: a failed send (Retry,
+surface gets a Refresh or Reload control. The only user-initiated retries are on things the user did: a failed send (Retry,
 Discard) and an explicitly opened original or file that failed to download.
 
 A live operation applies its delta directly (move the chat up, write the row,
@@ -232,8 +199,7 @@ enum Connection {
 ```
 
 The worker owns it and publishes each transition as one delta. The UI derives
-the banner and the enabled actions from it with a pure function. This replaces
-the nine booleans.
+the banner and the enabled actions from it with a pure function.
 
 Startup is two-phase:
 
@@ -273,9 +239,8 @@ The engine talks to a `Backend` trait at the RPC level: `profile`, `chats`,
 - `FakeBackend`: in-process, scripted. It serves canned chats and messages and
   can inject operations, delays and failures.
 
-The demo (`--demo`), `--snapshot` scenes and integration tests run the *real*
-engine, store and controller on `FakeBackend`. `start_demo` and the `demo`
-branches in `View`, `paging` and `main` are deleted.
+The demo (`--demo`), `--snapshot` scenes and integration tests run the same
+engine, store and controller on `FakeBackend`.
 
 ## Projection and deltas
 
@@ -296,15 +261,15 @@ enum Delta {
 ```
 
 - A `sub` id fences deltas for a window that was replaced by a newer
-  subscription. This replaces the `generation` checks.
+  subscription.
 - The controller applies deltas immediately, including while the pointer is
   down. The presenter preserves row identity by `key`, so selection and menus
-  survive patches. This deletes `deferred.rs`. If pointer-down stability needs
+  survive patches. If pointer-down stability needs
   more than keyed patching, the presenter (not the data layer) may hold back
   *model commits* until release, without dropping anything.
 - Scrolling far moves the window: the controller asks for a new window
   anchored at the visible row. The store is the history, so there is no UI-side
-  retention policy and no `RETAINED_ROWS`.
+  retention policy.
 - Image bitmaps are not stored in rows. The presenter looks them up by asset
   key in the existing decoded-image cache when it builds a row.
 
@@ -327,37 +292,11 @@ store and controller:
 - Restart: history, drafts, failed outbox items and the scroll anchor are
   restored from the store.
 
-## Implementation phases
+Out of scope: U-group surfaces, P-group protocol additions, T5 and T9.
 
-The new code replaces the old path; it does not adapt to it. No adapters or
-shims keep the PoC's `View`, `Update` protocol or worker loop running next to
-the new ones. Existing conventions are kept only where they are sound on their
-own merits (the transport, crypto, asset fetchers and rich-text rendering are).
-The rewrite lands on one branch and merges when the new path works end to end;
-intermediate phases need not leave a usable app. Each phase gets one review
-focused on data loss and broken flows, not style.
+## Implementation notes
 
-1. **Store library** (`src/store/`): schema, migrations, merge functions,
-   order, segments, outbox states. Pure unit tests, no UI.
-2. **Engine, controller and presenter, together**: `Backend` trait,
-   `LineBackend` (from `Client`), `FakeBackend`, scheduler, connection state
-   machine, two-phase open, sync supervisor with persisted revision, typed
-   errors, deltas, `AppState`, keyed models. Delete the old worker loop,
-   `View`'s message copies, `history`, `recent`, `aliases`, `deferred.rs`,
-   `Saved`'s outbox, the demo branches and `start_demo`. The demo and snapshot
-   scenes run on `FakeBackend`.
-3. **Cleanup**: remove the legacy encryption and the old cache code (the old
-   files are deleted separately, see "Legacy import"), media cache LRU without
-   expiry (D8), update app-design.md and the ux-acceptance rows, reset the V6
-   rows.
-
-Out of scope here: U-group surfaces, P-group protocol additions (the engine
-gets a slot for reaction and unsend ops, which T5/P7 then fill), and T9.
-
-## Phase 2 implementation differences
-
-The worker, RPC backend seam, controller and keyed Slint presenter are now in
-this worktree. The following details differ from the design above:
+The implementation has these specific constraints:
 
 - The UI drains the engine's single FIFO on a 16 ms event-loop timer. Each
   delta is applied as it is drained, including during pointer interaction;
@@ -375,6 +314,3 @@ this worktree. The following details differ from the design above:
 - RPC errors use `client::Error`; authorization expiry is a single `Auth`
   variant rather than a separate `AuthCause` enum. Media failures retain the
   existing asset fetcher's typed failure enum.
-- The unused legacy encrypted page/cache source module was removed with its
-  retired Client call sites, ahead of Phase 3 cleanup. No legacy on-disk files
-  were touched.
