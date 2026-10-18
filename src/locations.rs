@@ -8,7 +8,6 @@ use std::{
 #[derive(Clone, Debug)]
 pub struct Locations {
     pub session: PathBuf,
-    pub state: PathBuf,
     pub cache: PathBuf,
     pub wasm: PathBuf,
     pub config: PathBuf,
@@ -17,7 +16,6 @@ pub struct Locations {
 struct Existing {
     session: PathBuf,
     wasm: PathBuf,
-    state: PathBuf,
 }
 impl Locations {
     pub fn from_environment() -> Result<Self, String> {
@@ -36,7 +34,6 @@ impl Locations {
         Ok(Self {
             session: data.join("session.json"),
             wasm: data.join("ltsm.wasm"),
-            state: base("XDG_STATE_HOME", ".local/state").join("line-desktop"),
             cache: base("XDG_CACHE_HOME", ".cache").join("line-desktop"),
             config: base("XDG_CONFIG_HOME", ".config").join("line-desktop/paths.json"),
         })
@@ -48,7 +45,6 @@ impl Locations {
         let old: Existing = serde_json::from_slice(&fs::read(&self.config)?)?;
         self.session = old.session;
         self.wasm = old.wasm;
-        self.state = old.state;
         Ok(true)
     }
     pub fn legacy_available(root: &Path) -> bool {
@@ -62,12 +58,10 @@ impl Locations {
         if existing {
             self.session = root.join("artifacts/auth/session.json");
             self.wasm = root.join(crate::DEFAULT_WASM);
-            self.state = root.join("artifacts/auth/desktop-state");
         }
         let value = Existing {
             session: self.session.clone(),
             wasm: self.wasm.clone(),
-            state: self.state.clone(),
         };
         use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
         fs::DirBuilder::new()
@@ -94,7 +88,6 @@ mod tests {
         let paths = Locations::resolve(|key| match key {
             "HOME" => Some("/home/synthetic".into()),
             "XDG_DATA_HOME" => Some("/data".into()),
-            "XDG_STATE_HOME" => Some("/state".into()),
             "XDG_CACHE_HOME" => Some("/cache".into()),
             "XDG_CONFIG_HOME" => Some("/config".into()),
             _ => None,
@@ -102,7 +95,6 @@ mod tests {
         .unwrap();
         assert_eq!(paths.session, Path::new("/data/line-desktop/session.json"));
         assert_eq!(paths.wasm, Path::new("/data/line-desktop/ltsm.wasm"));
-        assert_eq!(paths.state, Path::new("/state/line-desktop"));
         assert_eq!(paths.cache, Path::new("/cache/line-desktop"));
         assert_eq!(paths.config, Path::new("/config/line-desktop/paths.json"));
         for invalid in [None, Some(""), Some("relative")] {
@@ -121,10 +113,6 @@ mod tests {
             assert_eq!(
                 paths.wasm,
                 Path::new("/home/synthetic/.local/share/line-desktop/ltsm.wasm")
-            );
-            assert_eq!(
-                paths.state,
-                Path::new("/home/synthetic/.local/state/line-desktop")
             );
             assert_eq!(
                 paths.cache,
@@ -156,7 +144,6 @@ mod tests {
         let paths = Locations::resolve(|key| match key {
             "HOME" => Some("/home/test".into()),
             "XDG_DATA_HOME" => Some("relative".into()),
-            "XDG_STATE_HOME" => Some("/state".into()),
             _ => None,
         })
         .unwrap();
@@ -164,7 +151,6 @@ mod tests {
             paths.session,
             Path::new("/home/test/.local/share/line-desktop/session.json")
         );
-        assert_eq!(paths.state, Path::new("/state/line-desktop"));
         assert_eq!(
             paths.wasm,
             Path::new("/home/test/.local/share/line-desktop/ltsm.wasm")
@@ -184,7 +170,6 @@ mod tests {
         let mut reloaded = Locations::resolve(|key| (key == "HOME").then(|| root.clone())).unwrap();
         assert!(reloaded.load_existing().unwrap());
         assert_eq!(reloaded.session, old);
-        assert_eq!(reloaded.state, root.join("artifacts/auth/desktop-state"));
         assert_eq!(
             fs::read(&old).unwrap(),
             b"synthetic sentinel, not credentials"

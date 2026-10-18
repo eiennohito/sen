@@ -92,7 +92,6 @@ impl Presenter {
                     .collect(),
                 decryption_failed: raw.decryption_failed,
                 rich: raw.rich,
-                mentioned: raw.mentioned,
                 skip_badge: raw.skip_badge,
             })
         } else {

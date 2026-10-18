@@ -9,11 +9,10 @@ original LINE crypto blob behind the existing Rust host.
 The first window has a searchable conversation list, a message history, and a
 multiline composer. Use ordinary text, flat colors, and restrained spacing.
 Avoid animated backgrounds, blur, shadows, and continuously running timers.
-The default application now opens the saved account, loads real chat metadata,
-decrypts recent history, and displays cached assets. Drafts and unresolved
-submissions persist in encrypted, account-scoped private state under the XDG
-state directory. Explicit legacy/custom session paths retain their configured
-state location.
+The default application opens the account's SQLite store before connecting.
+Messages are unbounded; drafts, pending sends, preferences and unread state
+belong to that store. See [core-model.md](core-model.md) for ownership,
+merge rules and startup behavior.
 `--demo` and `--snapshot` use synthetic conversations without account access.
 
 ## Everyday usability gate
@@ -70,7 +69,7 @@ any preedit check. The observer only tracks whether native preedit is active;
 it propagates every event and keeps app shortcuts, including Enter-to-send,
 from running during composition.
 A click on the already-selected chat does not replace editor text. Committed
-draft changes go to a coalescing encrypted-storage worker. Switching restores
+draft changes go through the engine to SQLite. Switching restores
 text, byte-offset caret/selection, and editor scroll; undo-history restoration
 is not guaranteed by the native selection API.
 
@@ -104,12 +103,15 @@ evaluated then; keep CPU rendering and IME quality as requirements.
 
 ```mermaid
 flowchart LR
-    UI[Slint UI thread] -->|bounded commands| Worker[Account worker]
-    Worker -->|view updates via event loop| UI
-    Worker --> API[LINE JSON / HTTPS]
-    Worker --> Crypto[Original WASM via Wasmi]
-    Worker --> State[Private session storage]
+    Controller[Controller / AppState] -->|intents| Engine[Worker / Engine]
+    Engine --> Store[SQLite Store]
+    Engine --> Backend[LineBackend or FakeBackend]
+    Engine -->|FIFO deltas| Controller
+    Controller --> Presenter[Presenter / Slint models]
 ```
+
+See [core-model.md](core-model.md) for the store, engine, controller and
+presenter. The UI drains deltas on a 16 ms event-loop timer.
 
 The desktop and CLI now share `src/client.rs` and `src/client/chat.rs`.
 `src/client/desktop.rs` owns the account operations, and its `assets` module
@@ -126,16 +128,14 @@ DNS lookup cannot hold the RPC resolver lock. Originals and files use the
 same pool, with explicit requests ahead of automatic thumbnails. A separate
 cancellable SSE transport thread delivers operations through the bounded worker queue;
 desktop D-Bus service/attention work runs outside the UI thread. Do not move a Wasmi store
-between threads or perform curl/network work on the GUI thread. Use a bounded
-command queue, publish plain view data through `upgrade_in_event_loop`, and
-discard a runtime after a WASM exception. Coalesce model updates; never ship
+between threads or perform curl/network work on the GUI thread. Use the engine's FIFO intent and delta lanes, and
+discard a runtime after a WASM exception. Never ship
 private keys or credentials to the UI. Media keys stay on background workers.
 Asset cache misses request media authorisation from the account worker over the
 separate bounded asset channel; cache hits need no token RPC. Asset completions
-return over that channel and use the existing UI events, guarded by the connection
-epoch. UI commands and sync pushes share eight command slots; asset events have
-eight separate slots and are serviced after queued commands. Both senders wake
-the worker directly; idle waits do not poll. Disk reads and image decode/encode run outside the cache mutex; map, prune
+return over that channel, guarded by the connection epoch. The scheduler serves
+user intents, bounded live operations and deduplicated refreshes in that order.
+Disk reads and image decode/encode run outside the cache mutex; map, prune
 and atomic private-write bookkeeping remain serialised.
 The asset queue retains at most 256 distinct pending/active keys and de-duplicates
 in-flight requests. A latest-value mailbox carries the open chat and exposed
@@ -171,10 +171,10 @@ Loaded media labels omit the type glyph; text-only labels keep it, including
 albums. Notifications retain their prior text, including sticker STKTXT.
 `cargo test --release --offline -p line-desktop chat_preview_performance -- --ignored --nocapture` probes 500 chat rows and 60 scroll redraws.
 
-Late history responses are checked against both chat ID and request generation.
+Window deltas are fenced by subscription ID.
 Submission saves a durable pending item before queueing a network command,
-then clears the submitted editor. Confirmation updates the item by local ID;
-it never clears newer text or changes focus. Known server IDs reconcile to
+then clears the submitted editor. Confirmation links the server ID to the same
+stable store key; it never clears newer text or changes focus. Known server IDs reconcile to
 that same row identity on refresh. Ambiguous sends remain unresolved across
 restart and are never retried automatically. Definite rejection and uncertain
 results have separate states. Recovery requires a deliberate Replace/Append
@@ -273,23 +273,6 @@ compositor's effective scale factor was not captured, so this is a preliminary
 sample, not a cross-machine benchmark. The preview closed cleanly after the
 smoke. Japanese composition has not been manually verified.
 
-S10 offline paging measurement (2026-10-17): one release `ui-debug` process,
-Slint software renderer on Plasma Wayland at scale 1.5, 980×720 logical pixels
-(1470×1080 screenshot). RSS was 62,056 KiB after opening the initial 50-message
-page and 71,100 KiB after traversing all 1,000 synthetic messages in 20 pages
-(+9,044 KiB). The rendered model stayed at ≤200 rows; retained history stayed
-at ≤600 rows per view, with eight total views. This measures that process's
-paging growth, not idle CPU, PSS, native-account memory, or physical input.
-
-History retention accounts conservatively for body/metadata, rich/link/reaction
-models, and referenced decoded image dimensions. Each retained view and recent
-snapshot has a 4 MiB budget; oversized optional image handles are released. One
-indivisible oversized text row is retained as an explicit exception, with local
-feedback, so budgeting never silently drops the anchored message. Older/newer
-range cursors reopen evicted pages through the worker's bounded encrypted cache.
-Deferred updates coalesce within bounded chat/image/terminal-event limits;
-loss of exact arrival-count precision offers Latest to retrieve current messages.
-
 At 980×720, a single 32-bit pixel buffer costs about 2.7 MiB. More buffers,
 HiDPI, font caches, accessibility, WASM memory, and decoded images add to this.
 Measure RSS and PSS after first paint and again after opening chats, composing
@@ -297,20 +280,12 @@ Japanese, and leaving the app idle. Record window dimensions and scale factor
 with each result. A headless snapshot is not an idle desktop memory measurement.
 
 Chats, friends, history and the native composer use the shared `Pane` scrollbar.
-Standard Settings, profile and sign-in scrollbars remain documented exceptions;
-the viewer uses bounded drag panning. History
-exposes at most 200 rows to Slint, with a 600-row / 4 MiB retained budget per
-loaded conversation and up to eight cached views. The indivisible-text exception
-is described above. Older pages use the
-worker's delivered-time/message-ID cursor; window changes preserve a measured
-reading anchor. Physical dragging and connected resource measurements remain
-release gates.
-
-The worker's decoded thumbnail cache is capped at 24 MiB; private media disk
-cache is 128 MiB / 4096 files with 30-day expiry. The decoded message memo is
-512 messages / 16 MiB and encrypted recent/range pages share a 32 MiB / 256-file
-budget. Network, decryption and decoding remain on workers. The public-key
-response cache is bounded to 256 entries.
+Settings, profile and sign-in use standard scrollbars; the viewer uses bounded
+drag panning. The controller holds the open chat's store window and preserves
+its reading anchor. SQLite keeps unbounded messages; media uses a 128 MiB /
+4096-file disk LRU ordered by mtime, refreshed on disk hits, without age expiry,
+and a 24 MiB decoded cache. Network, decryption and decoding run on workers.
+The public-key response cache is bounded to 256 entries.
 
 ## Reference audit and caching update
 
@@ -320,17 +295,13 @@ priority over expanding behavior without a reference. Friends, bounded paging
 and rich-message adapters are now implemented in the worktree; group creation
 and management remain outside this plan. Account compatibility is unverified.
 
-Crypto channels now have a 64-entry cache keyed by conversation/key IDs and
-group sender. Resetting the WASM also resets channel pointers. Recent-message
-pages are encrypted/authenticated with keys derived from the pairing secret;
-the disk budget is 32 MiB / 256 files, separate from image-cache limits.
-A 512-message / 16 MiB decoded memo fingerprints the raw message, including
-reactions. Selection reads the cached page; live sync supplies updates and item Retry
-retries failed media directly. Until the official-account route is supported,
-image 404s and unsupported routes say “Not available for this sender”; the
-retained failure class still distinguishes them.
-The SSE adapter supplies live operations and catch-up when authenticated;
-offline account startup is still unavailable. Asset arrivals mutate affected
+Crypto channels have a 64-entry cache keyed by conversation/key IDs and group
+sender. Resetting the WASM resets channel pointers. The engine merges store
+updates before publishing deltas; opening a chat reads its store window and
+schedules any needed network refresh. Offline startup shows stored content
+when the session has a validated account identity. Item Retry retries failed
+media directly. Unsupported media routes show their retained failure reason.
+Asset arrivals mutate affected
 Slint rows while preserving stable row identity. Messages with inline images
 or links render one bounded, measured flow at Unicode line-break
 opportunities, with link actions on the matching body spans. Breaks are
@@ -393,9 +364,10 @@ Enter inserting a line. `--scenarios` also exercises simulated pointer scrolling
 selection/clipboard, a delayed arrival burst, media completion, and failure
 recovery. Additional flags cover reading, layers, rich content and paged history;
 focused browser/composer scripts test their keyboard and draft invariants.
-Demo sends use the account command queue and production composer, outbox, and
-history reconciliation, with local Sent/Incoming or failure answers from a worker.
-Only demo storage is in memory. F12 **Fail next send** arms one uncertain result;
+Demo and snapshot scenes use FakeBackend through the same engine, SQLite
+store, controller and presenter. Demo stores use in-memory SQLite; account
+stores live on disk. Demo sends receive scripted Sent/Incoming or failure
+results. F12 **Fail next send** arms one uncertain result;
 Rejected and Uncertain send scenarios submit a prepared message through that same
 path while preserving the existing draft. First-open fixtures follow latest;
 reading, rich-content and photo-inspection scenarios deliberately start at the top.

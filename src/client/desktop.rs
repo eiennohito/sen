@@ -823,11 +823,6 @@ impl Client {
         ))
     }
 
-    pub fn cache_stats(&self) -> assets::CacheStats {
-        self.cache.lock().unwrap().stats()
-    }
-
-    /// Called only after the user presses Send; diagnostics never call this.
     pub fn send_text(&mut self, to: &str, text: &str) -> Result<Message> {
         self.request_seq = self.request_seq.wrapping_add(1) & 0x7fff_ffff;
         self.send_text_with_request(to, text, self.request_seq)
