@@ -58,7 +58,10 @@ def call(name, **arguments):
     result = rpc("tools/call", {"name": name, "arguments": arguments})
     if result.get("isError"):
         raise RuntimeError(f"MCP tool failed: {name}")
-    return json.loads(result["content"][0]["text"])
+    parsed = json.loads(result["content"][0]["text"])
+    if name == "get_element_tree":
+        assert not any("Internal error:" in str(item.get(field, "")) for item in parsed["elements"] for field in ("accessibleLabel", "accessibleValue", "accessibleDescription")), "debug internal-error toast appeared"
+    return parsed
 
 rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "line-ui-check", "version": "1"}})
 window = call("list_windows")["windowHandles"][0]
@@ -185,6 +188,15 @@ if args.signed_out:
         click("Back")
         click("Cancel sign-in")
         wait_for(lambda: any(item.get("accessibleLabel") == "Not signed in" for item in tree()), "Back did not cancel pairing")
+    click("Chats")
+    call("dispatch_key_event", windowHandle=window, text="\uf70f")
+    element("Synthetic interaction scenarios", "Text")
+    call("click_element", elementHandle=scenario_action("Sign-in keyring failure")["handle"])
+    click("Sign in")
+    click("Start")
+    element("Unlock your keyring (KWallet/GNOME Keyring) and try again. Ensure Secret Service is running with a default keyring.", "Text")
+    assert not any("Local data could not be saved" in item.get("accessibleLabel", "") for item in tree())
+    click("Back")
     click("Settings")
     shot("settings")
     for section in ("Notifications", "Background"):
@@ -1290,7 +1302,7 @@ if args.auth_recovery:
     call("click_element", elementHandle=element("Sign in again", "Button")["handle"])
     call("click_element", elementHandle=element("Start", "Button")["handle"])
     deadline = time.monotonic() + 3
-    while not any("Sign-in did not finish" in item.get("accessibleLabel", "") for item in tree()):
+    while not any("LINE refused sign-in" in item.get("accessibleLabel", "") for item in tree()):
         assert time.monotonic() < deadline, "synthetic sign-in did not report its failure"
         time.sleep(.05)
     call("dispatch_key_event", windowHandle=window, text="\x1b")

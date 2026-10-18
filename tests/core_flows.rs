@@ -48,8 +48,8 @@ impl App {
             if matches!(d, Delta::Notify(_)) {
                 self.notifications += 1;
             }
-            if let Delta::Error(e) = &d {
-                panic!("engine: {e}");
+            if let Delta::StorageFailed(e) = &d {
+                panic!("engine: {e:?}");
             }
             self.state.apply(d);
         }
@@ -257,7 +257,9 @@ fn unrelated_fetch_failure_does_not_block_send() {
     assert!(app.state.can_send());
     // Even a storage banner does not disable an unrelated operation. A committed
     // write clears it; no controller reset or manual retry is needed.
-    app.state.apply(Delta::Error("store write failed".into()));
+    app.state.apply(Delta::StorageFailed(
+        line_wasm_poc::engine::StorageFailure::Full,
+    ));
     assert!(app.state.can_send());
     app.send(Intent::Prefs(Prefs {
         text_size: 37,
@@ -599,7 +601,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
             failures += 1;
             break;
         }
-        assert!(!matches!(delta, Delta::Error(_)));
+        assert!(!matches!(delta, Delta::StorageFailed(_)));
         app.state.apply(delta);
     }
     assert_eq!(failures, 1);
@@ -823,7 +825,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
                 .deltas
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .expect("cached work must finish before RPC is released");
-            assert!(!matches!(delta, Delta::Fatal | Delta::Error(_)));
+            assert!(!matches!(delta, Delta::Fatal | Delta::StorageFailed(_)));
             if predicate(&delta) {
                 return delta;
             }
@@ -1458,4 +1460,121 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
     });
     app.until(|s| matches!(s.created_chat, Some(Err(_))));
     assert!(!app.state.chats.values().any(|c| c.chat.title == "Failure"));
+}
+
+#[test]
+fn signed_out_account_intents_never_reach_the_backend() {
+    let fake = FakeBackend::signed_out();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.until(|s| s.connection == Connection::AuthExpired);
+    for intent in [
+        Intent::Friends,
+        Intent::Contact("unknown-account-id".into()),
+        Intent::GroupInfo(ChatId("unknown-chat-id".into())),
+        Intent::Members(ChatId("unknown-chat-id".into())),
+        Intent::StickerPackages,
+        Intent::Retry(Key(999)),
+        Intent::Send {
+            chat: ChatId("unknown-chat-id".into()),
+            text: "private text".into(),
+        },
+    ] {
+        app.send(intent);
+    }
+    // A preference acknowledgment is a FIFO barrier after all account intents.
+    app.send(Intent::Prefs(Prefs {
+        text_size: 29,
+        ..Default::default()
+    }));
+    app.until(|s| s.prefs.text_size == 29);
+    assert!(fake.calls().is_empty());
+    assert!(app.state.error.is_none());
+    assert!(app.state.messages.is_empty());
+}
+
+#[test]
+fn pairing_reasons_survive_the_engine() {
+    use line_wasm_poc::client::error::SignInFailure::*;
+    let fake = FakeBackend::signed_out();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.until(|s| s.connection == Connection::AuthExpired);
+    for reason in [
+        CryptoModule("/missing/crypto.wasm".into()),
+        StateDirectory("/readonly/state".into()),
+        Keyring,
+        Network,
+        Server,
+        Phone,
+        Cancelled,
+    ] {
+        fake.fail_sign_in(reason.clone());
+        app.send(Intent::SignIn);
+        loop {
+            let delta = app
+                .worker
+                .deltas
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            if let Delta::PairFailed { reason: actual } = delta {
+                assert_eq!(actual, reason);
+                break;
+            }
+            assert!(!matches!(
+                delta,
+                Delta::Fatal | Delta::StorageFailed(_) | Delta::InternalError(_)
+            ));
+            app.state.apply(delta);
+        }
+    }
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn invariant_errors_are_never_storage_failures() {
+    use line_wasm_poc::{engine::StorageFailure, store::StoreError};
+    for error in [
+        StoreError::Invalid("impossible state".into()),
+        StoreError::Sql(rusqlite::Error::QueryReturnedNoRows),
+    ] {
+        assert_eq!(StorageFailure::classify(&error), None);
+    }
+    for (code, expected) in [
+        (rusqlite::ffi::SQLITE_FULL, StorageFailure::Full),
+        (rusqlite::ffi::SQLITE_READONLY, StorageFailure::ReadOnly),
+        (rusqlite::ffi::SQLITE_PERM, StorageFailure::Permission),
+        (rusqlite::ffi::SQLITE_IOERR, StorageFailure::Io),
+    ] {
+        let error = StoreError::Sql(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ));
+        assert_eq!(StorageFailure::classify(&error), Some(expected));
+    }
+}
+
+#[test]
+fn unknown_key_reports_a_bug_and_keeps_the_worker_running() {
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake, StoreLocation::Memory);
+    app.online();
+    app.send(Intent::Copy(Key(i64::MAX)));
+    loop {
+        let delta = app
+            .worker
+            .deltas
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        if let Delta::InternalError(kind) = delta {
+            assert_eq!(kind, "unknown key");
+            break;
+        }
+        assert!(!matches!(delta, Delta::StorageFailed(_) | Delta::Fatal));
+        app.state.apply(delta);
+    }
+    assert!(app.state.error.is_none());
+    app.send(Intent::Prefs(Prefs {
+        text_size: 31,
+        ..Default::default()
+    }));
+    app.until(|s| s.prefs.text_size == 31);
 }

@@ -106,26 +106,36 @@ pub fn sign_in(
 ) -> Result<()> {
     let ui = NativeLogin { emit, cancel };
     ui.check()?;
-    let wasm = fs::read(wasm_path).context("read crypto module")?;
+    let wasm = fs::read(wasm_path).context(super::error::Error::SignIn(
+        super::error::SignInFailure::CryptoModule(wasm_path.into()),
+    ))?;
     ensure!(
         format!("{:x}", Sha256::digest(&wasm)) == HASH,
-        "unsupported crypto module"
+        super::error::Error::SignIn(super::error::SignInFailure::CryptoModule(wasm_path.into()))
     );
     // Fail local prerequisites before requesting a phone approval.
     let parent = state
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    let new_directory = !parent.exists();
-    fs::create_dir_all(parent)?;
-    if new_directory {
-        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-    }
-    let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-    let probe = state.with_extension(format!("sign-in-{stamp}.check"));
-    private_write(&probe, b"sign-in storage check")?;
-    fs::remove_file(probe)?;
-    crate::credentials::check_writable()?;
+    let probe_directory = || -> Result<u128> {
+        let new_directory = !parent.exists();
+        fs::create_dir_all(parent)?;
+        if new_directory {
+            fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+        }
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+        let probe = state.with_extension(format!("sign-in-{stamp}.check"));
+        private_write(&probe, b"sign-in storage check")?;
+        fs::remove_file(probe)?;
+        Ok(stamp)
+    };
+    let stamp = probe_directory().context(super::error::Error::SignIn(
+        super::error::SignInFailure::StateDirectory(parent.into()),
+    ))?;
+    crate::credentials::check_writable().context(super::error::Error::SignIn(
+        super::error::SignInFailure::Keyring,
+    ))?;
     ui.check()?;
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
     let opts = Options {
@@ -137,7 +147,9 @@ pub fn sign_in(
     };
     login_with(&opts, &wasm, &ui)?;
     ui.check()?;
-    install_session(state, &staged)?;
+    install_session(state, &staged).context(super::error::Error::SignIn(
+        super::error::SignInFailure::StateDirectory(parent.into()),
+    ))?;
     Ok(())
 }
 
@@ -155,9 +167,95 @@ fn install_session(state: &Path, staged: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Classify at the pairing boundary before protocol diagnostics are discarded.
+pub fn failure(error: &anyhow::Error, cancelled: bool) -> super::error::SignInFailure {
+    use super::error::{Error, SignInFailure};
+    if cancelled {
+        return SignInFailure::Cancelled;
+    }
+    if let Some(Error::SignIn(reason)) = error.downcast_ref::<Error>() {
+        return reason.clone();
+    }
+    if let Some(e) = error.downcast_ref::<super::RpcError>() {
+        return if e.code == 10052 || e.status == 410 {
+            SignInFailure::Phone
+        } else {
+            SignInFailure::Server
+        };
+    }
+    if matches!(error.downcast_ref::<Error>(), Some(Error::Offline(_))) {
+        return SignInFailure::Network;
+    }
+    if error
+        .chain()
+        .any(|e| e.is::<std::io::Error>() || e.is::<ureq::Error>())
+    {
+        return SignInFailure::Network;
+    }
+    if error.to_string() == "QR code expired before phone verification" {
+        return SignInFailure::Phone;
+    }
+    SignInFailure::Server
+}
+
+pub(super) fn phone_error(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<super::RpcError>().is_some() {
+        error.context(super::error::Error::SignIn(
+            super::error::SignInFailure::Phone,
+        ))
+    } else {
+        error
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn missing_or_unsupported_crypto_fails_before_requesting_a_qr() -> Result<()> {
+        use super::super::error::SignInFailure;
+        let root =
+            std::env::temp_dir().join(format!("line-pairing-prerequisites-{}", std::process::id()));
+        fs::create_dir_all(&root)?;
+        let state = root.join("session.json");
+        let wasm = root.join("crypto.wasm");
+        for exists in [false, true] {
+            if exists {
+                fs::write(&wasm, b"unsupported module")?;
+            }
+            let error = sign_in(&state, &wasm, &AtomicBool::new(false), |_| {
+                panic!("prerequisite failure requested a QR")
+            })
+            .unwrap_err();
+            assert_eq!(
+                failure(&error, false),
+                SignInFailure::CryptoModule(wasm.clone())
+            );
+            assert!(!state.exists());
+        }
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
+    fn transport_and_phone_errors_keep_their_categories() {
+        use super::super::error::{Error, NetCause, SignInFailure};
+        let offline =
+            anyhow::Error::new(Error::Offline(NetCause::Unreachable)).context("transport");
+        assert_eq!(failure(&offline, false), SignInFailure::Network);
+        let rpc = super::super::RpcError {
+            method: "checkPinCodeVerified".into(),
+            http: 403,
+            code: 1,
+            status: 403,
+        };
+        assert_eq!(
+            failure(&phone_error(rpc.into()), false),
+            SignInFailure::Phone
+        );
+        assert_eq!(failure(&offline, true), SignInFailure::Cancelled);
+    }
+
     #[test]
     fn qr_png_reaches_the_desktop_as_rgba() -> Result<()> {
         let link = "line://au/q/synthetic?secret=synthetic&e2eeVersion=1";

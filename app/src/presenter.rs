@@ -695,12 +695,11 @@ impl Presenter {
         });
         ui.set_has_chat(state.selected.is_some());
         ui.set_storage_error(
-            if state.error.is_some() {
-                "Local data could not be saved."
-            } else {
-                ""
-            }
-            .into(),
+            state
+                .error
+                .map(crate::text::storage_failure)
+                .unwrap_or("")
+                .into(),
         );
         ui.global::<State>()
             .set_account_initial(name_initial(state.profile.display_name.as_str()));

@@ -94,6 +94,7 @@ impl Store {
             "INSERT OR REPLACE INTO sticker_packages VALUES(1,?)",
             [serde_json::to_string(rows)?],
         )?;
+        self.writes += 1;
         Ok(())
     }
     /// Replace only one actor, preserving the server revision for subsequent echoes.

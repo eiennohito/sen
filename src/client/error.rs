@@ -5,6 +5,8 @@ pub enum NetCause {
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
+    #[error("sign-in failed: {0:?}")]
+    SignIn(SignInFailure),
     #[error("offline")]
     Offline(NetCause),
     #[error("authorization expired")]
@@ -62,4 +64,30 @@ pub(crate) fn classify(error: &anyhow::Error) -> Error {
         };
     }
     Error::Decode
+}
+
+/// Prerequisites and protocol outcomes carried intact to the sign-in surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SignInFailure {
+    CryptoModule(std::path::PathBuf),
+    StateDirectory(std::path::PathBuf),
+    Keyring,
+    Network,
+    Server,
+    Phone,
+    Cancelled,
+}
+
+impl SignInFailure {
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::CryptoModule(_) => "crypto-module",
+            Self::StateDirectory(_) => "state-directory",
+            Self::Keyring => "keyring",
+            Self::Network => "network",
+            Self::Server => "server",
+            Self::Phone => "phone",
+            Self::Cancelled => "cancelled",
+        }
+    }
 }

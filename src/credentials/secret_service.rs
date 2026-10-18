@@ -19,7 +19,13 @@ pub struct Keyring;
 impl Keyring {
     pub fn reachable(&self) -> Result<()> {
         let session = Session::open()?;
-        session.default_collection().map(drop)
+        let collection = session.default_collection()?;
+        let proxy = session.proxy(collection.as_str(), "Collection")?;
+        ensure!(
+            !proxy.get_property::<bool>("Locked")?,
+            "default keyring collection is locked"
+        );
+        Ok(())
     }
 }
 impl Keys for Keyring {

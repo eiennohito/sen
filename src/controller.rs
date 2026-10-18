@@ -54,7 +54,7 @@ pub struct AppState {
     pub composer: String,
     pub submitting: Option<(ChatId, String)>,
     pub prefs: Prefs,
-    pub error: Option<String>,
+    pub error: Option<StorageFailure>,
 }
 impl Default for AppState {
     fn default() -> Self {
@@ -202,7 +202,6 @@ impl AppState {
             Delta::CreatedChat(result) => self.created_chat = Some(result),
             Delta::Fatal => {
                 self.connection = Connection::Fatal;
-                self.error = Some("engine stopped".into());
                 self.submitting = None;
             }
             Delta::Reset => *self = Self::default(),
@@ -321,7 +320,7 @@ impl AppState {
                 }
                 self.prefs = prefs;
             }
-            Delta::Error(e) => {
+            Delta::StorageFailed(e) => {
                 self.error = Some(e);
                 self.submitting = None;
             }

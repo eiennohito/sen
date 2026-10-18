@@ -38,3 +38,5 @@ pub fn sign(rt: &mut Runtime, path: &str, body: &str, access: &str) -> Result<St
     rt.destroy("SecureKey", sk)?;
     Ok(signature)
 }
+
+pub mod reporting;

@@ -241,6 +241,14 @@ export component AppWindow inherits Window {
     public function reset-viewer() { layers.reset-viewer(); }
     public function history-scroll(delta: length) { conversation.scroll(delta); }
     public function history-jump(y: length) { conversation.jump(y); }
+    in-out property <string> internal-error;
+    in-out property <bool> internal-error-seen;
+    Text { width: 1px; height: 1px; text: ""; accessible-description: root.internal-error-seen ? "Internal error: see log" : ""; }
+    if root.internal-error != "": Rectangle {
+        x: 16px; y: 16px; width: parent.width - 32px; height: 48px;
+        background: Tokens.background; border-width: 1px; border-color: Tokens.danger;
+        Text { text: root.internal-error; color: Tokens.danger; vertical-alignment: center; }
+    }
     layers := Layers {}
     NewChat { width: parent.width; height: parent.height; }
     auth-notice := ConnectionNotice {

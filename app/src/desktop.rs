@@ -322,6 +322,22 @@ impl Desktop {
                     ui.set_unsend_feedback_id(key.0.to_string().into());
                 }
             }
+            Delta::InternalError(kind) => {
+                #[cfg(feature = "ui-debug")]
+                {
+                    let message = format!("Internal error: {kind} (see log)");
+                    ui.set_internal_error_seen(true);
+                    ui.set_internal_error(message.into());
+                    let weak = ui.as_weak();
+                    slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
+                        if let Some(ui) = weak.upgrade() {
+                            ui.set_internal_error("".into());
+                        }
+                    });
+                }
+                #[cfg(not(feature = "ui-debug"))]
+                let _ = kind;
+            }
             Delta::Pair(event) => {
                 use line_wasm_poc::backend::PairEvent;
                 match event {
@@ -335,24 +351,19 @@ impl Desktop {
                     PairEvent::Scanned => ui.set_auth_stage("Phone scanned the code".into()),
                 }
             }
-            Delta::PairFailed { cancelled } => {
+            Delta::PairFailed { reason } => {
+                let cancelled = matches!(
+                    reason,
+                    line_wasm_poc::client::error::SignInFailure::Cancelled
+                );
                 ui.set_auth_cancelling(false);
                 ui.set_auth_qr(slint::Image::default());
                 ui.set_auth_pin("".into());
-                if *cancelled {
+                if cancelled {
                     self.state.panel = Panel::Chats;
                     self.state.detail.clear();
                 }
-                ui.set_auth_error(
-                    if *cancelled {
-                        ""
-                    } else if self.state.profile.mid.is_empty() {
-                        "Sign-in did not finish. Please try again."
-                    } else {
-                        "Sign-in did not finish. Your cached conversations are still available."
-                    }
-                    .into(),
-                );
+                ui.set_auth_error(text::sign_in_failure(reason).into());
             }
             Delta::Connection(Connection::Online) if ui.get_auth_busy() => {
                 self.state.panel = Panel::Chats;

@@ -4,6 +4,19 @@ use line_wasm_poc::backend::{LiveOp, Op};
 pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: i32) {
     let chat = d.state.selected.clone().unwrap_or(ChatId("alice".into()));
     match kind {
+        40..=46 => {
+            use line_wasm_poc::client::error::SignInFailure::*;
+            fake.fail_sign_in(match kind {
+                40 => CryptoModule("/demo/crypto.wasm".into()),
+                41 => StateDirectory("/demo/state".into()),
+                42 => Keyring,
+                43 => Network,
+                44 => Server,
+                45 => Phone,
+                _ => Cancelled,
+            });
+        }
+
         32 => {
             let rows = vec![
                 FakeBackend::message("protocol", 6300, "Unsend success fixture", true),

@@ -117,6 +117,79 @@ pub enum Intent {
     },
     Stop,
 }
+fn short_id(id: &str) -> String {
+    id.chars().take(6).filter(|c| !c.is_control()).collect()
+}
+impl Intent {
+    fn diagnostic(&self) -> String {
+        let name = match self {
+            Self::SearchChats { .. } => "search-chats",
+            Self::ChatList { .. } => "chat-list",
+            Self::Window(_) => "window",
+            Self::MoreChats => "more-chats",
+            Self::SignIn => "sign-in",
+            Self::Friends => "friends",
+            Self::Contact(_) => "contact",
+            Self::GroupInfo(_) => "group-info",
+            Self::ProfileAction(_) => "profile-action",
+            Self::Members(_) => "members",
+            Self::Asset(_) => "asset",
+            Self::Original(_) => "original",
+            Self::File { .. } => "file",
+            Self::RetryAsset(_) => "retry-asset",
+            Self::Page { .. } => "page",
+            Self::Send { .. } => "send",
+            Self::React { .. } => "react",
+            Self::StickerPackages => "sticker-packages",
+            Self::SendSticker { .. } => "send-sticker",
+            Self::CreateChat { .. } => "create-chat",
+            Self::Unsend(_) => "unsend",
+            Self::Retry(_) => "retry",
+            Self::Resend(_) => "resend",
+            Self::Discard(_) => "discard",
+            Self::Copy(_) => "copy",
+            Self::Draft { .. } => "draft",
+            Self::Prefs(_) => "prefs",
+            Self::MarkRead { .. } => "mark-read",
+            Self::Stop => "stop",
+        };
+        let ids = match self {
+            Self::Window(w) => format!(" chat={}", short_id(&w.chat.0)),
+            Self::GroupInfo(chat)
+            | Self::Members(chat)
+            | Self::Send { chat, .. }
+            | Self::SendSticker { chat, .. }
+            | Self::Draft { chat, .. }
+            | Self::MarkRead { chat, .. }
+            | Self::Page { chat, .. } => format!(" chat={}", short_id(&chat.0)),
+            Self::Contact(mid) => format!(" mid={}", short_id(mid)),
+            Self::ProfileAction(action) => match action {
+                ProfileAction::Rename { mid, .. } | ProfileAction::AddFriend { mid, .. } => {
+                    format!(" mid={}", short_id(mid))
+                }
+                ProfileAction::Mute { chat, .. } | ProfileAction::Leave { chat } => {
+                    format!(" chat={}", short_id(&chat.0))
+                }
+            },
+            Self::CreateChat { targets, .. } => format!(
+                " targets={}",
+                targets
+                    .iter()
+                    .map(|s| short_id(s))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Self::React { key, .. }
+            | Self::Unsend(key)
+            | Self::Retry(key)
+            | Self::Resend(key)
+            | Self::Discard(key)
+            | Self::Copy(key) => format!(" key={}", key.0),
+            _ => String::new(),
+        };
+        format!("{name}{ids}")
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileFailure {
     Rename,
@@ -127,9 +200,40 @@ pub enum ProfileFailure {
 #[derive(Clone, Debug)]
 pub enum CreateFailure {
     InvalidSelection,
-    Local(String),
+    Local,
     Rejected,
     Uncertain,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageFailure {
+    Full,
+    ReadOnly,
+    Permission,
+    Io,
+}
+impl StorageFailure {
+    pub fn classify(error: &StoreError) -> Option<Self> {
+        use rusqlite::ErrorCode;
+        match error {
+            StoreError::Sql(e) => match e.sqlite_error_code()? {
+                ErrorCode::DiskFull => Some(Self::Full),
+                ErrorCode::ReadOnly => Some(Self::ReadOnly),
+                ErrorCode::PermissionDenied => Some(Self::Permission),
+                ErrorCode::SystemIoFailure | ErrorCode::CannotOpen => Some(Self::Io),
+                _ => None,
+            },
+            StoreError::Io(e) => Some(if e.raw_os_error() == Some(libc::ENOSPC) {
+                Self::Full
+            } else if e.raw_os_error() == Some(libc::EROFS) {
+                Self::ReadOnly
+            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                Self::Permission
+            } else {
+                Self::Io
+            }),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone)]
 pub enum Delta {
@@ -140,7 +244,7 @@ pub enum Delta {
     Reset,
     Pair(PairEvent),
     PairFailed {
-        cancelled: bool,
+        reason: crate::client::error::SignInFailure,
     },
     Submitted {
         chat: ChatId,
@@ -206,7 +310,8 @@ pub enum Delta {
         text: String,
     },
     UnsendFailed(Key),
-    Error(String),
+    StorageFailed(StorageFailure),
+    InternalError(&'static str),
     StoreSaved,
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -226,6 +331,32 @@ enum Refresh {
     Details(ChatId),
     Recent(ChatId),
     Read(ChatId),
+}
+impl Refresh {
+    fn diagnostic(&self) -> String {
+        let (name, id) = match self {
+            Self::Stream => ("stream", None),
+            Self::Send(key) => return format!("send key={}", key.0),
+            Self::Friends => ("friends", None),
+            Self::Contact(id) => ("contact", Some(id.as_str())),
+            Self::Notice(id) => ("notice", Some(id.as_str())),
+            Self::GroupInfo(id) => ("group-info", Some(id.0.as_str())),
+            Self::Members(id) => ("members", Some(id.0.as_str())),
+            Self::ChatList => ("chat-list", None),
+            Self::MoreChats => ("more-chats", None),
+            Self::Receipts(id) => ("receipts", Some(id.0.as_str())),
+            Self::Older(id, _) => ("older", Some(id.0.as_str())),
+            Self::Newer(id, _) => ("newer", Some(id.0.as_str())),
+            Self::Details(id) => ("details", Some(id.0.as_str())),
+            Self::Recent(id) => ("recent", Some(id.0.as_str())),
+            Self::Read(id) => ("read", Some(id.0.as_str())),
+        };
+        format!(
+            "refresh-{name}{}",
+            id.map(|id| format!(" id={}", short_id(id)))
+                .unwrap_or_default()
+        )
+    }
 }
 #[derive(Default)]
 struct Lanes {
@@ -421,6 +552,9 @@ impl Worker {
                                                     },
                                                 ),
                                             );
+                                            if let Ok(Err(error)) = &outcome {
+                                                crate::reporting::log("backend-start", "fatal", error.as_ref());
+                                            }
                                             if !matches!(outcome, Ok(Ok(()))) {
                                                 fatal.send(Delta::Fatal);
                                             }
@@ -437,6 +571,9 @@ impl Worker {
                                 waiting_assets: VecDeque::new(),
                                 waiting_retries: Vec::new(),
                                 active_refresh: None,
+                                has_session: false,
+                                session_known: false,
+                                operation: "startup".into(),
                                 force_list: true,
                                 force_window: false,
                                 search: String::new(),
@@ -472,6 +609,9 @@ impl Worker {
             ));
             worker_inbox.lanes.lock().unwrap().stopped = true;
             worker_inbox.wake.notify_all();
+            if let Ok(Err(error)) = &outcome {
+                crate::reporting::log("engine-start", "fatal", error.as_ref());
+            }
             if !matches!(outcome, Ok(Ok(()))) {
                 let _ = fatal.send(Delta::Fatal);
             }
@@ -518,6 +658,9 @@ struct Engine {
     )>,
     waiting_retries: Vec<String>,
     active_refresh: Option<Refresh>,
+    has_session: bool,
+    session_known: bool,
+    operation: String,
     force_list: bool,
     force_window: bool,
     search: String,
@@ -535,9 +678,41 @@ struct Engine {
     stream: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
     assets_stop: Arc<AtomicBool>,
 }
+trait JobOutcome {
+    fn log_failure(&self, operation: &str);
+    fn connection_error(&self) -> Option<Error> {
+        None
+    }
+}
+impl<T, E: std::error::Error + 'static> JobOutcome for std::result::Result<T, E> {
+    fn connection_error(&self) -> Option<Error> {
+        self.as_ref()
+            .err()
+            .and_then(|e| (e as &dyn std::error::Error).downcast_ref::<Error>())
+            .cloned()
+    }
+    fn log_failure(&self, operation: &str) {
+        if let Err(error) = self {
+            crate::reporting::log(operation, "rpc", error);
+        }
+    }
+}
+impl JobOutcome for () {
+    fn log_failure(&self, _: &str) {}
+}
+impl JobOutcome for bool {
+    fn log_failure(&self, _: &str) {}
+}
+impl JobOutcome for Option<(ChatId, std::result::Result<Page, Error>)> {
+    fn log_failure(&self, operation: &str) {
+        if let Some((_, result)) = self {
+            result.log_failure(operation);
+        }
+    }
+}
 type Result<T> = std::result::Result<T, StoreError>;
 impl Engine {
-    fn rpc<T: Send + 'static>(
+    fn rpc<T: JobOutcome + Send + 'static>(
         &mut self,
         run: impl FnOnce(&mut dyn Backend) -> T + Send + 'static,
         apply: impl FnOnce(&mut Engine, T) -> Result<()> + Send + 'static,
@@ -551,18 +726,24 @@ impl Engine {
         });
     }
     // The FIFO network queue completes mutations before sign-in can swap stores.
-    fn rpc_completion<T: Send + 'static>(
+    fn rpc_completion<T: JobOutcome + Send + 'static>(
         &mut self,
         run: impl FnOnce(&mut dyn Backend) -> T + Send + 'static,
         apply: impl FnOnce(&mut Engine, T, bool) -> Result<()> + Send + 'static,
     ) {
+        let operation = self.operation.clone();
         self.net_pending += 1;
         let cancel = self.assets_stop.clone();
         let generation = self.generation;
         let _ = self.net.send(Box::new(move |backend| {
             crate::client::desktop::set_cancellation_token(cancel);
             let result = run(backend);
+            result.log_failure(&operation);
             Box::new(move |engine| {
+                engine.operation = operation;
+                if let Some(error) = result.connection_error() {
+                    engine.error(error);
+                }
                 engine.net_pending -= 1;
                 let current = generation == engine.generation;
                 apply(engine, result, current)
@@ -587,6 +768,27 @@ impl Engine {
             },
             |_, ()| Ok(()),
         );
+    }
+
+    fn report_store_error(&self, error: &StoreError) {
+        let storage = StorageFailure::classify(error);
+        let kind = if storage.is_some() {
+            "local-write"
+        } else {
+            match error {
+                StoreError::Invalid(_) => "invalid store operation",
+                StoreError::Sql(rusqlite::Error::QueryReturnedNoRows) => "unknown key",
+                StoreError::Json(_) => "stored data decode",
+                StoreError::NewerSchema(_) => "unsupported schema",
+                _ => "store invariant",
+            }
+        };
+        crate::reporting::log(&self.operation, kind, error);
+        if let Some(failure) = storage {
+            self.emit(Delta::StorageFailed(failure));
+        } else {
+            self.emit(Delta::InternalError(kind));
+        }
     }
 
     fn emit(&self, d: Delta) {
@@ -660,8 +862,20 @@ impl Engine {
                 after: 80,
             })?;
         }
-        self.start_assets();
-        self.online()?;
+        self.rpc(
+            |backend| backend.has_session(),
+            |engine, has_session| {
+                engine.session_known = true;
+                engine.has_session = has_session;
+                if has_session {
+                    engine.start_assets();
+                    engine.online()?;
+                } else {
+                    engine.connection(Connection::AuthExpired);
+                }
+                Ok(())
+            },
+        );
         loop {
             enum Work {
                 User(Intent),
@@ -673,7 +887,12 @@ impl Engine {
             let work = {
                 let mut q = self.inbox.lanes.lock().unwrap();
                 loop {
-                    if let Some(i) = q.users.pop_front() {
+                    if !self.session_known && q.users.iter().any(|i| matches!(i, Intent::Stop)) {
+                        break Work::User(Intent::Stop);
+                    }
+                    if (self.session_known || matches!(q.users.front(), Some(Intent::Stop)))
+                        && let Some(i) = q.users.pop_front()
+                    {
                         break Work::User(i);
                     }
                     if let Some(e) = q.live.pop_front() {
@@ -710,13 +929,23 @@ impl Engine {
             let writes = self.store.writes();
             let result = match work {
                 Work::User(Intent::Stop) => break,
-                Work::User(i) => self.intent(i),
-                Work::Live(e) => self.live(e),
+                Work::User(i) => {
+                    self.operation = i.diagnostic();
+                    self.intent(i)
+                }
+                Work::Live(e) => {
+                    self.operation = "live".into();
+                    self.live(e)
+                }
                 Work::Refresh(r) => {
+                    self.operation = r.diagnostic();
                     self.active_refresh = Some(r.clone());
                     self.refresh(r)
                 }
-                Work::Reconnect => self.online(),
+                Work::Reconnect => {
+                    self.operation = "reconnect-profile".into();
+                    self.online()
+                }
                 Work::Completed(done) => done(self),
             };
             if self.net_pending == 0
@@ -727,7 +956,9 @@ impl Engine {
                 self.retry_attempts.remove(&r);
             }
             match result {
-                Err(error) => self.emit(Delta::Error(error.to_string())),
+                Err(error) => {
+                    self.report_store_error(&error);
+                }
                 Ok(()) if self.store.writes() != writes => self.emit(Delta::StoreSaved),
                 Ok(()) => {}
             }
@@ -777,7 +1008,7 @@ impl Engine {
                             deliver(StreamEvent::Exited);
                         }
                     })
-                    .map_err(StoreError::Io)?;
+                    .map_err(|_| StoreError::Invalid("sync worker could not start".into()))?;
                 engine.stream = Some((stop, j));
                 engine
                     .inbox
@@ -986,6 +1217,18 @@ impl Engine {
         Ok(())
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
+        if !self.has_session
+            && !matches!(
+                i,
+                Intent::SignIn
+                    | Intent::Prefs(_)
+                    | Intent::SearchChats { .. }
+                    | Intent::ChatList { .. }
+                    | Intent::Stop
+            )
+        {
+            return Ok(());
+        }
         match i {
             Intent::SignIn => {
                 if self.connection == Connection::SigningIn {
@@ -1031,15 +1274,23 @@ impl Engine {
                                 engine.chat_keys.clear();
                                 engine.message_keys.clear();
                                 engine.emit(Delta::Reset);
+                                engine.has_session = true;
                                 engine.start_assets();
                                 engine.online()?;
                                 engine.publish()?;
                             }
-                            Err(_) => {
+                            Err(error) => {
+                                use crate::client::error::SignInFailure;
+                                crate::reporting::log("sign-in", "pairing", &error);
+                                let reason = if engine.inbox.pair_cancel.load(Ordering::Relaxed) {
+                                    SignInFailure::Cancelled
+                                } else if let Error::SignIn(reason) = error {
+                                    reason
+                                } else {
+                                    SignInFailure::Server
+                                };
                                 engine.connection(Connection::AuthExpired);
-                                engine.emit(Delta::PairFailed {
-                                    cancelled: engine.inbox.pair_cancel.load(Ordering::Relaxed),
-                                });
+                                engine.emit(Delta::PairFailed { reason });
                             }
                         }
                         Ok(())
@@ -1228,7 +1479,10 @@ impl Engine {
                     let own = self
                         .store
                         .account()
-                        .map_err(|e| CreateFailure::Local(e.to_string()))?
+                        .map_err(|e| {
+                            self.report_store_error(&e);
+                            CreateFailure::Local
+                        })?
                         .own_mid;
                     let mut targets = targets
                         .into_iter()
@@ -1243,9 +1497,10 @@ impl Engine {
                     let seq = if let Some(seq) = self.group_requests.get(&identity) {
                         *seq
                     } else {
-                        let seq = self
-                            .next_seq()
-                            .map_err(|e| CreateFailure::Local(e.to_string()))?;
+                        let seq = self.next_seq().map_err(|e| {
+                            self.report_store_error(&e);
+                            CreateFailure::Local
+                        })?;
                         self.group_requests.insert(identity.clone(), seq);
                         seq
                     };
@@ -1277,7 +1532,8 @@ impl Engine {
                                             engine.group_requests.remove(&identity);
                                             Ok(chat.id)
                                         }
-                                        Err(_) => {
+                                        Err(error) => {
+                                            engine.report_store_error(&error);
                                             engine.inbox.refresh(Refresh::ChatList);
                                             Err(CreateFailure::Uncertain)
                                         }
@@ -1853,7 +2109,7 @@ impl Engine {
         Ok(())
     }
     fn live(&mut self, e: StreamEvent) -> Result<()> {
-        if self.connection == Connection::SigningIn {
+        if !self.has_session || self.connection == Connection::SigningIn {
             match e {
                 StreamEvent::Connection(_)
                 | StreamEvent::Connecting(_)
@@ -1872,6 +2128,7 @@ impl Engine {
                     let _ = complete.send(false);
                     return Ok(());
                 }
+                _ if !self.has_session => return Ok(()),
                 _ => {}
             }
         }
@@ -2006,7 +2263,10 @@ impl Engine {
                     }
                 }
             }
-            StreamEvent::Connection(Err(e)) => self.error(e),
+            StreamEvent::Connection(Err(e)) => {
+                crate::reporting::log("connection", "rpc", &e);
+                self.error(e);
+            }
             StreamEvent::Exited => {
                 self.continuous = false;
                 if !matches!(
