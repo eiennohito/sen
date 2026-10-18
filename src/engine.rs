@@ -530,11 +530,23 @@ impl Engine {
                     && let Some(root) = &self.account_root
                 {
                     use sha2::{Digest, Sha256};
-                    self.store = Store::open(&root.join(format!("{:x}", Sha256::digest(&p.mid))))?;
-                    for row in self.store.all_pending()? {
+                    let mut target =
+                        Store::open(&root.join(format!("{:x}", Sha256::digest(&p.mid))))?;
+                    for row in target.all_pending()? {
                         if row.delivery == Delivery::Pending {
-                            self.store.mark_failed(row.key, Delivery::Uncertain)?;
+                            target.mark_failed(row.key, Delivery::Uncertain)?;
                         }
+                    }
+                    let keys = self.store.carry_local_to(&mut target)?;
+                    self.store = target;
+                    self.inbox
+                        .lanes
+                        .lock()
+                        .unwrap()
+                        .refresh
+                        .retain(|r| !matches!(r, Refresh::Send(_)));
+                    for key in keys {
+                        self.inbox.refresh(Refresh::Send(key));
                     }
                     for (key, value) in self.store.prefs()? {
                         self.emit(Delta::Pref { key, value });

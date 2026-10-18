@@ -17,9 +17,6 @@ export component Friends inherits Rectangle {
     public function focus-list() { list-focus.focus(); }
     public function move-cursor(delta: int) {
         State.friend-result = max(0, min(State.friends.length - 1, State.friend-result + delta));
-        if friend-search.has-focus && State.friend-result >= 0 && State.friend-result < State.friends.length && State.friends[State.friend-result].header {
-            State.friend-result = max(0, min(State.friends.length - 1, State.friend-result + (delta >= 0 ? 1 : -1)));
-        }
         friend-list.jump(-max(0px, State.friend-result * State.friend-row-height - friend-list.visible-height / 2));
     }
     public function activate() {

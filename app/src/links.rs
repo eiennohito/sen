@@ -5,78 +5,106 @@ use slint::{ModelRc, VecModel};
 
 pub(crate) fn detect(text: &str) -> Vec<(String, String)> {
     let mut found = Vec::new();
-    let mut offset = 0;
-    while offset < text.len() {
-        let remaining = &text[offset..];
-        let Some((start, _)) = remaining.char_indices().find(|(i, _)| {
-            let tail = &remaining[*i..];
-            tail.starts_with("https://") || tail.starts_with("http://") || tail.starts_with("www.")
-        }) else {
-            break;
-        };
-        let tail = &remaining[start..];
-        let end = tail
-            .char_indices()
-            .find(|(_, c)| {
-                c.is_whitespace()
-                    || matches!(
-                        c,
-                        '<' | '>'
-                            | '"'
-                            | '\''
-                            | '「'
-                            | '」'
-                            | '『'
-                            | '』'
-                            | '。'
-                            | '、'
-                            | '！'
-                            | '？'
-                            | '（'
-                            | '）'
-                            | '【'
-                            | '】'
-                            | '〈'
-                            | '〉'
-                            | '《'
-                            | '》'
-                    )
-            })
-            .map_or(tail.len(), |(i, _)| i);
-        let raw = &tail[..end];
-        let label = raw.trim_end_matches(['.', ',', '!', '?', ';', ':']);
-        // Keep balanced parentheses used by e.g. Wikipedia, discard sentence wraps.
-        let mut label = label;
-        while label.ends_with(')') && label.matches(')').count() > label.matches('(').count() {
-            label = &label[..label.len() - 1];
-        }
-        if label.len()
-            > if label.starts_with("www.") {
-                4
-            } else if label.starts_with("https://") {
-                8
-            } else {
-                7
+    for token in text
+        .split(|c: char| c.is_whitespace() || "<>\"'「」『』。、！？（）【】〈〉《》".contains(c))
+    {
+        for (start, c) in token.char_indices() {
+            let tail = &token[start..];
+            let explicit = ["https://", "http://", "www."].iter().any(|prefix| {
+                tail.get(..prefix.len())
+                    .is_some_and(|start| start.eq_ignore_ascii_case(prefix))
+            });
+            let boundary = start == 0
+                || token[..start]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| !c.is_ascii_alphanumeric() && !"-_.@".contains(c));
+            if !explicit && (!c.is_ascii_alphanumeric() || !boundary) {
+                continue;
             }
-        {
-            let url = if label.starts_with("www.") {
-                format!("https://{label}")
+            let mut label = tail;
+            loop {
+                let trimmed = label.trim_end_matches(['.', ',', ';', ':', '!', '?']);
+                label = trimmed;
+                if label.ends_with(')') && label.matches(')').count() > label.matches('(').count() {
+                    label = &label[..label.len() - 1];
+                } else {
+                    break;
+                }
+            }
+            let lower = label.to_ascii_lowercase();
+            let scheme = if lower.starts_with("https://") {
+                8
+            } else if lower.starts_with("http://") {
+                7
             } else {
-                label.to_owned()
+                0
             };
-            found.push((label.to_owned(), url));
-        }
-        offset += start + end.max(1);
-        while !text.is_char_boundary(offset) {
-            offset += 1;
+            let address = &label[scheme..];
+            let host = address.split(['/', '?', '#', ':']).next().unwrap_or("");
+            let domain = host.rsplit_once('.').is_some_and(|(name, tld)| {
+                !name.is_empty()
+                    && name.split('.').all(|part| {
+                        !part.is_empty()
+                            && part.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                    })
+                    && tld.len() >= 2
+                    && tld.bytes().all(|b| b.is_ascii_alphabetic())
+                    && (address.contains('/')
+                        || lower.starts_with("www.")
+                        || matches!(
+                            tld.to_ascii_lowercase().as_str(),
+                            "com"
+                                | "org"
+                                | "net"
+                                | "edu"
+                                | "gov"
+                                | "io"
+                                | "dev"
+                                | "app"
+                                | "jp"
+                                | "uk"
+                                | "de"
+                                | "fr"
+                                | "co"
+                        ))
+            });
+            if (scheme > 0 && !host.is_empty()) || domain {
+                let url = if scheme > 0 {
+                    format!("{}{}", &lower[..scheme], address)
+                } else {
+                    format!("https://{label}")
+                };
+                found.push((label.to_owned(), url));
+                break;
+            }
         }
     }
     found
 }
 
+pub(crate) fn rendered_text(row: &MessageRow) -> String {
+    use slint::Model;
+    if row.rich_runs.row_count() == 0 || row.rich_fallback {
+        row.body.to_string()
+    } else {
+        let rendered: String = row
+            .rich_runs
+            .iter()
+            .map(|run| run.text.to_string())
+            .collect();
+        // A reused row with a changed body still has the previous decorated runs.
+        if rendered != row.body.as_str() && row.rich_runs.iter().any(|run| run.link_id != 0) {
+            row.body.to_string()
+        } else {
+            rendered
+        }
+    }
+}
+
 pub(crate) fn decorate_message(row: &mut MessageRow, fallback_sender: &str) {
     row.links = ModelRc::new(VecModel::from(
-        detect(&row.body)
+        detect(&rendered_text(row))
             .into_iter()
             .map(|(label, url)| LinkRow {
                 label: label.into(),
@@ -181,7 +209,58 @@ mod tests {
             detect("(https://example.org/wiki/Foo_(bar)).")[0].0,
             "https://example.org/wiki/Foo_(bar)"
         );
-        assert!(detect("https:// www. text").is_empty());
+        assert!(detect("https:// www. text file.txt report.rs x.a foo.123").is_empty());
+        assert_eq!(
+            detect(
+                "example.com/path www.example.xyz example.org HTTPS://example.com/a HTTP://example.com/b"
+            ),
+            vec![
+                ("example.com/path".into(), "https://example.com/path".into()),
+                ("www.example.xyz".into(), "https://www.example.xyz".into()),
+                ("example.org".into(), "https://example.org".into()),
+                (
+                    "HTTPS://example.com/a".into(),
+                    "https://example.com/a".into()
+                ),
+                ("HTTP://example.com/b".into(), "http://example.com/b".into()),
+            ]
+        );
+        assert_eq!(
+            detect("example.com/a.,;:!?)."),
+            vec![("example.com/a".into(), "https://example.com/a".into())]
+        );
+        use crate::RichRun;
+        use slint::Model;
+        let mut row = MessageRow {
+            body: "pre-run body".into(),
+            rich_runs: ModelRc::new(VecModel::from(vec![
+                RichRun {
+                    text: "https://exa".into(),
+                    ..Default::default()
+                },
+                RichRun {
+                    text: "m".into(),
+                    emoji: true,
+                    ..Default::default()
+                },
+                RichRun {
+                    text: "ple.com/path".into(),
+                    ..Default::default()
+                },
+            ])),
+            ..Default::default()
+        };
+        decorate_message(&mut row, "contact");
+        assert_eq!(row.links.row_count(), 1);
+        assert_eq!(
+            row.links.row_data(0).unwrap().url,
+            "https://example.com/path"
+        );
+        assert!(
+            row.rich_runs
+                .iter()
+                .all(|run| run.url == "https://example.com/path")
+        );
     }
     #[test]
     fn message_labels_include_identity_time_and_delivery() {

@@ -443,6 +443,8 @@ not configurable in v1.
   within) → conversation header actions → visible connection recovery actions →
   history (one Tab stop) → Latest → Return to message (when visible) →
   composer → Send.
+- Chats filter chips are one Tab stop after browser search (and Clear when present) and before the list; Left/Right moves between chips and Space/Enter activates.
+- Friends category headers are rows in the friends list; arrow navigation reaches them and Enter/Space toggles collapse.
 - F6 enters the visible recovery strip. Without a layer, F6 or Tab after its
   last action moves to history, or the browser list in narrow browser layout. Shift+Tab before
   its first action returns to the conversation header/browser search. In narrow

@@ -120,37 +120,9 @@ impl Store {
         )
     }
     pub fn needs_refresh(&self, chat: &ChatId) -> Result<bool> {
-        let Some(record) = chat_record(&self.conn, chat)? else {
-            return Ok(false);
-        };
-        let confirmed = select_rows(
-            &self.conn,
-            "WHERE chat_id=? AND server_id IS NOT NULL ORDER BY sort_ts DESC,sort_id DESC LIMIT 1",
-            [&chat.0],
-        )?
-        .pop();
-        let newer_hint = match (&record.last_message_id, record.last_message_ms, &confirmed) {
-            (Some(id), Some(ts), Some(row)) => {
-                Cursor {
-                    sort_ts: ts,
-                    sort_id: server_sort(id)?,
-                } > row.sort
-            }
-            (Some(id), None, Some(row)) => server_sort(id)? > row.sort.sort_id,
-            (None, Some(ts), Some(row)) => ts > row.sort.sort_ts,
-            (Some(_), _, None) | (_, Some(_), None) => true,
-            _ => false,
-        };
-        if newer_hint {
-            return Ok(true);
-        }
-        let Some(newest) = confirmed else {
-            return Ok(false);
-        };
-        Ok(!segments(&self.conn, chat)?
-            .iter()
-            .any(|s| s.lo <= newest.sort && newest.sort <= s.hi))
+        head_needs_refresh(&self.conn, chat)
     }
+
     pub fn unread_anchor(&self, chat: &ChatId) -> Result<Option<StoredMessage>> {
         let Some(c) = self.chat(chat)? else {
             return Ok(None);
@@ -687,4 +659,37 @@ impl Store {
         }
         Ok(pending)
     }
+}
+
+pub(super) fn head_needs_refresh(conn: &Connection, chat: &ChatId) -> Result<bool> {
+    let Some(record) = chat_record(conn, chat)? else {
+        return Ok(false);
+    };
+    let confirmed = select_rows(
+        conn,
+        "WHERE chat_id=? AND server_id IS NOT NULL ORDER BY sort_ts DESC,sort_id DESC LIMIT 1",
+        [&chat.0],
+    )?
+    .pop();
+    let newer_hint = match (&record.last_message_id, record.last_message_ms, &confirmed) {
+        (Some(id), Some(ts), Some(row)) => {
+            Cursor {
+                sort_ts: ts,
+                sort_id: server_sort(id)?,
+            } > row.sort
+        }
+        (Some(id), None, Some(row)) => server_sort(id)? > row.sort.sort_id,
+        (None, Some(ts), Some(row)) => ts > row.sort.sort_ts,
+        (Some(_), _, None) | (_, Some(_), None) => true,
+        _ => false,
+    };
+    if newer_hint {
+        return Ok(true);
+    }
+    let Some(newest) = confirmed else {
+        return Ok(false);
+    };
+    Ok(!segments(conn, chat)?
+        .iter()
+        .any(|s| s.lo <= newest.sort && newest.sort <= s.hi))
 }

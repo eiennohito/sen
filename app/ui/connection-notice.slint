@@ -23,7 +23,7 @@ component Action inherits Rectangle {
     focus := FocusScope {
         enabled: root.enabled;
         accessible-role: button; accessible-label: root.description; accessible-enabled: root.enabled;
-        accessible-description: self.has-focus ? "Focused" : "";
+        accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
         accessible-action-default => { if root.enabled { root.activated(); } }
         key-pressed(event) => {
             if State.ime-active { return reject; }

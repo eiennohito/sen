@@ -14,7 +14,7 @@ component SettingsSections inherits FocusScope {
     property <length> row-height: max(36px, Tokens.small * 1.5 + 16px);
     preferred-height: (root.narrow ? 3 : 5) * root.row-height;
     accessible-role: tab-list; accessible-label: "Settings section";
-    accessible-description: self.has-focus ? "Focused" : "";
+    accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
     key-pressed(event) => {
         if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.current = max(0, root.current - 1); return accept; }
         if event.text == Key.DownArrow || event.text == Key.RightArrow { root.current = min(4, root.current + 1); return accept; }
@@ -87,8 +87,8 @@ export component Layers inherits Rectangle {
                 }
                 VerticalLayout {
                     spacing: 8px;
-                    auth-start := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Start sign-in"; enabled: !State.auth-busy; clicked => { State.start-sign-in(); } }
-                    auth-back := Button { accessible-description: self.has-focus ? "Focused" : ""; text: State.auth-cancelling ? "Cancelling…" : State.auth-busy ? "Cancel sign-in" : "Back"; enabled: !State.auth-cancelling; clicked => { root.dismiss-auth(); } }
+                    auth-start := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Start sign-in"; enabled: !State.auth-busy; clicked => { State.start-sign-in(); } }
+                    auth-back := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: State.auth-cancelling ? "Cancelling…" : State.auth-busy ? "Cancel sign-in" : "Back"; enabled: !State.auth-cancelling; clicked => { root.dismiss-auth(); } }
                 }
             }
         }
@@ -111,15 +111,15 @@ export component Layers inherits Rectangle {
                 } reject }
             VerticalLayout {
                 padding: 20px; spacing: 12px;
-                profile-back := Button { accessible-description: self.has-focus ? "Focused" : ""; visible: State.members-open; enabled: self.visible; text: "Back to members"; clicked => { root.back-to-members(); } }
-                profile-close := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Close profile"; clicked => { State.close-profile(); } }
+                profile-back := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; visible: State.members-open; enabled: self.visible; text: "Back to members"; clicked => { root.back-to-members(); } }
+                profile-close := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Close profile"; clicked => { State.close-profile(); } }
                 Image { source: State.profile-avatar; visible: !State.members-open || State.profile-avatar.width > 0; height: 80px; image-fit: contain; }
                 Text { text: State.profile-group ? "Group profile" : State.members-open ? "Member profile" : "Friend profile"; color: Tokens.secondary; }
                 if State.members-open && State.profile-avatar.width == 0: Rectangle { height: 80px; background: Tokens.selection; border-radius: 12px; Text { text: State.profile-initial; color: Tokens.selection-foreground; font-size: Tokens.heading; horizontal-alignment: center; vertical-alignment: center; } }
                 Text { text: State.profile-name; font-size: Tokens.heading; wrap: word-wrap; }
                 ScrollView { Text { text: State.profile-status; wrap: word-wrap; } }
                 if !State.profile-available && !State.members-open: Text { text: "This person or group is no longer in your list."; wrap: word-wrap; color: Tokens.danger; }
-                profile-chat := Button { accessible-description: self.has-focus ? "Focused" : ""; visible: !State.members-open || State.profile-available; text: "Open chat"; enabled: State.profile-available; clicked => { State.start-friend-chat(); } }
+                profile-chat := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; visible: !State.members-open || State.profile-available; text: "Open chat"; enabled: State.profile-available; clicked => { State.start-friend-chat(); } }
             }
         }
     }
@@ -172,14 +172,14 @@ export component Layers inherits Rectangle {
                                 spacing: 12px;
                                 Text { text: "Message text size"; }
                                 text-size := ComboBox {
-                                    accessible-description: self.has-focus ? "Focused" : "";
+                                    accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
                                     accessible-label: "Message text size";
                                     model: ["Small", "Default", "Large", "Extra large"];
                                     current-index: State.text-size <= 13 ? 0 : State.text-size <= 15 ? 1 : State.text-size <= 18 ? 2 : 3;
                                     selected(value) => { State.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; State.settings-changed(); }
                                 }
                                 if State.storage-error != "": Text { text: State.storage-error; wrap: word-wrap; color: Tokens.danger; }
-                                enter-sends := CheckBox { accessible-description: self.has-focus ? "Focused" : ""; text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
+                                enter-sends := CheckBox { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
                             }
                             VerticalLayout { visible: root.settings-section == 1; height: self.visible ? self.preferred-height : 0px;
                                 spacing: 12px;
@@ -242,7 +242,7 @@ export component Layers inherits Rectangle {
             VerticalLayout {
                 padding: 12px; spacing: 10px;
                 HorizontalLayout {
-                    viewer-close := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Close photo"; clicked => { State.close-viewer(); } }
+                    viewer-close := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Close photo"; clicked => { State.close-viewer(); } }
                     Text { text: State.viewer-status; color: Tokens.foreground; wrap: word-wrap; vertical-alignment: center; }
                 }
                 HorizontalLayout {
@@ -284,7 +284,7 @@ export component Layers inherits Rectangle {
                     Button { text: "−"; accessible-label: "Zoom out"; enabled: State.viewer-zoom > 0.1; clicked => { root.zoom(0.8, viewport.width / 2, viewport.height / 2); } }
                     Button { text: "+"; accessible-label: "Zoom in"; enabled: State.viewer-zoom < 24; clicked => { root.zoom(1.25, viewport.width / 2, viewport.height / 2); } }
                     Button { text: "Fit"; clicked => { root.fit-photo(); } }
-                    original-size := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "1:1"; accessible-label: "Original size"; clicked => { root.original-photo(); } }
+                    original-size := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "1:1"; accessible-label: "Original size"; clicked => { root.original-photo(); } }
                 }
             }
         }
@@ -308,8 +308,8 @@ export component Layers inherits Rectangle {
                     Text { text: "Cancel sign-in?"; font-size: Tokens.heading; }
                     Text { text: "The current approval attempt will stop. Your existing session and drafts stay on this device."; wrap: word-wrap; }
                     VerticalLayout {
-                        keep-waiting := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Keep waiting"; clicked => { root.cancel-confirm = false; auth-back.focus(); } }
-                        confirm-cancel := Button { accessible-description: self.has-focus ? "Focused" : ""; text: "Cancel sign-in"; clicked => { root.cancel-confirm = false; State.cancel-sign-in(); } }
+                        keep-waiting := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Keep waiting"; clicked => { root.cancel-confirm = false; auth-back.focus(); } }
+                        confirm-cancel := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Cancel sign-in"; clicked => { root.cancel-confirm = false; State.cancel-sign-in(); } }
                     }
                 }
             }

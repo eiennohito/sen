@@ -633,3 +633,29 @@ fn partial_chat_activity_hints_require_refresh() {
         assert!(s.needs_refresh(&chat()).unwrap());
     }
 }
+
+#[test]
+fn linked_send_extends_only_a_continuous_head() {
+    for continuous in [true, false] {
+        let mut s = store();
+        page(&mut s, &[1, 2], true);
+        if !continuous {
+            s.apply_live(&chat(), &input(3), false, None).unwrap();
+            // A list hint ahead of local history must not be bridged by a send.
+            s.conn
+                .execute("UPDATE chat SET last_key='9',last_activity=9", [])
+                .unwrap();
+        }
+        pending(&mut s, 1);
+        s.link_sent(1, id(101), 101).unwrap();
+        let window = s.window(&chat(), Anchor::Latest, 100, 0).unwrap();
+        if continuous {
+            assert!(window.gaps.is_empty());
+            assert!(window.reaches_end);
+            assert!(!s.needs_refresh(&chat()).unwrap());
+        } else {
+            assert!(window.gaps.iter().any(|gap| gap.before.is_some()));
+            assert!(s.needs_refresh(&chat()).unwrap());
+        }
+    }
+}

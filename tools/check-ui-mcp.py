@@ -28,8 +28,11 @@ parser.add_argument("--media", action="store_true", help="Check each media failu
 parser.add_argument("--auth-recovery", action="store_true", help="Check offline feedback, sign-in focus, synthetic sign-in failure and draft preservation")
 parser.add_argument("--layers", action="store_true", help="Check dialogs, profile panels, viewer input, export, and opener focus")
 parser.add_argument("--focus", action="store_true", help="Check every forward/reverse Tab stop on chats, friends and conversation, with and without recovery")
+parser.add_argument("--wide", action="store_true", help="Check the 1280×900 side-panel layout")
 add_preview_arguments(parser)
 args = parser.parse_args()
+if args.wide and args.launch:
+    args.demo_size = "1280x900"
 launch_preview(args)
 counter = 0
 
@@ -57,6 +60,9 @@ rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {}, "clientI
 window = call("list_windows")["windowHandles"][0]
 properties = call("get_window_properties", windowHandle=window)
 root = properties["rootElementHandle"]
+if args.wide:
+    scale = properties.get("scaleFactor", 1)
+    assert (properties["size"]["width"] / scale, properties["size"]["height"] / scale) == (1280, 900), "--wide requires a 1280×900 window"
 
 def tree():
     result = call("get_element_tree", elementHandle=root, maxElements=700)
@@ -148,11 +154,7 @@ if args.focus:
         call("dispatch_key_event", windowHandle=window, text=text, eventType=event_type)
 
     def focus_label():
-        deadline = time.monotonic() + 0.5
-        while True:
-            focused = [item for item in tree() if item.get("accessibleDescription", "").startswith("Focused")]
-            if len(focused) == 1 or time.monotonic() >= deadline: break
-            time.sleep(.01)
+        focused = [item for item in tree() if item.get("accessibleDescription", "").startswith("Focused")]
         assert len(focused) == 1, f"unlabelled or ambiguous Tab stop: {focused}"
         label = focused[0].get("accessibleLabel", "")
         assert label, "focused control has no label"
@@ -203,8 +205,44 @@ if args.focus:
             focus_key("\x12", "Release")
 
     def browser_stops(search_label, list_label, recovery):
-        return ["Navigation", search_label] + (recovery if narrow else []) + [list_label]
+        return ["Navigation", search_label] + (["All"] if list_label == "Conversations" else []) + (recovery if narrow else []) + [list_label]
 
+    # Chips are one Tab stop; arrows move focus without activating a filter.
+    click_focus("Chats")
+    click_focus("Find a conversation", "TextInput")
+    focus_tab()
+    assert focus_label() == "All"
+    focus_key("\uf703")
+    assert focus_label() == "Friends"
+    focus_key(" ")
+    assert focus_label() == "Friends"
+    assert not any(item.get("accessibleLabel", "").startswith("Weekend plans, ") for item in tree()), "Space did not activate Friends filter"
+    focus_key("\uf703")
+    assert focus_label() == "Groups"
+    focus_key("\n")
+    element("Weekend plans", "Button")
+    assert not any(item.get("accessibleLabel", "").startswith("葵, ") for item in tree()), "Enter did not activate Groups filter"
+    focus_key("\uf702")
+    focus_key("\uf702")
+    focus_key("\n")
+    assert focus_label() == "All"
+    # Category headers are arrow-reachable list rows, with both activation keys.
+    click_focus("Friends")
+    click_focus("Search friends and groups", "TextInput")
+    focus_tab()
+    assert focus_label() == "Friends and groups"
+    focus_key("\uf729")  # Home
+    focus_key(" ")
+    assert not any(item.get("accessibleLabel", "").startswith("Open profile: Weekend plans") for item in tree()), "Space did not collapse Groups"
+    focus_key("\uf701")  # Next row is now the Friends category.
+    focus_key("\n")
+    assert not any(item.get("accessibleLabel", "").startswith("Open profile:") for item in tree()), "Enter did not collapse Friends"
+    focus_key(" ")
+    focus_key("\uf700")
+    focus_key("\n")
+    element("Open profile: 葵", "Button")
+    element("Open profile: Weekend plans", "Button")
+    print("PASS: filter chip Tab/arrows/Space/Enter and friend category row arrows/Space/Enter")
     for offline in (False, True):
         click_focus("Chats")
         click_focus("葵")
@@ -226,7 +264,7 @@ if args.focus:
         for chat in ("葵", "Weekend plans"):
             click_focus(chat)
             call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value="Focus check")
-            expected = ["Back"] if narrow else ["Navigation", "Find a conversation", "Conversations"]
+            expected = ["Back"] if narrow else ["Navigation", "Find a conversation", "All", "Conversations"]
             if chat == "Weekend plans": expected.append(element("Members", "Button")["accessibleLabel"])
             expected += recovery + ["Message history", "Message draft"]
             if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
@@ -234,7 +272,7 @@ if args.focus:
             if chat == "Weekend plans":
                 click_focus("Members")
                 layer = ["Close members", "Search members", "Group members"]
-                prefix = expected if panel else [] if narrow else ["Navigation", "Find a conversation", "Conversations"]
+                prefix = expected if panel else [] if narrow else ["Navigation", "Find a conversation", "All", "Conversations"]
                 layer_recovery = [] if panel else recovery
                 check_chain(f"members {layer_kind} {suffix}", prefix + layer_recovery + layer, ("Close members", "Button"))
                 call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="葵")
@@ -331,8 +369,14 @@ if args.scenarios:
         return [item for item in tree() if item.get("accessibleRole") == "TextInput" and any(base.get("id", "").endswith("::body") for base in item.get("typeNamesAndIds", []))]
 
     demo_scenario("Long history")
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=800, deltaX=0)
-    element("Latest", "Button")  # Older loaded messages below are not new arrivals.
+    # The fixture page arrives on the worker. At wide size the original short
+    # chat fits entirely, so scrolling must wait until the long page is committed.
+    deadline = time.monotonic() + 5
+    while True:
+        call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=800, deltaX=0)
+        if any(item.get("accessibleLabel") == "Latest" for item in tree()): break
+        assert time.monotonic() < deadline, "long history did not become scrollable"
+        time.sleep(.05)
     body = next(item for item in bodies() if "\n" in item.get("accessibleValue", "") and item["absolutePosition"]["y"] > 110)
     expected_text = body["accessibleValue"]
     expected_y = body["absolutePosition"]["y"]
@@ -455,10 +499,11 @@ if args.friends:
     friend_rows = [item for item in tree() if item.get("accessibleLabel", "").startswith("Open profile:")]
     assert len(friend_rows) == 1, "friend name search failed"
     call("click_element", elementHandle=friend_search)
-    call("dispatch_key_event", windowHandle=window, text="\uf701")  # Down arrow
+    call("dispatch_key_event", windowHandle=window, text="\uf701")  # Category header
+    call("dispatch_key_event", windowHandle=window, text="\uf701")  # First friend
     call("dispatch_key_event", windowHandle=window, text="\n")
     element("Friend profile", "Text")
-    assert not any(item.get("accessibleLabel") == "Message draft" for item in tree()), "sheet exposed the covered composer to accessibility"
+    assert any(item.get("accessibleLabel") == "Message draft" for item in tree()) == args.wide, "profile composer visibility disagrees with panel/sheet layout"
     call("click_element", elementHandle=element("Chats", "Button")["handle"])
     assert not any(item.get("accessibleLabel") == "Close profile" for item in tree()), "destination switch left profile open"
     call("click_element", elementHandle=element("Friends", "Button")["handle"])
@@ -587,8 +632,11 @@ if args.layers:
     call("click_element", elementHandle=element("Open profile: 葵", "Button")["handle"])
     profile_close_y = element("Close profile", "Button")["absolutePosition"].get("y", 0)
     profile = bounds_by_id("Layers::profile")
-    assert abs(profile["absolutePosition"].get("x", 0) - browser_edge) <= 1, "sheet did not start after rail and browser"
-    assert not any(item.get("accessibleLabel") == "Message draft" for item in tree()), "sheet exposed the covered conversation"
+    if args.wide:
+        assert profile["absolutePosition"].get("x", 0) > browser_edge, "panel covered the conversation"
+    else:
+        assert abs(profile["absolutePosition"].get("x", 0) - browser_edge) <= 1, "sheet did not start after rail and browser"
+    assert any(item.get("accessibleLabel") == "Message draft" for item in tree()) == args.wide, "profile conversation visibility disagrees with layout"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     assert element("Friends and groups", "List").get("accessibleDescription") == "Focused friends and groups", "profile did not restore its list opener"
     call("click_element", elementHandle=element("Chats", "Button")["handle"])
@@ -629,7 +677,7 @@ if args.layers:
     close = element("Close profile", "Button")
     assert bounds_by_id("Layers::profile")["absolutePosition"].get("x", 0) == profile["absolutePosition"].get("x", 0)
     assert close["absolutePosition"].get("y", 0) == profile_close_y, "connection feedback moved the profile"
-    assert not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()), "sheet did not cover the conversation feedback"
+    assert any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()) == args.wide, "profile recovery visibility disagrees with panel/sheet layout"
     browser_search = element("Search friends and groups", "TextInput")
     assert browser_search["absolutePosition"]["x"] + browser_search["size"]["width"] <= close["absolutePosition"]["x"], "profile hid the browser"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
@@ -639,8 +687,12 @@ if args.layers:
     strip_bottom = strip["absolutePosition"].get("y", 0) + strip["size"]["height"]
     call("click_element", elementHandle=element("Members", "Button")["handle"])
     members = bounds_by_id("Layers::profile")
-    assert abs(members["absolutePosition"].get("x", 0) - browser_edge) <= 1, "members sheet covered the browser"
-    assert abs(members["absolutePosition"].get("y", 0) - strip_bottom) <= 1, "members sheet covered the recovery strip"
+    if args.wide:
+        assert members["absolutePosition"].get("x", 0) > browser_edge, "members panel covered the conversation"
+        assert members["absolutePosition"].get("y", 0) == 0, "members panel moved for the recovery strip"
+    else:
+        assert abs(members["absolutePosition"].get("x", 0) - browser_edge) <= 1, "members sheet covered the browser"
+        assert abs(members["absolutePosition"].get("y", 0) - strip_bottom) <= 1, "members sheet covered the recovery strip"
     call("dispatch_key_event", windowHandle=window, text="\x1b")
     print("PASS: Settings modal focus, profile reading/focus/browser/connection-strip placement, viewer keys/wheel/pan/loaded-photo navigation, isolated PNG export, opener restoration, draft retention")
 

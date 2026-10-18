@@ -445,3 +445,60 @@ fn opened_chat_history_and_reads_run_before_missing_details_sweep() {
     drop(app);
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn first_identity_keeps_local_work_and_sends_pending() {
+    use line_wasm_poc::store::{Draft, Store};
+    use sha2::{Digest, Sha256};
+    let root = std::env::temp_dir().join(format!("line-first-identity-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    let fake = FakeBackend::canned();
+    fake.offline(true);
+    let mut app = App::new(
+        fake.clone(),
+        StoreLocation::Account {
+            root: root.clone(),
+            mid: None,
+        },
+    );
+    app.until(|s| matches!(s.connection, Connection::Offline { .. }));
+    app.select("alice");
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "before identity".into(),
+    });
+    let key = app.body_key("before identity");
+    assert_eq!(app.state.messages[&key].delivery, Delivery::Pending);
+    app.send(Intent::Draft {
+        chat: ChatId("alice".into()),
+        draft: Draft {
+            text: "keep draft".into(),
+            cursor: 4,
+            anchor: 2,
+            updated: 123,
+        },
+    });
+    app.send(Intent::Pref {
+        key: "text_size".into(),
+        value: 19.into(),
+    });
+    app.until(|s| s.prefs.get("text_size") == Some(&19.into()));
+    fake.offline(false);
+    app.online();
+    app.until(|s| {
+        s.messages
+            .values()
+            .any(|m| m.body["body"] == "before identity" && m.delivery == Delivery::Sent)
+    });
+    drop(app);
+    let store = Store::open(&root.join(format!("{:x}", Sha256::digest("self")))).unwrap();
+    let draft = store.load_draft(&ChatId("alice".into())).unwrap().unwrap();
+    assert_eq!(
+        (draft.text.as_str(), draft.cursor, draft.anchor),
+        ("keep draft", 4, 2)
+    );
+    assert_eq!(store.get_pref("text_size").unwrap(), Some(19.into()));
+    assert!(store.all_pending().unwrap().is_empty());
+    drop(store);
+    std::fs::remove_dir_all(root).unwrap();
+}

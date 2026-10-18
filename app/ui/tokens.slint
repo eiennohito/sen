@@ -16,7 +16,8 @@ export global Tokens {
     out property <brush> surface: Palette.control-background;
     out property <brush> alternate-background: Palette.alternate-background;
     out property <brush> foreground: Palette.foreground;
-    out property <brush> secondary: Palette.alternate-foreground;
+    out property <brush> secondary: Palette.color-scheme == ColorScheme.dark ? #b0b0b0 : #626262;
+    out property <brush> placeholder: secondary;
     out property <brush> accent: Palette.accent-background;
     out property <brush> selection-foreground: Palette.selection-foreground;
     out property <brush> selection: Palette.selection-background;

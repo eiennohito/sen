@@ -71,7 +71,7 @@ fn pending_key(conn: &Connection, seq: u32) -> Result<Option<Key>> {
         .optional()?
         .map(Key))
 }
-fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
+pub(super) fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
     conn.execute(
         "UPDATE message SET server_id=?2, local_id=?3, request_seq=?4, sort_ts=?5, sort_id=?6,
         sender_id=?7, outgoing=?8, content_type=?9, body_json=?10, reactions_json=?11,
@@ -98,7 +98,7 @@ fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
     )?;
     Ok(())
 }
-fn insert(
+pub(super) fn insert(
     conn: &Connection,
     chat: &ChatId,
     local: Option<&LocalId>,
@@ -444,7 +444,25 @@ impl Store {
     ) -> Result<Changes> {
         self.mutate(|tx, c| {
             if let Some(key) = pending_key(tx, request_seq)? {
+                let before = by_key(tx, key)?;
+                let head = if !super::queries::head_needs_refresh(tx, &before.chat_id)? {
+                    segments(tx, &before.chat_id)?.last().cloned()
+                } else {
+                    None
+                };
                 link(tx, c, key, &server_id, created_ms)?;
+                if let Some(head) = head {
+                    let row = by_server(tx, &server_id)?.unwrap();
+                    add_segment(
+                        tx,
+                        &row.chat_id,
+                        Segment {
+                            lo: head.hi.clone().min(row.sort.clone()),
+                            hi: head.hi.max(row.sort),
+                            start: false,
+                        },
+                    )?;
+                }
             } else {
                 server_sort(&server_id)?;
                 let row = by_server(tx, &server_id)?

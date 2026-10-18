@@ -21,7 +21,7 @@ component HistoryPill inherits Rectangle {
     label := Text { x: 8px; width: parent.width - 16px; height: parent.height; text: root.text; font-size: Tokens.small; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; overflow: elide; accessible-role: none; }
     focus := FocusScope {
         enabled: root.enabled; accessible-role: button; accessible-label: root.label;
-        accessible-description: self.has-focus ? "Focused" : "";
+        accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
         accessible-action-default => { root.activated(); }
         key-pressed(event) => {
             if State.ime-active { return reject; }
@@ -52,7 +52,7 @@ export component Conversation inherits Rectangle {
                         width: title.width + 8px; height: header.height - 16px;
                         visible: State.chat-group; enabled: self.visible;
                         accessible-role: button; accessible-label: State.member-count >= 0 ? "Members, " + State.member-count : "Members";
-                        accessible-description: self.has-focus ? "Focused" : "";
+                        accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
                         accessible-action-default => { State.open-members(); }
                         Rectangle { border-radius: 6px; background: target.pressed ? Tokens.selection : target.has-hover ? Tokens.alternate-background : transparent; border-width: members-button.has-focus ? 2px : 0px; border-color: Tokens.accent; }
                         key-pressed(event) => { if !State.ime-active && (event.text == Key.Return || event.text == " ") { State.open-members(); return accept; } reject }

@@ -99,7 +99,7 @@ observations below do not verify the current build.
 | MSG2 | Copy yields visible text with line breaks and emoji fallback, no timestamps or labels | yes (rich Copy message and Select text retain the original fallback text) | S M |
 | MSG3 | Right click keeps an existing selection and targets the message; incoming updates keep selection and menu | part (stable message identity preserves unchanged selection/menu; native menu has no open-state callback for full mutation deferral) | S M (unchanged-row and selected-body chat-switch scenarios) |
 | MSG4 | Context menu offers Copy selection, Copy message, Copy link, Open photo as applicable; menus stay on screen | part (S5 URL actions add full address, Open link and Copy link; body copy unchanged) | M |
-| MSG5 | Links are detected, shown distinctly, inspectable (full URL), and opened only on deliberate activation | part ([P4](ux-sessions.md#p--protocol-gaps): bare domains, uppercase schemes and links across emoji runs) | S M |
+| MSG5 | Links are detected, shown distinctly, inspectable (full URL), and opened only on deliberate activation | yes (synthetic links tests and reading checker) | S M |
 | MSG6 | Reply previews jump to the referenced message with highlight and a return path | yes (within retained history; absent targets show local unavailable feedback) | S M (retained replies) |
 | MSG7 | Photo, video, voice, file, location, contact, sticker, system, withdrawn, undecryptable, and unknown content each have a distinct placeholder or presentation; one bad message hides nothing | yes (typed rows; file name/size/Save, video/voice duration, contact name, literal system text, withdrawal; no playback) | S M |
 | MSG8 | Inline LINE emoji render as runs within text | part (native measured grapheme/image flow; cross-run ligatures/contextual shaping unavailable; static bitmap fallback for animated emoji; Select text switches to the intact fallback body for selection; bodies over 2048 runs use plain fallback) | S M (partial implementation as listed) |
@@ -116,7 +116,7 @@ observations below do not verify the current build.
 | CMP4 | Send is disabled for whitespace or no chat without instructional captions; offline, storage failure and over-size show actionable feedback | yes | S |
 | CMP5 | Switching chats keeps text, caret, selection, and scroll per chat; clicking the open chat changes nothing | yes (text, byte-offset caret/selection, scroll; unchanged-chat guard) | S M |
 | CMP6 | Drafts survive restart in private storage; nothing moves between chats or accounts | yes | S |
-| CMP7 | After submit the composer is empty, focused, and a late result cannot alter newer text | part ([S24](ux-sessions.md#s--shell-and-layout): focus on disabled/hidden controls) | S M |
+| CMP7 | After submit the composer is empty, focused, and a late result cannot alter newer text | yes (synthetic submit and focus checks) | S M |
 | CMP8 | Pasting text keeps line breaks; pasting or dropping media opens the attachment preview | part (multiline text preserved; media preview absent) | S M |
 | CMP9 | Attachment selection shows a preview with destination, remove, cancel, Send; nothing transmits on selection or drop | no | — |
 | CMP10 | Shortcut help is in Settings, not a permanent caption under the composer | yes | S M |
@@ -273,6 +273,7 @@ Keep account contents and private screenshots out of Git. Newest first.
 | 2026-10-15 | `f7ab75a` and follow-ups | RD2–RD5, RD8 partial, MSG1–MSG3, OUT1, OUT3, OUT4, OUT8, CMP3–CMP7, FB2, SC1, SC2, SC5–SC8 | Wayland, scale 1.5, MCP simulated pointer and keyboard; `cargo test` | Passed as simulated input. Physical pointer, Fcitx, and 100/200 % scale never run. Sticker fallback, group identity, photo viewer, and authentication recovery sheets checked by MCP. |
 | 2026-10-15 | `f7ab75a` | Idle resource sample | Wayland, release build, 980×720 | 37.9 MiB RSS, 0.4 % CPU idle; scale factor not recorded. |
 | before 2026-10-15 | earlier | Real account: chat list, recent messages, photos, stickers, paid reactions displayed; one real send not yet validated | Native session, since invalidated by the Chrome login | Historical; does not prove current authorization. |
+| 2026-10-18 | Phase 4 known defects | MSG5, CMP7; continuous send linking, first-identity local work, C6/C7, S23/S24 and wide layouts | Offline workspace tests, formatting, all-target Clippy with warnings denied, release ui-debug; fresh owned headless demos | 196 tests pass (6 prerequisite-dependent tests ignored). At 980×720, unread, scenarios, friends, layout-photos, reading, rich, media, auth-recovery, layers and focus pass separately; at 1280×900, layers, focus, friends and scenarios pass separately with profiles as side panels. No account, external network or physical-input verification. |
 
 Detailed narratives of the earlier follow-ups (identity-preserving model
 edits, encrypted state storage, authentication recovery, newest-first

@@ -74,16 +74,17 @@ pub(crate) fn decorate_links(row: &mut MessageRow) {
     if row.links.row_count() == 0 || row.rich_fallback {
         return;
     }
+    let rendered = links::rendered_text(row);
     let mut spans = Vec::new();
     let mut offset = 0;
     for (index, link) in row.links.iter().enumerate() {
-        if let Some(start) = row.body[offset..].find(link.label.as_str()) {
+        if let Some(start) = rendered[offset..].find(link.label.as_str()) {
             let start = offset + start;
             offset = start + link.label.len();
             spans.push((start, offset, link.url, index as i32 + 1));
         }
     }
-    let body = row.body.as_str();
+    let body = rendered.as_str();
     let mut breaks = BTreeSet::from([0, body.len()]);
     for (end, _) in unicode_linebreak::linebreaks(body) {
         let inside = spans.iter().any(|(a, b, _, _)| *a < end && end < *b);

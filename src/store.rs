@@ -48,6 +48,56 @@ impl Store {
         }
         Ok(Self { conn, writes: 0 })
     }
+    /// Carry only work created before the first account identity was known.
+    pub fn carry_local_to(&self, target: &mut Store) -> Result<Vec<Key>> {
+        let mut seq = target
+            .get_pref("request_seq")?
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0)
+            .max(
+                self.get_pref("request_seq")?
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(0),
+            ) as u32;
+        let tx = target.conn.savepoint()?;
+        for (key, value) in self.prefs()? {
+            tx.execute(
+                "INSERT OR REPLACE INTO pref VALUES(?,?)",
+                params![key, value.to_string()],
+            )?;
+        }
+        let mut drafts = self.conn.prepare("SELECT chat_id FROM draft")?;
+        for chat in drafts.query_map([], |r| r.get::<_, String>(0))? {
+            let chat = ChatId(chat?);
+            let draft = self.load_draft(&chat)?.unwrap();
+            ensure_chat(&tx, &chat)?;
+            tx.execute("INSERT OR REPLACE INTO draft(chat_id,text,cursor,updated,anchor) VALUES(?,?,?,?,?)",
+                params![chat.0,draft.text,draft.cursor as i64,draft.updated,draft.anchor as i64])?;
+        }
+        let mut keys = Vec::new();
+        for mut row in self.all_pending()? {
+            seq += 1;
+            row.request_seq = Some(seq);
+            row.key = messages::insert(
+                &tx,
+                &row.chat_id,
+                row.local_id.as_ref(),
+                Some(seq),
+                row.created_at_local,
+            )?
+            .key;
+            messages::save(&tx, &row)?;
+            if row.delivery == Delivery::Pending {
+                keys.push(row.key);
+            }
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO pref VALUES('request_seq',?)",
+            [seq.to_string()],
+        )?;
+        tx.commit()?;
+        Ok(keys)
+    }
     pub fn writes(&self) -> u64 {
         self.writes
     }

@@ -196,7 +196,7 @@ export component Message inherits VerticalLayout {
                                         }
                                         if !root.message.has-picture: VerticalLayout {
                                             padding: 8px; spacing: 8px; alignment: center;
-                                            Text { text: root.message.image-failed ? root.message.image-error : root.message.sticker ? root.message.body : "Loading image…"; color: Tokens.secondary; horizontal-alignment: center; wrap: word-wrap; }
+                                            Text { text: root.message.image-failed ? root.message.image-error : root.message.sticker ? root.message.body : "Loading image…"; color: root.message.sticker && !root.message.image-failed ? Tokens.foreground : Tokens.secondary; horizontal-alignment: center; wrap: word-wrap; }
                                             if root.message.image-failed && root.message.image-retryable: HorizontalLayout { alignment: center; TextAction { text: "Retry"; action-label: "Retry image"; clicked => { State.retry-image(root.message.image-key); } } }
                                         }
                                     }
@@ -225,7 +225,7 @@ export component Message inherits VerticalLayout {
                                 spacing: 4px;
                                 for reaction in root.message.reactions: HorizontalLayout {
                                     if reaction.has-picture: Image { source: reaction.picture; width: 24px; height: 24px; image-fit: contain; }
-                                    Text { text: reaction.label; font-size: Tokens.small; color: Tokens.secondary; }
+                                    Text { text: reaction.label; font-size: Tokens.small; color: Tokens.foreground; }
                                 }
                             }
                         }

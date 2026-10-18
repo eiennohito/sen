@@ -26,7 +26,7 @@ export component Members inherits FocusScope {
     }
     VerticalLayout {
         padding: 16px; spacing: 12px;
-        close := Button { text: "Close members"; accessible-description: self.has-focus ? "Focused" : ""; clicked => { State.close-profile(); } }
+        close := Button { text: "Close members"; accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; clicked => { State.close-profile(); } }
         Text { text: "Members" + (State.member-count >= 0 ? " (" + State.member-count + ")" : ""); font-size: Tokens.heading; font-weight: 700; }
         search := SearchField {
             text <=> State.member-query; label: "Search members"; placeholder-text: "Search members";
@@ -42,7 +42,7 @@ export component Members inherits FocusScope {
         if State.members.length == 0: Text { text: State.member-query == "" ? "No members" : "No members match your search"; wrap: word-wrap; color: Tokens.secondary; }
         list := FocusScope {
             accessible-role: AccessibleRole.list; accessible-label: "Group members";
-            accessible-description: self.has-focus ? "Focused" : "";
+            accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
             key-pressed(event) => {
                 if State.ime-active { return reject; }
                 if event.text == Key.UpArrow { root.selected = max(0, root.selected - 1); root.reveal(); return accept; }

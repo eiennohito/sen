@@ -27,8 +27,8 @@ export component DraftEditor inherits Rectangle {
     border-color: input.has-focus ? Tokens.accent : Tokens.border;
     Text {
         x: 4px; y: 4px; width: parent.width - 24px;
-        visible: State.draft == "" && !State.ime-active;
-        text: "Message"; font-size: Tokens.base; color: Tokens.secondary;
+        visible: State.draft == "" && !State.ime-active && !input.has-focus;
+        text: "Message"; font-size: Tokens.base; color: Tokens.placeholder;
         accessible-role: none;
     }
     editor-pane := Pane {

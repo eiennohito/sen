@@ -32,7 +32,7 @@ export component SearchField inherits Rectangle {
             x: 0px; y: 0px;
             width: parent.width + root.native-trailing-padding + (root.text != "" && self.has-focus && root.enabled ? root.native-clear-width : 0px);
             height: root.height; enabled: root.enabled;
-            text <=> root.text; placeholder-text: root.placeholder-text; font-size: Tokens.base;
+            text <=> root.text; placeholder-text: ""; accessible-placeholder-text: root.placeholder-text; font-size: Tokens.base;
             accessible-label: root.label; accessible-description: self.has-focus ? "Focused search" : "";
             edited(value) => { root.edited(value); }
             key-pressed(event) => {
@@ -40,6 +40,12 @@ export component SearchField inherits Rectangle {
                 root.key-pressed(event)
             }
         }
+    }
+    Text {
+        x: 12px; y: 0px; width: editor-clip.width - 12px; height: root.height;
+        visible: root.text == "" && !input.has-focus;
+        text: root.placeholder-text; color: Tokens.placeholder; font-size: Tokens.base;
+        vertical-alignment: center; overflow: elide; accessible-role: none;
     }
     // Complete the native frame with the same brushes, composited once over the same parent.
     Rectangle {
