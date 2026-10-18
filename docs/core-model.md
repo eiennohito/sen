@@ -3,8 +3,8 @@
 Status: accepted 2026-10-18 (full rewrite, SQLite, FakeBackend demo, no legacy import). Replaces the PoC message model (D0)
 and the worker/controller artifacts found in the 2026-10-18 audits. Behaviour
 stays [ux-model.md](ux-model.md); engineering constraints not overridden here
-stay in [app-design.md](app-design.md). Nothing in this document is
-implemented yet.
+stay in [app-design.md](app-design.md). Phase 1 of the Store library is
+implemented; the worker and projection below remain planned.
 
 ## Why a rewrite, not fixes
 
@@ -85,10 +85,11 @@ Tables (columns abbreviated):
 - `message(key INTEGER PK, chat_id, server_id UNIQUE NULL, local_id UNIQUE
   NULL, request_seq NULL, sort_ts, sort_id, sender_id, outgoing,
   content_type, body_json, reactions_json, reactions_rev, withdrawn,
-  delivery, delivery_detail, created_at_local)`, with an index
+  delivery, delivery_detail, created_at_local, content_rev)`, with an index
   `(chat_id, sort_ts, sort_id)`.
 - `segment(chat_id, lo_ts, lo_id, hi_ts, hi_id, reaches_start)`. These are the
   contiguous ranges known to have no gaps (see "Gaps").
+- `withdrawal(server_id PK)` remembers unsends received before a message.
 - `contact`, `member(chat_id, mid, …)`, `draft(chat_id, text, cursor,
   updated)`, `pref(key, value)`, `read_marker(chat_id, server_id, state)`.
 
@@ -120,10 +121,31 @@ There is one total order everywhere: `(sort_ts, sort_id)`.
 | Reaction op 139/140 | Replace `reactions_json` if the op's revision is newer. |
 | Receipt op 55 / read ranges | Advance `delivery` to Read for outgoing rows up to the marker. |
 | Read elsewhere op 40 | Advance `chat.last_read_server_id`; recompute unread. |
-| Chat list page | Upsert `chat` rows. Preview and activity come from the chat's newest message row, never from the list payload, unless the list's last message is newer than anything stored. In that case insert that message row, which also marks the chat as needing a refresh (M14). Chats absent from a *complete* list sweep are marked `left`. |
+| Chat list page | Upsert `chat` rows. Preview and activity come from the chat's newest message row, never from the list payload, unless the list's last message is newer than anything stored. In Phase 1 the list input carries only the last server id/time, so persist that hint and report `needs_refresh` until a page/live row catches up (M14); do not fabricate a message body. Chats absent from a *complete* list sweep are marked `left`. |
 
 Preview, activity, unread and history are all read from the same rows, so
 they cannot disagree.
+
+The Phase 1 API accepts canonical decimal server ids (up to 20 digits, no
+leading zeros except `0`). Zero padding then exactly preserves the existing
+`(length, lexicographic)` comparison. Invalid ids fail the entire transaction.
+`MessageInput.created_ms <= 0` falls back to a positive `delivered_ms`, then zero.
+
+`reactions_rev` versions page/live content as well as reactions until a distinct
+edit revision exists in the transport. A nullable `message.content_rev` tracks
+body-field updates separately, so reaction-only operations cannot suppress a
+later content update. Incoming rows enter as Sent; persisted receipt markers
+upgrade outgoing rows to Read, including rows loaded after the receipt.
+
+Page `Older.before`/`Newer.after` cursors certify adjacency to the fetched range.
+Segments merge at shared endpoints or overlapping ranges; consecutive numeric
+server ids alone do not certify continuity. Empty pages with `reaches_start`
+mark the anchored segment (or the newest segment for Recent). An entirely empty
+chat uses a minimum-cursor segment to remember that the start is known. Windows
+include the anchor, up to `before` earlier rows and `after` later rows. Local
+outbox rows do not certify server continuity or hide gaps between confirmed rows.
+`reaches_end` means the newest stored row is included and no newer server-list
+hint or uncovered confirmed row requires refresh.
 
 ### Gaps
 
@@ -160,8 +182,9 @@ count cap; a chat's failed rows are listed in its row badge until resolved.
 ### Legacy import
 
 Nothing is imported (user decision 2026-10-18). On the first open the store
-starts empty; the old `desktop.state`, encrypted message pages and
-`protocol.state` are deleted, and the encryption code is removed (D7, D6).
+starts empty. The standalone Phase 1 store does not inspect or delete legacy
+files. Legacy cache deletion and encryption removal belong to app integration
+and cleanup (D7, D6); no app/client changes are made in Phase 1.
 
 ## Worker
 

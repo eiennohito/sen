@@ -29,6 +29,8 @@ socket2 = "0.6"
 libc = "0.2"
 ureq = { version = "=3.4.2", default-features = false, features = ["rustls", "rustls-webpki-roots"] }
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
+rusqlite = { version = "0.37", features = ["bundled"] }
+thiserror = "2"
 
 [dev-dependencies]
 curve25519-dalek = "=4.1.3"
