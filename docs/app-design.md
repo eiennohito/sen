@@ -367,18 +367,18 @@ to preserve resource paths. See [build iteration](build-iteration.md) for profil
 commands, generated-code costs and guidance for evaluating further reductions.
 
 `--features ui-debug` enables Slint's MCP server and element debug info.
-Agent-started previews use `tools/run-ui-debug.py`, which
+Agent-started previews use `tools/run_ui_debug.py`, which
 sets the loopback MCP port inside an owned private headless D-Bus session
 with private XDG directories and no activation service directories. The wrapper
 selects Slint’s headless software backend and supplies guarded
 `--debug-background`; missing prerequisites fail. Normal user runs retain foreground startup. Headless snapshots do not
 map a GUI window. Regular builds omit this feature, and the desktop installer
-rejects debug-server builds. `tools/check-ui-mcp.py` checks an
-offline preview, including Japanese/emoji drafts, switching, filtering, and
-Enter inserting a line. `--scenarios` also exercises simulated pointer scrolling,
-selection/clipboard, a delayed arrival burst, media completion, and failure
-recovery. Additional flags cover reading, layers, rich content and paged history;
-focused browser/composer scripts test their keyboard and draft invariants.
+rejects debug-server builds. `python3 tools/check-ui-mcp.py --all` launches
+its own offline demos and checks visible actions and results: Japanese/emoji
+drafts, switching/filtering, focus chains, compose and attachments, synthetic
+arrivals, reading, layers/viewer, rich content, media retry and unread state.
+`--group NAME` selects a group. Every group prints PASS/FAIL and seconds,
+followed by the command total. The runner never builds.
 Demo and snapshot scenes use FakeBackend through the same engine, SQLite
 store, controller and presenter. Demo stores use in-memory SQLite; account
 stores live on disk. Demo sends receive scripted Sent/Incoming or failure
@@ -397,23 +397,23 @@ Sends use the same clock as fixtures. The injectable clock is test-only; there
 is no demo clock CLI option. Headless snapshots fix now to 2026-10-18 14:00 local
 time, including list times and date dividers.
 For iteration, build with `cargo build --profile fast --offline -p line-desktop
---features ui-debug`, then launch with `tools/run-ui-debug.py --profile fast
---port PORT -- --demo`. Each `check-*-mcp.py` also accepts `--launch --profile
-fast --port PORT` to start and stop its own wrapper, with optional `--demo-size
-1400x900`. 
-Without `--launch`, checks still connect to the supplied port. The launcher and
-checks default to `release`; use that profile for final MCP validation.
-`tools/check-ui-mcp.py --focus --port PORT` covers search clearing and
-forward/reverse Tab with empty and non-empty queries, including Offline.
-The consolidated checks use fresh instances per group; run `--layers`, `--focus`,
-`--friends` and `--scenarios` again with `--wide`. The retired standalone browser,
-composer, members, search and preview scripts are no longer validation entry points.
+--features ui-debug`, then run `python3 tools/check-ui-mcp.py --group focus
+--binary target/fast/line-desktop`. Final validation uses a release ui-debug
+binary and `python3 tools/check-ui-mcp.py --all --binary
+target/release/line-desktop`, three times consecutively.
+The full matrix uses one 980×720 instance and one 1280×900 instance. The existing
+F12 automation hook replaces the synthetic backend and in-memory store between
+groups. Signed-out and missing-module groups have separate signed-out demos.
+`--wide` selects the larger window for individual groups; `--screenshots
+DIRECTORY` saves intermediate and completed surfaces. All launches own private
+temporary XDG data/cache/config/state/runtime directories and a private D-Bus
+session. Startup retries MCP `initialize` for up to 30 seconds rather than
+reading a PID file or log marker. The retired standalone browser, composer,
+members, search and preview scripts are no longer validation entry points.
 The color-scheme override only applies to demo previews; normal windows keep
 the system scheme. `--demo-dark` is an alias
 for `--demo-color-scheme dark`; both use the same palette override.
-Run `tools/check-ui-mcp.py --port PORT` against fresh wrapper instances
-at both the default `--demo` size (conversation sheet) and
-`--demo --demo-size 1400x900` (non-modal panel). `--snapshot-profile` opens a
+`--snapshot-profile` opens a
 profile in offline headless snapshots. `--snapshot-scene` selects `chats`,
 `chats-query`, `friends`, `friends-query`, `friends-empty-group`, `settings`,
 `composer`, `composer-reason`, `latest`, or `return` for shell layout captures.

@@ -10,7 +10,7 @@ import { TextMetrics, RichMetric } from "text-metrics.slint";
 export { RichMetric } from "text-metrics.slint";
 import { ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { Pane } from "scrollpane.slint";
-export { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow, RichRun } from "types.slint";
+export { DemoAutomation, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow, MessageKind, LinkRow, RichRun } from "types.slint";
 import { Rail } from "rail.slint";
 import { Friends } from "friends.slint";
 import { Chats } from "chats.slint";
@@ -22,6 +22,7 @@ import { ConnectionNotice, FeedbackRect } from "connection-notice.slint";
 import { DemoScenarios } from "demo-scenarios.slint";
 
 export component AppWindow inherits Window {
+    if State.demo-reset-enabled: demo-reset-marker := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: "Demo automation"; accessible-value: State.demo-instance + ":" + State.demo-reset-generation; }
     public function connection-status-text() -> string { return auth-notice.compact-status; }
     public function connection-actions-fit() -> bool { return auth-notice.actions-fit(); }
     public function connection-obstacles() -> [FeedbackRect] {
