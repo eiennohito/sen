@@ -106,7 +106,7 @@ impl Client {
     pub fn open_local(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
         let has_session = state_path.exists();
         let state = if has_session {
-            crate::credentials::load_migrating(state_path)?
+            crate::credentials::load(state_path)?
         } else {
             json!({"wasm_sha256":HASH})
         };

@@ -289,7 +289,7 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             };
             c.data_mut().types.insert(p[0], Type { kind, size });
         }
-        "c" => {} // Numeric configuration constants are not used by this PoC.
+        "c" => {} // Numeric configuration constants are not used by this host.
         "N" => {
             let name = cstr(&c, p[0])?;
             let types = (1..p[1])

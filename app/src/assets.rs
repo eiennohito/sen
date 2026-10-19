@@ -1,6 +1,6 @@
 //! App image preparation. The projection runs on the publishing worker, before
 //! pixels reach the Slint queue; the UI thread only creates renderer handles.
-use line_wasm_poc::{
+use line_client::{
     client::desktop::assets::{Asset, Pixels},
     engine::{Delta, Intent},
 };
@@ -36,7 +36,7 @@ impl Assets {
 }
 
 /// The software renderer doesn't round image clipping. Supply a masked square
-/// so old square cache entries also render as circular avatars.
+/// to render decoded avatar pixels as a circle.
 pub(crate) fn circular_avatar(pixels: &Pixels) -> Pixels {
     let Some(image) = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba.clone())
     else {
@@ -70,9 +70,9 @@ pub(crate) fn circular_avatar(pixels: &Pixels) -> Pixels {
 impl Assets {
     pub(crate) fn stickers(
         &mut self,
-        state: &line_wasm_poc::controller::AppState,
+        state: &line_client::controller::AppState,
         selected: usize,
-        sender: &line_wasm_poc::engine::Sender,
+        sender: &line_client::engine::Sender,
     ) {
         for asset in state
             .sticker_packages
@@ -97,9 +97,9 @@ impl Assets {
     }
     pub(crate) fn visible(
         &mut self,
-        state: &line_wasm_poc::controller::AppState,
+        state: &line_client::controller::AppState,
         selected: usize,
-        sender: &line_wasm_poc::engine::Sender,
+        sender: &line_client::engine::Sender,
     ) {
         for asset in state
             .chats
@@ -113,7 +113,7 @@ impl Assets {
                     .profile
                     .picture_path
                     .as_deref()
-                    .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar),
+                    .and_then(line_client::client::desktop::assets::Asset::avatar),
             )
             .chain(
                 state
@@ -134,11 +134,11 @@ impl Assets {
             .values()
             .chain(state.chats.values().filter_map(|c| c.preview.as_ref()))
         {
-            use line_wasm_poc::client::desktop::assets::Asset;
+            use line_client::client::desktop::assets::Asset;
             let media = m.body.image().cloned();
             let emoji = m.body.spans().iter().filter_map(Asset::inline_emoji);
             let reactions = m.reactions.iter().filter_map(|r| match &r.kind {
-                line_wasm_poc::store::ReactionKind::Paid(asset) => asset.clone(),
+                line_client::store::ReactionKind::Paid(asset) => asset.clone(),
                 _ => None,
             });
             for asset in media.into_iter().chain(emoji).chain(reactions) {

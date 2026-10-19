@@ -26,7 +26,7 @@ migrated once or discarded, not supported in parallel.
 
 ## Everyday usability gate
 
-The current sketch is a PoC, not ready for daily use. The user's issue list is
+The current sketch is a prototype, not ready for daily use. The user's issue list is
 non-exhaustive; audit interaction sequences and asynchronous state changes as
 well as appearance. See the reference map's everyday-use requirements for
 per-message send/server-confirmation/read states, selection/copy, preview
@@ -38,6 +38,7 @@ behavior and toolkit deviations, is recorded in ux-acceptance.md.
 
 Pin Slint and slint-build to 1.18.1. Disable default features and enable `std`,
 `compat-1-18`, `backend-winit`, `renderer-software`, and `accessibility`.
+Slint 1.18.1 requires `compat-1-18` with a compile-time error if omitted.
 Normal launches select `winit` + `software` programmatically and fail if unavailable. Slint
 documents CPU rendering through this backend/renderer combination, and separate
 Wayland/X11 feature flags if a smaller platform-specific build is needed.

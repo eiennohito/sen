@@ -181,7 +181,7 @@ impl Desktop {
                     text: self.state.composer.clone(),
                     cursor: ui.get_editor_caret() as usize,
                     anchor: ui.get_editor_anchor() as usize,
-                    updated: line_wasm_poc::engine::now_ms(),
+                    updated: line_client::engine::now_ms(),
                 },
             });
         }
@@ -298,7 +298,7 @@ impl Desktop {
                         let global = ui.global::<State>();
                         global.set_new_chat_uncertain(matches!(
                             error,
-                            line_wasm_poc::engine::CreateFailure::Uncertain
+                            line_client::engine::CreateFailure::Uncertain
                         ));
                         global.set_new_chat_error(text::create_failure(error).into());
                     }
@@ -346,7 +346,7 @@ impl Desktop {
                 ui.global::<State>().set_session_cause("".into());
             }
             Delta::Pair(event) => {
-                use line_wasm_poc::backend::PairEvent;
+                use line_client::backend::PairEvent;
                 match event {
                     PairEvent::Stage(stage) => {
                         ui.set_auth_stage(text::pairing_stage(*stage).into())
@@ -362,13 +362,11 @@ impl Desktop {
                 }
             }
             Delta::PairFailed { reason } => {
-                let cancelled = matches!(
-                    reason,
-                    line_wasm_poc::client::error::SignInFailure::Cancelled
-                );
+                let cancelled =
+                    matches!(reason, line_client::client::error::SignInFailure::Cancelled);
                 ui.global::<State>().set_auth_prerequisite_missing(matches!(
                     reason,
-                    line_wasm_poc::client::error::SignInFailure::CryptoModule(_)
+                    line_client::client::error::SignInFailure::CryptoModule(_)
                 ));
                 ui.set_auth_cancelling(false);
                 ui.set_auth_qr(slint::Image::default());

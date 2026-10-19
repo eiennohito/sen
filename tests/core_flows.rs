@@ -1,12 +1,12 @@
-use line_wasm_poc::client::error::RejectReason;
-use line_wasm_poc::{
+use line_client::client::error::RejectReason;
+use line_client::{
     backend::{FakeBackend, LiveOp, Op},
     controller::AppState,
     engine::{Connection, Delta, Intent, StoreLocation, Timing, Worker},
     store::{ChatId, Delivery, Key, Prefs, Reaction, ReactionKind},
 };
 use std::time::{Duration, Instant};
-fn message_text(row: &line_wasm_poc::store::StoredMessage) -> &str {
+fn message_text(row: &line_client::store::StoredMessage) -> &str {
     row.body.as_text()
 }
 struct App {
@@ -94,7 +94,7 @@ fn m13_send_switch_return_with_stale_page() {
     app.until(|s| s.messages.contains_key(&key));
     app.send(Intent::Page {
         chat: ChatId("alice".into()),
-        kind: line_wasm_poc::store::PageKind::Recent,
+        kind: line_client::store::PageKind::Recent,
     });
     app.send(Intent::Prefs(Prefs {
         text_size: 38,
@@ -258,7 +258,7 @@ fn unrelated_fetch_failure_does_not_block_send() {
     // Even a storage banner does not disable an unrelated operation. A committed
     // write clears it; no controller reset or manual retry is needed.
     app.state.apply(Delta::StorageFailed(
-        line_wasm_poc::engine::StorageFailure::Full,
+        line_client::engine::StorageFailure::Full,
     ));
     assert!(app.state.can_send());
     app.send(Intent::Prefs(Prefs {
@@ -275,7 +275,7 @@ fn unrelated_fetch_failure_does_not_block_send() {
 }
 #[test]
 fn opening_unread_chat_centers_the_window_on_the_divider() {
-    use line_wasm_poc::store::{Anchor, ChatInput, ServerId};
+    use line_client::store::{Anchor, ChatInput, ServerId};
     let fake = FakeBackend::canned();
     fake.set_page(
         ChatId("alice".into()),
@@ -311,7 +311,7 @@ fn opening_unread_chat_centers_the_window_on_the_divider() {
 
 #[test]
 fn reentrant_panel_requests_are_queued_without_borrowing_the_controller() {
-    use line_wasm_poc::controller::{ActionQueue, Panel};
+    use line_client::controller::{ActionQueue, Panel};
     let fake = FakeBackend::canned();
     let mut app = App::new(fake, StoreLocation::Memory);
     app.online();
@@ -329,7 +329,7 @@ fn reentrant_panel_requests_are_queued_without_borrowing_the_controller() {
 
 #[test]
 fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
-    use line_wasm_poc::{
+    use line_client::{
         backend::{Error, FakeRpc},
         store::{ChatInput, ServerId},
     };
@@ -383,7 +383,7 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
 
 #[test]
 fn opened_chat_history_and_reads_run_before_missing_details_sweep() {
-    use line_wasm_poc::{
+    use line_client::{
         backend::FakeRpc,
         store::{ChatInput, ServerId, Store},
     };
@@ -449,7 +449,7 @@ fn opened_chat_history_and_reads_run_before_missing_details_sweep() {
 
 #[test]
 fn first_identity_keeps_local_work_and_sends_pending() {
-    use line_wasm_poc::store::{Draft, Store};
+    use line_client::store::{Draft, Store};
     use sha2::{Digest, Sha256};
     let root = std::env::temp_dir().join(format!("line-first-identity-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
@@ -573,8 +573,8 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
 
 #[test]
 fn unsend_success_echo_and_failure_keep_the_same_row() {
-    use line_wasm_poc::backend::{Error, FakeRpc};
-    use line_wasm_poc::store::ServerId;
+    use line_client::backend::{Error, FakeRpc};
+    use line_client::store::ServerId;
     let fake = FakeBackend::canned();
     fake.set_page(
         ChatId("alice".into()),
@@ -635,7 +635,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
 
 #[test]
 fn cached_intents_complete_while_backend_rpc_is_blocked() {
-    use line_wasm_poc::{backend::*, engine::WindowSub, store::*};
+    use line_client::{backend::*, engine::WindowSub, store::*};
     use std::sync::{Arc, atomic::AtomicBool};
     struct Blocked(
         FakeBackend,
@@ -652,7 +652,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         }
     }
     impl Backend for Blocked {
-        fn contact(&mut self, mid: &str) -> Result<line_wasm_poc::store::Friend> {
+        fn contact(&mut self, mid: &str) -> Result<line_client::store::Friend> {
             self.0.contact(mid)
         }
         fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
@@ -663,7 +663,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         }
         fn profile_action(
             &mut self,
-            action: &line_wasm_poc::backend::ProfileAction,
+            action: &line_client::backend::ProfileAction,
             full: serde_json::Value,
             seq: u32,
         ) -> Result<()> {
@@ -673,11 +673,11 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
             self.0.sign_in(c, d)
         }
-        fn friends(&mut self) -> Result<Vec<line_wasm_poc::store::Friend>> {
+        fn friends(&mut self) -> Result<Vec<line_client::store::Friend>> {
             self.wait();
             self.0.friends()
         }
-        fn members(&mut self, c: &ChatId) -> Result<Vec<line_wasm_poc::store::Member>> {
+        fn members(&mut self, c: &ChatId) -> Result<Vec<line_client::store::Member>> {
             self.wait();
             self.0.members(c)
         }
@@ -686,8 +686,8 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         }
         fn authorize(
             &mut self,
-            a: &line_wasm_poc::client::desktop::assets::Asset,
-        ) -> std::result::Result<Option<String>, line_wasm_poc::client::desktop::assets::Failure>
+            a: &line_client::client::desktop::assets::Asset,
+        ) -> std::result::Result<Option<String>, line_client::client::desktop::assets::Failure>
         {
             self.0.authorize(a)
         }
@@ -696,9 +696,9 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         }
         fn media(
             &mut self,
-            a: &line_wasm_poc::client::desktop::assets::Asset,
-            p: line_wasm_poc::client::desktop::assets::Purpose,
-        ) -> Result<Option<line_wasm_poc::client::desktop::assets::Payload>> {
+            a: &line_client::client::desktop::assets::Asset,
+            p: line_client::client::desktop::assets::Purpose,
+        ) -> Result<Option<line_client::client::desktop::assets::Payload>> {
             self.0.media(a, p)
         }
         fn profile(&mut self) -> Result<Profile> {
@@ -724,13 +724,13 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
             self.0.react(id, kind, seq)
         }
-        fn sticker_packages(&mut self) -> Result<Vec<line_wasm_poc::store::StickerPackage>> {
+        fn sticker_packages(&mut self) -> Result<Vec<line_client::store::StickerPackage>> {
             self.0.sticker_packages()
         }
         fn send_sticker(
             &mut self,
             chat: &ChatId,
-            sticker: &line_wasm_poc::store::Content,
+            sticker: &line_client::store::Content,
             seq: u32,
         ) -> Result<MessageInput> {
             self.0.send_sticker(chat, sticker, seq)
@@ -837,9 +837,9 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     rpc.recv_timeout(Duration::from_secs(2))
         .expect("profile RPC entered and blocked");
     let mut state = AppState::default();
-    state.members.push(line_wasm_poc::store::Member {
+    state.members.push(line_client::store::Member {
         resolved: true,
-        contact: line_wasm_poc::store::Friend {
+        contact: line_client::store::Friend {
             profile: Default::default(),
             id: "old".into(),
             name: "Old chat".into(),
@@ -941,7 +941,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
 
 #[test]
 fn repeated_retry_and_discard_preserve_in_flight_send() {
-    use line_wasm_poc::{backend::*, store::*};
+    use line_client::{backend::*, store::*};
     use std::sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -969,7 +969,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         calls: Arc<AtomicUsize>,
     }
     impl Backend for BlockedSend {
-        fn contact(&mut self, mid: &str) -> Result<line_wasm_poc::store::Friend> {
+        fn contact(&mut self, mid: &str) -> Result<line_client::store::Friend> {
             self.fake.contact(mid)
         }
         fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
@@ -980,7 +980,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         }
         fn profile_action(
             &mut self,
-            action: &line_wasm_poc::backend::ProfileAction,
+            action: &line_client::backend::ProfileAction,
             full: serde_json::Value,
             seq: u32,
         ) -> Result<()> {
@@ -990,10 +990,10 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
             self.fake.sign_in(c, d)
         }
-        fn friends(&mut self) -> Result<Vec<line_wasm_poc::store::Friend>> {
+        fn friends(&mut self) -> Result<Vec<line_client::store::Friend>> {
             self.fake.friends()
         }
-        fn members(&mut self, c: &ChatId) -> Result<Vec<line_wasm_poc::store::Member>> {
+        fn members(&mut self, c: &ChatId) -> Result<Vec<line_client::store::Member>> {
             self.fake.members(c)
         }
         fn start_assets(&mut self, s: Arc<AtomicBool>, d: Deliver) {
@@ -1001,8 +1001,8 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         }
         fn authorize(
             &mut self,
-            a: &line_wasm_poc::client::desktop::assets::Asset,
-        ) -> std::result::Result<Option<String>, line_wasm_poc::client::desktop::assets::Failure>
+            a: &line_client::client::desktop::assets::Asset,
+        ) -> std::result::Result<Option<String>, line_client::client::desktop::assets::Failure>
         {
             self.fake.authorize(a)
         }
@@ -1011,9 +1011,9 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         }
         fn media(
             &mut self,
-            a: &line_wasm_poc::client::desktop::assets::Asset,
-            p: line_wasm_poc::client::desktop::assets::Purpose,
-        ) -> Result<Option<line_wasm_poc::client::desktop::assets::Payload>> {
+            a: &line_client::client::desktop::assets::Asset,
+            p: line_client::client::desktop::assets::Purpose,
+        ) -> Result<Option<line_client::client::desktop::assets::Payload>> {
             self.fake.media(a, p)
         }
         fn profile(&mut self) -> Result<Profile> {
@@ -1040,13 +1040,13 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
             self.fake.react(id, kind, seq)
         }
-        fn sticker_packages(&mut self) -> Result<Vec<line_wasm_poc::store::StickerPackage>> {
+        fn sticker_packages(&mut self) -> Result<Vec<line_client::store::StickerPackage>> {
             self.fake.sticker_packages()
         }
         fn send_sticker(
             &mut self,
             chat: &ChatId,
-            sticker: &line_wasm_poc::store::Content,
+            sticker: &line_client::store::Content,
             seq: u32,
         ) -> Result<MessageInput> {
             self.fake.send_sticker(chat, sticker, seq)
@@ -1133,14 +1133,14 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
     );
 }
 
-fn profile_action(app: &mut App, action: line_wasm_poc::backend::ProfileAction) {
+fn profile_action(app: &mut App, action: line_client::backend::ProfileAction) {
     app.state.action = Some(action.clone());
     app.send(Intent::ProfileAction(action));
     app.until(|s| s.action.is_none());
 }
 #[test]
 fn rename_contact_failure_then_success_updates_the_store_page() {
-    use line_wasm_poc::backend::{Error, FakeRpc, ProfileAction};
+    use line_client::backend::{Error, FakeRpc, ProfileAction};
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -1155,7 +1155,7 @@ fn rename_contact_failure_then_success_updates_the_store_page() {
     assert_eq!(app.state.contacts["alice"].name, "葵");
     assert_eq!(
         app.state.action_error,
-        Some(line_wasm_poc::engine::ProfileFailure::Rename)
+        Some(line_client::engine::ProfileFailure::Rename)
     );
     profile_action(&mut app, action);
     assert_eq!(app.state.contacts["alice"].name, "Aoi 🌿");
@@ -1169,12 +1169,12 @@ fn rename_contact_failure_then_success_updates_the_store_page() {
 }
 #[test]
 fn add_friend_failure_then_success_changes_relation_in_place() {
-    use line_wasm_poc::backend::{Error, FakeRpc, ProfileAction};
+    use line_client::backend::{Error, FakeRpc, ProfileAction};
     let fake = FakeBackend::canned();
     let mut members = fake.clone();
-    use line_wasm_poc::backend::Backend;
+    use line_client::backend::Backend;
     let mut rows = members.members(&ChatId("weekend".into())).unwrap();
-    rows[0].contact.profile = line_wasm_poc::store::ContactProfile {
+    rows[0].contact.profile = line_client::store::ContactProfile {
         relation: Some(2),
         ..Default::default()
     };
@@ -1186,7 +1186,7 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
     app.until(|s| s.contacts.contains_key(&mid));
     // Synthetic contact source prefers the friend record, so provide the observed non-friend snapshot.
     let mut row = app.state.contacts[&mid].clone();
-    row.profile = line_wasm_poc::store::ContactProfile {
+    row.profile = line_client::store::ContactProfile {
         relation: Some(2),
         ..Default::default()
     };
@@ -1202,7 +1202,7 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
     assert_eq!(app.state.contacts[&mid].profile.relation, Some(2));
     assert_eq!(
         app.state.action_error,
-        Some(line_wasm_poc::engine::ProfileFailure::AddFriend)
+        Some(line_client::engine::ProfileFailure::AddFriend)
     );
     profile_action(&mut app, action);
     assert_eq!(app.state.contacts[&mid].profile.relation, Some(0));
@@ -1210,7 +1210,7 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
 }
 #[test]
 fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
-    use line_wasm_poc::backend::{Error, FakeRpc, ProfileAction};
+    use line_client::backend::{Error, FakeRpc, ProfileAction};
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -1230,7 +1230,7 @@ fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
     assert!(!app.state.chats[&chat].chat.muted);
     assert_eq!(
         app.state.action_error,
-        Some(line_wasm_poc::engine::ProfileFailure::Mute)
+        Some(line_client::engine::ProfileFailure::Mute)
     );
     profile_action(&mut app, action);
     assert!(app.state.chats[&chat].chat.muted);
@@ -1240,7 +1240,7 @@ fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
 }
 #[test]
 fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
-    use line_wasm_poc::backend::{Error, FakeRpc, ProfileAction};
+    use line_client::backend::{Error, FakeRpc, ProfileAction};
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -1253,7 +1253,7 @@ fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
     assert!(!app.state.chats[&chat].chat.left);
     assert_eq!(
         app.state.action_error,
-        Some(line_wasm_poc::engine::ProfileFailure::Leave)
+        Some(line_client::engine::ProfileFailure::Leave)
     );
     profile_action(&mut app, action);
     assert!(app.state.chats[&chat].chat.left);
@@ -1264,7 +1264,7 @@ fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
 }
 #[test]
 fn detail_stack_pop_and_close_use_the_recorded_opener() {
-    use line_wasm_poc::controller::DetailPage;
+    use line_client::controller::DetailPage;
     let mut state = AppState::default();
     let chat = ChatId("weekend".into());
     state.push_detail(DetailPage::GroupInfo(chat.clone()), "header".into());
@@ -1278,7 +1278,7 @@ fn detail_stack_pop_and_close_use_the_recorded_opener() {
 
 #[test]
 fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
-    use line_wasm_poc::backend::{Backend, FakeRpc};
+    use line_client::backend::{Backend, FakeRpc};
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -1286,7 +1286,7 @@ fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
         let mut source = fake.clone();
         let mut rows = source.friends().unwrap();
         rows[0].name = format!("Changed {kind}");
-        rows[0].profile = line_wasm_poc::store::ContactProfile {
+        rows[0].profile = line_client::store::ContactProfile {
             relation: Some(0),
             ..Default::default()
         };
@@ -1300,7 +1300,7 @@ fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
     }
     let chat = ChatId("weekend".into());
     for kind in [121, 122, 127, 128] {
-        fake.add_chat(line_wasm_poc::store::ChatInput {
+        fake.add_chat(line_client::store::ChatInput {
             id: chat.clone(),
             title: format!("Group {kind}"),
             is_group: true,
@@ -1322,7 +1322,7 @@ fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
 
 #[test]
 fn compose_reaction_set_cancel_and_failure_revert() {
-    use line_wasm_poc::backend::{Error, FakeRpc};
+    use line_client::backend::{Error, FakeRpc};
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -1344,7 +1344,7 @@ fn compose_reaction_set_cancel_and_failure_revert() {
 
 #[test]
 fn compose_sticker_send_echo_dedup_and_recovery() {
-    use line_wasm_poc::store::Content;
+    use line_client::store::Content;
     let fake = FakeBackend::canned();
     fake.echo_first(true);
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
@@ -1403,7 +1403,7 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
 
 #[test]
 fn compose_new_chat_local_friend_then_group_success_and_failure() {
-    use line_wasm_poc::{
+    use line_client::{
         backend::{Error, FakeRpc},
         store::Friend,
     };
@@ -1480,7 +1480,7 @@ fn signed_out_account_intents_never_reach_the_backend() {
         },
         Intent::SendAttachments {
             chat: ChatId("unknown-chat-id".into()),
-            items: vec![line_wasm_poc::attachments::Attachment {
+            items: vec![line_client::attachments::Attachment {
                 path: "/unread-signed-out-attachment".into(),
                 name: "private.txt".into(),
                 size: 1,
@@ -1505,7 +1505,7 @@ fn signed_out_account_intents_never_reach_the_backend() {
 
 #[test]
 fn pairing_reasons_survive_the_engine() {
-    use line_wasm_poc::client::error::SignInFailure::*;
+    use line_client::client::error::SignInFailure::*;
     let fake = FakeBackend::signed_out();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.until(|s| s.connection == Connection::SignedOut);
@@ -1542,7 +1542,7 @@ fn pairing_reasons_survive_the_engine() {
 
 #[test]
 fn invariant_errors_are_never_storage_failures() {
-    use line_wasm_poc::{engine::StorageFailure, store::StoreError};
+    use line_client::{engine::StorageFailure, store::StoreError};
     for error in [
         StoreError::Invalid("impossible state".into()),
         StoreError::Sql(rusqlite::Error::QueryReturnedNoRows),
@@ -1592,7 +1592,7 @@ fn unknown_key_reports_a_bug_and_keeps_the_worker_running() {
 
 #[test]
 fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
-    use line_wasm_poc::client::error::SignInFailure;
+    use line_client::client::error::SignInFailure;
     let fake = FakeBackend::signed_out();
     let reason = SignInFailure::CryptoModule("/missing/crypto.wasm".into());
     fake.fail_open(Some(reason.clone()));
@@ -1612,7 +1612,7 @@ fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
     worker.sender.send(Intent::SignIn);
     loop {
         match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::Pair(line_client::backend::PairEvent::Qr(_)) => break,
             Delta::Fatal | Delta::PairFailed { .. } => panic!("repaired open did not recover"),
             _ => {}
         }
@@ -1623,7 +1623,7 @@ fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
 
 #[test]
 fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
-    use line_wasm_poc::client::error::SignInFailure;
+    use line_client::client::error::SignInFailure;
     use std::sync::mpsc;
     let fake = FakeBackend::signed_out();
     let (started, waiting) = mpsc::channel();
@@ -1632,7 +1632,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
     let worker = Worker::start_with(StoreLocation::Memory, move || {
         if std::mem::take(&mut first) {
             return Err(
-                line_wasm_poc::backend::Error::SignIn(SignInFailure::CryptoModule(
+                line_client::backend::Error::SignIn(SignInFailure::CryptoModule(
                     "/missing/crypto.wasm".into(),
                 ))
                 .into(),
@@ -1659,8 +1659,8 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
                 assert_eq!(reason, SignInFailure::Cancelled);
                 break;
             }
-            Delta::Pair(line_wasm_poc::backend::PairEvent::Stage(
-                line_wasm_poc::client::pairing::Stage::WaitingKeyring,
+            Delta::Pair(line_client::backend::PairEvent::Stage(
+                line_client::client::pairing::Stage::WaitingKeyring,
             )) => {}
             Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
             _ => {}
@@ -1672,7 +1672,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
     worker.sender.send(Intent::SignIn);
     loop {
         match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::Pair(line_client::backend::PairEvent::Qr(_)) => break,
             Delta::PairFailed { .. } | Delta::Fatal => panic!("late result escaped its generation"),
             _ => {}
         }
@@ -1682,7 +1682,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
 
 #[test]
 fn cancel_during_initial_open_does_not_wait_for_credentials() {
-    use line_wasm_poc::client::error::SignInFailure;
+    use line_client::client::error::SignInFailure;
     use std::sync::mpsc;
     let (started, waiting) = mpsc::channel();
     let (release, resume) = mpsc::channel();
@@ -1701,8 +1701,8 @@ fn cancel_during_initial_open_does_not_wait_for_credentials() {
                 assert_eq!(reason, SignInFailure::Cancelled);
                 break;
             }
-            Delta::Pair(line_wasm_poc::backend::PairEvent::Stage(
-                line_wasm_poc::client::pairing::Stage::WaitingKeyring,
+            Delta::Pair(line_client::backend::PairEvent::Stage(
+                line_client::client::pairing::Stage::WaitingKeyring,
             )) => {}
             Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
             _ => {}
@@ -1714,7 +1714,7 @@ fn cancel_during_initial_open_does_not_wait_for_credentials() {
     worker.sender.send(Intent::SignIn);
     loop {
         match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::Pair(line_client::backend::PairEvent::Qr(_)) => break,
             Delta::PairFailed { .. } | Delta::Fatal => {
                 panic!("stale startup escaped its generation")
             }
@@ -1726,7 +1726,7 @@ fn cancel_during_initial_open_does_not_wait_for_credentials() {
 
 #[test]
 fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
-    use line_wasm_poc::client::error::SignInFailure;
+    use line_client::client::error::SignInFailure;
     let worker = Worker::start_with::<FakeBackend>(StoreLocation::Memory, || {
         panic!("synthetic network worker crash")
     });
@@ -1753,7 +1753,7 @@ fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
 
 #[test]
 fn unusable_saved_session_allows_start_to_pair() {
-    use line_wasm_poc::client::error::{SavedSessionFailure, SignInFailure};
+    use line_client::client::error::{SavedSessionFailure, SignInFailure};
     let fake = FakeBackend::signed_out();
     let reason = SignInFailure::SavedSession(SavedSessionFailure::Keys);
     fake.fail_open(Some(reason.clone()));
@@ -1772,7 +1772,7 @@ fn unusable_saved_session_allows_start_to_pair() {
     worker.sender.send(Intent::SignIn);
     loop {
         match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::Pair(line_client::backend::PairEvent::Qr(_)) => break,
             Delta::PairFailed { .. } | Delta::Fatal => panic!("unusable session blocked pairing"),
             _ => {}
         }
@@ -1799,10 +1799,7 @@ fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
         if let Delta::PairFailed { reason } =
             worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap()
         {
-            assert_eq!(
-                reason,
-                line_wasm_poc::client::error::SignInFailure::Cancelled
-            );
+            assert_eq!(reason, line_client::client::error::SignInFailure::Cancelled);
             break;
         }
     }
@@ -1810,7 +1807,7 @@ fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
     loop {
         match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
             Delta::Connection(Connection::Online) => break,
-            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_))
+            Delta::Pair(line_client::backend::PairEvent::Qr(_))
             | Delta::Fatal
             | Delta::PairFailed { .. } => panic!("valid session lost after cancellation"),
             _ => {}
@@ -1820,7 +1817,7 @@ fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
 
 #[test]
 fn attachments_preserve_order_progress_and_retry_identity() {
-    use line_wasm_poc::{attachments::Attachment, store::Content};
+    use line_client::{attachments::Attachment, store::Content};
     let root = std::env::temp_dir().join(format!("line-attachments-flow-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let photo = root.join("First.png");
@@ -1887,7 +1884,7 @@ fn attachments_preserve_order_progress_and_retry_identity() {
 
 #[test]
 fn text_send_completes_while_upload_is_blocked() {
-    use line_wasm_poc::attachments::Attachment;
+    use line_client::attachments::Attachment;
     let root = std::env::temp_dir().join(format!("line-upload-blocked-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("blocked.txt");
@@ -1932,7 +1929,7 @@ fn text_send_completes_while_upload_is_blocked() {
 
 #[test]
 fn attachment_send_success_after_sign_in_still_confirms_the_row() {
-    use line_wasm_poc::{attachments::Attachment, store::Store};
+    use line_client::{attachments::Attachment, store::Store};
     let root = std::env::temp_dir().join(format!("line-send-sign-in-{}", std::process::id()));
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("clipboard.txt");
@@ -1987,7 +1984,7 @@ fn attachment_send_success_after_sign_in_still_confirms_the_row() {
 
 #[test]
 fn expired_session_cancels_upload_even_if_connection_recovers_before_it_finishes() {
-    use line_wasm_poc::{
+    use line_client::{
         attachments::Attachment,
         backend::{Error, FakeRpc},
     };

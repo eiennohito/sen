@@ -277,7 +277,7 @@ Runtime initialization was 170.31 ms. This isolates a crypto bottleneck; it is
 not an end-to-end app speedup or a group/network benchmark. Reproduce with:
 
 ```sh
-cargo run --release --offline --bin line-wasm-poc -- --bench
+cargo run --release --offline --example crypto-harness -- --bench
 cargo test --release --offline --lib cached_channel_is_reusable_across_messages -- --ignored
 ```
 

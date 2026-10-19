@@ -3,7 +3,7 @@
 A Rust client experiment using LINE Chrome's unmodified crypto WASM, with a
 Slint desktop app. Linux desktop is the first target.
 
-The protocol PoC has authenticated a real phone-paired session, restored three
+The protocol prototype has authenticated a real phone-paired session, restored three
 Letter Sealing keys, and decrypted a real V2 chat payload containing a media key.
 The desktop app uses the saved session to load real conversation names, recent
 messages, photos, stickers, and reactions. Text decryption uses the original
@@ -86,14 +86,8 @@ These paths have synthetic coverage; live compatibility and native read markers
 remain unverified while Chrome owns the account slot. Unknown mute state is not
 shown as a known server preference.
 
-Default session and WASM paths are `$XDG_DATA_HOME/line-desktop/session.json` and
-`$XDG_DATA_HOME/line-desktop/ltsm.wasm` (normally under `~/.local/share`). Cache uses
-`$XDG_CACHE_HOME/line-desktop`. `--state FILE`, `--wasm FILE` and `--cache-dir DIR`
-remain overrides. An explicit custom session path keeps sibling private state
-for compatibility. On first launch, existing repository files require an explicit
-Use existing files or Start fresh choice; credentials are never copied silently.
-`line-auth` shares these session/WASM defaults and saved desktop path choices;
-`--state` or `--wasm` uses explicit paths with XDG defaults for omitted paths.
+Run `tools/install-crypto-module.sh` to copy and verify `ltsm.wasm` from the newest installed Chrome LINE extension, then launch `line-desktop` and choose **Sign in** to pair with your phone. Session credentials and the module use `$XDG_DATA_HOME/line-desktop/` (default `~/.local/share/line-desktop/`); cache uses `$XDG_CACHE_HOME/line-desktop/` (default `~/.cache/line-desktop/`). The desktop keyring seals saved sign-in credentials. `line-auth` shares the session/module defaults; `--state FILE`, `--wasm FILE` and the app's `--cache-dir DIR` are developer overrides.
+
 Private desktop state uses `$XDG_STATE_HOME/line-desktop` (normally under
 `~/.local/state`). Empty or relative XDG directories fall back to `$HOME`.
 Use `--demo` for an offline synthetic preview. Press **F12** in the shell to open
@@ -189,7 +183,7 @@ Clear the account cache to remove both message pages and image previews.
 Crypto channels are reused with a 64-entry bound and reset with the WASM runtime.
 An offline synthetic benchmark measured 140.15 ms/message rebuilding a channel
 versus 4.54 ms reusing one; this is a crypto-stage measurement, not a measured
-full-app speedup. Run `cargo run --release --bin line-wasm-poc -- --bench`.
+full-app speedup. Run `cargo run --release --example crypto-harness -- --bench`.
 
 The [Chromium UI map](docs/chromium-ui-map.md) records the live reference,
 missing features, rich-message decoding gaps, history protocol, and reconstruction
@@ -254,11 +248,10 @@ verified protocol details. The blob is not included in Git.
 ```sh
 cargo build --release --bins
 # CLI defaults: $XDG_DATA_HOME/line-desktop/{session.json,ltsm.wasm}
-# (fallback $HOME/.local/share/line-desktop/), following the app's saved paths choice.
-# To use the repo session explicitly:
-target/release/line-auth status --state artifacts/auth/session.json --wasm artifacts/line-3.7.2/ltsm.wasm
-target/release/line-auth chat-check --state artifacts/auth/session.json --wasm artifacts/line-3.7.2/ltsm.wasm
-cargo run --release --bin line-wasm-poc
+# (fallback $HOME/.local/share/line-desktop/).
+target/release/line-auth status
+target/release/line-auth chat-check
+cargo run --release --example crypto-harness
 ```
 
 `login` performs QR pairing when needed; preserve an existing session. `status`

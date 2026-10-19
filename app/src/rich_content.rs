@@ -549,7 +549,7 @@ mod tests {
         row.rich_runs = runs(
             body,
             &[account::EmojiView {
-                span: line_wasm_poc::store::InlineEmoji {
+                span: line_client::store::InlineEmoji {
                     start_utf16: 3,
                     end_utf16: 6,
                     start_byte: 7,
@@ -811,7 +811,7 @@ mod tests {
         let body = "日本👩🏽‍💻[笑]\nlongunbrokentext";
         let start = body.find("[笑]").unwrap();
         let end = start + "[笑]".len();
-        let span = line_wasm_poc::store::InlineEmoji {
+        let span = line_client::store::InlineEmoji {
             start_utf16: 0,
             end_utf16: 0,
             start_byte: start,
@@ -856,7 +856,7 @@ mod tests {
             let start = words.len();
             let body = format!("{words}[笑]");
             let end = start + "[笑]".len();
-            let span = line_wasm_poc::store::InlineEmoji {
+            let span = line_client::store::InlineEmoji {
                 start_utf16: 0,
                 end_utf16: 0,
                 start_byte: start,

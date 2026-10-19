@@ -52,7 +52,7 @@ S23 and S24 are resolved below.
 ## U — Profiles, members and groups
 
 U0–U6 are resolved in Phase 6 under the user-approved [§3.4 design](ux-model.md#34-profile-member-and-group-surfaces-u0-approved).
-The PoC block was replaced with the shared detail stack; see the Resolved rows.
+The prototype block was replaced with the shared detail stack; see the Resolved rows.
 Remaining protocol work stays in P5/P6.
 
 ## M — Messages
@@ -84,7 +84,7 @@ Phase 7 basic chat flows follow [the decided visual design](visual-design.md#flo
 | U0 | Phase 6: user-approved §3.4 is the normative design, including relations, stack, focus, responsive placement and traced action states. |
 | U1 | Phase 6: relation-aware Chat/Rename/Add friend, read-only Favourite, fraud notice, More → Copy name; own and unknown profiles are read-only. Writes use engine intents and Backend. **live unverified**; Block and Report remain untraced (P6). |
 | U2 | Phase 6: header avatar/title, group sender avatar/name, member and Friends rows, Settings account and rail account open the shared detail stack; group Friends rows select that chat. |
-| U3 | Phase 6: PoC block replaced by detail.slint: accent cover tint, circular 96 px avatar/viewer, rich name/status, original name, compact icon actions and header. Optional cover fetch skipped because it needs channel auth. |
+| U3 | Phase 6: prototype block replaced by detail.slint: accent cover tint, circular 96 px avatar/viewer, rich name/status, original name, compact icon actions and header. Optional cover fetch skipped because it needs channel auth. |
 | U4 | Phase 6: group info → Members, Notifications switch and confirmed Leave; full getChats wire object is stored for updateChat. Rooms omit writes. Left chats remain read-only in the list. **live unverified**. |
 | U5 | Phase 6: searchable avatar/name/status rows, Friend marker, self first, friend Chat on hover/focus; invitees form Invited (N), without profile actions. |
 | U6 | Phase 6: controller-owned DetailPage stack (Profile, GroupInfo, Members), one pop/close rule, one opener-focus restoration adapter; same stack at 1060/740 breakpoints. §8.2 updated. |
@@ -105,8 +105,8 @@ Phase 7 basic chat flows follow [the decided visual design](visual-design.md#flo
 | T1 | RPCs go through one pooled `ureq` 3 agent per `Api` (rustls, HTTP/1.1, no async runtime) with the curl path's safety properties, prompt cancellation including DNS, and a single pre-body retry on stale reused connections. Live account unverified. |
 | T7 | QR encoded in-process with `qrcodegen` (PNG for the app and `--qr-file`, black-on-white ANSI or plain text in the CLI); kitty output removed. Verified by independent zxing decode. |
 | T8 | Already correct at `05cd26d`: `app/src/links.rs` spawns `xdg-open` on a helper thread and waits on it. The audit row was stale. |
-| T11 | Decided 2026-10-18: desktop Secret Service, with a development store for agents. `src/credentials.rs` seals the session file with AES-256-GCM (format `line-desktop-sealed-session`, mode 0600); its 32-byte key is one item in the default collection (`application=line-desktop`, `purpose=session-key`, `key-id`), reused by later saves so `before-sign-in` backups stay readable. Every session read/write goes through it. `Client::open` and `line-auth status` seal a legacy plaintext file only after the new key reads back and the envelope round-trips, and never over a concurrent save; plain loads never write. Sealed files are never downgraded; a refresh on an unsealed file without a reachable keyring stays plaintext rather than being lost; a new sign-in checks the keyring before asking the phone. `LINE_DESKTOP_CREDENTIALS=plaintext-file` keeps the old mode-0600 file per `--state` path for agent and debug instances and refuses sealed files; `tools/run-ui-debug.py` sets it in its private bus. Unit tests plus a private-bus contract against a synthetic locked keyring (unlock prompts, item attributes) pass. Not run against the real keyring or the account's `session.json`, which migrates at the first authorised start. Startup failure from a locked/absent keyring still shows the generic session failure. |
-| T10 | `line-auth` resolves defaults through the app's XDG `Locations` (moved to `src/locations.rs`), lazily, honouring the saved paths choice. |
+| T11 | Desktop Secret Service seals session files with AES-256-GCM (format `line-desktop-sealed-session`, mode 0600). Its 32-byte key is one item in the default collection (`application=line-desktop`, `purpose=session-key`, `key-id`), reused by later saves. Keyring mode refuses plaintext with a typed saved-session failure; no migration or plaintext save fallback exists. `LINE_DESKTOP_CREDENTIALS=plaintext-file` is the explicit development store and refuses sealed files; `tools/run-ui-debug.py` selects it for its private bus. Credential tests use in-memory keys and a synthetic Secret Service, never the real keyring. |
+| T10 | `line-auth` resolves defaults lazily through the app's fixed XDG `Locations` in `src/locations.rs`; `--state` and `--wasm` override individual paths. |
 | V1 | Demo scenarios moved into an F12 dialog (`app/ui/demo-scenarios.slint`); the demo shell renders as production, apart from the title hint. MCP checks pass, each flag on a fresh instance. |
 | S1 | The profile is a panel that narrows only the conversation from 1060 px (rail + browser + 398 px conversation + 320 px panel, derived from shared widths); 740–1059 px it is a sheet over the conversation with the browser kept; below 740 px a full-window sheet. Always below the connection strip. |
 | S2 | The profile closes on destination switch and on navigation to any other chat; it stays only for its own chat. |

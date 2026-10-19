@@ -3,7 +3,7 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use line_wasm_poc::{DEFAULT_WASM, HASH, VERSION, runtime::Runtime, sign};
+use line_client::{HASH, VERSION, runtime::Runtime, sign};
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::Path};
 
@@ -349,12 +349,15 @@ fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "Usage: line-wasm-poc [WASM [HAR]]\n       line-wasm-poc --export-test-key OUTPUT_JSON [WASM]\n       line-wasm-poc --bench [WASM]"
+            "Usage: crypto-harness [WASM [HAR]]\n       crypto-harness --export-test-key OUTPUT_JSON [WASM]\n       crypto-harness --bench [WASM]"
         );
         return Ok(());
     }
     let export = args.first().is_some_and(|s| s == "--export-test-key");
     let bench = args.first().is_some_and(|s| s == "--bench");
+    let default_wasm = line_client::locations::Locations::from_environment()
+        .map_err(anyhow::Error::msg)?
+        .wasm;
     let wasm = if export {
         args.get(2)
     } else if bench {
@@ -363,9 +366,14 @@ fn main() -> Result<()> {
         args.first()
     }
     .map(String::as_str)
-    .unwrap_or(DEFAULT_WASM);
-    let bytes = fs::read(wasm)
-        .with_context(|| format!("read {wasm}; run tools/extract_extension.py first"))?;
+    .map(Path::new)
+    .unwrap_or(&default_wasm);
+    let bytes = fs::read(wasm).with_context(|| {
+        format!(
+            "read {}; run tools/install-crypto-module.sh first",
+            wasm.display()
+        )
+    })?;
     let hash = format!("{:x}", Sha256::digest(&bytes));
     ensure!(
         hash == HASH,
@@ -375,10 +383,10 @@ fn main() -> Result<()> {
         return export_test_key(&bytes, args.get(1).context("missing output filename")?);
     }
     if bench {
-        ensure!(args.len() <= 2, "usage: line-wasm-poc --bench [WASM]");
+        ensure!(args.len() <= 2, "usage: crypto-harness --bench [WASM]");
         return benchmark(&bytes);
     }
-    ensure!(args.len() <= 2, "usage: line-wasm-poc [WASM [HAR]]");
+    ensure!(args.len() <= 2, "usage: crypto-harness [WASM [HAR]]");
     println!("LINE Chrome {VERSION}, unmodified WASM SHA-256 {hash}");
     let mut rt = Runtime::new(&bytes)?;
     println!(

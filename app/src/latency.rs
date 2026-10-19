@@ -53,7 +53,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
     };
     draw();
     let image = demo_data::avatar(0).to_rgba8().unwrap();
-    let pixels = std::sync::Arc::new(line_wasm_poc::client::desktop::assets::Pixels {
+    let pixels = std::sync::Arc::new(line_client::client::desktop::assets::Pixels {
         rgba: image.as_bytes().to_vec(),
         width: image.width(),
         height: image.height(),
@@ -128,7 +128,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
     d.state.chat_order.clear();
     d.state.selected = None;
     let contacts = (0..300)
-        .map(|i| line_wasm_poc::store::Friend {
+        .map(|i| line_client::store::Friend {
             profile: Default::default(),
             id: format!("contact-{i}"),
             name: format!("Contact {i}"),
@@ -149,7 +149,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
             d.state.members = contacts
                 .iter()
                 .cloned()
-                .map(|contact| line_wasm_poc::store::Member {
+                .map(|contact| line_client::store::Member {
                     resolved: true,
                     contact,
                     is_self: false,

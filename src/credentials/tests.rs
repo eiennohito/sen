@@ -66,47 +66,39 @@ fn sealed_file_hides_credentials_and_round_trips() {
 }
 
 #[test]
-fn legacy_plaintext_is_migrated_once_and_verified() {
-    let root = root("migrate");
+fn keyring_refuses_plaintext_without_reading_keys_or_changing_file() {
+    let root = root("plaintext");
     let path = root.join("session.json");
-    let legacy = serde_json::to_vec_pretty(&synthetic()).unwrap();
-    private_write(&path, &legacy).unwrap();
-    // Plain loads never write.
+    let bytes = serde_json::to_vec_pretty(&synthetic()).unwrap();
+    private_write(&path, &bytes).unwrap();
+    for keys_available in [true, false] {
+        let result = if keys_available {
+            load_with(&path, Store::Keyring, &MapKeys::default())
+        } else {
+            load_with(&path, Store::Keyring, &Unreachable)
+        };
+        assert!(matches!(
+            result
+                .unwrap_err()
+                .downcast_ref::<crate::client::error::Error>(),
+            Some(crate::client::error::Error::SignIn(
+                crate::client::error::SignInFailure::SavedSession(
+                    SavedSessionFailure::CredentialsStore
+                )
+            ))
+        ));
+    }
+    assert!(save_with(&path, &json!({}), Store::Keyring, &MapKeys::default()).is_err());
+    assert_eq!(fs::read(&path).unwrap(), bytes);
     assert_eq!(
-        load_with(&path, Store::Keyring, &MapKeys::default()).unwrap(),
+        load_with(&path, Store::PlaintextFile, &Unreachable).unwrap(),
         synthetic()
     );
-    assert_eq!(fs::read(&path).unwrap(), legacy);
-    // Without a keyring the file is left as it was.
-    assert_eq!(
-        load_migrating_with(&path, Store::Keyring, &Unreachable).unwrap(),
-        synthetic()
-    );
-    assert_eq!(fs::read(&path).unwrap(), legacy);
-    // The development store never seals.
-    let keys = MapKeys::default();
-    load_migrating_with(&path, Store::PlaintextFile, &keys).unwrap();
-    assert_eq!(fs::read(&path).unwrap(), legacy);
-    assert!(keys.0.lock().unwrap().is_empty());
-    // With a keyring the same content is sealed and stays readable.
-    assert_eq!(
-        load_migrating_with(&path, Store::Keyring, &keys).unwrap(),
-        synthetic()
-    );
-    assert!(sealed(&parse(&fs::read(&path).unwrap()).unwrap()));
-    assert_eq!(
-        load_with(&path, Store::Keyring, &keys).unwrap(),
-        synthetic()
-    );
-    let sealed_bytes = fs::read(&path).unwrap();
-    load_migrating_with(&path, Store::Keyring, &keys).unwrap();
-    assert_eq!(fs::read(&path).unwrap(), sealed_bytes);
-    assert_eq!(keys.0.lock().unwrap().len(), 1);
     fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn stores_never_downgrade_or_lose_a_refresh() {
+fn stores_refuse_downgrades_and_require_keys() {
     let root = root("downgrade");
     let path = root.join("session.json");
     let keys = MapKeys::default();
@@ -116,17 +108,9 @@ fn stores_never_downgrade_or_lose_a_refresh() {
     assert!(save_with(&path, &json!({}), Store::PlaintextFile, &keys).is_err());
     assert!(save_with(&path, &json!({}), Store::Keyring, &Unreachable).is_err());
     assert_eq!(fs::read(&path).unwrap(), sealed_bytes);
-    // A new session needs the keyring; an existing plaintext one keeps its refresh.
     let fresh = root.join("fresh.json");
     assert!(save_with(&fresh, &synthetic(), Store::Keyring, &Unreachable).is_err());
     assert!(!fresh.exists());
-    let legacy = root.join("legacy.json");
-    private_write(&legacy, b"{}").unwrap();
-    save_with(&legacy, &synthetic(), Store::Keyring, &Unreachable).unwrap();
-    assert_eq!(
-        load_with(&legacy, Store::PlaintextFile, &keys).unwrap(),
-        synthetic()
-    );
     // The development store writes and reads plaintext.
     let dev = root.join("dev.json");
     save_with(&dev, &synthetic(), Store::PlaintextFile, &Unreachable).unwrap();

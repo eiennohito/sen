@@ -237,7 +237,7 @@ coverage is reported as ignored rather than passed. To run an oracle suite:
 cargo test --release --offline --features native-crypto aes_matches_oracle -- --ignored --nocapture
 ```
 
-Explicit oracle runs require the pinned fixture at `DEFAULT_WASM` or
+Explicit oracle runs require the pinned fixture at the XDG crypto-module path or
 `LINE_CRYPTO_ORACLE_PATH`. A missing fixture fails loudly with the named
 `SKIP native crypto oracle` diagnostic; permission errors and wrong hashes
 also fail. There is no successful early return for an absent oracle.
@@ -290,8 +290,8 @@ MAC verification succeeded before padding rejection.
 ```sh
 GOCACHE="$PWD/target/t9-fixture-go-cache" GOTELEMETRY=off GOPROXY=off \
   go run tools/generate-fixture.go fixtures/letter-sealing-v2.json fixtures/letter-sealing-v2.json
-cargo test --release --offline -p line-wasm-poc --features native-crypto native_crypto -- --nocapture
-cargo test --release --offline -p line-wasm-poc --features native-crypto native_crypto::tests::benchmark_decrypt -- --ignored --nocapture
+cargo test --release --offline -p line-client --features native-crypto native_crypto -- --nocapture
+cargo test --release --offline -p line-client --features native-crypto native_crypto::tests::benchmark_decrypt -- --ignored --nocapture
 ```
 
 The round-2 benchmark on this worktree measured a 74-byte fixture message, reused

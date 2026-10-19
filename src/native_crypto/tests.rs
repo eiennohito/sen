@@ -1,5 +1,5 @@
 use super::*;
-use crate::{DEFAULT_WASM, HASH, runtime::Runtime};
+use crate::{HASH, runtime::Runtime};
 use anyhow::Context;
 use base64::{
     Engine,
@@ -23,7 +23,9 @@ fn decode(value: &Value) -> Vec<u8> {
 fn wasm(test_name: &str) -> Result<Vec<u8>> {
     let path = std::env::var_os("LINE_CRYPTO_ORACLE_PATH")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join(DEFAULT_WASM));
+        .map(Ok)
+        .unwrap_or_else(|| crate::locations::Locations::from_environment().map(|paths| paths.wasm))
+        .map_err(anyhow::Error::msg)?;
     wasm_at(&path).with_context(|| format!("SKIP native crypto oracle: {test_name}: fixture missing or invalid; set LINE_CRYPTO_ORACLE_PATH"))
 }
 

@@ -294,7 +294,11 @@ mod tests {
     fn cached_channel_is_reusable_across_messages() -> Result<()> {
         let fixture: Value =
             serde_json::from_str(include_str!("../../fixtures/letter-sealing-v2.json"))?;
-        let mut api = Api::new(&fs::read(crate::DEFAULT_WASM)?)?;
+        let mut api = Api::new(&fs::read(
+            crate::locations::Locations::from_environment()
+                .map_err(anyhow::Error::msg)?
+                .wasm,
+        )?)?;
         let h = api.rt.bytes(&decode(required(&fixture, "exported_key")?)?);
         let key = api.rt.static_call("Curve25519Key", "loadKey", &[h])?;
         api.rt.release(h)?;

@@ -1,5 +1,5 @@
 //! User-facing wording for typed library outcomes.
-use line_wasm_poc::client::{desktop::assets::Failure, error::RejectReason};
+use line_client::client::{desktop::assets::Failure, error::RejectReason};
 
 pub(crate) fn image_text(failure: Failure) -> &'static str {
     match failure {
@@ -36,8 +36,8 @@ pub(crate) fn viewer_failure(failure: Failure) -> String {
     format!("media failure: {failure:?}")
 }
 
-pub(crate) fn create_failure(failure: &line_wasm_poc::engine::CreateFailure) -> &str {
-    use line_wasm_poc::engine::CreateFailure;
+pub(crate) fn create_failure(failure: &line_client::engine::CreateFailure) -> &str {
+    use line_client::engine::CreateFailure;
     match failure {
         CreateFailure::InvalidSelection => "Select at least two friends to create a group.",
         CreateFailure::Local => "Couldn't create group. Try again.",
@@ -48,8 +48,8 @@ pub(crate) fn create_failure(failure: &line_wasm_poc::engine::CreateFailure) -> 
     }
 }
 
-pub(crate) fn profile_failure(failure: line_wasm_poc::engine::ProfileFailure) -> &'static str {
-    use line_wasm_poc::engine::ProfileFailure;
+pub(crate) fn profile_failure(failure: line_client::engine::ProfileFailure) -> &'static str {
+    use line_client::engine::ProfileFailure;
     match failure {
         ProfileFailure::Rename => "Couldn't rename.",
         ProfileFailure::AddFriend => "Couldn't add friend.",
@@ -58,8 +58,8 @@ pub(crate) fn profile_failure(failure: line_wasm_poc::engine::ProfileFailure) ->
     }
 }
 
-pub(crate) fn pairing_stage(stage: line_wasm_poc::client::pairing::Stage) -> String {
-    use line_wasm_poc::client::pairing::Stage;
+pub(crate) fn pairing_stage(stage: line_client::client::pairing::Stage) -> String {
+    use line_client::client::pairing::Stage;
     match stage {
         Stage::WaitingKeyring => "Waiting for the keyring to unlock…".into(),
         Stage::RecoveringKeys => "Recovering E2EE keys from saved pairing metadata".into(),
@@ -85,8 +85,8 @@ pub(crate) fn pairing_stage(stage: line_wasm_poc::client::pairing::Stage) -> Str
     }
 }
 
-pub fn storage_failure(reason: line_wasm_poc::engine::StorageFailure) -> &'static str {
-    use line_wasm_poc::engine::StorageFailure::*;
+pub fn storage_failure(reason: line_client::engine::StorageFailure) -> &'static str {
+    use line_client::engine::StorageFailure::*;
     match reason {
         Full => "Can't save messages: disk is full. New messages are shown but won't be kept.",
         ReadOnly => {
@@ -98,8 +98,8 @@ pub fn storage_failure(reason: line_wasm_poc::engine::StorageFailure) -> &'stati
         Io => "Can't save messages: disk I/O failed. New messages are shown but won't be kept.",
     }
 }
-pub fn sign_in_failure(reason: &line_wasm_poc::client::error::SignInFailure) -> String {
-    use line_wasm_poc::client::error::SignInFailure::*;
+pub fn sign_in_failure(reason: &line_client::client::error::SignInFailure) -> String {
+    use line_client::client::error::SignInFailure::*;
     match reason {
         CryptoModule(path) => format!("Crypto module missing or unsupported. Install the supported module at {} and try again.", path.display()),
         StateDirectory(path) => format!("State directory is not writable: {}. Grant write permission and try again.", path.display()),

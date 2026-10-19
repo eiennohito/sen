@@ -10,7 +10,7 @@ pub(crate) struct Options {
     pub dark: bool,
     pub snapshot_profile: bool,
     pub background: bool,
-    pub locations: line_wasm_poc::locations::Locations,
+    pub locations: line_client::locations::Locations,
 }
 
 pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> {

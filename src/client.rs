@@ -71,12 +71,7 @@ impl Options {
         if ["login", "status", "chat-check"].contains(&command.as_str())
             && (state.is_none() || wasm.is_none())
         {
-            let mut locations = resolve_locations()?;
-            if state.is_none() && wasm.is_none() {
-                locations
-                    .load_existing()
-                    .map_err(|error| anyhow::anyhow!("{error}"))?;
-            }
+            let locations = resolve_locations()?;
             state.get_or_insert(locations.session);
             wasm.get_or_insert(locations.wasm);
         }
@@ -446,7 +441,7 @@ fn validate_keys(rt: &mut Runtime, state: &Value) -> Result<usize> {
     Ok(keys.len())
 }
 fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
-    let mut state = crate::credentials::load_migrating(&opts.state)?;
+    let mut state = crate::credentials::load(&opts.state)?;
     ensure!(
         state["wasm_sha256"] == HASH,
         "saved session WASM version mismatch"
@@ -656,7 +651,7 @@ fn run() -> Result<()> {
     let opts = Options::parse()?;
     if ["help", "--help", "-h"].contains(&opts.command.as_str()) {
         println!(
-            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\nSaved desktop path choices are reused unless --state or --wasm is supplied.\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are sealed in a mode-0600 file whose key is kept in the desktop keyring (Secret Service); status seals a legacy plaintext file.\nLINE_DESKTOP_CREDENTIALS=plaintext-file keeps an unsealed file instead (debug and agent instances without a keyring).\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
+            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are sealed in a mode-0600 file whose key is kept in the desktop keyring (Secret Service).\nLINE_DESKTOP_CREDENTIALS=plaintext-file keeps an unsealed file instead (debug and agent instances without a keyring).\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
         );
         return Ok(());
     }
@@ -705,11 +700,10 @@ mod tests {
     fn cli_defaults_overrides_and_display_modes() -> Result<()> {
         let root = env::temp_dir().join(format!("line-cli-paths-{}", std::process::id()));
         fs::create_dir_all(&root)?;
-        let mut locations = Locations {
+        let locations = Locations {
             session: root.join("data/session.json"),
             wasm: root.join("data/ltsm.wasm"),
             cache: root.join("cache"),
-            config: root.join("config/paths.json"),
         };
         let parse = |args: &[&str], terminal| {
             Options::parse_from(args.iter().map(|s| (*s).into()), terminal, || {
@@ -746,17 +740,9 @@ mod tests {
         );
         assert!(parse(&["status", "--display", "graphics"], true).is_err());
         assert!(parse(&["status", "--state"], false).is_err());
-        locations
-            .choose(&root, true)
-            .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let defaults = Locations {
-            session: root.join("data/session.json"),
-            wasm: root.join("data/ltsm.wasm"),
-            ..locations.clone()
-        };
         let parse = |args: &[&str]| {
             Options::parse_from(args.iter().map(|s| (*s).into()), false, || {
-                Ok(defaults.clone())
+                Ok(locations.clone())
             })
         };
         let opts = parse(&["status"])?;
@@ -764,10 +750,10 @@ mod tests {
         assert_eq!(opts.wasm, locations.wasm);
         let opts = parse(&["status", "--state", "custom.json"])?;
         assert_eq!(opts.state, Path::new("custom.json"));
-        assert_eq!(opts.wasm, defaults.wasm);
+        assert_eq!(opts.wasm, locations.wasm);
         let opts = parse(&["status", "--wasm", "custom.wasm"])?;
         assert_eq!(opts.wasm, Path::new("custom.wasm"));
-        assert_eq!(opts.state, defaults.session);
+        assert_eq!(opts.state, locations.session);
         fs::remove_dir_all(root)?;
         Ok(())
     }
