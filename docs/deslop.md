@@ -69,6 +69,11 @@ only tests of contact/group live operations and of pairing after a broken
 saved session). A replaced or new test must fail when the behaviour is
 broken; break it once and see.
 
+When a check fails, decide which side is wrong against the spec (the
+issue, docs/visual-design.md), not against the check. A UI layout moved
+until a tightened geometry check passed put the message buttons over the
+previous bubble; screenshots, not the check, showed it.
+
 A whole-suite audit runs with the next deslop pass. Suite runtime is part
 of the budget: slow tests cost development speed.
 
