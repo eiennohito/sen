@@ -9,12 +9,13 @@ merge. "Branch" means the work exists but is not merged yet.
 |---|---|---|---|
 | 1 | Read markers (`sendChatChecked`) and reactions (`react`) failed on the real server: "response decode failed" | user log | merged; success is now the extension's `message == "OK"` rule. Needs confirmation in the real app |
 | 4 | Unread count with no visible messages (LINE official account) | user | merged; the read marker covers hidden events. Needs confirmation in the real app (depends on #1) |
-| 34 | A request fails with HTTP 400 every 2–4 s in the real app; the log line (`operation=backend-rpc … rpc:http=400:code=0`) doesn't say which request, and it retries in a loop | user log | investigating |
-| 35 | Sticker picker shows "No stickers" in the real app | user | investigating (possibly #34) |
+| 34 | A request fails with HTTP 400 every 2–4 s in the real app; the log line (`operation=backend-rpc … rpc:http=400:code=0`) doesn't say which request | user log | fixing: log method and operation; a reconnect without a revision change no longer refetches every chat; permanent per-chat 400s not re-enqueued. Needs the user's next log to confirm the method |
+| 35 | Sticker picker shows "No stickers" in the real app | user | cause: wrong `getOwnedProductSummaries` arguments (extension sends `["stickershop", offset, 1000, {language, country}]`); error was swallowed. Fixing |
 | 36 | The user's own profile shows as "Unknown member" in chats (the profile page itself is correct) | user | investigating |
 | 37 | Clicking a chat shows its profile page for a moment before the messages | user | investigating |
 | 38 | Clicking a profile picture opens the viewer with the small avatar instead of the original full-resolution image (circled avatars themselves are fine) | user | investigating |
 | 39 | React/reply button positioning on messages looks wrong | user | investigating |
+| 41 | Unicode emoji broken in the current build (chat names and messages); LINE emoji images work | user | investigating: bisecting in the demo |
 | 40 | Photos ignore EXIF orientation: a preview and its original can show different orientations (the EXIF one is correct) | user | fix: apply the decoder's EXIF orientation when decoding every photo (thumbnail, preview, original, viewer, export unchanged bytes) |
 | 15 | God objects: `State` (213 properties), `AppWindow` with 85 forwarding aliases | user | R4, not started. The demo reset copies ~180 State properties by hand; R4 replaces it with a per-feature-global reset |
 | 16 | Generated Slint Rust is 10 MB | user | R4: interpreter in dev builds, compiled releases cut by source rules |
