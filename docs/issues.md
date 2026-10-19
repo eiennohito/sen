@@ -17,7 +17,9 @@ merge. "Branch" means the work exists but is not merged yet.
 | 21 | HANDOFF.md describes the old architecture | found | after #15–#17 |
 | 22 | Untraced actions: block, report, invite, accept/reject invitations, remove member | found | not started |
 | 23 | Live account verification | constraint | needs the device slot (user's call) |
-| 24 | Demo scenes and fixtures are compiled into the product binary | found | in the deslop pass (#17) |
+| 24 | Demo scenes and fixtures are compiled into the product binary | found | deslop pass: move to a dev package behind a feature |
+| 25 | Opening a chat from a notification or D-Bus activation skips saving the current draft (6 copies of "open chat") | audit | deslop pass, desktop glue batch |
+| 26 | Deslop batches from the audit: store schema/unread model, transport rewrite on stock ureq, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1 running: store, transport, crypto/credentials |
 
 ## Done (merged to main)
 
