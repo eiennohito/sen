@@ -55,6 +55,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             d.sender.send(Intent::SendSticker {
                 chat,
                 sticker: Box::new(sticker.clone()),
+                reply: d.state.composer_reply.clone(),
             });
         }
     });

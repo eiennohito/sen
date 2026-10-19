@@ -96,20 +96,7 @@ pub(super) fn avatar(index: usize) -> slint::Image {
             ]);
         }
     }
-    let pixels = std::thread::spawn(move || {
-        crate::assets::circular_avatar(&line::client::desktop::assets::Pixels {
-            width: 80,
-            height: 120,
-            rgba,
-        })
-    })
-    .join()
-    .unwrap();
-    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-        &pixels.rgba,
-        pixels.width,
-        pixels.height,
-    ))
+    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&rgba, 80, 120))
 }
 
 pub fn image_asset(fake: &FakeBackend, name: &str, image: slint::Image) -> Asset {
@@ -482,6 +469,13 @@ pub fn seed(fake: &FakeBackend) {
             })
             .collect(),
     );
+    fake.set_chats(chats);
+    for (chat, _, rows) in pages {
+        fake.set_page(ChatId(chat.into()), rows);
+    }
+}
+
+pub fn hidden_events(fake: &FakeBackend) {
     let hidden = (0..2)
         .map(|i| {
             let mut row = message(
@@ -500,7 +494,7 @@ pub fn seed(fake: &FakeBackend) {
             row
         })
         .collect::<Vec<_>>();
-    chats.push(ChatInput {
+    fake.add_chat(ChatInput {
         id: ChatId("official-hidden".into()),
         title: "Official hidden events".into(),
         unread_count: 2,
@@ -509,10 +503,6 @@ pub fn seed(fake: &FakeBackend) {
         ..Default::default()
     });
     fake.set_page(ChatId("official-hidden".into()), hidden);
-    fake.set_chats(chats);
-    for (chat, _, rows) in pages {
-        fake.set_page(ChatId(chat.into()), rows);
-    }
 }
 
 pub fn reading(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
@@ -714,33 +704,6 @@ pub fn previews(fake: &FakeBackend) {
         });
         pages.push((ChatId(chat), vec![row]));
     }
-    let hidden = (0..2)
-        .map(|i| {
-            let mut row = message(
-                fake,
-                "official-hidden",
-                950 + i,
-                "",
-                "2026/10/18 09:20",
-                false,
-            );
-            row.body = Content::System {
-                kind: Some("OA_UNKNOWN".into()),
-                params: None,
-                text: None,
-            };
-            row
-        })
-        .collect::<Vec<_>>();
-    chats.push(ChatInput {
-        id: ChatId("official-hidden".into()),
-        title: "Official hidden events".into(),
-        unread_count: 2,
-        last_message_id: hidden.last().map(|m| m.server_id.clone()),
-        last_message_ms: hidden.last().map(|m| m.created_ms),
-        ..Default::default()
-    });
-    fake.set_page(ChatId("official-hidden".into()), hidden);
     fake.set_chats(chats);
     for (chat, rows) in pages {
         fake.set_page(chat, rows);

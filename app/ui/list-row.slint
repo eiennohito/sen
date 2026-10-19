@@ -1,11 +1,42 @@
-import { State } from "state.slint";
-export component ListRow inherits Rectangle {
-    clip: true;
-}
+import { Tokens } from "tokens.slint";
+import { Avatar } from "avatar.slint";
+import { PreviewLine } from "preview-line.slint";
+import { RichRun } from "types.slint";
 export component RowText inherits Text {
-    in property <string> value;
-    text: State.single-line(root.value);
-    wrap: no-wrap;
-    overflow: elide;
-    min-width: 0px;
+    wrap: no-wrap; overflow: elide; min-width: 0px;
+}
+export component ListRow inherits Rectangle {
+    in property <string> identity;
+    in property <string> initial;
+    in property <image> avatar;
+    in property <string> title;
+    in property <string> title-note;
+    in property <string> subtitle;
+    in property <[RichRun]> subtitle-runs;
+    in property <string> prefix;
+    in property <string> time;
+    in property <bool> muted;
+    in property <bool> show-preview: true;
+    in property <length> trailing-width;
+    in property <length> avatar-size: 44px;
+    Avatar { x: Tokens.space-2; y: (parent.height - root.avatar-size) / 2; width: root.avatar-size; height: root.avatar-size; identity: root.identity; initial: root.initial; picture: root.avatar; label: root.title + " avatar"; }
+    Rectangle {
+        x: Tokens.space-2 + root.avatar-size + Tokens.space-3; y: Tokens.space-2;
+        width: max(0px, parent.width - self.x - Tokens.space-3); height: max(0px, parent.height - Tokens.space-4);
+        title-line := Rectangle {
+            x: 0px; width: parent.width;
+            y: root.subtitle == "" && root.subtitle-runs.length == 0 ? (parent.height - self.height) / 2 : 0px;
+            height: Tokens.base * 1.5;
+            time := RowText { x: parent.width - self.width; y: 3px; width: min(self.preferred-width, parent.width * 0.55); text: root.time; color: Tokens.secondary; font-size: Tokens.time; }
+            note := RowText { x: parent.width - self.width - root.trailing-width; width: min(self.preferred-width, parent.width * 0.4); height: parent.height; text: root.title-note; color: Tokens.secondary; font-size: Tokens.small; vertical-alignment: center; }
+            name := RowText { x: 0px; y: 0px; width: max(0px, parent.width - time.width - note.width - (root.muted ? Tokens.space-6 : Tokens.space-2) - (root.time == "" ? root.trailing-width : 0px)); height: parent.height; text: root.title; color: Tokens.text; font-weight: 600; vertical-alignment: center; }
+            if root.muted: Image { x: name.width + Tokens.space-1; y: 3px; width: 16px; height: 16px; source: @image-url("../assets/icons/muted.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Muted"; }
+        }
+        Rectangle {
+            x: 0px; y: title-line.height + 2px; width: max(0px, parent.width - root.trailing-width); height: max(0px, parent.height - self.y); clip: true;
+            if root.subtitle-runs.length == 0: RowText { width: parent.width; height: parent.height; text: root.prefix + root.subtitle; color: Tokens.secondary; font-size: Tokens.preview; }
+            if root.subtitle-runs.length > 0 && root.show-preview: PreviewLine { width: parent.width; height: parent.height; runs: root.subtitle-runs; prefix: root.prefix; text-color: Tokens.secondary; }
+        }
+    }
+    @children
 }

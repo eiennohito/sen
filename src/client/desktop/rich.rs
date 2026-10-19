@@ -83,6 +83,12 @@ pub fn parse(raw: &Value) -> RichContent {
         }
         _ => {}
     }
+    details.emoji = emoji_spans(text, metadata);
+    details
+}
+
+pub fn emoji_spans(text: &str, metadata: &Value) -> Vec<InlineEmoji> {
+    let mut spans = Vec::new();
     // REPLACE is a JSON string in both plain and E2EE-decoded messages.
     let replace = if metadata["REPLACE"].is_object() {
         Some(metadata["REPLACE"].clone())
@@ -117,14 +123,12 @@ pub fn parse(raw: &Value) -> RichContent {
                 })
             })();
             if let Some(span) = span {
-                details.emoji.push(span);
+                spans.push(span);
             }
         }
-        details
-            .emoji
-            .sort_by_key(|span| (span.start_utf16, span.end_utf16));
+        spans.sort_by_key(|span| (span.start_utf16, span.end_utf16));
         let mut end = 0;
-        details.emoji.retain(|span| {
+        spans.retain(|span| {
             if span.start_utf16 < end {
                 return false;
             }
@@ -132,7 +136,7 @@ pub fn parse(raw: &Value) -> RichContent {
             true
         });
     }
-    details
+    spans
 }
 
 /// A group map contains current members including self; legacy room lists

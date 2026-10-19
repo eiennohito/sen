@@ -63,7 +63,6 @@ export component DraftEditor inherits Rectangle {
                 if State.browser-key(event) == accept { return accept; }
                 if State.ime-active { return reject; }
                 if event.modifiers.control && (event.text == "v" || event.text == "V") && !State.modal-open && State.paste-attachment() { return accept; }
-                if event.text == Key.Escape { if State.composer-reply.reply-id != "" { State.cancel-reply(); } return accept; }
                 if event.text == Key.Tab && event.modifiers.shift { State.focus-reading-before-editor(); return accept; }
                 if event.text == Key.Return && !event.modifiers.alt && !event.modifiers.meta && !event.modifiers.shift && (event.modifiers.control || State.enter-sends) {
                     if !State.modal-open && State.can-send && !event.repeat { State.send(); }

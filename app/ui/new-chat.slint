@@ -32,20 +32,19 @@ export component NewChat inherits Rectangle {
                 search := SearchField { text <=> State.new-chat-query; placeholder-text: "Find friends"; label: "Find friends for new chat"; edited(value) => { State.new-chat-filter(); } clear => { State.new-chat-query = ""; State.new-chat-filter(); } enabled: !State.new-chat-busy; }
                 if State.new-chat-selected.length > 0: ScrollView { height: 36px; vertical-stretch: 0;
                     HorizontalLayout { alignment: start; spacing: 6px;
-                        for friend in State.new-chat-selected: ListRow {
+                        for friend in State.new-chat-selected: Rectangle {
                             width: chip-label.preferred-width + 48px; height: 32px; border-radius: 16px; background: Tokens.surface-2;
-                            chip-label := RowText { x: 12px; height: parent.height; value: friend.name; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
+                            chip-label := RowText { x: 12px; height: parent.height; text: friend.name; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
                             IconButton { x: parent.width - 28px; y: 4px; width: 24px; height: 24px; label: "Remove " + friend.name; icon: @image-url("../assets/icons/close.svg"); enabled: !State.new-chat-busy; activated => { State.new-chat-toggle(friend.id); } }
                         }
                     }
                 }
                 Pane { full-height: State.new-chat-friends.length * 56px;
                     VerticalLayout { spacing: 4px; alignment: start;
-                        for friend in State.new-chat-friends: ListRow { height: 52px; HorizontalLayout { spacing: 8px;
-                            Avatar { width: 40px; height: 40px; identity: friend.id; initial: friend.initial; picture: friend.avatar; label: friend.name + " avatar"; }
-                            RowText { value: friend.name; horizontal-stretch: 1; color: Tokens.text; font-size: Tokens.base; vertical-alignment: center; overflow: elide; }
-                            CheckBox { width: 20px; indicator-only: true; text: friend.name; checked: friend.selected; enabled: !State.new-chat-busy; toggled => { State.new-chat-toggle(friend.id); } }
-                        }}
+                        for friend in State.new-chat-friends: ListRow { height: 52px;
+                            identity: friend.id; initial: friend.initial; avatar: friend.avatar; title: friend.name; avatar-size: 40px; trailing-width: 32px;
+                            CheckBox { x: parent.width - 28px; y: (parent.height - self.height) / 2; width: 20px; indicator-only: true; text: friend.name; checked: friend.selected; enabled: !State.new-chat-busy; toggled => { State.new-chat-toggle(friend.id); } }
+                        }
                     }
                 }
                 if State.new-chat-count > 1: Rectangle {

@@ -1,4 +1,4 @@
-import { ListRow, RowText } from "list-row.slint";
+import { RowText } from "list-row.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { IconButton } from "icon-button.slint";
@@ -16,7 +16,7 @@ component NameField inherits Rectangle {
     input := TextInput { x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; text <=> root.text; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name"; }
     Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; border-radius: 12px; background: transparent; border-width: root.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
 }
-component DetailRow inherits ListRow {
+component DetailRow inherits Rectangle {
     in property <string> label;
     in property <bool> danger;
     in property <bool> enabled: true;
@@ -30,7 +30,7 @@ component DetailRow inherits ListRow {
     opacity: root.enabled ? 1 : 0.4;
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled; accessible-checked: root.checked; accessible-value: root.toggle ? (root.checked ? "On" : "Off") : ""; accessible-description: root.has-focus ? "Focused" : "";
     accessible-action-default => { if root.enabled { root.activated(); } }
-    RowText { x: 12px; width: parent.width - 72px; height: parent.height; value: root.label; color: root.danger ? Tokens.danger : Tokens.text; vertical-alignment: center; }
+    RowText { x: 12px; width: parent.width - 72px; height: parent.height; text: root.label; color: root.danger ? Tokens.danger : Tokens.text; vertical-alignment: center; }
     if !root.toggle && !root.danger: Image { x: parent.width - 28px; y: 16px; width: 20px; height: 20px; source: @image-url("../assets/icons/next.svg"); colorize: Tokens.secondary; }
     if root.toggle: Rectangle { x: parent.width - 52px; y: 14px; width: 40px; height: 24px; border-radius: 12px; background: root.checked ? Tokens.accent : Tokens.surface-2;
         Rectangle { x: root.checked ? 18px : 2px; y: 2px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.bg; }

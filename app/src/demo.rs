@@ -95,6 +95,8 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             demo_data::reading(fake, "reading"),
         ),
         14 => {
+            demo_data::hidden_events(fake);
+            d.sender.send(Intent::MoreChats);
             for (target, count) in [(chat.clone(), 3), (ChatId("weekend".into()), 2)] {
                 let mut rows = fake.page(&target);
                 // New ids must sort after everything already read.
@@ -189,6 +191,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             d.sender.send(Intent::Send {
                 chat: chat.clone(),
                 text: "駅に着いたら連絡してね。See you soon! 🐈".into(),
+                reply: None,
             });
             d.sender.send(Intent::Draft {
                 chat,
@@ -207,6 +210,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 d.sender.send(Intent::Send {
                     chat,
                     text: "Rejected message".into(),
+                    reply: None,
                 });
             }
         }
@@ -497,22 +501,19 @@ pub(crate) fn settle(ui: &AppWindow, desktop: &Runtime, worker: &Worker) {
     }
 }
 
-pub(crate) fn worker(fake: FakeBackend, text_size: i32, assets: assets::Assets) -> Worker {
+pub(crate) fn worker(fake: FakeBackend, text_size: i32) -> Worker {
     use std::sync::atomic::{AtomicBool, Ordering};
     let initial = AtomicBool::new(true);
     let worker = Worker::start_projected(
         StoreLocation::Memory,
         move || fake.open(),
         Default::default(),
-        move |delta| {
-            let delta = match delta {
-                Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
-                    prefs.text_size = text_size;
-                    Delta::Prefs(prefs)
-                }
-                other => other,
-            };
-            assets.project(delta)
+        move |delta| match delta {
+            Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
+                prefs.text_size = text_size;
+                Delta::Prefs(prefs)
+            }
+            other => other,
         },
     );
     worker.sender.send(Intent::Prefs(Prefs {

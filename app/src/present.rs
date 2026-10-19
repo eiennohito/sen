@@ -53,6 +53,8 @@ pub(crate) fn group_messages(messages: &mut [MessageRow]) {
         let b = right.sort_key.parse::<i64>().unwrap_or(0);
         !matches!(left.kind, MessageKind::System | MessageKind::Withdrawn)
             && !matches!(right.kind, MessageKind::System | MessageKind::Withdrawn)
+            && matches!(left.delivery.as_str(), "" | "Sent" | "Read")
+            && matches!(right.delivery.as_str(), "" | "Sent" | "Read")
             && right.day_label.is_empty()
             && left.outgoing == right.outgoing
             && (left.outgoing || (!left.sender_id.is_empty() && left.sender_id == right.sender_id))
@@ -64,12 +66,11 @@ pub(crate) fn group_messages(messages: &mut [MessageRow]) {
         let before = i > 0 && joins(&messages[i - 1], &messages[i]);
         let after = i + 1 < messages.len() && joins(&messages[i], &messages[i + 1]);
         messages[i].run_position = match (before, after) {
-            (false, false) => "single",
-            (false, true) => "first",
-            (true, true) => "middle",
-            (true, false) => "last",
-        }
-        .into();
+            (false, false) => line_desktop_ui::RunPosition::Single,
+            (false, true) => line_desktop_ui::RunPosition::First,
+            (true, true) => line_desktop_ui::RunPosition::Middle,
+            (true, false) => line_desktop_ui::RunPosition::Last,
+        };
     }
 }
 

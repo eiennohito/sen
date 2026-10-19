@@ -1,83 +1,26 @@
 use line::{controller::AppState, store::Content};
 
 pub(crate) fn text(content: &Content, state: &AppState, sender: &str) -> Option<String> {
-    let Content::System { kind, params, .. } = content else {
-        return None;
-    };
-    let groups: Vec<Vec<&str>> = params
-        .as_deref()
-        .unwrap_or_default()
-        .split('\u{1e}')
-        .map(|group| group.split('\u{1f}').collect())
-        .collect();
-    let arg = |index: usize| {
-        groups
-            .get(index)
-            .and_then(|g| g.first())
-            .copied()
-            .filter(|s| !s.is_empty())
-    };
-    let name = |mid: &str| {
-        if mid == state.profile.mid {
-            return "You".to_owned();
-        }
-        state
-            .contacts
-            .get(mid)
-            .or_else(|| state.friends.iter().find(|f| f.id == mid))
-            .or_else(|| {
-                state
-                    .members
-                    .iter()
-                    .find(|m| m.contact.id == mid)
-                    .map(|m| &m.contact)
-            })
-            .map(|f| f.name.clone())
-            .unwrap_or_else(|| "Unknown member".into())
-    };
-    let actor = || arg(0).map(name);
-    let result = match kind.as_deref()? {
-        "C_PN" => format!("{} renamed the group to “{}”", actor()?, arg(1)?),
-        "C_PI" => format!("{} changed the group photo", actor()?),
-        "C_MJ" | "A_MJ" => format!("{} joined the group", actor()?),
-        "C_ML" | "A_ML" => format!("{} left the group", actor()?),
-        "C_GI" | "C_MI" | "A_MC" | "A_MI" => {
-            let invitees = groups
-                .get(1)?
+    line::system_events::parse(content).map(|event| event.text(sender, |mid| name(state, mid)))
+}
+
+pub(crate) fn name(state: &AppState, mid: &str) -> String {
+    if mid == state.profile.mid {
+        return "You".into();
+    }
+    state
+        .contacts
+        .get(mid)
+        .or_else(|| state.friends.iter().find(|f| f.id == mid))
+        .or_else(|| {
+            state
+                .members
                 .iter()
-                .filter(|s| !s.is_empty())
-                .map(|s| name(s))
-                .collect::<Vec<_>>();
-            if invitees.is_empty() {
-                return None;
-            }
-            format!("{} invited {}", actor()?, invitees.join(", "))
-        }
-        "C_MR" | "A_MR" => format!("{} removed {} from the group", actor()?, name(arg(1)?)),
-        "C_IC" | "A_IC" => format!("{} canceled the invitation for {}", actor()?, name(arg(1)?)),
-        "C_SP" => format!("{} allowed joining via link or QR code", actor()?),
-        "C_SN" => format!("{} disabled joining via link or QR code", actor()?),
-        "BB" => format!(
-            "{} renamed album “{}” to “{}”",
-            name(sender),
-            arg(0)?,
-            arg(1)?
-        ),
-        "BD" => format!("{} deleted album “{}”", name(sender), arg(0)?),
-        "BO" => format!("{} removed photos from “{}”", name(sender), arg(0)?),
-        "C_OL" => {
-            let invitees = groups
-                .get(1)?
-                .iter()
-                .map(|mid| name(mid))
-                .collect::<Vec<_>>();
-            format!("{} cannot join any more chats", invitees.join(", "))
-        }
-        "C_BG" => "This chat was upgraded to a group".into(),
-        "pseudo_leave_chat" => format!("{} left the chat", arg(0)?),
-        _ => return None,
-    };
-    Some(result.replace(['\n', '\r'], " "))
+                .find(|m| m.contact.id == mid)
+                .map(|m| &m.contact)
+        })
+        .map(|f| crate::present::single_line(&f.name))
+        .unwrap_or_else(|| "Unknown member".into())
 }
 
 #[cfg(test)]

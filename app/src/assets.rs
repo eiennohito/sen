@@ -1,43 +1,24 @@
-//! App image preparation. The projection runs on the publishing worker, before
-//! pixels reach the Slint queue; the UI thread only creates renderer handles.
+//! Avatar rasterization and visible asset requests.
 use line::{
     client::desktop::assets::{Asset, Pixels},
-    engine::{Delta, Intent},
+    engine::Intent,
 };
-use std::{
-    collections::BTreeSet,
-    sync::{Arc, Mutex},
-};
+use std::collections::BTreeSet;
 
 #[derive(Clone, Default)]
 pub(crate) struct Assets {
-    avatars: Arc<Mutex<BTreeSet<String>>>,
     requested: BTreeSet<String>,
 }
 impl Assets {
     pub(crate) fn request(&mut self, asset: &Asset) -> bool {
         let key = asset.key();
-        if asset.kind() == "avatar" {
-            self.avatars.lock().unwrap().insert(key.clone());
-        }
         self.requested.insert(key)
-    }
-    pub(crate) fn project(&self, delta: Delta) -> Delta {
-        match delta {
-            Delta::Asset { key, pixels } if self.avatars.lock().unwrap().contains(&key) => {
-                Delta::Asset {
-                    key,
-                    pixels: Arc::new(circular_avatar(&pixels)),
-                }
-            }
-            other => other,
-        }
     }
 }
 
 /// The software renderer doesn't round image clipping. Supply a masked square
 /// to render decoded avatar pixels as a circle.
-pub(crate) fn circular_avatar(pixels: &Pixels) -> Pixels {
+pub(crate) fn circular_avatar(pixels: &Pixels, size: u32) -> Pixels {
     let Some(image) = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba.clone())
     else {
         return Pixels {
@@ -61,9 +42,12 @@ pub(crate) fn circular_avatar(pixels: &Pixels) -> Pixels {
             *channel = (u16::from(*channel) * alpha / 255) as u8;
         }
     }
-    let mut image = image::imageops::resize(&square, 64, 64, image::imageops::FilterType::Triangle);
+    let mut image =
+        image::imageops::resize(&square, size, size, image::imageops::FilterType::Triangle);
+    let radius = size as f32 / 2.;
     for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let distance = ((x as f32 + 0.5 - 32.).powi(2) + (y as f32 + 0.5 - 32.).powi(2)).sqrt();
+        let distance =
+            ((x as f32 + 0.5 - radius).powi(2) + (y as f32 + 0.5 - radius).powi(2)).sqrt();
         let alpha = u16::from(pixel.0[3]);
         for channel in &mut pixel.0[..3] {
             *channel = (u16::from(*channel) * 255)
@@ -71,11 +55,11 @@ pub(crate) fn circular_avatar(pixels: &Pixels) -> Pixels {
                 .unwrap_or(0)
                 .min(255) as u8;
         }
-        pixel.0[3] = (alpha as f32 * (32.5 - distance).clamp(0., 1.)).round() as u8;
+        pixel.0[3] = (alpha as f32 * (radius + 0.5 - distance).clamp(0., 1.)).round() as u8;
     }
     Pixels {
-        width: 64,
-        height: 64,
+        width: size,
+        height: size,
         rgba: image.into_raw(),
     }
 }
@@ -140,20 +124,6 @@ impl Assets {
             }
         }
 
-        for friend in state.friends.iter().chain(state.contacts.values()) {
-            let rich = line::client::desktop::rich::parse(
-                &serde_json::json!({"text": friend.status, "contentMetadata": friend.profile.status_metadata}),
-            );
-            for asset in rich
-                .emoji
-                .iter()
-                .filter_map(line::client::desktop::assets::Asset::inline_emoji)
-            {
-                if self.request(&asset) {
-                    sender.send(Intent::Asset(asset));
-                }
-            }
-        }
         self.stickers(state, selected, sender);
 
         for m in state
@@ -188,12 +158,12 @@ mod tests {
             height: 1000,
             rgba: [25, 70, 200, 255].repeat(1600 * 1000),
         };
-        let circle = circular_avatar(&source);
-        assert_eq!((circle.width, circle.height), (64, 64));
+        let circle = circular_avatar(&source, 44);
+        assert_eq!((circle.width, circle.height), (44, 44));
         assert_eq!(circle.rgba[3], 0);
-        assert_eq!(circle.rgba[(32 * 64 + 32) * 4 + 3], 255);
+        assert_eq!(circle.rgba[(22 * 44 + 22) * 4 + 3], 255);
         assert_eq!(
-            &circle.rgba[(32 * 64 + 32) * 4..(32 * 64 + 32) * 4 + 3],
+            &circle.rgba[(22 * 44 + 22) * 4..(22 * 44 + 22) * 4 + 3],
             &[25, 70, 200]
         );
     }

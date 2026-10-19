@@ -8,6 +8,8 @@ use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
 pub(crate) struct Reading {
+    pub(crate) jump_target: Option<ServerId>,
+    pub(crate) highlight_timer: slint::Timer,
     pub(crate) latest_requested: bool,
     pub(crate) opening_history: bool,
     pub(crate) divider_top: Option<f32>,
@@ -102,16 +104,14 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
                     .get(&m.key)
                     .is_some_and(|(y, h)| *y >= top && y + h <= bottom)
             })
+            .filter(|m| !m.outgoing && matches!(m.delivery, Delivery::Sent | Delivery::Read))
             .filter_map(|m| m.server_id.clone())
             .max_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)));
         let tail_visible = state
             .rows()
             .into_iter()
             .rev()
-            .find(|m| {
-                !matches!(m.body, Content::System { .. })
-                    || crate::system_events::text(&m.body, state, &m.sender_id).is_some()
-            })
+            .find(|m| line::system_events::displayable(&m.body))
             .is_none_or(|m| {
                 reading
                     .geometry
@@ -128,12 +128,17 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
             state
                 .messages
                 .values()
+                .filter(|m| !m.outgoing && matches!(m.delivery, Delivery::Sent | Delivery::Read))
                 .filter_map(|m| m.server_id.clone())
                 .chain(
                     state
                         .chats
                         .get(&chat)
-                        .and_then(|c| c.chat.last_message_id.clone()),
+                        .and_then(|c| c.preview.as_ref())
+                        .filter(|m| {
+                            !m.outgoing && matches!(m.delivery, Delivery::Sent | Delivery::Read)
+                        })
+                        .and_then(|m| m.server_id.clone()),
                 )
                 .max_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)))
         } else {
@@ -227,44 +232,87 @@ mod tests {
     use super::*;
 
     #[test]
-    fn reading_an_empty_server_tail_clears_hidden_unread_events() {
-        let chat = ChatId("official-hidden".into());
-        let mut state = AppState {
-            connection: Connection::Online,
-            selected: Some(chat.clone()),
-            reaches_end: true,
-            ..Default::default()
-        };
-        state.chats.insert(
-            chat.clone(),
-            ChatListItem {
-                chat: ChatRecord {
-                    id: chat.clone(),
-                    unread_count: 2,
-                    last_message_id: Some(ServerId("951".into())),
+    fn exposing_hidden_incoming_events_clears_the_chat_badge() {
+        std::thread::spawn(|| {
+            use line::{
+                backend::FakeBackend,
+                engine::{StoreLocation, Worker},
+            };
+            use slint::Model;
+            let fake = FakeBackend::canned();
+            let chat = ChatId("alice".into());
+            let mut hidden = FakeBackend::message("alice", 951, "", false);
+            hidden.body = Content::System {
+                kind: Some("OA_UNKNOWN".into()),
+                params: None,
+                text: None,
+            };
+            fake.add_chat(ChatInput {
+                id: chat.clone(),
+                title: "Official hidden events".into(),
+                unread_count: 1,
+                last_message_id: Some(ServerId("951".into())),
+                ..Default::default()
+            });
+            fake.set_page(chat.clone(), vec![hidden]);
+            let worker = Worker::start(fake, StoreLocation::Memory);
+            let mut state = AppState::default();
+            worker.sender.send(state.select(chat.clone()));
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            while state.connection != Connection::Online
+                || !state.reaches_end
+                || state.messages.is_empty()
+                || state
+                    .chats
+                    .get(&chat)
+                    .is_none_or(|c| c.chat.unread_count == 0)
+            {
+                state.apply(
+                    worker
+                        .deltas
+                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                        .unwrap(),
+                );
+            }
+            let _window = crate::snapshot::install().unwrap();
+            let ui = crate::window::create_app_window().unwrap();
+            let mut presenter = crate::presenter::Presenter::default();
+            presenter.install(&ui);
+            presenter.present(&ui, &state, "", 0);
+            assert!(
+                ui.get_chats()
+                    .iter()
+                    .any(|row| row.id == "alice" && row.unread == 1)
+            );
+            let intents = exposure(
+                &mut Reading::default(),
+                &state,
+                Geometry {
+                    active: true,
+                    height: 400.,
+                    at_bottom: true,
                     ..Default::default()
                 },
-                preview: None,
-                activity_ms: 0,
-                failed_count: 0,
-                draft: None,
-            },
-        );
-        let mut reading = Reading::default();
-        let mut view = Geometry {
-            active: true,
-            height: 400.,
-            ..Default::default()
-        };
-        assert!(exposure(&mut reading, &state, view).is_empty());
-        view.at_bottom = true;
-        view.modal = true;
-        assert!(exposure(&mut reading, &state, view).is_empty());
-        view.modal = false;
-        assert!(
-            matches!(exposure(&mut reading, &state, view).as_slice(), [Intent::MarkRead { id, .. }] if id.0 == "951")
-        );
-        assert!(exposure(&mut reading, &state, view).is_empty());
+            );
+            assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.0 == "951"));
+            for intent in intents {
+                worker.sender.send(intent);
+            }
+            while state.chats[&chat].chat.unread_count != 0 {
+                state.apply(
+                    worker
+                        .deltas
+                        .recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))
+                        .unwrap(),
+                );
+            }
+            presenter.present(&ui, &state, "", 0);
+            let row = ui.get_chats().iter().find(|row| row.id == "alice").unwrap();
+            assert_eq!(row.unread, 0);
+            assert!(!row.unread_unknown);
+        })
+        .join()
+        .unwrap();
     }
 
     #[test]
@@ -331,6 +379,12 @@ mod tests {
         assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.0 == "9"));
         assert!(exposure(&mut reading, &state, view).is_empty());
         view.pill_height = 0.;
+        state.messages.get_mut(&Key(2)).unwrap().outgoing = true;
+        assert!(exposure(&mut reading, &state, view).is_empty());
+        state.messages.get_mut(&Key(2)).unwrap().outgoing = false;
+        state.messages.get_mut(&Key(2)).unwrap().delivery = Delivery::Pending;
+        assert!(exposure(&mut reading, &state, view).is_empty());
+        state.messages.get_mut(&Key(2)).unwrap().delivery = Delivery::Sent;
         view.modal = true;
         assert!(exposure(&mut reading, &state, view).is_empty());
         view.modal = false;

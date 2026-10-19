@@ -345,6 +345,7 @@ pub struct Changes {
 /// Page cursors certify continuity between the fetched range and its anchor.
 #[derive(Clone, Debug)]
 pub enum PageKind {
+    Around { id: ServerId },
     Recent,
     Older { before: Cursor },
     Newer { after: Cursor },

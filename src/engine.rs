@@ -113,6 +113,7 @@ pub enum Intent {
     Send {
         chat: ChatId,
         text: String,
+        reply: Option<ReplyReference>,
     },
     React {
         key: Key,
@@ -126,6 +127,7 @@ pub enum Intent {
     SendSticker {
         chat: ChatId,
         sticker: Box<Content>,
+        reply: Option<ReplyReference>,
     },
     CreateChat {
         name: String,
@@ -363,6 +365,7 @@ enum Refresh {
     ChatList,
     MoreChats,
     Receipts(ChatId),
+    Around(ChatId, ServerId),
     Older(ChatId, Cursor),
     Newer(ChatId, Cursor),
     Details(ChatId),
@@ -382,6 +385,7 @@ impl Refresh {
             Self::ChatList => ("chat-list", None),
             Self::MoreChats => ("more-chats", None),
             Self::Receipts(id) => ("receipts", Some(id.0.as_str())),
+            Self::Around(id, _) => ("around", Some(id.0.as_str())),
             Self::Older(id, _) => ("older", Some(id.0.as_str())),
             Self::Newer(id, _) => ("newer", Some(id.0.as_str())),
             Self::Details(id) => ("details", Some(id.0.as_str())),
@@ -930,7 +934,7 @@ impl Engine {
         self.connection(connection);
     }
     fn rpc_failed(&mut self, r: Refresh, e: Error) {
-        if !matches!(e, Error::ResponseDecode { .. } | Error::Internal) {
+        if !matches!(e, Error::Internal) {
             self.retry_later(r);
         }
         self.error(e);
@@ -942,7 +946,11 @@ impl Engine {
             Refresh::Recent(chat) if Some(chat) == opened => 1,
             Refresh::Send(_) => 2,
             Refresh::ChatList | Refresh::MoreChats => 3,
-            Refresh::Read(_) | Refresh::Older(..) | Refresh::Newer(..) | Refresh::Receipts(_) => 4,
+            Refresh::Read(_)
+            | Refresh::Around(..)
+            | Refresh::Older(..)
+            | Refresh::Newer(..)
+            | Refresh::Receipts(_) => 4,
             Refresh::Stream
             | Refresh::Friends
             | Refresh::Members(_)
@@ -1816,7 +1824,11 @@ impl Engine {
                 }
                 self.publish()?;
             }
-            Intent::SendSticker { chat, sticker } => {
+            Intent::SendSticker {
+                chat,
+                sticker,
+                reply,
+            } => {
                 if !matches!(*sticker, Content::Sticker { .. })
                     || self.store.chat(&chat)?.is_some_and(|c| c.left)
                 {
@@ -1829,20 +1841,20 @@ impl Engine {
                     seq,
                     *sticker,
                     now_ms(),
-                    self.store.load_draft(&chat)?.and_then(|d| d.reply),
+                    reply,
                 )?;
                 if let Some(mut draft) = self.store.load_draft(&chat)? {
                     draft.reply = None;
                     self.store.save_draft(&chat, &draft)?;
-                    self.emit(Delta::Draft {
-                        chat: chat.clone(),
-                        draft: Some(draft),
-                    });
                 }
                 self.publish()?;
+                self.emit(Delta::Submitted {
+                    chat: chat.clone(),
+                    text: String::new(),
+                });
                 self.inbox.refresh(Refresh::Send(key));
             }
-            Intent::Send { chat, text } => {
+            Intent::Send { chat, text, reply } => {
                 if self.store.chat(&chat)?.is_some_and(|c| c.left) {
                     return Ok(());
                 }
@@ -1853,7 +1865,7 @@ impl Engine {
                     seq,
                     Content::text(&text),
                     now_ms(),
-                    self.store.load_draft(&chat)?.and_then(|d| d.reply),
+                    reply,
                 )?;
                 self.store.clear_draft(&chat)?;
                 self.publish()?;
@@ -2226,15 +2238,9 @@ impl Engine {
             .map(|c| c.id)
             .collect::<BTreeSet<_>>();
         for row in rows {
-            if let Content::System {
-                params: Some(params),
-                ..
-            } = &row.body
-            {
-                for mid in params
-                    .split(['\u{1e}', '\u{1f}'])
-                    .filter(|mid| mid.starts_with('u') && (mid.len() == 33 || mid.len() == 44))
-                {
+            if let Some(event) = crate::system_events::parse(&row.body) {
+                for mid in event.mids() {
+                    let mid = mid.as_str();
                     if !known.contains(mid) {
                         self.inbox.refresh(Refresh::Contact(mid.into()));
                     }
@@ -2294,6 +2300,7 @@ impl Engine {
     }
     fn page_refresh(chat: ChatId, kind: PageKind) -> Refresh {
         match kind {
+            PageKind::Around { id } => Refresh::Around(chat, id),
             PageKind::Recent => Refresh::Recent(chat),
             PageKind::Older { before } => Refresh::Older(chat, before),
             PageKind::Newer { after } => Refresh::Newer(chat, after),
@@ -2341,7 +2348,7 @@ impl Engine {
                             }
                             // A contact the server returns without a profile (e.g. a deleted
                             // account) is a final answer; retrying would loop forever.
-                            Err(Error::Decode) => {}
+                            Err(Error::Decode(_)) => {}
                             Err(e) => engine.rpc_failed(Refresh::Contact(mid), e),
                         };
                         Ok(())
@@ -2440,6 +2447,7 @@ impl Engine {
             }
             Refresh::ChatList => self.load_chats(false)?,
             Refresh::MoreChats => self.load_chats(true)?,
+            Refresh::Around(chat, id) => self.page(chat, PageKind::Around { id })?,
             Refresh::Older(chat, before) => self.page(chat, PageKind::Older { before })?,
             Refresh::Newer(chat, after) => self.page(chat, PageKind::Newer { after })?,
             Refresh::Receipts(chat) => {

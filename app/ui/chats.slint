@@ -96,14 +96,14 @@ export component Chats inherits Rectangle {
                     }
                     HorizontalLayout {
                     spacing: 4px;
-                    for category[i] in ["All", "Friends", "Groups"]: ListRow {
+                    for category[i] in ["All", "Friends", "Groups"]: Rectangle {
                         height: 28px; border-radius: 14px;
                         background: State.category == i ? Tokens.text : Tokens.surface-2;
                         border-width: chips-focus.has-focus && chips-focus.cursor == i ? 2px : 0px; border-color: (chips-focus.has-focus && chips-focus.cursor == i) || State.category == i ? Tokens.accent : Tokens.border;
                         accessible-role: button; accessible-label: category;
                         accessible-item-selectable: true; accessible-item-selected: State.category == i;
                         accessible-action-default => { chips-focus.cursor = i; chips-focus.focus(); State.category = i; State.filter-category(); }
-                        RowText { value: category; color: State.category == i ? Tokens.bg : Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+                        RowText { text: category; color: State.category == i ? Tokens.bg : Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
                         TouchArea { mouse-cursor: pointer; clicked => { chips-focus.cursor = i; chips-focus.focus(); State.category = i; State.filter-category(); } }
                     }
                 }
@@ -140,29 +140,19 @@ for chat[i] in State.chats: ListRow {
                         background: chat.index == State.selected-chat ? Tokens.selection : row-touch.has-hover ? Tokens.chat-hover : transparent;
                         border-width: (list-focus.has-focus || search.has-focus) && i == State.result-focus ? 2px : 0px;
                         border-color: Tokens.accent;
-                        Avatar { x: 8px; y: (parent.height - 44px) / 2; identity: chat.id; initial: chat.initial; picture: chat.avatar; }
-                        Rectangle {
-                            x: 64px; y: 10px; width: max(0px, parent.width - 76px); height: parent.height - 20px; clip: true;
-                            time := RowText { y: 3px; x: parent.width - self.width; max-width: parent.width * 0.55; value: chat.time; color: Tokens.secondary; font-size: Tokens.time; horizontal-alignment: right; }
-                            name := RowText { x: 0px; y: 0px; width: max(0px, parent.width - time.width - (chat.muted ? 24px : 8px)); height: State.text-size * 1.5px; value: chat.title; color: Tokens.text; font-weight: 600; }
-                            if chat.muted: Image { x: name.width + 4px; y: 3px; width: 16px; height: 16px; source: @image-url("../assets/icons/muted.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Muted"; }
-                            preview := Rectangle {
-                                x: 0px; y: name.height + 2px; width: max(0px, parent.width - markers.width - 4px); height: max(0px, parent.height - self.y);
-                                if chat.draft || chat.preview-runs.length == 0: RowText { width: parent.width; height: parent.height; value: chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview; color: Tokens.secondary; font-size: Tokens.preview; }
-                                if !chat.draft && chat.preview-runs.length > 0 && i * State.chat-row-height + State.list-y + State.chat-row-height >= 0px && i * State.chat-row-height + State.list-y <= chat-list.visible-height: PreviewLine {
-                                    width: parent.width; height: parent.height; runs: chat.preview-runs;
-                                    prefix: chat.outgoing-preview ? "You: " : "";
-                                    text-color: Tokens.secondary;
-                                }
-                            }
+                        identity: chat.id; initial: chat.initial; avatar: chat.avatar; title: chat.title; time: chat.time; muted: chat.muted;
+                        subtitle: chat.draft ? "Draft: " + chat.draft-preview : chat.preview;
+                        prefix: !chat.draft && chat.outgoing-preview ? "You: " : "";
+                        subtitle-runs: chat.draft ? [] : chat.preview-runs;
+                        trailing-width: markers.width + Tokens.space-1;
+                        show-preview: i * State.chat-row-height + State.list-y + State.chat-row-height >= 0px && i * State.chat-row-height + State.list-y <= chat-list.visible-height;
                             markers := HorizontalLayout {
-                                x: parent.width - self.width; y: name.height + 2px; spacing: 4px; width: (chat.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
-                                if !chat.failed && (chat.unread > 0 || chat.unread-unknown): Rectangle { width: chat.unread-unknown ? 8px : 32px; height: chat.unread-unknown ? 8px : 20px; border-radius: self.height / 2; background: chat.muted ? Tokens.secondary : Tokens.accent; RowText { visible: !chat.unread-unknown; value: chat.unread > 999 ? "999+" : "" + chat.unread; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
+                                x: parent.width - self.width - Tokens.space-3; y: Tokens.space-2 + Tokens.base * 1.5 + 2px; spacing: 4px; width: (chat.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
+                                if !chat.failed && (chat.unread > 0 || chat.unread-unknown): Rectangle { width: chat.unread-unknown ? 8px : 32px; height: chat.unread-unknown ? 8px : 20px; border-radius: self.height / 2; background: chat.muted ? Tokens.secondary : Tokens.accent; RowText { visible: !chat.unread-unknown; text: chat.unread > 999 ? "999+" : "" + chat.unread; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
                                 if chat.draft: Image { source: @image-url("../assets/icons/draft.svg"); colorize: Tokens.accent; width: 16px; height: 16px; accessible-role: image; accessible-label: "Draft"; }
                                 if chat.failed: Image { source: @image-url("../assets/icons/error.svg"); colorize: Tokens.danger; width: 16px; height: 16px; accessible-role: image; accessible-label: "Send failed"; }
 
                             }
-                        }
                         accessible-role: button;
                         accessible-item-selectable: true;
                         accessible-item-selected: chat.index == State.selected-chat;

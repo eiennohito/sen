@@ -84,24 +84,18 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         demo::configure(fake, &scene, case.as_deref());
     }
     let assets = assets::Assets::default();
-    let projection = assets.clone();
     let worker = if let Some(fake) = &fake {
-        demo::worker(fake.clone(), text_size, projection)
+        demo::worker(fake.clone(), text_size)
     } else {
         let root = locations.session.parent().unwrap().join("accounts");
-        Worker::start_projected(
-            StoreLocation::Account { root, mid: None },
-            move || {
-                LineBackend::open_local(
-                    &locations.session,
-                    wasm_override.clone(),
-                    &locations.cache,
-                    client_version.clone(),
-                )
-            },
-            Default::default(),
-            move |delta| projection.project(delta),
-        )
+        Worker::start_with(StoreLocation::Account { root, mid: None }, move || {
+            LineBackend::open_local(
+                &locations.session,
+                wasm_override.clone(),
+                &locations.cache,
+                client_version.clone(),
+            )
+        })
     };
     let ui = window::create_app_window()?;
     if fake.is_some() {
@@ -144,6 +138,9 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                                 },
                             );
                         }
+                    }
+                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                        ui.global::<State>().set_device_scale(*scale_factor as f32)
                     }
                     WindowEvent::Focused(active) => ui.global::<State>().set_window_active(*active),
                     WindowEvent::Ime(Ime::Preedit(text, _)) => ui.set_ime_active(!text.is_empty()),

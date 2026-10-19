@@ -225,10 +225,9 @@ these are extension call shapes, not a live capture.
 - `react`: `[{reqSeq, messageId, reactionType: {predefinedReactionType}}]`;
   `cancelReaction`: `[{reqSeq, messageId}]`. The reaction menu uses these
   mutations for types 2–7; it consumes no success payload.
-- Our RPC decoder accepts the gateway's `message: "OK"` envelope, including
-  absent data for void methods, and empty HTTP 2xx success for those methods.
-  Empty/204 responses are supported defensively, **not observed in the source**.
-  Explicit LINE errors remain failures. Decode diagnostics contain method,
+- Our RPC decoder parses JSON, then accepts HTTP 200 with `message: "OK"`.
+  Absent data becomes Null. Every other envelope returns an RPC error with
+  its code (or zero when absent). Decode diagnostics contain method,
   HTTP status, content type and byte length; never response content or ids.
 - Composer text and sticker enqueue calls pass a `relation` with
   `relatedMessageId: replyTargetMessageId`, `messageRelationType: 3`

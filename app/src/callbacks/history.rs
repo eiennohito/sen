@@ -16,40 +16,27 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             .state
             .reply_targets
             .get(&ServerId(id.to_string()))
-            .map(|m| m.key);
-        if let Some(key) = target {
-            let origin = reading::return_anchor(
-                &d.history,
-                d.state.rows(),
-                Desktop::reading_geometry(&ui),
-                ui.get_following(),
-            );
-            d.history.return_anchor = origin;
-            d.history.opening_history = false;
-            d.history.restore_anchor = Some((key, ui.global::<State>().get_history_visible_top()));
-            // A target already laid out is scrolled to at once; the window may not change.
-            let known = d.history.geometry.contains_key(&key);
-            d.history.restore_ready = known;
-            if !known {
-                d.history.geometry.clear();
-            }
-            ui.set_following(false);
-            ui.global::<State>().set_return_visible(origin.is_some());
-            ui.global::<State>()
-                .set_highlight_message(key.0.to_string().into());
-            let weak = ui.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
-                if let Some(ui) = weak.upgrade()
-                    && ui.global::<State>().get_highlight_message() == key.0.to_string()
-                {
-                    ui.global::<State>().set_highlight_message("".into());
-                }
+            .map(|m| m.key)
+            .or_else(|| {
+                d.state
+                    .messages
+                    .values()
+                    .find(|m| m.server_id.as_ref().is_some_and(|s| s.0 == id.as_str()))
+                    .map(|m| m.key)
             });
-            let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
-            d.sender.send(intent);
+        if let Some(key) = target {
+            d.jump_to_message(&ui, key);
+        } else if let Some(chat) = d.state.selected.clone() {
+            let id = ServerId(id.to_string());
+            d.history.jump_target = Some(id.clone());
+            d.sender.send(Intent::Page {
+                chat,
+                kind: PageKind::Around { id },
+            });
         }
     });
     global_callback!(ui, actions, on_return_to_message, |ui, d| {
+        d.history.jump_target = None;
         if let Some((key, offset, _)) = d.history.return_anchor.take() {
             // The origin is kept below the top cover, which may have changed.
             d.history.restore_anchor =
@@ -62,19 +49,12 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             ui.set_following(false);
             ui.global::<State>().set_return_visible(false);
             ui.global::<State>().set_highlight_message("".into());
-            let weak = ui.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
-                if let Some(ui) = weak.upgrade()
-                    && ui.global::<State>().get_highlight_message() == key.0.to_string()
-                {
-                    ui.global::<State>().set_highlight_message("".into());
-                }
-            });
             let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
             d.sender.send(intent);
         }
     });
     global_callback!(ui, actions, on_latest_request, |ui, d| {
+        d.history.jump_target = None;
         ui.global::<State>().set_return_visible(false);
         ui.global::<State>().set_highlight_message("".into());
         d.history.return_anchor = None;

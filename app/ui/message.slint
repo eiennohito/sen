@@ -6,7 +6,7 @@ import { Button } from "button.slint";
 import { LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
-import { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind } from "types.slint";
+import { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind, RunPosition } from "types.slint";
 import { RichFlow } from "rich-flow.slint";
 import { Pane } from "scrollpane.slint";
 
@@ -35,7 +35,7 @@ export component Message inherits TouchArea {
     in property <MessageRow> message;
     in property <length> origin-y;
     property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.undecryptable;
-    property <length> bubble-limit: max(72px, min(480px, root.width - (!root.message.outgoing && root.message.sender-name != "" ? 37px : 0px) - 56px - (root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8) - 44px));
+    property <length> bubble-limit: max(Tokens.bubble-min, min(Tokens.bubble-max, root.width - (!root.message.outgoing && root.message.sender-name != "" ? Tokens.message-avatar + Tokens.message-gap : 0px) - Tokens.message-actions - (root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8) - Tokens.space-6 - Tokens.space-4 - Tokens.space-1));
     property <bool> selecting-rich: false;
     property <bool> rich-focused: false;
     property <bool> card-focused: false;
@@ -61,26 +61,26 @@ export component Message inherits TouchArea {
     init => { root.report-geometry(); }
     VerticalLayout {
                         vertical-stretch: 0; spacing: 2px;
-                        padding-top: root.message.run-position == "single" || root.message.run-position == "first" ? 12px : 2px;
+                        padding-top: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.first ? 12px : 2px;
                         if root.message.id == State.unread-divider: Text { text: "Unread messages"; color: Tokens.accent-strong; font-size: Tokens.small; horizontal-alignment: center; height: 28px; }
                         if root.message.day-label != "": HorizontalLayout { alignment: center; DatePill { text: root.message.day-label; } }
                         if root.system-item: HorizontalLayout { alignment: center; DatePill { text: root.message.body; max-width: root.width - 24px; background: State.highlight-message == root.message.id ? Tokens.bubble-selection : Tokens.surface-2; } }
                         message-content := HorizontalLayout {
                         visible: !root.system-item;
                         height: root.system-item ? 0px : self.preferred-height;
-                        spacing: 5px;
+                        spacing: Tokens.message-gap;
                         if root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
                         if !root.message.outgoing && root.message.sender-name != "": VerticalLayout {
-                            width: 32px; spacing: 0px; alignment: end;
-                            Avatar { width: 32px; height: 32px; visible: root.message.run-position == "single" || root.message.run-position == "last"; identity: root.message.sender-id; initial: root.message.sender-initial; picture: root.message.sender-avatar; label: root.message.sender-name + " avatar"; TouchArea { accessible-role: button; accessible-label: "Profile: " + root.message.sender-name; accessible-action-default => { State.open-member(root.message.sender-id); } clicked => { State.open-member(root.message.sender-id); } } }
+                            width: Tokens.message-avatar; spacing: 0px; alignment: end;
+                            Avatar { width: Tokens.message-avatar; height: Tokens.message-avatar; visible: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last; identity: root.message.sender-id; initial: root.message.sender-initial; picture: root.message.sender-avatar; label: root.message.sender-name + " avatar"; TouchArea { accessible-role: button; accessible-label: "Profile: " + root.message.sender-name; accessible-action-default => { State.open-member(root.message.sender-id); } clicked => { State.open-member(root.message.sender-id); } } }
                         }
                         message-column := VerticalLayout {
                             horizontal-stretch: 0;
                             min-width: min(root.bubble-limit, root.message.image-key != "" || root.message.photo ? 200px : 24px);
-                            preferred-width: root.card ? min(300px, root.bubble-limit) : root.message.image-key != "" || root.message.photo ? min(340px, root.bubble-limit) : min(root.bubble-limit, (root.showing-rich ? (root.rich-width > 0 ? root.rich-width * 1px : 480px) : body-measure.preferred-width) + 24px);
-                            max-width: max(72px, min(480px, root.bubble-limit));
+                            preferred-width: root.card ? min(300px, root.bubble-limit) : root.message.image-key != "" || root.message.photo ? min(340px, root.bubble-limit) : min(root.bubble-limit, (root.showing-rich ? (root.rich-width > 0 ? root.rich-width * 1px : Tokens.bubble-max) : body-measure.preferred-width) + 24px);
+                            max-width: root.bubble-limit;
                             spacing: 3px;
-                            if (root.message.run-position == "single" || root.message.run-position == "first") && !root.message.outgoing && root.message.sender-name != "": Text {
+                            if (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.first) && !root.message.outgoing && root.message.sender-name != "": Text {
                                 text: root.message.sender-name; accessible-label: "Sender: " + root.message.sender-name;
                                 color: Tokens.secondary; font-size: Tokens.small; overflow: elide;
                                 TouchArea { accessible-role: button; accessible-label: "Sender profile: " + root.message.sender-name; accessible-action-default => { State.open-member(root.message.sender-id); } clicked => { State.open-member(root.message.sender-id); } }
@@ -121,16 +121,17 @@ export component Message inherits TouchArea {
                                 background: parent.selected ? Tokens.bubble-selection : root.message.sticker || root.message.photo ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface-2;
                                 border-width: parent.selected ? 2px : 0px;
                                 border-color: parent.selected ? Tokens.bubble-selection-border : Tokens.border;
-                                border-top-left-radius: !root.message.outgoing && (root.message.run-position == "middle" || root.message.run-position == "last") ? 4px : 16px;
-                                border-bottom-left-radius: !root.message.outgoing && (root.message.run-position == "middle" || root.message.run-position == "first") ? 4px : 16px;
-                                border-top-right-radius: root.message.outgoing && (root.message.run-position == "middle" || root.message.run-position == "last") ? 4px : 16px;
-                                border-bottom-right-radius: root.message.outgoing && (root.message.run-position == "middle" || root.message.run-position == "first") ? 4px : 16px;
+                                border-top-left-radius: !root.message.outgoing && (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.last) ? 4px : 16px;
+                                border-bottom-left-radius: !root.message.outgoing && (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.first) ? 4px : 16px;
+                                border-top-right-radius: root.message.outgoing && (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.last) ? 4px : 16px;
+                                border-bottom-right-radius: root.message.outgoing && (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.first) ? 4px : 16px;
                                 }
                                 height: bubble-content.preferred-height;
                                 body-measure := Text { visible: false; text: root.showing-rich ? "" : root.message.body; font-size: Tokens.base; wrap: word-wrap; }
                                 bubble-content := VerticalLayout {
                                     padding-top: 8px; padding-bottom: 8px; padding-left: 12px; padding-right: 12px; spacing: 6px; alignment: start;
                                     if root.message.reply-id != "": ReplyQuote {
+                                        surface: root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface-2;
                                         sender: root.message.reply-sender; sender-id: root.message.reply-sender-id; preview: root.message.reply-preview;
                                         picture: root.message.reply-picture; has-picture: root.message.reply-has-picture;
                                         quote-focus := FocusScope {
@@ -312,8 +313,8 @@ export component Message inherits TouchArea {
                             HorizontalLayout {
                                 y: max(0px, message-column.y + message-bubble.y + message-bubble.height - self.height);
                                 height: max(16px, Tokens.time * 1.4); spacing: 2px;
-                                Text { text: (root.message.run-position == "single" || root.message.run-position == "last") ? root.message.clock : ""; accessible-label: (root.message.run-position == "single" || root.message.run-position == "last") ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
-                                if root.message.outgoing && (root.message.run-position == "single" || root.message.run-position == "last"): Image {
+                                Text { text: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.clock : ""; accessible-label: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
+                                if root.message.outgoing && (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last): Image {
                                     width: 16px; height: 16px;
                                     source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/clock.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == "Rejected" ? @image-url("../assets/icons/error.svg") : root.message.delivery == "Unconfirmed" ? @image-url("../assets/icons/warning.svg") : @image-url("../assets/icons/check.svg");
                                     accessible-role: image;
@@ -323,20 +324,21 @@ export component Message inherits TouchArea {
                             }
                         }
                         Rectangle {
-                            width: 56px; horizontal-stretch: 0;
+                            width: Tokens.message-actions; horizontal-stretch: 0;
                             reply-button := IconButton {
-                                x: 28px; y: react-button.y; width: 28px; height: 28px; label: "Reply";
+                                x: 28px; y: react-button.y; width: 28px; height: 28px; label: "Reply"; focus-description: "Focused";
                                 icon: @image-url("../assets/icons/reply.svg");
                                 visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus || react-button.has-focus);
                                 activated => { State.reply(root.message.id); }
+                                key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { react-button.focus-button(); } else { State.focus-composer(); } return accept; } reject }
                             }
                             react-button := IconButton {
                                 y: max(0px, message-column.y + message-bubble.y + message-bubble.height - 28px);
                                 width: 28px; height: 28px; border-radius: 14px;
-                                label: "React"; icon: @image-url("../assets/icons/react.svg");
+                                label: "React"; focus-description: "Focused"; icon: @image-url("../assets/icons/react.svg");
                                 visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus || reply-button.has-focus);
                                 activated => { reactions.show(); }
-                                key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { if root.card { State.focus-history(); } else { body.focus(); } } else { State.focus-composer(); } return accept; } reject }
+                                key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { if root.card { State.focus-history(); } else { body.focus(); } } else { reply-button.focus-button(); } return accept; } reject }
                             }
                         }
                         if !root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }

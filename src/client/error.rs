@@ -19,17 +19,8 @@ pub enum Error {
     Server(i64),
     #[error("send rejected: {0}")]
     Rejected(RejectReason),
-    #[error("response decode failed")]
-    Decode,
-    #[error(
-        "response decode failed: method={method} status={status} content-type={content_type} body-length={body_len}"
-    )]
-    ResponseDecode {
-        method: String,
-        status: u16,
-        content_type: String,
-        body_len: usize,
-    },
+    #[error("response decode failed: {0}")]
+    Decode(String),
     #[error("protocol error")]
     Protocol,
     #[error("crypto failed")]
@@ -68,7 +59,7 @@ pub enum RejectReason {
     NotAccepted,
 }
 
-/// Preserve boundary errors; unknown local failures are internal errors.
+/// Preserve boundary errors; unknown local failures are decode errors.
 pub(crate) fn classify(error: &anyhow::Error) -> Error {
     if let Some(error) = error.downcast_ref::<Error>() {
         return error.clone();
@@ -82,7 +73,7 @@ pub(crate) fn classify(error: &anyhow::Error) -> Error {
             Error::Server(error.code)
         };
     }
-    Error::Internal
+    Error::Decode(error.to_string())
 }
 
 /// Prerequisites and protocol outcomes carried intact to the sign-in surface.

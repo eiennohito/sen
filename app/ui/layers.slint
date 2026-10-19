@@ -1,4 +1,4 @@
-import { ListRow, RowText } from "list-row.slint";
+import { RowText } from "list-row.slint";
 import { ComboBox, CheckBox } from "preferences.slint";
 import { Button } from "button.slint";
 import { PanelState } from "types.slint";
@@ -25,7 +25,7 @@ component SettingsSections inherits FocusScope {
         if event.text == Key.End { root.current = 4; return accept; }
         reject
     }
-    for section[i] in ["Chats", "Notifications", "Background", "Shortcuts", "About"]: ListRow {
+    for section[i] in ["Chats", "Notifications", "Background", "Shortcuts", "About"]: Rectangle {
         x: root.narrow ? mod(i, 2) * (root.width + 8px) / 2 : 0px;
         y: (root.narrow ? floor(i / 2) : i) * root.row-height;
         width: root.narrow ? (root.width - 8px) / 2 : root.width; height: root.row-height - 4px;
@@ -34,7 +34,7 @@ component SettingsSections inherits FocusScope {
         accessible-role: tab; accessible-label: section;
         accessible-item-selectable: true; accessible-item-selected: root.current == i;
         accessible-action-default => { root.current = i; root.focus(); }
-        RowText { x: 8px; width: parent.width - 16px; height: parent.height; value: section; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
+        RowText { x: 8px; width: parent.width - 16px; height: parent.height; text: section; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
         touch := TouchArea { mouse-cursor: pointer; clicked => { root.current = i; root.focus(); } }
     }
 }

@@ -333,9 +333,7 @@ impl Client {
         let response = self.talk("getContactsV2", json!([{"targetUserMids":[mid]}, 2]))?;
         let contact = &response["contacts"][mid]["contact"];
         let member = member_identity(mid, contact, &self.my_mid);
-        if !member.resolved {
-            return Err(Error::Decode.into());
-        }
+        ensure!(member.resolved, "unresolved contact");
         Ok(member.contact)
     }
     pub fn profile_notice(&mut self, mid: &str) -> Result<Value> {
@@ -455,6 +453,19 @@ impl Client {
 
     pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
         self.refresh_messages(chat_mid)
+    }
+
+    pub fn around(&mut self, chat: &str, id: &str) -> Result<(Vec<Message>, bool)> {
+        let data = self.talk("getMessagesByIds", json!([[id]]))?;
+        let raw = data
+            .as_array()
+            .and_then(|rows| rows.iter().find(|m| m["id"] == id))
+            .context("original message unavailable")?;
+        let original = self.message(raw)?;
+        let (mut rows, start) = self.older(chat, id, original.delivered_time)?;
+        rows.push(original);
+        sort_messages(&mut rows);
+        Ok((rows, start))
     }
 
     pub fn older(
@@ -1240,6 +1251,6 @@ fn attach_reply(message: &mut Value, reply: Option<&crate::store::ReplyReference
     if let Some(reply) = reply {
         message["relatedMessageId"] = json!(reply.message_id);
         message["messageRelationType"] = json!(3);
-        message["relatedMessageServiceCode"] = json!(1);
+        message["relatedMessageServiceCode"] = json!(reply.service_code.unwrap_or(1));
     }
 }

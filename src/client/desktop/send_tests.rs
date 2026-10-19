@@ -39,7 +39,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
             let public = public.clone();
             steps.push(("negotiateE2EEPublicKey", Box::new(move |args| {
                 assert_eq!(args, json!(["upeer"]));
-                (200, json!({"code":0,"data":{"allowedTypes":[0],"specVersion":1,"publicKey":{"keyId":id}}}))
+                (200, json!({"code":0,"message":"OK","data":{"allowedTypes":[0],"specVersion":1,"publicKey":{"keyId":id}}}))
             })));
             steps.push((
                 "getE2EEPublicKey",
@@ -47,7 +47,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
                     assert_eq!(args, json!(["upeer", 1, id]));
                     (
                         200,
-                        json!({"code":0,"data":{"keyId":id,"keyData":STANDARD.encode(public)}}),
+                        json!({"code":0,"message":"OK","data":{"keyId":id,"keyData":STANDARD.encode(public)}}),
                     )
                 }),
             ));
@@ -56,13 +56,13 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
                 assert_eq!(args[0], 7);
                 assert_eq!(args[1]["relatedMessageId"], "original");
                 assert_eq!(args[1]["messageRelationType"], 3);
-                assert_eq!(args[1]["relatedMessageServiceCode"], 1);
+                assert_eq!(args[1]["relatedMessageServiceCode"], 2);
                 assert_eq!(decode(args[1]["chunks"][4].as_str().unwrap()).unwrap(), (id as u32).to_be_bytes());
                 sent.lock().unwrap().push(args[1].clone());
                 if id == 42 {
                     (200, json!({"code":code,"data":{}}))
                 } else {
-                    (200, json!({"code":0,"data":{"id":"sent","from":"uself","to":"upeer","contentType":0,"text":"hello"}}))
+                    (200, json!({"code":0,"message":"OK","data":{"id":"sent","from":"uself","to":"upeer","contentType":0,"text":"hello"}}))
                 }
             })));
         }
@@ -75,7 +75,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
             7,
             Some(&crate::store::ReplyReference {
                 message_id: "original".into(),
-                service_code: Some(1),
+                service_code: Some(2),
             }),
         );
         if code == 83 {
@@ -116,53 +116,32 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
 }
 
 #[test]
-fn void_calls_accept_gateway_ok_without_data_and_empty_success() -> Result<()> {
+fn rpc_success_uses_http_and_message_and_allows_absent_data() -> Result<()> {
     let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
     let api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
     let (mut client, root) = client(api);
     let (transport, server) = server_responses(vec![
+        ("getProfile", Box::new(|_| (200, json!({"message":"OK"})))),
         (
-            "sendChatChecked",
-            Box::new(|args| {
-                assert_eq!(args, json!([7, "chat", "123", 0]));
-                (200, json!({"message":"OK"}))
+            "getProfile",
+            Box::new(|_| {
+                (
+                    200,
+                    json!({"message":"OK", "code":7, "data":{"displayName":"Name"}}),
+                )
             }),
         ),
-        (
-            "react",
-            Box::new(|args| {
-                assert_eq!(
-                    args,
-                    json!([{"reqSeq":8,"messageId":"123","reactionType":{"predefinedReactionType":3}}])
-                );
-                (204, Value::Null)
-            }),
-        ),
-        (
-            "cancelReaction",
-            Box::new(|args| {
-                assert_eq!(args, json!([{"reqSeq":9,"messageId":"123"}]));
-                (200, json!({"message":"OK"}))
-            }),
-        ),
-        (
-            "react",
-            Box::new(|_| (200, json!({"message":"ERROR","code":5}))),
-        ),
-        ("getProfile", Box::new(|_| (200, Value::Null))),
+        ("getProfile", Box::new(|_| (200, json!({"code":0})))),
+        ("getProfile", Box::new(|_| (201, json!({"message":"OK"})))),
     ]);
     client.api.http = transport;
-    client.mark_read("chat", "123", 7)?;
-    client.react("123", Some(3), 8)?;
-    client.react("123", None, 9)?;
-    assert!(matches!(
-        error::classify(&client.react("123", Some(3), 10).unwrap_err()),
-        Error::Server(5)
-    ));
-    let error = client.api.profile("synthetic").unwrap_err();
-    assert!(
-        matches!(error.downcast_ref::<Error>(), Some(Error::ResponseDecode { method, status: 200, content_type, body_len: 0 }) if method == "getProfile" && content_type.is_empty())
-    );
+    assert_eq!(client.api.profile("synthetic")?, Value::Null);
+    assert_eq!(client.api.profile("synthetic")?["displayName"], "Name");
+    for http in [200, 201] {
+        let error = client.api.profile("synthetic").unwrap_err();
+        let error = error.downcast_ref::<RpcError>().unwrap();
+        assert_eq!((error.http, error.code), (http, 0));
+    }
     server.join().unwrap();
     fs::remove_dir_all(root)?;
     Ok(())

@@ -749,7 +749,10 @@ impl Backend for FakeBackend {
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>> {
         use crate::client::desktop::assets::{Payload, Pixels, Purpose};
-        if let Some(pixels) = asset.local_pixels().map_err(|_| Error::Decode)? {
+        if let Some(pixels) = asset
+            .local_pixels()
+            .map_err(|e| Error::Decode(e.to_string()))?
+        {
             return Ok(Some(Payload::Image(Arc::new(pixels))));
         }
 
@@ -832,7 +835,7 @@ impl Backend for FakeBackend {
                     ..Default::default()
                 })
             })
-            .ok_or(Error::Decode)
+            .ok_or_else(|| Error::Decode("missing response field".into()))
     }
 
     fn notice(&mut self, _mid: &str) -> Result<Value> {
@@ -966,7 +969,7 @@ impl Backend for FakeBackend {
                     sort_id: format!("{:0>20}", m.server_id.0),
                 };
                 match kind {
-                    PageKind::Recent => true,
+                    PageKind::Recent | PageKind::Around { .. } => true,
                     PageKind::Older { before } => cursor < *before,
                     PageKind::Newer { after } => cursor > *after,
                 }
@@ -1184,12 +1187,17 @@ impl Backend for FakeBackend {
     }
     fn decode(&mut self, raw: Value) -> Result<LiveOp> {
         Ok(LiveOp {
-            revision: raw["revision"].as_i64().ok_or(Error::Decode)?,
+            revision: raw["revision"]
+                .as_i64()
+                .ok_or_else(|| Error::Decode("missing response field".into()))?,
             replay: raw["replay"].as_bool().unwrap_or(false),
             op: match raw["type"].as_u64() {
                 Some(139 | 140) => reaction_operation(&raw, "self")?,
                 Some(64 | 65) => Op::Withdraw(ServerId(
-                    raw["param2"].as_str().ok_or(Error::Decode)?.into(),
+                    raw["param2"]
+                        .as_str()
+                        .ok_or_else(|| Error::Decode("missing response field".into()))?
+                        .into(),
                 )),
                 _ => Op::Checkpoint,
             },
@@ -1541,7 +1549,7 @@ impl Backend for LineBackend {
             .ok_or(Error::Auth)?
             .online_profile()
             .map_err(rpc)?;
-        serde_json::from_value(data).map_err(|_| Error::Decode)
+        serde_json::from_value(data).map_err(|e| Error::Decode(e.to_string()))
     }
     fn chats(&mut self, cursor: Option<String>) -> Result<ChatPage> {
         let (rows, more, cursor) = self
@@ -1579,6 +1587,12 @@ impl Backend for LineBackend {
     }
     fn messages(&mut self, chat: &ChatId, kind: &PageKind) -> Result<Page> {
         let (rows, reaches_start) = match kind {
+            PageKind::Around { id } => self
+                .client
+                .as_mut()
+                .ok_or(Error::Auth)?
+                .around(&chat.0, &id.0)
+                .map_err(rpc)?,
             PageKind::Older { before } => self
                 .client
                 .as_mut()
@@ -1806,7 +1820,7 @@ impl Backend for LineBackend {
         let revision = raw["revision"]
             .as_i64()
             .or_else(|| raw["revision"].as_str()?.parse().ok())
-            .ok_or(Error::Decode)?;
+            .ok_or_else(|| Error::Decode("missing response field".into()))?;
         let chat = || ChatId(raw["param1"].as_str().unwrap_or_default().into());
         let id = || ServerId(raw["param2"].as_str().unwrap_or_default().into());
         let op = match raw["type"].as_u64() {
@@ -1817,7 +1831,7 @@ impl Backend for LineBackend {
                     .ok_or(Error::Auth)?
                     .operation(&raw)
                     .map_err(rpc)?
-                    .ok_or(Error::Decode)?;
+                    .ok_or_else(|| Error::Decode("missing response field".into()))?;
                 m.request_seq = raw["reqSeq"]
                     .as_u64()
                     .or_else(|| raw["reqSeq"].as_str()?.parse().ok())
@@ -1827,7 +1841,12 @@ impl Backend for LineBackend {
             }
             Some(55) => Op::Receipt {
                 chat: chat(),
-                up_to: ServerId(raw["param3"].as_str().ok_or(Error::Decode)?.into()),
+                up_to: ServerId(
+                    raw["param3"]
+                        .as_str()
+                        .ok_or_else(|| Error::Decode("missing response field".into()))?
+                        .into(),
+                ),
             },
             Some(40) => Op::Read {
                 chat: chat(),
@@ -1855,13 +1874,17 @@ impl Backend for LineBackend {
 }
 
 fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
-    let data: Value = serde_json::from_str(raw["param2"].as_str().ok_or(Error::Decode)?)
-        .map_err(|_| Error::Decode)?;
+    let data: Value = serde_json::from_str(
+        raw["param2"]
+            .as_str()
+            .ok_or_else(|| Error::Decode("missing response field".into()))?,
+    )
+    .map_err(|e| Error::Decode(e.to_string()))?;
     let chat = ChatId(
         data["chatMid"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or(Error::Decode)?
+            .ok_or_else(|| Error::Decode("missing response field".into()))?
             .into(),
     );
     let actor = if raw["type"] == 139 {
@@ -1880,7 +1903,12 @@ fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
     };
     match actor.filter(|s| !s.is_empty()) {
         Some(actor) => Ok(Op::Reaction {
-            id: ServerId(raw["param1"].as_str().ok_or(Error::Decode)?.into()),
+            id: ServerId(
+                raw["param1"]
+                    .as_str()
+                    .ok_or_else(|| Error::Decode("missing response field".into()))?
+                    .into(),
+            ),
             actor: actor.into(),
             curr: crate::client::desktop::reaction_kind(&data["curr"]),
         }),

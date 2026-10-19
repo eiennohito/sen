@@ -13,8 +13,23 @@ pub struct Presenter {
     friend_keys: Vec<String>,
     members: Rc<VecModel<MemberRow>>,
     member_keys: Vec<String>,
+    rendered_friends: std::collections::BTreeMap<String, CachedFriend>,
     rendered_chats: std::collections::BTreeMap<ChatId, (ChatInputs, ChatRow)>,
-    rendered: std::collections::BTreeMap<Key, (StoredMessage, Option<Friend>, MessageRow)>,
+    rendered: std::collections::BTreeMap<Key, (MessageInputs, MessageRow)>,
+}
+struct CachedFriend {
+    friend: Friend,
+    size: i32,
+    row: FriendRow,
+    assets: Vec<line::client::desktop::assets::Asset>,
+}
+#[derive(PartialEq)]
+struct MessageInputs {
+    message: StoredMessage,
+    sender: Option<Friend>,
+    system_text: Option<String>,
+    reply: Option<(StoredMessage, String)>,
+    upload: f32,
 }
 // Asset pixels are patched in place; these are the non-asset row inputs.
 #[derive(PartialEq)]
@@ -22,6 +37,7 @@ struct ChatInputs {
     chat: ChatInput,
     title: String,
     preview: Option<StoredMessage>,
+    system_text: Option<String>,
     activity: i64,
     failed: u32,
     draft: Option<Draft>,
@@ -102,7 +118,7 @@ impl Presenter {
             .filter(|f| !f.group && f.id != state.profile.mid)
             .map(|f| ComposeFriend {
                 id: f.id.clone().into(),
-                name: f.name.clone().into(),
+                name: single_line(&f.name).into(),
                 initial: name_initial(&f.name),
                 avatar: f
                     .avatar
@@ -150,7 +166,7 @@ impl Presenter {
                 .sticker_packages
                 .iter()
                 .map(|p| StickerTab {
-                    name: p.name.clone().into(),
+                    name: single_line(&p.name).into(),
                     picture: p.stickers.first().map(picture).unwrap_or_default(),
                 })
                 .collect::<Vec<_>>(),
@@ -184,19 +200,40 @@ impl Presenter {
                     .map(|m| &m.contact)
             })
             .cloned();
-        if !matches!(m.body, Content::System { .. })
-            && let Some((stored, identity, row)) = self.rendered.get(&m.key)
-            && stored == m
-            && identity == &sender
-            && (m.delivery != Delivery::Pending
-                || row.upload_progress == state.uploads.get(&m.key).copied().unwrap_or(0.))
+        let system_text = crate::system_events::text(&m.body, state, &m.sender_id);
+        let reply =
+            m.reply
+                .as_ref()
+                .and_then(|r| {
+                    state
+                        .reply_targets
+                        .get(&ServerId(r.message_id.clone()))
+                        .or_else(|| {
+                            state.messages.values().find(|m| {
+                                m.server_id.as_ref().is_some_and(|id| id.0 == r.message_id)
+                            })
+                        })
+                })
+                .map(|target| {
+                    (
+                        target.clone(),
+                        crate::system_events::name(state, &target.sender_id),
+                    )
+                });
+        let inputs = MessageInputs {
+            message: m.clone(),
+            sender: sender.clone(),
+            system_text: system_text.clone(),
+            reply,
+            upload: state.uploads.get(&m.key).copied().unwrap_or(0.),
+        };
+        if let Some((old, row)) = self.rendered.get(&m.key)
+            && *old == inputs
         {
             return row.clone();
         }
         let mut view = content_view(&m.body);
-        if matches!(m.body, Content::System { .. }) {
-            view.rich.system_text = crate::system_events::text(&m.body, state, &m.sender_id);
-        }
+        view.rich.system_text = system_text;
         view.rich.reply = m.reply.as_deref().cloned();
         view.id = m.key.0.to_string();
         view.sender_id = m.sender_id.clone();
@@ -326,9 +363,25 @@ impl Presenter {
                 }
             }
         }
+        if let Some((target, name)) = &inputs.reply {
+            let quoted = content_view(&target.body);
+            row.reply_sender = if target.outgoing {
+                "You".into()
+            } else {
+                name.clone().into()
+            };
+            row.reply_sender_id = target.sender_id.clone().into();
+            row.reply_preview = single_line(&message_text(&quoted)).into();
+            row.reply_image_key = quoted.image_key.into();
+            if matches!(target.body, Content::Photo { .. } | Content::Sticker { .. })
+                && let Some(image) = self.images.get(row.reply_image_key.as_str())
+            {
+                row.reply_picture = image.clone();
+                row.reply_has_picture = true;
+            }
+        }
         links::decorate_message(&mut row, "Contact");
-        self.rendered
-            .insert(m.key, (m.clone(), sender, row.clone()));
+        self.rendered.insert(m.key, (inputs, row.clone()));
         row
     }
     pub fn present(&mut self, ui: &AppWindow, state: &AppState, query: &str, category: i32) {
@@ -342,39 +395,64 @@ impl Presenter {
                     .to_lowercase()
                     .contains(&ui.get_friend_query().to_lowercase())
             })
-            .map(|f| FriendRow {
-                id: f.id.clone().into(),
-                name: f.name.clone().into(),
-                initial: name_initial(&f.name),
-                status: single_line(&f.status).into(),
-                status_runs: {
-                    let details = line::client::desktop::rich::parse(&serde_json::json!({"text": f.status, "contentMetadata": f.profile.status_metadata}));
-                    let content = Content::Text { text: f.status.clone(), spans: details.emoji };
-                    let view = content_view(&content);
-                    let mut message = message_row(view);
-                    let runs = message.rich_runs.iter().map(|mut run| {
-                        if let Some(image) = self.images.get(run.image_key.as_str()) { run.picture = image.clone(); run.has_picture = true; }
-                        run
-                    }).collect::<Vec<_>>();
-                    message.rich_runs = ModelRc::new(VecModel::from(runs));
-                    let mut preview = ChatRow::default();
-                    preview::set(&mut preview, &message, ui.get_text_size());
-                    preview.preview_runs
-                },
-                group: f.group,
-                avatar_key: f
-                    .avatar
-                    .as_ref()
-                    .map(|a| a.key())
-                    .unwrap_or_default()
-                    .into(),
-                avatar: f
-                    .avatar
-                    .as_ref()
-                    .and_then(|a| self.images.get(&a.key()))
-                    .cloned()
-                    .unwrap_or_default(),
-                ..Default::default()
+            .map(|f| {
+                if let Some(cached) = self.rendered_friends.get(&f.id)
+                    && cached.friend == *f
+                    && cached.size == ui.get_text_size()
+                {
+                    return cached.row.clone();
+                }
+                let spans =
+                    line::client::desktop::rich::emoji_spans(&f.status, &f.profile.status_metadata);
+                let assets = spans
+                    .iter()
+                    .filter_map(line::client::desktop::assets::Asset::inline_emoji)
+                    .collect::<Vec<_>>();
+                let metadata = spans
+                    .into_iter()
+                    .map(|span| {
+                        let image_key = line::client::desktop::assets::Asset::inline_emoji(&span)
+                            .map(|a| a.key())
+                            .unwrap_or_default();
+                        account::EmojiView { span, image_key }
+                    })
+                    .collect::<Vec<_>>();
+                let row = FriendRow {
+                    id: f.id.clone().into(),
+                    name: single_line(&f.name).into(),
+                    initial: name_initial(&f.name),
+                    status: single_line(&f.status).into(),
+                    status_runs: preview::preview_runs(
+                        &f.status,
+                        &metadata,
+                        &self.images,
+                        ui.get_text_size(),
+                    ),
+                    group: f.group,
+                    avatar_key: f
+                        .avatar
+                        .as_ref()
+                        .map(|a| a.key())
+                        .unwrap_or_default()
+                        .into(),
+                    avatar: f
+                        .avatar
+                        .as_ref()
+                        .and_then(|a| self.images.get(&a.key()))
+                        .cloned()
+                        .unwrap_or_default(),
+                    ..Default::default()
+                };
+                self.rendered_friends.insert(
+                    f.id.clone(),
+                    CachedFriend {
+                        friend: f.clone(),
+                        size: ui.get_text_size(),
+                        row: row.clone(),
+                        assets,
+                    },
+                );
+                row
             })
             .collect::<Vec<_>>();
         let mut grouped = Vec::new();
@@ -419,9 +497,9 @@ impl Presenter {
             })
             .map(|m| MemberRow {
                 id: m.contact.id.clone().into(),
-                name: m.contact.name.clone().into(),
+                name: single_line(&m.contact.name).into(),
                 initial: name_initial(&m.contact.name),
-                status: m.contact.status.clone().into(),
+                status: single_line(&m.contact.status).into(),
                 is_self: m.is_self,
                 friend: state
                     .friends
@@ -638,6 +716,10 @@ impl Presenter {
                 chat: c.clone(),
                 title: title.to_owned(),
                 preview: item.preview.clone(),
+                system_text: item
+                    .preview
+                    .as_ref()
+                    .and_then(|m| crate::system_events::text(&m.body, state, &m.sender_id)),
                 activity: item.activity_ms,
                 failed: item.failed_count,
                 draft: item.draft.clone(),
@@ -645,10 +727,7 @@ impl Presenter {
                 index,
                 text_size: ui.get_text_size(),
             };
-            if !matches!(
-                item.preview.as_ref().map(|m| &m.body),
-                Some(Content::System { .. })
-            ) && let Some((old, row)) = self.rendered_chats.get(id)
+            if let Some((old, row)) = self.rendered_chats.get(id)
                 && *old == inputs
             {
                 chats.push((id.clone(), row.clone()));
@@ -657,7 +736,7 @@ impl Presenter {
             let mut row = ChatRow {
                 id: id.0.clone().into(),
                 index: index as i32,
-                title: title.into(),
+                title: single_line(title).into(),
                 initial: name_initial(title),
                 unread: c.unread_count as i32,
                 failed: item.failed_count > 0,
@@ -676,8 +755,10 @@ impl Presenter {
                 ..Default::default()
             };
             if let Some(m) = &item.preview {
-                let message = self.row(m, state);
-                preview::set(&mut row, &message, ui.get_text_size());
+                let mut view = content_view(&m.body);
+                view.outgoing = m.outgoing;
+                view.rich.system_text = inputs.system_text.clone();
+                preview::set(&mut row, &view, &self.images, ui.get_text_size());
             } else if item.activity_ms == 0 {
                 row.time = "New".into();
                 row.preview = "No messages yet".into();
@@ -698,16 +779,7 @@ impl Presenter {
         let rows = state
             .rows()
             .into_iter()
-            .filter(|m| {
-                if matches!(m.body, Content::System { .. })
-                    && crate::system_events::text(&m.body, state, &m.sender_id).is_none()
-                {
-                    #[cfg(debug_assertions)]
-                    eprintln!("Unknown chat event: {:?}", m.body);
-                    return false;
-                }
-                true
-            })
+            .filter(|m| line::system_events::displayable(&m.body))
             .collect::<Vec<_>>();
         // Choose on first population, then retain the mode for this conversation.
         // Switching delegate types during a live arrival would lose selection
@@ -716,33 +788,7 @@ impl Presenter {
             ui.global::<State>().set_history_virtual(rows.len() > 60);
             self.history_chat = state.selected.clone();
         }
-        let mut messages = rows
-            .iter()
-            .map(|m| {
-                let mut row = self.row(m, state);
-                if let Some(target) = state.reply_targets.get(&ServerId(row.reply_id.to_string())) {
-                    let quoted = self.row(target, state);
-                    let name = if quoted.outgoing {
-                        "You"
-                    } else {
-                        quoted.sender_name.as_str()
-                    };
-                    row.reply_sender = name.into();
-                    row.reply_sender_id = quoted.sender_id;
-                    row.reply_preview = match quoted.kind {
-                        MessageKind::Photo => "Photo".into(),
-                        MessageKind::Sticker => "Sticker".into(),
-                        MessageKind::File => format!("File: {}", single_line(&quoted.body)).into(),
-                        _ => single_line(&quoted.body).into(),
-                    };
-                    row.reply_has_picture = quoted.has_picture
-                        && matches!(quoted.kind, MessageKind::Photo | MessageKind::Sticker);
-                    row.reply_image_key = quoted.image_key;
-                    row.reply_picture = quoted.picture;
-                }
-                row
-            })
-            .collect::<Vec<_>>();
+        let mut messages = rows.iter().map(|m| self.row(m, state)).collect::<Vec<_>>();
 
         let group = state
             .selected
@@ -780,6 +826,7 @@ impl Presenter {
         );
         self.rendered.retain(|k, _| {
             state.messages.contains_key(k)
+                || state.reply_targets.values().any(|m| m.key == *k)
                 || state
                     .chats
                     .values()
@@ -847,7 +894,7 @@ impl Presenter {
                 .unwrap_or(-1),
         );
         if let Some(c) = state.selected.as_ref().and_then(|id| state.chats.get(id)) {
-            ui.set_chat_title(chat_title(&c.chat, state).into());
+            ui.set_chat_title(single_line(chat_title(&c.chat, state)).into());
             ui.global::<State>().set_chat_id(c.chat.id.0.clone().into());
             ui.global::<State>()
                 .set_chat_initial(name_initial(chat_title(&c.chat, state)));
@@ -985,11 +1032,14 @@ impl Presenter {
                 }
             }
         }
-        for (_, _, row) in self.rendered.values_mut() {
+        for (_, row) in self.rendered.values_mut() {
             patch_message_asset(row, key, image, failure);
         }
         for i in 0..self.messages.row_count() {
             let mut row = self.messages.row_data(i).unwrap();
+            if !uses_asset(&row, key) {
+                continue;
+            }
             if patch_message_asset(&mut row, key, image, failure) {
                 self.messages.set_row_data(i, row);
             }
@@ -1005,8 +1055,8 @@ impl Presenter {
                 self.chats.set_row_data(i, cached.clone());
             }
         }
-        for i in 0..self.friends.row_count() {
-            let mut row = self.friends.row_data(i).unwrap();
+        for cached in self.rendered_friends.values_mut() {
+            let row = &mut cached.row;
             patch_runs(
                 &row.status_runs,
                 key,
@@ -1014,6 +1064,14 @@ impl Presenter {
                 failure.is_some(),
                 Some(ui.get_text_size()),
             );
+            if row.avatar_key == key
+                && let Some(image) = image
+            {
+                row.avatar = image.clone();
+            }
+        }
+        for i in 0..self.friends.row_count() {
+            let mut row = self.friends.row_data(i).unwrap();
             if row.avatar_key == key
                 && let Some(image) = image
                 && row.avatar != *image
@@ -1081,7 +1139,19 @@ impl Presenter {
                 ui.set_profile_avatar(image.clone());
             }
         }
-        self.present_compose(ui, state);
+        let mut quote = ui.global::<State>().get_composer_reply();
+        if uses_asset(&quote, key) && patch_message_asset(&mut quote, key, image, failure) {
+            ui.global::<State>().set_composer_reply(quote);
+        }
+    }
+    pub fn request_status_assets(&self, assets: &mut assets::Assets, sender: &Sender) {
+        for cached in self.rendered_friends.values() {
+            for asset in &cached.assets {
+                if assets.request(asset) {
+                    sender.send(Intent::Asset(asset.clone()));
+                }
+            }
+        }
     }
     pub fn patch_draft(&mut self, chat: &ChatId, draft: &Option<Draft>) {
         let Some((inputs, row)) = self.rendered_chats.get_mut(chat) else {

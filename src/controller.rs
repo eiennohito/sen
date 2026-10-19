@@ -146,8 +146,11 @@ impl AppState {
         let chat = self.selected.clone()?;
         let text = self.composer.clone();
         self.submitting = Some((chat.clone(), text.clone()));
-        self.composer_reply = None;
-        Some(Intent::Send { chat, text })
+        Some(Intent::Send {
+            chat,
+            text,
+            reply: self.composer_reply.clone(),
+        })
     }
 
     pub fn select(&mut self, chat: ChatId) -> Intent {
@@ -226,6 +229,8 @@ impl AppState {
             Delta::Submitted { chat, text } => {
                 if self.selected.as_ref() == Some(&chat) && self.composer == text {
                     self.composer.clear();
+                }
+                if self.selected.as_ref() == Some(&chat) {
                     self.composer_reply = None;
                 }
                 self.submitting = None;

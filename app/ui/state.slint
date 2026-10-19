@@ -3,7 +3,6 @@ import { StickerTab, StickerItem, ComposeFriend } from "types.slint";
 import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
-    pure callback single-line(string) -> string;
     in-out property <MessageRow> composer-reply;
     callback reply(string);
     callback cancel-reply();
@@ -27,6 +26,9 @@ export global State {
     in-out property <bool> history-virtual;
     in-out property <length> virtual-history-height;
     in-out property <length> plain-history-height;
+    in-out property <float> device-scale: 1;
+    pure callback avatar-picture(image, float, float) -> image;
+    pure callback name-tint(string, color, bool) -> color;
     pure callback avatar-tint(string) -> color;
     in-out property <string> account-initial;
     in-out property <string> chat-id;

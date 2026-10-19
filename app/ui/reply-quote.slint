@@ -2,6 +2,8 @@ import { Tokens } from "tokens.slint";
 import { State } from "state.slint";
 import { RowText } from "list-row.slint";
 export component ReplyQuote inherits Rectangle {
+    in property <color> surface: Tokens.bg;
+    property <color> name-tint: State.name-tint(root.sender-id, root.surface, Tokens.dark);
     in property <string> sender;
     in property <string> sender-id;
     in property <string> preview;
@@ -9,12 +11,12 @@ export component ReplyQuote inherits Rectangle {
     in property <bool> has-picture;
     in property <bool> cancellable;
     height: max(44px, Tokens.small * 2.8 + 12px);
-    background: Tokens.text.with-alpha(0.06); border-radius: 8px; clip: true;
-    Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: State.avatar-tint(root.sender-id); }
+    background: root.surface; border-radius: 8px; clip: true;
+    Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: root.name-tint; }
     VerticalLayout {
         padding: 6px; padding-left: 10px; padding-right: (root.cancellable ? 40px : 6px) + (root.has-picture ? 38px : 0px); spacing: 2px;
-        if root.sender != "": RowText { value: root.sender; color: State.avatar-tint(root.sender-id); font-size: Tokens.small; font-weight: 600; }
-        RowText { value: root.preview; vertical-alignment: center; color: Tokens.secondary; font-size: Tokens.small; }
+        if root.sender != "": RowText { text: root.sender; color: root.name-tint; font-size: Tokens.small; font-weight: 600; }
+        RowText { text: root.preview; vertical-alignment: center; color: Tokens.secondary; font-size: Tokens.small; }
     }
     if root.has-picture: Image { x: parent.width - (root.cancellable ? 78px : 38px); y: (parent.height - 32px) / 2; width: 32px; height: 32px; source: root.picture; image-fit: contain; }
 }

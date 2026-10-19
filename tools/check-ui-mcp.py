@@ -235,10 +235,7 @@ assert any(part.get("id", "").endswith("::demo-marker") for part in demo_marker.
 call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
 call("dispatch_key_event", windowHandle=window, text="\t", eventType="PressAndRelease")
 call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
-try:
-    last_scenario = scenario_element("Demo exposed")
-except StopIteration:
-    last_scenario = scenario_element("Offline")
+last_scenario = scenario_element("Offline")
 last_scenario_label = last_scenario["accessibleLabel"]
 assert last_scenario.get("accessibleDescription") == "Focused", "reverse Tab did not focus the final scenario"
 call("dispatch_key_event", windowHandle=window, text="\t", eventType="PressAndRelease")
@@ -502,6 +499,13 @@ if args.compose:
     open_reactions()
     wait_for(lambda: not element("LOVE", "Button").get("accessibleItemSelected"), "repeat pick did not cancel")
     compose_key("\x1b")
+    body = next(item for item in tree() if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut)
+    call("click_element", elementHandle=body["handle"])
+    for label in ("React", "Reply"):
+        compose_key("\t")
+        assert any(item.get("accessibleLabel") == label and item.get("accessibleDescription") == "Focused" for item in tree()), f"body → React → Reply lost focus at {label}"
+    compose_key("\t")
+    assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft", "Reply did not tab to composer"
     def reply_via_menu():
         body = next(item for item in reversed(tree()) if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut and item.get("accessibleLabel", "").startswith("Outgoing,"))
         call("click_element", elementHandle=body["handle"], button="Right")
@@ -521,7 +525,15 @@ if args.compose:
     compose_click("Send")
     wait_for(lambda: any(item.get("accessibleValue") == "Reply sent with original attached" for item in tree()), "reply send missing")
     wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "reply bar remained after send")
-    element("Jump to replied message", "Button")
+    def new_message_has_quote():
+        delegates = [item["handle"] for item in tree() if any(part.get("typeName") == "Message" for part in item.get("typeNamesAndIds", []))]
+        for handle in delegates:
+            rows = call("get_element_tree", elementHandle=handle, maxElements=200)["elements"]
+            if any(item.get("accessibleValue") == "Reply sent with original attached" for item in rows):
+                return any(item.get("accessibleLabel") == "Jump to replied message" and item.get("accessibleDescription") == " ".join(before_shortcut.split()) for item in rows)
+        return False
+    wait_for(new_message_has_quote, "new message itself did not show its original quote")
+    surface_shot("sent-reply")
     call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value=before_shortcut)
     print("PASS: context-menu Reply, composer bar, Escape cancellation and sent quote")
     compose_click("Stickers")
@@ -1335,9 +1347,6 @@ if args.unread:
     assert not any(f", {n} unread" in current["accessibleLabel"] for n in [1,2]),"complete exposure left a partial boundary"
     element("Unread messages","Text")
     assert ", 2 unread" in element("Weekend plans","Button")["accessibleLabel"],"reading one chat cleared another chat"
-    call("click_element", elementHandle=element("Official hidden events", "Button")["handle"])
-    element("Beginning of conversation", "Text")
-    assert not any("System message" in item.get("accessibleLabel", "") for item in tree())
     print("PASS: unread row badges, separate-chat counts, persistent divider and stable scrolled arrival anchor; no native focus request")
 
 

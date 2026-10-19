@@ -361,7 +361,7 @@ impl Store {
                 PageKind::Older { before } | PageKind::Newer { after: before } => {
                     cursors.push(before.clone())
                 }
-                PageKind::Recent => {}
+                PageKind::Recent | PageKind::Around { .. } => {}
             }
             if cursors.is_empty() && reaches_start {
                 if let Some(s) = segments(tx, chat)?.last() {

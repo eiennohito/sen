@@ -77,6 +77,7 @@ fn m13_send_switch_return_with_stale_page() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "durable send".into(),
+        reply: None,
     });
     let key = app.body_key("durable send");
     app.until(|s| {
@@ -144,6 +145,7 @@ fn echo_and_send_result_keep_one_identity_in_both_orders() {
         app.send(Intent::Send {
             chat: ChatId("alice".into()),
             text: "echo".into(),
+            reply: None,
         });
         let key = app.body_key("echo");
         app.until(|s| s.messages[&key].delivery == Delivery::Sent);
@@ -219,6 +221,7 @@ fn failed_send_retry_discard_and_copy() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "retry text".into(),
+        reply: None,
     });
     let key = app.body_key("retry text");
     app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
@@ -230,6 +233,7 @@ fn failed_send_retry_discard_and_copy() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "discard text".into(),
+        reply: None,
     });
     let key = app.body_key("discard text");
     app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
@@ -340,7 +344,10 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
     });
     let failures = [
         (FakeRpc::Chats, Error::Server(500)),
-        (FakeRpc::Messages(chat.clone()), Error::Decode),
+        (
+            FakeRpc::Messages(chat.clone()),
+            Error::Decode("synthetic decode failure".into()),
+        ),
         (FakeRpc::Details(chat.clone()), Error::Crypto),
         (FakeRpc::Receipts(chat.clone()), Error::Server(503)),
         (
@@ -466,6 +473,7 @@ fn first_identity_keeps_local_work_and_sends_pending() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "before identity".into(),
+        reply: None,
     });
     let key = app.body_key("before identity");
     assert_eq!(app.state.messages[&key].delivery, Delivery::Pending);
@@ -1116,6 +1124,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "one retry".into(),
+        reply: None,
     });
     let key = app.body_key("one retry");
     app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
@@ -1164,7 +1173,10 @@ fn rename_contact_failure_then_success_updates_the_store_page() {
         mid: "alice".into(),
         name: "Aoi 🌿".into(),
     };
-    fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
+    fake.fail_rpc(
+        FakeRpc::Action(action.clone()),
+        Error::Decode("synthetic decode failure".into()),
+    );
     profile_action(&mut app, action.clone());
     assert_eq!(app.state.contacts["alice"].name, "葵");
     assert_eq!(
@@ -1211,7 +1223,10 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
         mid: mid.clone(),
         chat: "weekend".into(),
     };
-    fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
+    fake.fail_rpc(
+        FakeRpc::Action(action.clone()),
+        Error::Decode("synthetic decode failure".into()),
+    );
     profile_action(&mut app, action.clone());
     assert_eq!(app.state.contacts[&mid].profile.relation, Some(2));
     assert_eq!(
@@ -1239,7 +1254,10 @@ fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
         chat: chat.clone(),
         disabled: true,
     };
-    fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
+    fake.fail_rpc(
+        FakeRpc::Action(action.clone()),
+        Error::Decode("synthetic decode failure".into()),
+    );
     profile_action(&mut app, action.clone());
     assert!(!app.state.chats[&chat].chat.muted);
     assert_eq!(
@@ -1262,7 +1280,10 @@ fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
     app.until(|s| !s.window_loading);
     let chat = ChatId("weekend".into());
     let action = ProfileAction::Leave { chat: chat.clone() };
-    fake.fail_rpc(FakeRpc::Action(action.clone()), Error::Decode);
+    fake.fail_rpc(
+        FakeRpc::Action(action.clone()),
+        Error::Decode("synthetic decode failure".into()),
+    );
     profile_action(&mut app, action.clone());
     assert!(!app.state.chats[&chat].chat.left);
     assert_eq!(
@@ -1371,6 +1392,7 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
     app.send(Intent::SendSticker {
         chat: ChatId("alice".into()),
         sticker: Box::new(sticker.clone()),
+        reply: None,
     });
     app.until(|s| {
         s.messages
@@ -1390,6 +1412,7 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
     app.send(Intent::SendSticker {
         chat: ChatId("alice".into()),
         sticker: Box::new(other.clone()),
+        reply: None,
     });
     app.until(|s| {
         s.messages
@@ -1447,6 +1470,7 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
     app.send(Intent::Send {
         chat: ChatId("new-friend".into()),
         text: "First hello".into(),
+        reply: None,
     });
     let key = app.body_key("First hello");
     app.until(|s| {
@@ -1491,6 +1515,7 @@ fn signed_out_account_intents_never_reach_the_backend() {
         Intent::Send {
             chat: ChatId("unknown-chat-id".into()),
             text: "private text".into(),
+            reply: None,
         },
         Intent::SendAttachments {
             chat: ChatId("unknown-chat-id".into()),
@@ -1922,6 +1947,7 @@ fn text_send_completes_while_upload_is_blocked() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "text during upload".into(),
+        reply: None,
     });
     app.until(|s| {
         s.messages
@@ -2110,6 +2136,7 @@ fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
     app.send(Intent::SendSticker {
         chat: ChatId("alice".into()),
         sticker: Box::new(sticker),
+        reply: Some(target.clone()),
     });
     app.until(|s| {
         s.messages.values().any(|m| {
@@ -2131,5 +2158,43 @@ fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
             .reply
             .as_deref(),
         Some(&target)
+    );
+}
+
+#[test]
+fn missing_reply_original_loads_from_the_server_and_opens_in_history() {
+    use line::store::{Anchor, PageKind, ReplyReference, ServerId};
+    let fake = FakeBackend::canned();
+    let original = FakeBackend::message("alice", 91001, "Original outside local history", false);
+    let mut reply = FakeBackend::message("alice", 91002, "Reply to an older message", false);
+    reply.reply = Some(Box::new(ReplyReference {
+        message_id: "91001".into(),
+        service_code: Some(1),
+    }));
+    fake.set_page(ChatId("alice".into()), vec![reply.clone()]);
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Reply to an older message");
+    assert!(
+        !app.state
+            .reply_targets
+            .contains_key(&ServerId("91001".into()))
+    );
+    fake.set_page(ChatId("alice".into()), vec![original, reply]);
+    app.send(Intent::Page {
+        chat: ChatId("alice".into()),
+        kind: PageKind::Around {
+            id: ServerId("91001".into()),
+        },
+    });
+    app.until(|s| s.reply_targets.contains_key(&ServerId("91001".into())));
+    let key = app.state.reply_targets[&ServerId("91001".into())].key;
+    let intent = app.state.subscribe_window(Anchor::Key(key), 80, 80);
+    app.send(intent);
+    app.until(|s| !s.window_loading && s.messages.contains_key(&key));
+    assert_eq!(
+        app.state.messages[&key].body.as_text(),
+        "Original outside local history"
     );
 }

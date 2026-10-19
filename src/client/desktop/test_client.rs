@@ -30,11 +30,7 @@ pub(super) fn server_responses(
             let mut body = vec![0; length];
             socket.read_exact(&mut body).unwrap();
             let (status, data) = reply(serde_json::from_slice(&body).unwrap());
-            let response = if data.is_null() {
-                String::new()
-            } else {
-                data.to_string()
-            };
+            let response = data.to_string();
             write!(socket.get_mut(), "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{response}", response.len()).unwrap();
         }
     })

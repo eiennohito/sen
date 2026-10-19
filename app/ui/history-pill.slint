@@ -7,6 +7,6 @@ export component DatePill inherits Rectangle {
     height: label.preferred-height + 8px; border-radius: self.height / 2; background: Tokens.surface-2;
     HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
         if root.icon.width > 0: Image { width: 14px; height: 14px; source: root.icon; colorize: Tokens.secondary; }
-        label := RowText { value: root.text; font-size: Tokens.small; color: Tokens.secondary; vertical-alignment: center; }
+        label := RowText { text: root.text; font-size: Tokens.small; color: Tokens.secondary; vertical-alignment: center; }
     }
 }

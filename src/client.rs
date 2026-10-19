@@ -282,51 +282,24 @@ impl Api {
                 30
             }),
         )?;
-        if (500..600).contains(&http) {
-            return Err(Error::Server(i64::from(http)).into());
-        }
-        if (400..500).contains(&http) {
-            return Err(RpcError {
-                method: path.rsplit('/').next().unwrap_or("RPC").into(),
-                http,
-                code: 0,
-                status: 0,
-            }
-            .into());
-        }
         let method = path.rsplit('/').next().unwrap_or("RPC");
-        let decode = || Error::ResponseDecode {
-            method: method.into(),
-            status: http,
-            content_type: content_type.clone(),
-            body_len: bytes.len(),
-        };
-        let void = matches!(
-            method,
-            "sendChatChecked" | "react" | "cancelReaction" | "unsendMessage"
-        );
-        if void && (200..300).contains(&http) && bytes.is_empty() {
-            return Ok(Value::Null);
-        }
-        let response: Value = serde_json::from_slice(&bytes).map_err(|_| decode())?;
-        let code = response["code"]
-            .as_i64()
-            .or_else(|| (response["message"] == "OK").then_some(0))
-            .ok_or_else(decode)?;
-        if http != 200 || code != 0 {
-            return Err(RpcError {
-                method: path.rsplit('/').next().unwrap_or("RPC").into(),
+        let response: Value = serde_json::from_slice(&bytes).map_err(|_| {
+            Error::Decode(format!(
+                "method={method} status={http} content-type={content_type} body-length={}",
+                bytes.len()
+            ))
+        })?;
+        if http == 200 && response["message"] == "OK" {
+            Ok(response.get("data").cloned().unwrap_or(Value::Null))
+        } else {
+            Err(RpcError {
+                method: method.into(),
                 http,
-                code,
+                code: response["code"].as_i64().unwrap_or(0),
                 status: response["data"]["statusCode"].as_i64().unwrap_or(0),
             }
-            .into());
+            .into())
         }
-        response
-            .get("data")
-            .cloned()
-            .or_else(|| void.then_some(Value::Null))
-            .ok_or_else(|| decode().into())
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {
         let service = if poll_seconds > 0 {
@@ -364,13 +337,16 @@ fn decode(value: &str) -> Result<Vec<u8>> {
             return Ok(b);
         }
     }
-    Err(anyhow::Error::new(Error::Decode).context("invalid base64 key material"))
+    Err(
+        anyhow::Error::new(Error::Decode("invalid key material".into()))
+            .context("invalid base64 key material"),
+    )
 }
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
         .as_str()
         .filter(|s| !s.is_empty())
-        .ok_or(Error::Decode)
+        .ok_or(Error::Decode("invalid key material".into()))
         .with_context(|| format!("missing {field}"))
 }
 fn percent_encode(value: &str) -> String {
