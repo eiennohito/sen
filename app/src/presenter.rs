@@ -158,7 +158,8 @@ impl Presenter {
                     .map(|m| &m.contact)
             })
             .cloned();
-        if let Some((stored, identity, row)) = self.rendered.get(&m.key)
+        if !matches!(m.body, Content::System { .. })
+            && let Some((stored, identity, row)) = self.rendered.get(&m.key)
             && stored == m
             && identity == &sender
             && (m.delivery != Delivery::Pending
@@ -167,6 +168,9 @@ impl Presenter {
             return row.clone();
         }
         let mut view = content_view(&m.body);
+        if matches!(m.body, Content::System { .. }) {
+            view.rich.system_text = crate::system_events::text(&m.body, state, &m.sender_id);
+        }
         view.rich.reply = m.reply.as_deref().cloned();
         view.id = m.key.0.to_string();
         view.sender_id = m.sender_id.clone();
@@ -229,7 +233,9 @@ impl Presenter {
                 }
             );
         }
-        row.can_react = m.server_id.is_some() && !m.body.is_withdrawn();
+        row.can_react = m.server_id.is_some()
+            && matches!(m.delivery, Delivery::Sent | Delivery::Read)
+            && !matches!(m.body, Content::System { .. } | Content::Withdrawn);
         row.reaction_count = m.reactions.len() as i32;
         row.own_reaction = m
             .reactions
@@ -243,7 +249,10 @@ impl Presenter {
                 }
             })
             .unwrap_or(0);
-        row.can_unsend = m.outgoing && m.server_id.is_some() && !m.body.is_withdrawn();
+        row.can_unsend = m.outgoing
+            && m.server_id.is_some()
+            && matches!(m.delivery, Delivery::Sent | Delivery::Read)
+            && !matches!(m.body, Content::System { .. } | Content::Withdrawn);
         row.recoverable = matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain);
         row.delivery_detail = match &m.delivery {
             Delivery::Rejected { reason } => text::rejection(reason).into(),
@@ -596,7 +605,10 @@ impl Presenter {
                 index,
                 text_size: ui.get_text_size(),
             };
-            if let Some((old, row)) = self.rendered_chats.get(id)
+            if !matches!(
+                item.preview.as_ref().map(|m| &m.body),
+                Some(Content::System { .. })
+            ) && let Some((old, row)) = self.rendered_chats.get(id)
                 && *old == inputs
             {
                 chats.push((id.clone(), row.clone()));
@@ -643,7 +655,20 @@ impl Presenter {
         patch(&self.chats, &mut self.chat_keys, chats);
         self.rendered_chats
             .retain(|id, _| state.chats.contains_key(id));
-        let rows = state.rows();
+        let rows = state
+            .rows()
+            .into_iter()
+            .filter(|m| {
+                if matches!(m.body, Content::System { .. })
+                    && crate::system_events::text(&m.body, state, &m.sender_id).is_none()
+                {
+                    #[cfg(debug_assertions)]
+                    eprintln!("Unknown chat event: {:?}", m.body);
+                    return false;
+                }
+                true
+            })
+            .collect::<Vec<_>>();
         // Choose on first population, then retain the mode for this conversation.
         // Switching delegate types during a live arrival would lose selection
         // and the current reading anchor at the size boundary.
@@ -1195,9 +1220,7 @@ pub(crate) fn content_view(content: &Content) -> account::MessageView {
             rich.system_key = kind.clone();
             rich.system_args = params.clone();
             rich.system_text = text.clone();
-            text.clone().unwrap_or_else(|| {
-                "Unsupported message · this content cannot be displayed yet".into()
-            })
+            text.clone().unwrap_or_default()
         }
         Content::Withdrawn => {
             rich.withdrawn = true;
@@ -1209,7 +1232,7 @@ pub(crate) fn content_view(content: &Content) -> account::MessageView {
         }
         Content::Unknown { content_type } => {
             rich.content_type = i64::from(*content_type);
-            "Unsupported message · this content cannot be displayed yet".into()
+            "This message type isn't supported yet".into()
         }
     };
     view.image_key = content.image().map(|a| a.key()).unwrap_or_default();

@@ -25,6 +25,7 @@ pub(crate) struct Reading {
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Geometry {
     pub y: f32,
+    pub at_bottom: bool,
     pub visible_top: f32,
     pub height: f32,
     pub pill_height: f32,
@@ -73,7 +74,7 @@ pub(crate) fn observe(reading: &mut Reading, state: &AppState, view: Geometry) -
     {
         effects.show = Some((-top + view.visible_top, false));
         reading.opening_history = false;
-    } else if reading.opening_history && state.reaches_end && !state.messages.is_empty() {
+    } else if reading.opening_history && state.reaches_end {
         effects.show = Some((0., true));
         reading.opening_history = false;
     }
@@ -92,7 +93,7 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
     {
         let top = -view.y + view.visible_top;
         let bottom = -view.y + view.height - view.pill_height;
-        let marker = state
+        let exposed = state
             .rows()
             .iter()
             .filter(|m| {
@@ -103,6 +104,41 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
             })
             .filter_map(|m| m.server_id.clone())
             .max_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)));
+        let tail_visible = state
+            .rows()
+            .into_iter()
+            .rev()
+            .find(|m| {
+                !matches!(m.body, Content::System { .. })
+                    || crate::system_events::text(&m.body, state, &m.sender_id).is_some()
+            })
+            .is_none_or(|m| {
+                reading
+                    .geometry
+                    .get(&m.key)
+                    .is_some_and(|(y, h)| y + h > top && y + h <= bottom)
+            });
+        let marker = if view.at_bottom
+            && tail_visible
+            && view.height > 0.
+            && state.reaches_end
+            && !state.window_loading
+            && !reading.opening_history
+        {
+            state
+                .messages
+                .values()
+                .filter_map(|m| m.server_id.clone())
+                .chain(
+                    state
+                        .chats
+                        .get(&chat)
+                        .and_then(|c| c.chat.last_message_id.clone()),
+                )
+                .max_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)))
+        } else {
+            exposed
+        };
         if let Some(id) = marker
             && state
                 .chats
@@ -189,6 +225,47 @@ pub(crate) fn return_anchor(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reading_an_empty_server_tail_clears_hidden_unread_events() {
+        let chat = ChatId("official-hidden".into());
+        let mut state = AppState {
+            connection: Connection::Online,
+            selected: Some(chat.clone()),
+            reaches_end: true,
+            ..Default::default()
+        };
+        state.chats.insert(
+            chat.clone(),
+            ChatListItem {
+                chat: ChatRecord {
+                    id: chat.clone(),
+                    unread_count: 2,
+                    last_message_id: Some(ServerId("951".into())),
+                    ..Default::default()
+                },
+                preview: None,
+                activity_ms: 0,
+                failed_count: 0,
+                draft: None,
+            },
+        );
+        let mut reading = Reading::default();
+        let mut view = Geometry {
+            active: true,
+            height: 400.,
+            ..Default::default()
+        };
+        assert!(exposure(&mut reading, &state, view).is_empty());
+        view.at_bottom = true;
+        view.modal = true;
+        assert!(exposure(&mut reading, &state, view).is_empty());
+        view.modal = false;
+        assert!(
+            matches!(exposure(&mut reading, &state, view).as_slice(), [Intent::MarkRead { id, .. }] if id.0 == "951")
+        );
+        assert!(exposure(&mut reading, &state, view).is_empty());
+    }
 
     #[test]
     fn exposure_requires_active_unobscured_rows_and_advances_numeric_ids_once() {

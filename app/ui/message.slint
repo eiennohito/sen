@@ -30,12 +30,13 @@ component TextAction inherits Rectangle {
     public function focus-action() { action-focus.focus(); }
 }
 
-export component Message inherits VerticalLayout {
+export component Message inherits TouchArea {
     in property <MessageRow> message;
     in property <length> origin-y;
-    property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.unknown || root.message.kind == MessageKind.undecryptable;
+    property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.undecryptable;
     property <bool> selecting-rich: false;
     property <bool> rich-focused: false;
+    property <bool> card-focused: false;
     property <bool> rich-fallback: false;
     property <float> rich-width;
     property <bool> copying-rich;
@@ -56,11 +57,12 @@ export component Message inherits VerticalLayout {
     changed anchor-top => { root.report-geometry(); }
     changed anchor-height => { root.report-geometry(); }
     init => { root.report-geometry(); }
+    VerticalLayout {
                         vertical-stretch: 0; spacing: 2px;
                         padding-top: root.message.group-start ? 12px : 0px;
                         if root.message.id == State.unread-divider: Text { text: "Unread messages"; color: Tokens.accent-strong; font-size: Tokens.small; horizontal-alignment: center; height: 28px; }
                         if root.message.day-label != "": HorizontalLayout { alignment: center; DatePill { text: root.message.day-label; } }
-                        if root.system-item: HorizontalLayout { alignment: center; DatePill { text: root.message.body; accessible-role: text; accessible-label: root.message.accessible-label; icon: root.message.kind == MessageKind.withdrawn ? @image-url("../assets/icons/withdrawn.svg") : @image-url("../assets/icons/info.svg"); } }
+                        if root.system-item: Text { text: root.message.body; accessible-role: text; accessible-label: root.message.accessible-label; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; overflow: elide; }
                         message-content := HorizontalLayout {
                         visible: !root.system-item;
                         height: root.system-item ? 0px : self.preferred-height;
@@ -112,14 +114,13 @@ export component Message inherits VerticalLayout {
                                     if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
                                     if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
                                 }
-                                property <bool> selected: body.has-focus || root.rich-focused || State.highlight-message == root.message.id;
+                                property <bool> selected: body.has-focus || root.card-focused || root.rich-focused || State.highlight-message == root.message.id;
                                 Rectangle { width: 100%; height: 100%;
                                 background: parent.selected ? Tokens.bubble-selection : root.message.sticker || root.message.photo ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface-2;
                                 border-width: parent.selected ? 2px : 0px;
                                 border-color: parent.selected ? Tokens.bubble-selection-border : Tokens.border;
                                 border-radius: 16px;
                                 }
-                                bubble-hover := TouchArea { }
                                 height: bubble-content.preferred-height;
                                 body-measure := Text { visible: false; text: root.showing-rich ? "" : root.message.body; font-size: Tokens.base; wrap: word-wrap; }
                                 bubble-content := VerticalLayout {
@@ -156,7 +157,7 @@ export component Message inherits VerticalLayout {
                                             accessible-action-default => { self.focus(); }
                                             key-pressed(event) => {
                                                 if State.ime-active { return reject; }
-                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else { State.focus-composer(); } return accept; }
+                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else { State.focus-composer(); } return accept; }
                                                 return State.reading-key(event);
                                             }
                                         }
@@ -195,7 +196,7 @@ export component Message inherits VerticalLayout {
                                             // Explicit surface traversal is the click-only equivalent on Slint 1.18.
                                             key-pressed(event) => {
                                                 if State.ime-active { return reject; }
-                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if !State.following && State.has-chat { State.focus-reading-before-editor(); } else { State.focus-composer(); } return accept; }
+                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else if !State.following && State.has-chat { State.focus-reading-before-editor(); } else { State.focus-composer(); } return accept; }
                                                 if State.reading-key(event) == accept { return accept; }
                                                 reject
                                             }
@@ -212,7 +213,7 @@ export component Message inherits VerticalLayout {
                                             }
                                         }
                                         VerticalLayout { spacing: 4px; alignment: center;
-                                            card-title := TextInput { read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else { State.focus-composer(); } return accept; } State.reading-key(event) } }
+                                            card-title := TextInput { changed has-focus => { root.card-focused = self.has-focus; } read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else { State.focus-composer(); } return accept; } State.reading-key(event) } }
                                             card-meta := Text { text: root.message.detail; color: Tokens.secondary; font-size: Tokens.small; }
                                         }
                                         if root.message.kind == MessageKind.file && (root.message.delivery == "Sent" || root.message.delivery == "Read") && (!root.message.file-failed || root.message.file-retryable): IconButton { label: root.message.file-failed ? "Retry file" : "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !State.file-saving && !root.message.local-media; activated => { State.save-file(root.message.id); } }
@@ -302,15 +303,20 @@ export component Message inherits VerticalLayout {
                                 }
                             }
                         }
+                        Rectangle {
+                            width: 28px; horizontal-stretch: 0;
+                            react-button := IconButton {
+                                y: max(0px, message-column.y + message-bubble.y + message-bubble.height - 28px);
+                                width: 28px; height: 28px; border-radius: 14px;
+                                label: "React"; icon: @image-url("../assets/icons/react.svg");
+                                visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus);
+                                activated => { reactions.show(); }
+                                key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { if root.card { State.focus-history(); } else { body.focus(); } } else { State.focus-composer(); } return accept; } reject }
+                            }
+                        }
                         // Time appears once per sender/time group, beside the
                         // bubble. Status has a fixed slot and never adds a row.
                         Rectangle {
-                            if root.message.can-react: IconButton {
-                                y: max(0px, message-column.y + message-bubble.y + message-bubble.height - 48px); width: 28px; height: 28px; border-radius: 14px;
-                                label: "React"; icon: @image-url("../assets/icons/react.svg");
-                                opacity: bubble-hover.has-hover || message-bubble.selected || self.has-focus ? 1 : 0;
-                                activated => { reactions.show(); }
-                            }
                             width: root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8;
                             HorizontalLayout {
                                 y: max(0px, message-column.y + message-bubble.y + message-bubble.height - self.height);
@@ -329,4 +335,4 @@ export component Message inherits VerticalLayout {
                         }
                     
 }
-
+}

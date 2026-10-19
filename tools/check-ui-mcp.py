@@ -483,7 +483,14 @@ if args.compose:
 
     # Select the just-sent message; its reaction target is visible at the tail.
     def open_reactions():
-        reaction = next(item for item in reversed(tree()) if item.get("accessibleLabel") == "React" and item.get("accessibleRole") == "Button")
+        body = next(item for item in reversed(tree()) if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut and item.get("accessibleLabel", "").startswith("Outgoing,"))
+        call("hover_element", elementHandle=body["handle"])
+        reaction = min((item for item in tree() if item.get("accessibleLabel") == "React" and item.get("accessibleRole") == "Button"), key=lambda item: abs(item["absolutePosition"]["y"] - body["absolutePosition"]["y"]))
+        position = reaction["absolutePosition"]
+        call("move_pointer", windowHandle=window, position={"x": position["x"] - 2, "y": position["y"] + reaction["size"]["height"] / 2})
+        assert any(item.get("accessibleLabel") == "React" for item in tree()), "React disappeared in the gap"
+        call("hover_element", elementHandle=reaction["handle"])
+        assert any(item.get("accessibleLabel") == "React" for item in tree()), "React disappeared over its button"
         call("click_element", elementHandle=reaction["handle"])
     open_reactions()
     element("LOVE", "Button")
@@ -1030,7 +1037,7 @@ if args.reading:
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=-1800, deltaX=0)
     labels.extend(item.get("accessibleLabel", "") for item in tree())
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=1800, deltaX=0)
-    for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "System message", "Message unsent", "Couldn't decrypt this message", "Unsupported message"):
+    for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "joined the group", "Message unsent", "Couldn't decrypt this message", "This message type isn't supported yet"):
         assert any(expected in label for label in labels), f"missing placeholder: {expected}"
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     first_y = first["absolutePosition"]["y"]
@@ -1101,7 +1108,7 @@ if args.reading:
     element("Latest", "Button")
     reading_key("\uf72d")  # PageDown
     reading_key("\uf72b")  # End
-    last = next(item for item in reading_bodies() if "Unsupported message" in item.get("accessibleValue", ""))
+    last = next(item for item in reading_bodies() if "This message type isn't supported yet" in item.get("accessibleValue", ""))
     call("click_element", elementHandle=last["handle"])
     assert not any(item.get("accessibleLabel") == "Latest" and item.get("accessibleRole") == "Button" for item in tree()), "click focus disabled following"
     reading_key("\uf700")  # Up from a click-focused body scrolls on the first press.
@@ -1306,6 +1313,9 @@ if args.unread:
     assert not any(f", {n} unread" in current["accessibleLabel"] for n in [1,2]),"complete exposure left a partial boundary"
     element("Unread messages","Text")
     assert ", 2 unread" in element("Weekend plans","Button")["accessibleLabel"],"reading one chat cleared another chat"
+    call("click_element", elementHandle=element("Official hidden events", "Button")["handle"])
+    element("Beginning of conversation", "Text")
+    assert not any("System message" in item.get("accessibleLabel", "") for item in tree())
     print("PASS: unread row badges, separate-chat counts, persistent divider and stable scrolled arrival anchor; no native focus request")
 
 

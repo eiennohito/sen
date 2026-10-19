@@ -145,12 +145,12 @@ fn calendar_pair(
 
 pub(crate) fn message_text(m: &account::MessageView) -> String {
     let kind = crate::links::kind(m.rich.content_type, m.rich.withdrawn, m.decryption_failed);
+    if kind == MessageKind::System {
+        return m.rich.system_text.clone().unwrap_or_default();
+    }
     let mut body = crate::links::placeholder(kind)
         .map(|label| {
-            if kind == MessageKind::System {
-                m.rich.system_text.clone().unwrap_or_else(|| label.into())
-            } else if matches!(kind, MessageKind::File | MessageKind::Contact) && !m.body.is_empty()
-            {
+            if matches!(kind, MessageKind::File | MessageKind::Contact) && !m.body.is_empty() {
                 if kind == MessageKind::File {
                     m.rich.file_name.clone().unwrap_or_else(|| m.body.clone())
                 } else {

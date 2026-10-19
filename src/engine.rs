@@ -2211,6 +2211,20 @@ impl Engine {
             .map(|c| c.id)
             .collect::<BTreeSet<_>>();
         for row in rows {
+            if let Content::System {
+                params: Some(params),
+                ..
+            } = &row.body
+            {
+                for mid in params
+                    .split(['\u{1e}', '\u{1f}'])
+                    .filter(|mid| mid.starts_with('u') && (mid.len() == 33 || mid.len() == 44))
+                {
+                    if !known.contains(mid) {
+                        self.inbox.refresh(Refresh::Contact(mid.into()));
+                    }
+                }
+            }
             if !row.outgoing && !row.sender_id.is_empty() && !known.contains(&row.sender_id) {
                 self.inbox.refresh(Refresh::Contact(row.sender_id.clone()));
             }

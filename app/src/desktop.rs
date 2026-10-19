@@ -20,6 +20,9 @@ impl Desktop {
         let global = ui.global::<State>();
         reading::Geometry {
             y: ui.get_history_y(),
+            at_bottom: global.get_following()
+                && global.get_history_extent() + ui.get_history_y()
+                    <= global.get_text_size() as f32,
             visible_top: global.get_history_visible_top(),
             height: global.get_history_viewport_height(),
             pill_height: global.get_history_pill_height(),

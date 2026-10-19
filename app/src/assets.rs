@@ -47,7 +47,7 @@ pub(crate) fn circular_avatar(pixels: &Pixels) -> Pixels {
         };
     };
     let edge = image.width().min(image.height());
-    let square = image::imageops::crop_imm(
+    let mut square = image::imageops::crop_imm(
         &image,
         (image.width() - edge) / 2,
         (image.height() - edge) / 2,
@@ -55,10 +55,23 @@ pub(crate) fn circular_avatar(pixels: &Pixels) -> Pixels {
         edge,
     )
     .to_image();
+    for pixel in square.pixels_mut() {
+        let alpha = u16::from(pixel.0[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = (u16::from(*channel) * alpha / 255) as u8;
+        }
+    }
     let mut image = image::imageops::resize(&square, 64, 64, image::imageops::FilterType::Triangle);
     for (x, y, pixel) in image.enumerate_pixels_mut() {
         let distance = ((x as f32 + 0.5 - 32.).powi(2) + (y as f32 + 0.5 - 32.).powi(2)).sqrt();
-        pixel.0[3] = (pixel.0[3] as f32 * (32. - distance).clamp(0., 1.)) as u8;
+        let alpha = u16::from(pixel.0[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = (u16::from(*channel) * 255)
+                .checked_div(alpha)
+                .unwrap_or(0)
+                .min(255) as u8;
+        }
+        pixel.0[3] = (alpha as f32 * (32.5 - distance).clamp(0., 1.)).round() as u8;
     }
     Pixels {
         width: 64,
@@ -153,7 +166,6 @@ impl Assets {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Moved from the library with the presentation operation.
     #[test]
     fn avatar_is_a_centered_circle() {
         let source = Pixels {

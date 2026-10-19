@@ -225,7 +225,7 @@ pub(super) fn rich(row: &mut MessageInput, rich: RichContent) {
     };
 }
 pub fn group(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
-    [
+    let mut rows: Vec<_> = [
         ("Morning!", "2026/10/17 09:18", "aoi", "葵", false),
         ("Shall we walk?", "2026/10/17 09:19", "aoi", "葵", false),
         ("Yes!", "2026/10/17 09:20", "ren", "蓮", false),
@@ -259,7 +259,31 @@ pub fn group(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
         }
         row
     })
-    .collect()
+    .collect();
+    for (i, (kind, params)) in [
+        ("C_PN", "aoi\u{1e}Weekend plans"),
+        ("C_MJ", "ren"),
+        ("C_PI", "aoi"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut row = message(
+            fake,
+            chat,
+            base + 7 + i as i64,
+            "",
+            "2026/10/18 09:19",
+            false,
+        );
+        row.body = Content::System {
+            kind: Some(kind.into()),
+            params: Some(params.into()),
+            text: None,
+        };
+        rows.push(row);
+    }
+    rows
 }
 pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
     let target = message(
@@ -342,7 +366,8 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
                     _ => None,
                 },
                 contact_name: (content_type == 13).then(|| "葵".into()),
-                system_text: (content_type == 18).then(|| body.into()),
+                system_key: (content_type == 18).then(|| "C_MJ".into()),
+                system_args: (content_type == 18).then(|| "alice".into()),
                 withdrawn: content_type == 1000,
                 ..Default::default()
             },
@@ -457,6 +482,33 @@ pub fn seed(fake: &FakeBackend) {
             })
             .collect(),
     );
+    let hidden = (0..2)
+        .map(|i| {
+            let mut row = message(
+                fake,
+                "official-hidden",
+                950 + i,
+                "",
+                "2026/10/18 09:20",
+                false,
+            );
+            row.body = Content::System {
+                kind: Some("OA_UNKNOWN".into()),
+                params: None,
+                text: None,
+            };
+            row
+        })
+        .collect::<Vec<_>>();
+    chats.push(ChatInput {
+        id: ChatId("official-hidden".into()),
+        title: "Official hidden events".into(),
+        unread_count: 2,
+        last_message_id: hidden.last().map(|m| m.server_id.clone()),
+        last_message_ms: hidden.last().map(|m| m.created_ms),
+        ..Default::default()
+    });
+    fake.set_page(ChatId("official-hidden".into()), hidden);
     fake.set_chats(chats);
     for (chat, _, rows) in pages {
         fake.set_page(ChatId(chat.into()), rows);
@@ -484,6 +536,8 @@ pub fn reading(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
                 &mut row,
                 RichContent {
                     content_type,
+                    system_key: (i == 8).then(|| "C_MJ".into()),
+                    system_args: (i == 8).then(|| "alice".into()),
                     withdrawn: i == 9,
                     ..Default::default()
                 },
@@ -660,6 +714,33 @@ pub fn previews(fake: &FakeBackend) {
         });
         pages.push((ChatId(chat), vec![row]));
     }
+    let hidden = (0..2)
+        .map(|i| {
+            let mut row = message(
+                fake,
+                "official-hidden",
+                950 + i,
+                "",
+                "2026/10/18 09:20",
+                false,
+            );
+            row.body = Content::System {
+                kind: Some("OA_UNKNOWN".into()),
+                params: None,
+                text: None,
+            };
+            row
+        })
+        .collect::<Vec<_>>();
+    chats.push(ChatInput {
+        id: ChatId("official-hidden".into()),
+        title: "Official hidden events".into(),
+        unread_count: 2,
+        last_message_id: hidden.last().map(|m| m.server_id.clone()),
+        last_message_ms: hidden.last().map(|m| m.created_ms),
+        ..Default::default()
+    });
+    fake.set_page(ChatId("official-hidden".into()), hidden);
     fake.set_chats(chats);
     for (chat, rows) in pages {
         fake.set_page(chat, rows);

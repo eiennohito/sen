@@ -168,3 +168,45 @@ with pencil, member search, Invite friends, collapsible "Members N" with remove
 ×, "Members join automatically" setting), invite picker (Recent chats and
 Friends N with checkboxes, selection pane, Invite). Profiles open in LINE's
 separate popup window; the main window keeps the chat.
+
+## Chat events (extension source, 2026-10-19)
+
+`main.js` defines `CHATEVENT = 18`. `contentMetadata.LOC_KEY` selects
+an event; `LOC_ARGS` splits on record separator U+001E into argument groups,
+then on unit separator U+001F into values. These are **not JSON arrays**.
+The renderer resolves user IDs in the arguments through contacts, rather
+than treating `text` as the event description. Unknown/empty keys render
+nothing (the extension also blanks keys when removing an event).
+
+| LOC_KEY | Argument groups | Meaning |
+| --- | --- | --- |
+| C_PN | actor MID; new name | Group renamed |
+| C_PI | actor MID | Group photo changed |
+| C_MJ / A_MJ | member MID | Member joined |
+| C_ML / A_ML | member MID | Member left |
+| C_GI / C_MI / A_MC / A_MI | actor MID; invitee MIDs | Invited/added members |
+| C_MR / A_MR | actor MID; member MID | Member removed |
+| C_IC / A_IC | actor MID; invitee MID | Invitation canceled |
+| C_SP / C_SN | actor MID | Joining via link/QR allowed / disabled (as mapped by extension) |
+| C_BG | none | Chat upgraded to group |
+| pseudo_leave_chat | literal display name | Locally synthesized departure |
+| BB | old album name; new album name | Album renamed (actor is message.from) |
+| BD / BO | album name | Album deleted / photos removed (actor is message.from) |
+| C_OL | actor; invitee MIDs | Invitees at chat limit |
+
+English resources in the English JS locale chunk use
+`groupchat.systemmsg.changegroupname` (“%1 changed the group's name to
+\"%2\".”), `userjoin` (“%1 joined the group.”), `userleave`, `inviteuser`,
+`kickoutuser`, `cancelinvite`, and `changegroupphoto`. Auto-group variants
+also offer a group-name update link. The app uses concise single-line
+sentences. Synthetic example:
+`{"contentType":18,"contentMetadata":{"LOC_KEY":"C_PN","LOC_ARGS":"aoi\u001eWeekend plans"}}`.
+
+Unread count is message-box metadata, independent of history projection.
+Recent/older decoding retains unsupported types as `Content::Unknown`.
+Read exposure previously required a fully visible rendered row, so an empty
+or omitted tail had no marker target even with a server newest-ID hint.
+At the loaded history bottom the app now covers that hint; unknown event
+rows remain stored and unsupported content gets an explicit bubble.
+The offline “Official hidden events” chat reproduces two unread events
+with no visible message rows.
