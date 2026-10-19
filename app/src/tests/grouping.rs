@@ -10,7 +10,7 @@ fn grouping_uses_identity_time_and_delivery() {
         .unwrap()
         .timestamp_millis();
     let message = |id: u64, sender: &str, time| {
-        let mut m = super::message("group", "Hello");
+        let mut m = super::message("Hello");
         m.key = Key(id as i64);
         m.server_id = Some(ServerId::new(id.to_string()).unwrap());
         m.sort.sort_ts = time;

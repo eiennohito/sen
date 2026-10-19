@@ -2,7 +2,7 @@ use super::*;
 
 fn emoji_message() -> StoredMessage {
     let body = "日😀[笑]\n again [笑] end";
-    let mut m = message("preview-emoji", body);
+    let mut m = message(body);
     m.outgoing = true;
     let spans = body
         .match_indices("[笑]")
@@ -109,7 +109,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
         ) {
             continue;
         }
-        let mut m = message("media", "");
+        let mut m = message("");
         m.body = content;
         let asset = line::client::desktop::assets::Asset::avatar("/synthetic").unwrap();
         let media_key = asset.key();
@@ -149,7 +149,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
     }
 }
 
-fn label_cases() -> [(Content, &'static str, &'static str); 9] {
+pub(crate) fn label_cases() -> [(Content, &'static str, &'static str); 9] {
     [
         (
             Content::Photo {
@@ -179,7 +179,7 @@ fn label_cases() -> [(Content, &'static str, &'static str); 9] {
                 asset: None,
             },
             "File · notes.txt",
-            "File · notes.txt",
+            "notes.txt",
         ),
         (
             Content::Contact {
@@ -187,7 +187,7 @@ fn label_cases() -> [(Content, &'static str, &'static str); 9] {
                 name: Some("Alice".into()),
             },
             "Contact · Alice",
-            "Contact · Alice",
+            "Alice",
         ),
         (
             Content::Voice {
@@ -225,7 +225,7 @@ fn label_cases() -> [(Content, &'static str, &'static str); 9] {
 #[test]
 fn content_labels_agree_across_rows_previews_and_accessibility() {
     for (content, compact, full) in label_cases() {
-        let mut m = message("label", "");
+        let mut m = message("");
         m.body = content;
         let mut chat = ChatRow::default();
         preview::set(&mut chat, &m.body, m.outgoing, None, &HashMap::new(), 15);

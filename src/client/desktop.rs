@@ -32,7 +32,6 @@ use crate::store::{Content, Friend, Member, Reaction, ReactionKind};
 fn member_identity(id: &str, contact: &Value, my_mid: &str) -> Member {
     Member {
         is_self: id == my_mid,
-
         contact: Friend {
             profile: serde_json::from_value(contact.clone()).unwrap_or_default(),
             id: id.into(),

@@ -9,9 +9,15 @@ pub(crate) fn name(state: &AppState, mid: &str) -> String {
     if mid == state.profile.mid {
         return "You".into();
     }
-    crate::present::single_line(crate::text::member_name(
-        state.contact(mid).and_then(|f| f.name.as_deref()),
-    ))
+    let contact = state.contact(mid);
+    let name = if state.profile_friend(mid) {
+        contact
+            .map(crate::text::friend_name)
+            .unwrap_or("Unnamed friend")
+    } else {
+        crate::text::member_name(contact.and_then(|f| f.name.as_deref()))
+    };
+    crate::present::single_line(name)
 }
 
 fn event_text(event: &Event<'_>, sender: &str, name: impl Fn(&str) -> String) -> String {

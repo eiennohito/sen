@@ -775,13 +775,8 @@ def check_detail_stack():
     element("Rename", "Button")
     element("Chat", "Button")
     click("Back")
-    # The unnamed member precedes the invited member at the end of this fixture.
-    call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="")
-    call("click_element", elementHandle=element("Search members", "TextInput")["handle"])
-    for text in ("\uf701", "\uf72b", "\uf700", "\n"):
-        key(text)
-    element("Add friend", "Button")
-    assert not any(item.get("accessibleLabel") in ("Chat", "Rename") for item in tree()), "non-friend profile exposed friend actions"
+    click("Open member: Unknown member")
+    assert not any(item.get("accessibleLabel") in ("Chat", "Rename", "Add friend") for item in tree()), "unknown profile exposed a write"
     click("Back")
     call("set_element_value", elementHandle=element("Search members", "TextInput")["handle"], value="葵")
     click("Back")

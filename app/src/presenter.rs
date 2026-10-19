@@ -27,6 +27,7 @@ struct CachedFriend {
 struct MessageInputs {
     message: StoredMessage,
     sender: Option<Friend>,
+    sender_friend: bool,
     system_text: Option<String>,
     reply: Option<(StoredMessage, String)>,
     upload: f32,
@@ -187,7 +188,7 @@ impl Presenter {
                 crate::system_events::name(state, &m.sender_id).into()
             },
             sender_id: m.sender_id.clone().into(),
-            body: single_line(&compact_text(m, state)).into(),
+            body: single_line(&compact_text(&m.body, state, &m.sender_id)).into(),
             image_key: image_key.into(),
             picture: image.cloned().unwrap_or_default(),
             has_picture: image.is_some(),
@@ -212,6 +213,9 @@ impl Presenter {
         let inputs = MessageInputs {
             message: m.clone(),
             sender: sender.clone(),
+            // Only an unnamed sender needs the friend lookup for its fallback.
+            sender_friend: sender.as_ref().is_some_and(|s| s.name.is_none())
+                && state.profile_friend(&m.sender_id),
             system_text: system_text.clone(),
             reply,
             upload: state.uploads.get(&m.key).copied().unwrap_or(0.),
@@ -224,7 +228,14 @@ impl Presenter {
         let mut row = message_row(m, system_text.as_deref());
         row.sender_name = sender
             .as_ref()
-            .map(|s| text::member_name(s.name.as_deref()).to_owned())
+            .map(|s| {
+                if inputs.sender_friend {
+                    text::friend_name(s)
+                } else {
+                    text::member_name(s.name.as_deref())
+                }
+                .to_owned()
+            })
             .unwrap_or_else(|| {
                 if m.sender_id.is_empty() {
                     "Unknown sender".into()
@@ -332,7 +343,11 @@ impl Presenter {
             let quoted = self.quote(target, state);
             row.reply_sender = quoted.sender_name;
             row.reply_sender_id = quoted.sender_id;
-            row.reply_preview = quoted.body;
+            row.reply_preview = single_line(
+                &crate::system_events::text(&target.body, state, &target.sender_id)
+                    .unwrap_or_else(|| message_text(&target.body).1),
+            )
+            .into();
             row.reply_image_key = quoted.image_key;
             row.reply_picture = quoted.picture;
             row.reply_has_picture = quoted.has_picture && (quoted.photo || quoted.sticker);
@@ -577,14 +592,11 @@ impl Presenter {
             let name = if own {
                 state.profile.display_name.as_str()
             } else if kind != 0 {
-                text::group_name(
-                    c.map(|c| c.title.as_str())
-                        .filter(|name| !name.is_empty())
-                        .or_else(|| f.and_then(|f| f.name.as_deref())),
-                )
-            } else if let Some(friend) =
-                f.filter(|_| state.friends.iter().any(|friend| friend.id == id))
-            {
+                c.map(|c| c.title.as_str())
+                    .filter(|name| !name.is_empty())
+                    .or_else(|| f.and_then(|f| f.name.as_deref()))
+                    .unwrap_or("Group")
+            } else if let Some(friend) = f.filter(|_| state.profile_friend(id)) {
                 text::friend_name(friend)
             } else {
                 text::member_name(f.and_then(|f| f.name.as_deref()))
@@ -1254,44 +1266,6 @@ fn patch_runs(
     }
 }
 
-pub(crate) fn reaction_views(reactions: &[Reaction]) -> Vec<ReactionRow> {
-    let mut groups: Vec<(String, String)> = vec![];
-    for reaction in reactions {
-        let (label, key) = match &reaction.kind {
-            ReactionKind::Predefined(id) => (
-                match id {
-                    2 => "👍",
-                    3 => "❤️",
-                    4 => "😆",
-                    5 => "😮",
-                    6 => "😢",
-                    7 => "😰",
-                    _ => "Reaction",
-                }
-                .to_owned(),
-                String::new(),
-            ),
-            ReactionKind::Emoji => ("Emoji".into(), String::new()),
-            ReactionKind::Paid(asset) => (
-                "Emoji".into(),
-                asset.as_ref().map(|a| a.key()).unwrap_or_default(),
-            ),
-        };
-        if !groups.iter().any(|g| g.0 == label && g.1 == key) {
-            groups.push((label, key));
-        }
-    }
-    groups
-        .into_iter()
-        .take(3)
-        .map(|(label, image_key)| ReactionRow {
-            label: label.into(),
-            image_key: image_key.into(),
-            ..Default::default()
-        })
-        .collect()
-}
-
 pub(crate) fn chat_title<'a>(chat: &'a ChatInput, state: &'a AppState) -> &'a str {
     if !chat.title.trim().is_empty() {
         return &chat.title;
@@ -1303,7 +1277,61 @@ pub(crate) fn chat_title<'a>(chat: &'a ChatInput, state: &'a AppState) -> &'a st
         .unwrap_or("Conversation")
 }
 
-fn compact_text(message: &StoredMessage, state: &AppState) -> String {
-    crate::system_events::text(&message.body, state, &message.sender_id)
-        .unwrap_or_else(|| kind_label(&message.body).1)
+pub(crate) fn compact_text(content: &Content, state: &AppState, sender: &str) -> String {
+    crate::system_events::text(content, state, sender).unwrap_or_else(|| kind_label(content).1)
+}
+
+#[cfg(test)]
+mod content_tests {
+    use super::*;
+
+    #[test]
+    fn reply_rows_keep_full_text_while_composer_quotes_are_compact() {
+        for (body, compact, full) in crate::tests::previews::label_cases() {
+            let mut target = crate::tests::message("");
+            target.body = body;
+            target.server_id = Some(line::store::ServerId::new("10").unwrap());
+            let mut reply = crate::tests::message("reply");
+            reply.key = Key(2);
+            reply.reply = Some(Box::new(line::store::ReplyReference {
+                message_id: "10".into(),
+                service_code: None,
+            }));
+            let mut state = AppState::default();
+            state.messages.insert(target.key, target.clone());
+            let mut presenter = Presenter::default();
+            assert_eq!(presenter.quote(&target, &state).body, compact);
+            assert_eq!(presenter.row(&reply, &state).reply_preview, full);
+        }
+    }
+
+    #[test]
+    fn sender_fallback_tracks_friend_relation_even_when_contact_is_unchanged() {
+        let mut state = AppState::default();
+        let contact = Friend {
+            id: "sender".into(),
+            ..Default::default()
+        };
+        state.contacts.insert(contact.id.clone(), contact.clone());
+        let mut message = crate::tests::message("hello");
+        message.sender_id = contact.id.clone();
+        let mut presenter = Presenter::default();
+        assert_eq!(
+            presenter.row(&message, &state).sender_name,
+            "Unknown member"
+        );
+        assert_eq!(
+            crate::system_events::name(&state, "sender"),
+            "Unknown member"
+        );
+        state.friends.push(contact);
+        assert_eq!(
+            presenter.row(&message, &state).sender_name,
+            "Unnamed friend"
+        );
+        assert_eq!(
+            crate::system_events::name(&state, "sender"),
+            "Unnamed friend"
+        );
+    }
 }

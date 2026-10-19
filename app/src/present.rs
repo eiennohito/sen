@@ -55,8 +55,7 @@ pub(crate) fn group_messages(messages: &mut [MessageRow], source: &[Option<&Stor
     let mut previous_date = None;
     for (row, message) in messages.iter_mut().zip(source) {
         row.sender_initial = name_initial(&row.sender_name);
-        let time =
-            message.and_then(|m| calendar_pair(m.sort.sort_ts, now_millis()).map(|(time, _)| time));
+        let time = message.and_then(|m| local_time(m.sort.sort_ts));
         let date = time.map(|time| time.date_naive());
         row.clock = time
             .map(|time| time.format("%H:%M").to_string())
@@ -82,7 +81,9 @@ pub(crate) fn group_messages(messages: &mut [MessageRow], source: &[Option<&Stor
             && !matches!(right.body, Content::System { .. } | Content::Withdrawn)
             && matches!(left.delivery, Delivery::Sent | Delivery::Read)
             && matches!(right.delivery, Delivery::Sent | Delivery::Read)
-            && calendar_pair(a, b).is_some_and(|(a, b)| a.date_naive() == b.date_naive())
+            && local_time(a)
+                .zip(local_time(b))
+                .is_some_and(|(a, b)| a.date_naive() == b.date_naive())
             && left.outgoing == right.outgoing
             && (left.outgoing || (!left.sender_id.is_empty() && left.sender_id == right.sender_id))
             && a > 0
@@ -159,6 +160,13 @@ pub(crate) fn day_label(timestamp: i64, now: i64) -> String {
     }
 }
 
+fn local_time(timestamp: i64) -> Option<chrono::DateTime<chrono::Local>> {
+    if timestamp <= 0 || timestamp == i64::MAX {
+        return None;
+    }
+    Some(chrono::DateTime::from_timestamp_millis(timestamp)?.with_timezone(&chrono::Local))
+}
+
 fn calendar_pair(
     timestamp: i64,
     now: i64,
@@ -166,16 +174,10 @@ fn calendar_pair(
     chrono::DateTime<chrono::Local>,
     chrono::DateTime<chrono::Local>,
 )> {
-    if timestamp <= 0 || timestamp == i64::MAX {
-        return None;
-    }
-    Some((
-        chrono::DateTime::from_timestamp_millis(timestamp)?.with_timezone(&chrono::Local),
-        chrono::DateTime::from_timestamp_millis(now)?.with_timezone(&chrono::Local),
-    ))
+    Some((local_time(timestamp)?, local_time(now)?))
 }
 
-/// Compact labels shared by previews, notifications and reply quotes.
+/// Compact labels shared by previews, notifications and the composer reply bar.
 pub(crate) fn kind_label(content: &Content) -> (MessageKind, String) {
     use MessageKind::*;
     match content {
@@ -228,20 +230,69 @@ pub(crate) fn message_text(content: &Content) -> (MessageKind, String) {
         Content::Sticker {
             text: Some(text), ..
         } => body = format!("{body} · {text}"),
+        Content::File {
+            name: Some(name), ..
+        }
+        | Content::Contact {
+            name: Some(name), ..
+        } => {
+            body = name.clone();
+        }
         _ => {}
     }
     (kind, body)
 }
 
-pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> MessageRow {
-    let (kind, body) = message_text(&m.body);
-    let emoji = m
-        .body
+pub(crate) fn emoji_views(content: &Content) -> Vec<EmojiView> {
+    content
         .spans()
         .iter()
         .cloned()
         .map(EmojiView::new)
-        .collect::<Vec<_>>();
+        .collect()
+}
+
+pub(crate) fn reaction_views(reactions: &[Reaction]) -> Vec<ReactionRow> {
+    let mut groups: Vec<(String, String)> = vec![];
+    for reaction in reactions {
+        let (label, key) = match &reaction.kind {
+            ReactionKind::Predefined(id) => (
+                match id {
+                    2 => "👍",
+                    3 => "❤️",
+                    4 => "😆",
+                    5 => "😮",
+                    6 => "😢",
+                    7 => "😰",
+                    _ => "Reaction",
+                }
+                .to_owned(),
+                String::new(),
+            ),
+            ReactionKind::Emoji => ("Emoji".into(), String::new()),
+            ReactionKind::Paid(asset) => (
+                "Emoji".into(),
+                asset.as_ref().map(|a| a.key()).unwrap_or_default(),
+            ),
+        };
+        if !groups.iter().any(|g| g.0 == label && g.1 == key) {
+            groups.push((label, key));
+        }
+    }
+    groups
+        .into_iter()
+        .take(3)
+        .map(|(label, image_key)| ReactionRow {
+            label: label.into(),
+            image_key: image_key.into(),
+            ..Default::default()
+        })
+        .collect()
+}
+
+pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> MessageRow {
+    let (kind, body) = message_text(&m.body);
+    let emoji = emoji_views(&m.body);
     let rich_runs = if kind == MessageKind::Text && !emoji.is_empty() {
         crate::rich_content::runs(m.body.as_text(), &emoji)
     } else {
@@ -258,7 +309,7 @@ pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> Messa
     let reactions = if m.body.is_withdrawn() {
         vec![]
     } else {
-        crate::presenter::reaction_views(&m.reactions)
+        reaction_views(&m.reactions)
     };
     MessageRow {
         skip_badge: m.skip_badge,
@@ -283,7 +334,6 @@ pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> Messa
         outgoing: m.outgoing,
         image_key: m.body.image().map(|a| a.key()).unwrap_or_default().into(),
         reactions: ModelRc::new(VecModel::from(reactions)),
-
         ..Default::default()
     }
 }

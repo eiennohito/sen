@@ -120,12 +120,7 @@ pub(crate) fn set(
             },
         ]))
     } else {
-        let emoji = content
-            .spans()
-            .iter()
-            .cloned()
-            .map(EmojiView::new)
-            .collect::<Vec<_>>();
+        let emoji = emoji_views(content);
         preview_runs(content.as_text(), &emoji, images, size)
     };
 }

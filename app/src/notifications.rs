@@ -64,8 +64,7 @@ impl Notifications {
             let text = policy::redact(
                 prefs.preview,
                 title,
-                &crate::system_events::text(&m.body, state, &m.sender_id)
-                    .unwrap_or_else(|| kind_label(&m.body).1),
+                &presenter::compact_text(&m.body, state, &m.sender_id),
             );
             self.service.notify(attention::Notice {
                 chat: m.chat_id.0.clone(),

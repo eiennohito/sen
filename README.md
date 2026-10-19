@@ -51,8 +51,8 @@ Preview this flow without accessing the account with `--demo-friends`.
 
 Group and room headers open a read-only Members view with name search and
 member profiles with Back to members. Non-friends use the existing contact
-lookup; unavailable names use the member display fallback. Open chat is
-available only for friends or existing conversations. The view uses a panel from 1060 px, a
+lookup; unavailable names read “Unknown member”. Open chat is available only
+for friends or existing conversations. The view uses a panel from 1060 px, a
 conversation sheet from 740 px, and a full-window sheet below that. F12 → Group
 members opens the 25-member offline fixture. Run
 `tools/check-members-mcp.py --port PORT` in an owned `--demo` ui-debug preview.

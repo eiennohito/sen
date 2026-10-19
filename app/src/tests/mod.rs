@@ -1,5 +1,5 @@
 use super::*;
-fn message(_id: &str, text: &str) -> StoredMessage {
+pub(crate) fn message(text: &str) -> StoredMessage {
     StoredMessage {
         key: Key(1),
         chat_id: ChatId("chat".into()),
@@ -49,4 +49,4 @@ fn test_window() -> AppWindow {
 }
 mod grouping;
 mod layers;
-mod previews;
+pub(crate) mod previews;

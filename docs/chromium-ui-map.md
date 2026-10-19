@@ -254,9 +254,8 @@ shapes on the account worker in batches of at most 100 MIDs. Membership sets
 are retained for up to 128 groups/rooms. A separate 4096-entry member contact
 cache holds answered identities and server-answered absence; call failures
 cache nothing and remain eligible for panel Retry. It never evicts friend or
-1:1 contacts. Unknown identities show an initial and the member display
-fallback; history keeps its sender fallback and can retry failed/absent
-identity lookups. Self's
+1:1 contacts. Unknown identities show an initial and “Unknown member”; history
+keeps its sender fallback and can retry failed/absent identity lookups. Self's
 identity comes from the already-fetched account profile.
 
 There is no local trace identifying membership operation numbers, and no

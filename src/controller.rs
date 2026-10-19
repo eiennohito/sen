@@ -142,11 +142,14 @@ impl AppState {
             && !self.profile_friend(mid)
             && self
                 .contact(mid)
-                .is_some_and(|f| f.profile.account_type == 0)
+                .is_some_and(|f| f.name.is_some() && f.profile.account_type == 0)
     }
     pub fn profile_available(&self, mid: &str) -> bool {
+        let friend = self.profile_friend(mid);
         !self.profile_own(mid)
-            && (self.profile_friend(mid) || self.chats.contains_key(&ChatId(mid.into())))
+            && self.contact(mid).is_some_and(|f| {
+                friend || (f.name.is_some() && self.chats.contains_key(&ChatId(mid.into())))
+            })
     }
     pub fn push_detail(&mut self, page: DetailPage, opener: String) {
         self.detail.push(DetailEntry { page, opener });
@@ -433,8 +436,24 @@ mod content_model_tests {
     use super::*;
 
     #[test]
-    fn profile_rules_ignore_names_and_use_contact_precedence() {
+    fn profile_rules_keep_unnamed_friends_but_disable_unresolved_members() {
         let mut state = AppState::default();
+        let chat_id = ChatId("member".into());
+        state.chats.insert(
+            chat_id.clone(),
+            ChatListItem {
+                chat: ChatInput {
+                    id: chat_id.clone(),
+                    ..Default::default()
+                },
+                unread_count: 0,
+                preview: None,
+                activity_ms: 0,
+                failed_count: 0,
+                draft: None,
+            },
+        );
+        assert!(!state.profile_available("member"));
         let friend = Friend {
             id: "member".into(),
             name: None,
@@ -448,6 +467,10 @@ mod content_model_tests {
         contact.profile.relation = Some(2);
         state.contacts.insert(contact.id.clone(), contact);
         assert!(!state.profile_friend("member"));
+        assert!(!state.profile_addable("member"));
+        assert!(!state.profile_available("member"));
+        state.chats.remove(&chat_id);
+        state.contacts.get_mut("member").unwrap().name = Some("Member".into());
         assert!(state.profile_addable("member"));
         assert!(!state.profile_available("member"));
         let contact = state.contacts.get_mut("member").unwrap();
