@@ -257,7 +257,7 @@ pub struct LocalId(pub String);
 pub enum Delivery {
     Pending,
     Rejected {
-        reason: crate::client::error::RejectReason,
+        reason: crate::client::error::Refusal,
     },
     Uncertain,
     Sent,

@@ -196,7 +196,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while desktop.update(|d| {
             if scene == "signed-out" {
-                d.state.connection != Connection::SignedOut
+                !matches!(d.state.connection, Connection::SignedOut { .. })
             } else {
                 d.state.messages.is_empty()
             }

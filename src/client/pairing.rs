@@ -217,33 +217,7 @@ fn install_session(state: &Path, staged: &Path, cancel: Option<&AtomicBool>) -> 
 
 /// Classify at the pairing boundary before protocol diagnostics are discarded.
 pub fn failure(error: &anyhow::Error, cancelled: bool) -> super::error::SignInFailure {
-    use super::error::{Error, SignInFailure};
-    if cancelled {
-        return SignInFailure::Cancelled;
-    }
-    if let Some(Error::SignIn(reason)) = error.downcast_ref::<Error>() {
-        return reason.clone();
-    }
-    if let Some(e) = error.downcast_ref::<super::RpcError>() {
-        return if e.code == 10052 || e.status == 410 {
-            SignInFailure::Phone
-        } else {
-            SignInFailure::Server
-        };
-    }
-    if matches!(error.downcast_ref::<Error>(), Some(Error::Offline(_))) {
-        return SignInFailure::Network;
-    }
-    if error
-        .chain()
-        .any(|e| e.is::<std::io::Error>() || e.is::<ureq::Error>())
-    {
-        return SignInFailure::Network;
-    }
-    if error.to_string() == "QR code expired before phone verification" {
-        return SignInFailure::Phone;
-    }
-    SignInFailure::Internal
+    super::error::sign_in_failure(error, cancelled)
 }
 
 pub(super) fn phone_error(error: anyhow::Error) -> anyhow::Error {
@@ -290,11 +264,11 @@ mod tests {
 
     #[test]
     fn transport_and_phone_errors_keep_their_categories() {
-        use super::super::error::{Error, NetCause, SignInFailure};
-        let offline =
-            anyhow::Error::new(Error::Offline(NetCause::Unreachable)).context("transport");
+        use super::super::error::{Failure, SignInFailure};
+        let offline = anyhow::Error::new(Failure::NotDelivered).context("transport");
         assert_eq!(failure(&offline, false), SignInFailure::Network);
         let rpc = super::super::RpcError {
+            gateway: 0,
             method: "checkPinCodeVerified".into(),
             http: 403,
             code: 1,

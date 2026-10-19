@@ -126,10 +126,7 @@ impl Client {
             Ok(message) => message,
             Err(error) => {
                 let _ = self.reset_runtime();
-                return Err(match crate::client::error::classify(&error) {
-                    Error::Auth | Error::SessionInvalid => error,
-                    _ => Error::Rejected(crate::client::error::RejectReason::UploadFailed).into(),
-                });
+                return Err(error);
             }
         };
         ensure!(
@@ -143,6 +140,6 @@ impl Client {
             message["contentMetadata"][key] = value.clone();
         }
         let result = self.talk("sendMessage", json!([seq, message]))?;
-        Ok(self.message(&result))
+        self.confirmation(&result)
     }
 }

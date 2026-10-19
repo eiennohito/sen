@@ -1240,7 +1240,7 @@ mod tests {
             for size in [(980, 720), (360, 520)] {
                 for text_size in [15, 24] {
                     ui.set_text_size(text_size);
-                    for delivery in ["Rejected", "Unconfirmed"] {
+                    for delivery in ["Not sent", "May not have been sent"] {
                         ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                             id: "failed".into(),
                             body: "Meet at eleven.".into(),
@@ -1266,7 +1266,7 @@ mod tests {
                                 && y >= top
                                 && y <= bottom
                                 && p.0
-                                    == if delivery == "Rejected" {
+                                    == if delivery == "Not sent" {
                                         [217, 48, 37]
                                     } else {
                                         [107, 111, 118]

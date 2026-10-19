@@ -153,8 +153,6 @@ impl Connector for ResetConnector {
                 control,
             }),
             last_attempt: 0,
-            header_match: 0,
-            headers_done: false,
         })))
     }
 }
@@ -233,7 +231,7 @@ impl UreqTransport for ObserveTls {
 }
 
 #[test]
-fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
+fn tls_reused_header_failure_returns_without_resending() {
     let (mut transport, listener, config) = fixture();
     let (reset_now, wait_reset) = mpsc::channel();
     let (acknowledge, acknowledged) = mpsc::channel();
@@ -255,7 +253,7 @@ fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
     );
     let server = thread::spawn(move || {
         let mut accepts = 0;
-        let mut deliveries = 0;
+        let deliveries = 0;
         let mut first = tls_accept(&listener, &config);
         accepts += 1;
         assert_eq!(read_post(&mut first), b"{}");
@@ -263,11 +261,6 @@ fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
         wait_reset.recv_timeout(Duration::from_secs(3)).unwrap();
         reset(first);
         acknowledge.send(()).unwrap();
-        let mut fresh = tls_accept(&listener, &config);
-        accepts += 1;
-        assert_eq!(read_post(&mut fresh), SECOND_BODY.as_bytes());
-        deliveries += 1;
-        respond(&mut fresh);
         wait_done.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(
             listener.accept().unwrap_err().kind(),
@@ -281,9 +274,12 @@ fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
     control.armed.store(true, Ordering::Relaxed);
     let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
     done.send(()).unwrap();
-    assert_eq!(server.join().unwrap(), (2, 1));
-    assert_eq!(result.unwrap(), (200, b"{}".to_vec()));
-    assert_eq!(control.connections.load(Ordering::Relaxed), 2);
+    assert_eq!(server.join().unwrap(), (1, 0));
+    assert_eq!(
+        crate::client::error::classify(&result.unwrap_err()),
+        crate::client::error::Failure::NotDelivered
+    );
+    assert_eq!(control.connections.load(Ordering::Relaxed), 1);
     assert_eq!(
         control.swallowed.load(Ordering::Relaxed),
         1,

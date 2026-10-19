@@ -338,12 +338,9 @@ impl Desktop {
                 #[cfg(not(feature = "ui-debug"))]
                 let _ = kind;
             }
-            Delta::Connection(Connection::SignedOut) => {
+            Delta::Connection(Connection::SignedOut { reason }) => {
                 ui.global::<State>()
-                    .set_session_cause("Not signed in".into());
-            }
-            Delta::Connection(Connection::AuthExpired) => {
-                ui.global::<State>().set_session_cause("".into());
+                    .set_session_cause(format!("Signed out: {reason}.").into());
             }
             Delta::Pair(event) => {
                 use line_wasm_poc::backend::PairEvent;
@@ -378,10 +375,6 @@ impl Desktop {
                     self.state.detail.clear();
                 }
                 ui.set_auth_error(text::sign_in_failure(reason).into());
-                if !cancelled {
-                    ui.global::<State>()
-                        .set_session_cause(text::sign_in_failure(reason).into());
-                }
             }
             Delta::Connection(Connection::Online) => {
                 ui.global::<State>().set_session_cause("".into());

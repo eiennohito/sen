@@ -178,7 +178,7 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
     s.mark_failed(
         k,
         Delivery::Rejected {
-            reason: crate::client::error::RejectReason::NotAccepted,
+            reason: crate::client::error::Refusal::NotAccepted,
         },
     )
     .unwrap();
@@ -564,11 +564,11 @@ fn newer_schema_is_refused_without_migration() {
     let dir = TempDir::new();
     {
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 6).unwrap();
+        s.conn.pragma_update(None, "user_version", 7).unwrap();
     }
     assert!(matches!(
         Store::open(&dir.0),
-        Err(StoreError::NewerSchema(6))
+        Err(StoreError::NewerSchema(7))
     ));
 }
 
@@ -766,7 +766,7 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
         Delivery::Pending,
         Delivery::Uncertain,
         Delivery::Rejected {
-            reason: crate::backend::RejectReason::UploadFailed,
+            reason: crate::backend::Refusal::FileMissing,
         },
         Delivery::Sent,
     ]

@@ -481,6 +481,34 @@ impl Store {
             Ok(())
         })
     }
+    pub fn attempt_started(&self, key: Key) -> Result<bool> {
+        Ok(self.conn.query_row(
+            "SELECT attempt_started FROM message WHERE key=?",
+            [key.0],
+            |r| r.get(0),
+        )?)
+    }
+    pub fn start_attempt(&mut self, key: Key) -> Result<()> {
+        self.conn
+            .execute("UPDATE message SET attempt_started=1 WHERE key=?", [key.0])?;
+        self.writes += 1;
+        Ok(())
+    }
+    pub fn recover_sends(&mut self) -> Result<()> {
+        for row in self.all_pending()? {
+            if row.delivery == Delivery::Pending {
+                let delivery = if self.attempt_started(row.key)? {
+                    Delivery::Uncertain
+                } else {
+                    Delivery::Rejected {
+                        reason: crate::client::error::Refusal::AppClosed,
+                    }
+                };
+                self.mark_failed(row.key, delivery)?;
+            }
+        }
+        Ok(())
+    }
     pub fn mark_failed(&mut self, key: Key, delivery: Delivery) -> Result<Changes> {
         if !matches!(delivery, Delivery::Rejected { .. } | Delivery::Uncertain) {
             return Err(StoreError::Invalid("expected failure delivery".into()));
@@ -488,7 +516,10 @@ impl Store {
         self.local_delivery(key, delivery, None)
     }
     pub fn retry(&mut self, key: Key, new_request_seq: u32) -> Result<Changes> {
-        self.local_delivery(key, Delivery::Pending, Some(new_request_seq))
+        let changes = self.local_delivery(key, Delivery::Pending, Some(new_request_seq))?;
+        self.conn
+            .execute("UPDATE message SET attempt_started=0 WHERE key=?", [key.0])?;
+        Ok(changes)
     }
     fn local_delivery(
         &mut self,

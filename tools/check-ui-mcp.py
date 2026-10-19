@@ -89,10 +89,10 @@ def element(label, role, read_tree=tree):
                 raise AssertionError(f"Missing {role} {label!r}; visible controls: {labels}") from None
             time.sleep(0.05)
 
-def wait_for(predicate, message):
+def wait_for(predicate, message, timeout=5):
     # MCP input dispatch completes before worker deltas and layout callbacks.
     # Poll the observable outcome instead of assuming one RPC or a sleep drains them.
-    deadline = time.monotonic() + 5
+    deadline = time.monotonic() + timeout
     while True:
         result = predicate()
         if result:
@@ -338,7 +338,7 @@ if args.focus:
     element("Open profile: 葵", "Button")
     element("Open profile: Weekend plans", "Button")
     print("PASS: filter chip Tab/arrows/Space/Enter and friend category row arrows/Space/Enter")
-    for offline in (False, True):
+    def check_focus_shell(offline):
         click_focus("Chats")
         click_focus("葵")
         browser()
@@ -400,6 +400,7 @@ if args.focus:
         check_chain(f"settings {suffix}", ["Close settings", "Settings section", "Message text size", "Enter sends"], ("Close settings", "Button"))
         focus_key("\x1b")
         click_focus("Chats")
+    check_focus_shell(False)
     demo_scenario("Reconnect blip")
     time.sleep(2.2)
     # Leave a connected Chats browser with empty drafts and queries for later checks.
@@ -607,9 +608,9 @@ if args.scenarios:
     demo_scenario("Uncertain send")
     time.sleep(1.2)
     assert not any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") in ("Retry connection", "Retry conversations", "Retry older") for item in tree()), "removed network Retry control returned"
-    assert any("Maybe not sent" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
+    assert any("May not have been sent" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == "Keep this newer draft", "late result replaced newer text"
-    failed = next(item for item in bodies() if "Unconfirmed" in item.get("accessibleLabel", ""))
+    failed = next(item for item in bodies() if "May not have been sent" in item.get("accessibleLabel", ""))
     call("click_element", elementHandle=failed["handle"], button="Right")
     call("click_element", elementHandle=element("Copy to composer", "Text")["handle"])
     call("click_element", elementHandle=element("Append", "Button")["handle"])
@@ -846,31 +847,18 @@ if args.auth_recovery:
                     or a["y"] + size_a["height"] <= b["y"] or b["y"] + size_b["height"] <= a["y"]), f"feedback covered {label}"
 
     demo_scenario("Offline")
+    deadline = time.monotonic() + 20
+    while not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()):
+        assert time.monotonic() < deadline, "persistent network loss did not show Offline"
+        time.sleep(.05)
     safe_strip()
     unchanged_shell()
     assert not any(item.get("accessibleLabel") == "Sign in again" for item in tree()), "network failure offered sign-in"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before
-    demo_scenario("Expired sign-in")
-    safe_strip()
-    unchanged_shell()
-    call("click_element", elementHandle=composer)
-    call("dispatch_key_event", windowHandle=window, text="\uf709")  # F6 enters sign-in recovery.
-    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
-    call("dispatch_key_event", windowHandle=window, text="\n")
-    assert any("Signing in here signs LINE out in Chrome." in item.get("accessibleLabel", "") for item in tree())
-    assert element("Start", "Button").get("accessibleDescription") == "Focused"
-    call("dispatch_key_event", windowHandle=window, text="\x1b")
-    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
-    assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "sign-in dismissal changed the draft"
-    call("dispatch_key_event", windowHandle=window, text="\t")
-    assert element("Message history", "List").get("accessibleDescription") == "Focused history"
     demo_scenario("Reconnect blip")
-    deadline = time.monotonic() + 5
-    while any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()):
-        assert time.monotonic() < deadline, "automatic reconnect did not clear recovery"
-        time.sleep(.05)
+    wait_for(lambda: not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()), "network success did not clear Offline")
     unchanged_shell()
-    print("PASS: offline/expired feedback placement, F6/Tab order, sign-in dismissal and draft preservation")
+    print("PASS: persistent Offline appears quietly, clears on success, and preserves the draft")
 
 if args.layers:
     check_detail_stack()
@@ -1158,6 +1146,7 @@ if args.rich:
         origin_y = emoji_body()["absolutePosition"]["y"]
         call("click_element", elementHandle=reply["handle"])
         demo_scenario("Offline")
+        wait_for(lambda: any(item.get("accessibleLabel") == "Connection needs attention" for item in rich_tree()), "persistent loss did not show Offline", timeout=20)
         rich_element("Return to message", "Button")
         latest = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest"))
         return_pill = rich_element("Return to message", "Button")
@@ -1351,6 +1340,19 @@ if args.auth_recovery:
     # after other groups have finished using the demo connection.
     before = call("get_element_properties", elementHandle=composer).get("accessibleValue")
     demo_scenario("Expired sign-in")
+    safe_strip()
+    unchanged_shell()
+    call("click_element", elementHandle=composer)
+    call("dispatch_key_event", windowHandle=window, text="\uf709")  # F6 enters sign-in recovery.
+    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
+    call("dispatch_key_event", windowHandle=window, text="\n")
+    assert any("Signing in here signs LINE out in Chrome." in item.get("accessibleLabel", "") for item in tree())
+    assert element("Start", "Button").get("accessibleDescription") == "Focused"
+    call("dispatch_key_event", windowHandle=window, text="\x1b")
+    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
+    assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "sign-in dismissal changed the draft"
+    call("dispatch_key_event", windowHandle=window, text="\t")
+    assert element("Message history", "List").get("accessibleDescription") == "Focused history"
     call("click_element", elementHandle=element("Sign in again", "Button")["handle"])
     call("click_element", elementHandle=element("Start", "Button")["handle"])
     deadline = time.monotonic() + 3
@@ -1361,3 +1363,7 @@ if args.auth_recovery:
     assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == before, "failed sign-in changed the draft"
     print("PASS: synthetic sign-in failure preserves cached composer and returns focus to recovery")
+
+if args.focus:
+    check_focus_shell(True)
+    print("PASS: signed-out focus remains usable without reviving the session")

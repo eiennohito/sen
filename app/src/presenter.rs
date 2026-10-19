@@ -209,8 +209,8 @@ impl Presenter {
             Delivery::Pending => "Sending…",
             Delivery::Sent => "Sent",
             Delivery::Read => "Read",
-            Delivery::Rejected { .. } => "Rejected",
-            Delivery::Uncertain => "Unconfirmed",
+            Delivery::Rejected { .. } => "Not sent",
+            Delivery::Uncertain => "May not have been sent",
         }
         .into();
         if let Some(_item) = m
@@ -225,7 +225,7 @@ impl Presenter {
             row.file_missing = matches!(
                 m.delivery,
                 Delivery::Rejected {
-                    reason: line_wasm_poc::backend::RejectReason::FileMissing
+                    reason: line_wasm_poc::backend::Refusal::FileMissing
                 }
             );
         }
@@ -246,7 +246,7 @@ impl Presenter {
         row.can_unsend = m.outgoing && m.server_id.is_some() && !m.body.is_withdrawn();
         row.recoverable = matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain);
         row.delivery_detail = match &m.delivery {
-            Delivery::Rejected { reason } => text::rejection(reason).into(),
+            Delivery::Rejected { reason } => format!("Not sent: {}", text::rejection(reason)),
             Delivery::Uncertain => {
                 "The message may have arrived. Check before sending again.".into()
             }
@@ -402,6 +402,54 @@ impl Presenter {
             members.into_iter().map(|r| (r.id.to_string(), r)).collect(),
         );
         let g = ui.global::<State>();
+        let mut conversation_error = String::new();
+        let mut friends_error = String::new();
+        let mut chat_list_error = String::new();
+        let mut detail_error = String::new();
+        let detail_id = state.detail.last().map(|entry| match &entry.page {
+            line_wasm_poc::controller::DetailPage::Profile(id) => id.as_str(),
+            line_wasm_poc::controller::DetailPage::GroupInfo(id)
+            | line_wasm_poc::controller::DetailPage::Members(id) => id.0.as_str(),
+        });
+        for (request, failure) in &state.refresh_failures {
+            use line_wasm_poc::{client::error::Failure, engine::Refresh};
+            let message = match failure {
+                Failure::Refused(reason) => format!("Couldn't load this item: {reason}"),
+                Failure::Bug(_) => "Couldn't load this item.".into(),
+                _ => continue,
+            };
+            match request {
+                Refresh::Friends => friends_error = message,
+                Refresh::Profile | Refresh::ChatList | Refresh::MoreChats => {
+                    chat_list_error = message
+                }
+                Refresh::Recent(chat)
+                | Refresh::Older(chat, _)
+                | Refresh::Newer(chat, _)
+                | Refresh::Read(chat)
+                | Refresh::Receipts(chat)
+                | Refresh::Details(chat)
+                    if state.selected.as_ref() == Some(chat) =>
+                {
+                    conversation_error = message
+                }
+                Refresh::Contact(mid) | Refresh::Notice(mid) if detail_id == Some(mid.as_str()) => {
+                    detail_error = message
+                }
+                Refresh::GroupInfo(chat) | Refresh::Members(chat)
+                    if detail_id == Some(chat.0.as_str()) =>
+                {
+                    detail_error = message
+                }
+                Refresh::Stream | Refresh::Decode(_) if state.selected.is_some() => {
+                    conversation_error = format!("Couldn't receive updates. {message}")
+                }
+                _ => {}
+            }
+        }
+        g.set_conversation_error(conversation_error.into());
+        g.set_friends_error(friends_error.into());
+        g.set_chat_list_error(chat_list_error.into());
         g.set_detail_depth(state.detail.len() as i32);
         g.set_invitee_count(
             state
@@ -428,7 +476,8 @@ impl Presenter {
             state
                 .action_error
                 .map(text::profile_failure)
-                .unwrap_or_default()
+                .map(str::to_owned)
+                .unwrap_or(detail_error)
                 .into(),
         );
         g.set_chat_left(
@@ -728,9 +777,9 @@ impl Presenter {
             Connection::Local => ConnectionState::Local,
             Connection::Connecting { .. } => ConnectionState::Connecting,
             Connection::Online => ConnectionState::Online,
-            Connection::Offline { .. } => ConnectionState::Offline,
-            Connection::SignedOut | Connection::AuthExpired => ConnectionState::AuthExpired,
-            Connection::SessionInvalid | Connection::Fatal => ConnectionState::SessionInvalid,
+            Connection::Offline => ConnectionState::Offline,
+            Connection::SignedOut { .. } => ConnectionState::SignedOut,
+            Connection::Fatal => ConnectionState::Fatal,
             Connection::SigningIn => ConnectionState::SigningIn,
         });
         ui.set_connection_status(
@@ -738,10 +787,8 @@ impl Presenter {
                 Connection::Local => "Cached conversations",
                 Connection::Online => "Connected",
                 Connection::Connecting { .. } => "Connecting…",
-                Connection::Offline { .. } => "Offline — reconnecting automatically",
-                Connection::SignedOut => "Not signed in",
-                Connection::AuthExpired => "Sign in required",
-                Connection::SessionInvalid => "Session unavailable",
+                Connection::Offline => "Offline — reconnecting automatically",
+                Connection::SignedOut { .. } => "Signed out",
                 Connection::Fatal => "Something went wrong — restart",
                 Connection::SigningIn => "Signing in…",
             }

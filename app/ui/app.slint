@@ -119,8 +119,8 @@ export component AppWindow inherits Window {
     public function close-viewer() { let from-detail = State.viewer-from-detail; State.request-panel(PanelState.none); if !from-detail { State.focus-history(); } State.viewer-return-key = root.viewer-key; State.viewer-return-serial += 1; root.viewer-key = ""; root.photo-closed(); }
     out property <bool> connected <=> State.connected;
     out property <bool> connection-failed <=> State.connection-failed;
-    out property <bool> auth-expired <=> State.auth-expired;
-    out property <bool> session-unavailable <=> State.session-unavailable;
+    out property <bool> signed-out <=> State.signed-out;
+    out property <bool> fatal <=> State.fatal;
     out property <bool> retrying-connection <=> State.retrying-connection;
     out property <bool> auth-open <=> State.auth-open;
     out property <bool> auth-busy <=> State.auth-busy;

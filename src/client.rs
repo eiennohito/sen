@@ -143,10 +143,11 @@ impl Progress {
 }
 #[derive(Debug)]
 pub(crate) struct RpcError {
-    method: String,
+    pub(crate) gateway: i64,
+    pub(crate) method: String,
     pub(crate) http: u16,
     pub(crate) code: i64,
-    status: i64,
+    pub(crate) status: i64,
 }
 impl fmt::Display for RpcError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -171,6 +172,9 @@ struct Api {
     key_cache: std::collections::HashMap<String, Value>,
     channels: std::collections::HashMap<String, (u32, u64)>,
     channel_tick: u64,
+    state: Value,
+    session_path: Option<PathBuf>,
+    stream_access: std::sync::Arc<std::sync::RwLock<String>>,
 }
 impl Api {
     fn new(wasm: &[u8]) -> Result<Self> {
@@ -182,6 +186,9 @@ impl Api {
             key_cache: Default::default(),
             channels: Default::default(),
             channel_tick: 0,
+            state: Value::Null,
+            session_path: None,
+            stream_access: Default::default(),
         })
     }
     fn cached_channel(&mut self, key: &str) -> Option<u32> {
@@ -206,7 +213,7 @@ impl Api {
         self.channels.insert(key, (channel, self.channel_tick));
         Ok(())
     }
-    fn call(
+    fn call_once(
         &mut self,
         path: &str,
         args: &Value,
@@ -214,70 +221,48 @@ impl Api {
         session: &str,
         poll_seconds: u64,
     ) -> Result<Value> {
-        let body = serde_json::to_string(args)?;
-        #[cfg(test)]
-        let signature = if self.synthetic_signature {
-            "synthetic".into()
-        } else {
-            sign(&mut self.rt, path, &body, access)?
-        };
-        #[cfg(not(test))]
-        let signature = sign(&mut self.rt, path, &body, access)?;
-        let mut headers = vec![
-            ("Content-Type", "application/json"),
-            ("User-Agent", UA),
-            ("x-line-chrome-version", VERSION),
-            ("x-lal", "en_US"),
-            ("x-hmac", signature.as_str()),
-        ];
-        let cookie = format!("lct={access}");
-        if !access.is_empty() {
-            headers.extend([("x-line-access", access), ("Cookie", cookie.as_str())]);
-        }
-        if !session.is_empty() {
-            headers.push(("X-Line-Session-ID", session));
-        }
-        let millis = (poll_seconds * 1000).to_string();
-        if poll_seconds > 0 {
-            headers.push(("X-LST", millis.as_str()));
-        }
-        let (http, bytes) = self.http.request(
-            path,
-            &body,
-            &headers,
-            Duration::from_secs(if poll_seconds > 0 {
-                poll_seconds + 10
+        let result = (|| {
+            let body = serde_json::to_string(args)?;
+            #[cfg(test)]
+            let signature = if self.synthetic_signature {
+                "synthetic".into()
             } else {
-                30
-            }),
-        )?;
-        if (500..600).contains(&http) {
-            return Err(Error::Server(i64::from(http)).into());
-        }
-        if (400..500).contains(&http) {
-            return Err(RpcError {
-                method: path.rsplit('/').next().unwrap_or("RPC").into(),
-                http,
-                code: 0,
-                status: 0,
+                sign(&mut self.rt, path, &body, access)?
+            };
+            #[cfg(not(test))]
+            let signature = sign(&mut self.rt, path, &body, access)?;
+            let mut headers = vec![
+                ("Content-Type", "application/json"),
+                ("User-Agent", UA),
+                ("x-line-chrome-version", VERSION),
+                ("x-lal", "en_US"),
+                ("x-hmac", signature.as_str()),
+            ];
+            let cookie = format!("lct={access}");
+            if !access.is_empty() {
+                headers.extend([("x-line-access", access), ("Cookie", cookie.as_str())]);
             }
-            .into());
-        }
-        let response: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Decode)?;
-        let code = response["code"].as_i64().ok_or(Error::Decode)?;
-        if http != 200 || code != 0 {
-            return Err(RpcError {
-                method: path.rsplit('/').next().unwrap_or("RPC").into(),
-                http,
-                code,
-                status: response["data"]["statusCode"].as_i64().unwrap_or(0),
+            if !session.is_empty() {
+                headers.push(("X-Line-Session-ID", session));
             }
-            .into());
-        }
-        response
-            .get("data")
-            .cloned()
-            .ok_or_else(|| Error::Decode.into())
+            let millis = (poll_seconds * 1000).to_string();
+            if poll_seconds > 0 {
+                headers.push(("X-LST", millis.as_str()));
+            }
+            let (http, bytes) = self.http.request(
+                path,
+                &body,
+                &headers,
+                Duration::from_secs(if poll_seconds > 0 {
+                    poll_seconds + 10
+                } else {
+                    30
+                }),
+            )?;
+            error::decode_response(path, http, &bytes)
+        })();
+        error::network_result(&result.as_ref().map(|_| ()).map_err(error::classify));
+        result
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {
         let service = if poll_seconds > 0 {
@@ -321,13 +306,14 @@ fn decode(value: &str) -> Result<Vec<u8>> {
             return Ok(b);
         }
     }
-    Err(anyhow::Error::new(Error::Decode).context("invalid base64 key material"))
+    Err(anyhow::Error::new(error::Failure::Bug("decode".into()))
+        .context("invalid base64 key material"))
 }
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
         .as_str()
         .filter(|s| !s.is_empty())
-        .ok_or(Error::Decode)
+        .ok_or(error::Failure::Bug("decode".into()))
         .with_context(|| format!("missing {field}"))
 }
 fn percent_encode(value: &str) -> String {

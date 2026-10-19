@@ -49,17 +49,17 @@ fn client(transport: http::Transport) -> (Client, PathBuf) {
             key_cache: HashMap::new(),
             channels: HashMap::new(),
             channel_tick: 0,
+            state: json!({"token_v3_issue_result":{"accessToken":"synthetic"}}),
+            session_path: Some(root.join("session.json")),
+            stream_access: Arc::new(std::sync::RwLock::new("synthetic".into())),
         },
         wasm: vec![],
-        stream_access: Arc::new(std::sync::RwLock::new("synthetic".into())),
-        state: json!({"token_v3_issue_result":{"accessToken":"synthetic"}}),
         my_mid: "uself".into(),
         obs_access: None,
         sequence: 0,
         cache: Arc::new(std::sync::Mutex::new(
             ImageCache::new(&root, "uself").unwrap(),
         )),
-        session_path: root.join("session.json"),
         cache_root: root.clone(),
     };
     (client, root)
@@ -112,8 +112,7 @@ fn batches_members_at_100() {
         contacts(2, ""),
     ]);
     let (mut client, root) = client(transport);
-    let (members, failed) = client.members("group").unwrap();
-    assert!(!failed);
+    let members = client.members("group").unwrap();
     assert_eq!(members.len(), 202);
     assert_eq!(members.iter().filter(|m| m.is_self).count(), 1);
     assert!(
@@ -127,7 +126,7 @@ fn batches_members_at_100() {
 }
 
 #[test]
-fn failed_member_lookup_can_be_retried_without_hiding_members() {
+fn failed_member_lookup_reports_network_failure_and_can_be_retried() {
     let ids = vec!["uknown".into(), "uabsent".into(), "ufailed".into()];
     let (transport, worker) = server(vec![
         chats(ids.clone()),
@@ -139,11 +138,12 @@ fn failed_member_lookup_can_be_retried_without_hiding_members() {
         contacts(4, "uabsent"),
     ]);
     let (mut client, root) = client(transport);
-    let (members, failed) = client.members("group").unwrap();
-    assert!(failed);
-    assert_eq!(members.len(), 4);
-    let (members, failed) = client.members("group").unwrap();
-    assert!(!failed);
+    let error = client.members("group").unwrap_err();
+    assert_eq!(
+        crate::client::error::classify(&error),
+        crate::client::error::Failure::Unanswered
+    );
+    let members = client.members("group").unwrap();
     assert_eq!(
         members
             .iter()

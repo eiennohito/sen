@@ -7,8 +7,8 @@ use std::sync::{
 };
 use std::time::Duration;
 
-pub use crate::client::error::{Error, NetCause, RejectReason};
-pub type Result<T> = std::result::Result<T, Error>;
+pub use crate::client::error::{Failure, Refusal, SignOutReason};
+pub type Result<T> = std::result::Result<T, Failure>;
 /// Traced writes; live account verification remains pending.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProfileAction {
@@ -43,6 +43,7 @@ pub type PairDeliver = Arc<dyn Fn(PairEvent) + Send + Sync>;
 /// Asset queue handles are independent of the backend's RPC owner.
 #[derive(Clone)]
 pub struct AssetRequests {
+    pub stop: Arc<AtomicBool>,
     pub request: Arc<
         dyn Fn(crate::client::desktop::assets::Asset, crate::client::desktop::assets::Purpose)
             + Send
@@ -61,7 +62,7 @@ pub enum StreamEvent {
     },
     Resync {
         revision: Option<i64>,
-        complete: std::sync::mpsc::SyncSender<bool>,
+        complete: std::sync::mpsc::SyncSender<Result<()>>,
     },
     Operation(LiveOp),
     Raw(Value),
@@ -73,7 +74,7 @@ pub enum StreamEvent {
     Connecting(u32),
     Retry {
         attempt: u32,
-        error: Error,
+        error: Failure,
     },
 }
 pub type Deliver = Arc<dyn Fn(StreamEvent) -> bool + Send + Sync>;
@@ -96,7 +97,7 @@ pub trait Backend: Send {
     fn authorize(
         &mut self,
         asset: &crate::client::desktop::assets::Asset,
-    ) -> std::result::Result<Option<String>, crate::client::desktop::assets::Failure>;
+    ) -> Result<Option<String>>;
     fn retry_asset(&mut self, key: &str);
     /// Cache-only access; must never authorize or download an asset.
     fn cached_media(
@@ -126,7 +127,7 @@ pub trait Backend: Send {
         _item: crate::attachments::Attachment,
         _seq: u32,
     ) -> Result<UploadJob> {
-        Err(Error::Protocol)
+        Err(Failure::Bug("protocol".into()))
     }
     fn finish_attachment(
         &mut self,
@@ -134,7 +135,7 @@ pub trait Backend: Send {
         _uploaded: Value,
         _seq: u32,
     ) -> Result<MessageInput> {
-        Err(Error::Protocol)
+        Err(Failure::Bug("protocol".into()))
     }
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput>;
     fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()>;
@@ -151,11 +152,12 @@ pub trait Backend: Send {
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>>;
     fn decode(&mut self, raw: Value) -> Result<LiveOp>;
-    fn refresh_token(&mut self, stop: &AtomicBool) -> Result<()>;
+    fn refresh_token(&mut self) -> Result<()>;
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FakeRpc {
+    Send(ChatId),
     Profile,
     React(ServerId, Option<u32>),
     StickerPackages,
@@ -172,7 +174,7 @@ pub enum FakeRpc {
 #[derive(Default)]
 struct FakeState {
     calls: Vec<FakeRpc>,
-    failures: Vec<(FakeRpc, Error)>,
+    failures: Vec<(FakeRpc, Failure)>,
     friends: Option<Vec<crate::store::Friend>>,
     contacts: std::collections::BTreeMap<String, Friend>,
     members: Option<Vec<crate::store::Member>>,
@@ -180,7 +182,6 @@ struct FakeState {
     signed_out: bool,
     open_failure: Option<crate::client::error::SignInFailure>,
     sign_in_failure: Option<crate::client::error::SignInFailure>,
-    fail_send: bool,
     upload_delay: Duration,
     send_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
     upload_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
@@ -189,7 +190,6 @@ struct FakeState {
     friends_calls: u64,
     receipts: std::collections::BTreeMap<ChatId, ServerId>,
     pixels: std::collections::BTreeMap<String, Arc<crate::client::desktop::assets::Pixels>>,
-    uncertain_send: bool,
     echo_first: bool,
     next_id: i64,
     next_revision: i64,
@@ -226,7 +226,7 @@ impl FakeBackend {
         if let Some(reason) = self.0.lock().unwrap().open_failure.clone()
             && !matches!(reason, crate::client::error::SignInFailure::SavedSession(_))
         {
-            return Err(Error::SignIn(reason).into());
+            return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)).into());
         }
         Ok(self.clone())
     }
@@ -255,15 +255,9 @@ impl FakeBackend {
             let _ = entered.send(());
             let _ = blocked.recv();
         }
-        self.online()?;
+        self.rpc(FakeRpc::Send(chat.clone()))?;
         let (row, echo, revision, deliver) = {
             let mut s = self.0.lock().unwrap();
-            if std::mem::take(&mut s.uncertain_send) {
-                return Err(Error::Offline(NetCause::Unreachable));
-            }
-            if std::mem::take(&mut s.fail_send) {
-                return Err(Error::Rejected(RejectReason::SyntheticSend));
-            }
             s.next_id += 1;
             let mut row = Self::message(&chat.0, s.next_id, "", true);
             row.body = body;
@@ -375,13 +369,13 @@ impl FakeBackend {
         };
         if let Some(d) = deliver {
             d(StreamEvent::Connection(if offline {
-                Err(Error::Offline(NetCause::Unreachable))
+                Err(Failure::NotDelivered)
             } else {
                 Ok(())
             }));
         }
     }
-    pub fn fail_rpc(&self, rpc: FakeRpc, error: Error) {
+    pub fn fail_rpc(&self, rpc: FakeRpc, error: Failure) {
         self.0.lock().unwrap().failures.push((rpc, error));
     }
     pub fn fail_sign_in(&self, reason: crate::client::error::SignInFailure) {
@@ -391,13 +385,17 @@ impl FakeBackend {
         self.0.lock().unwrap().calls.clone()
     }
     fn rpc(&self, rpc: FakeRpc) -> Result<()> {
-        self.online()?;
-        let mut s = self.0.lock().unwrap();
-        s.calls.push(rpc.clone());
-        if let Some(index) = s.failures.iter().position(|(call, _)| call == &rpc) {
-            return Err(s.failures.remove(index).1);
-        }
-        Ok(())
+        let result = (|| {
+            self.online()?;
+            let mut s = self.0.lock().unwrap();
+            s.calls.push(rpc.clone());
+            if let Some(index) = s.failures.iter().position(|(call, _)| call == &rpc) {
+                return Err(s.failures.remove(index).1);
+            }
+            Ok(())
+        })();
+        crate::client::error::network_result(&result);
+        result
     }
     pub fn set_contact(&self, contact: Friend) {
         self.0
@@ -470,12 +468,17 @@ impl FakeBackend {
         s.pages.clear();
     }
     pub fn fail_send(&self) {
-        self.0.lock().unwrap().fail_send = true;
+        self.fail_rpc(
+            FakeRpc::Send(ChatId("alice".into())),
+            Failure::Refused(Refusal::SyntheticSend),
+        );
     }
     pub fn auth_expired(&self) {
         let d = self.0.lock().unwrap().deliver.clone();
         if let Some(d) = d {
-            d(StreamEvent::Connection(Err(Error::Auth)));
+            d(StreamEvent::Connection(Err(Failure::SignedOut(
+                SignOutReason::AuthenticationFailed,
+            ))));
         }
     }
     pub fn asset(photo: bool) -> crate::client::desktop::assets::Asset {
@@ -501,7 +504,7 @@ impl FakeBackend {
         row
     }
     pub fn uncertain_send(&self) {
-        self.0.lock().unwrap().uncertain_send = true;
+        self.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::Unanswered);
     }
     pub fn echo_first(&self, value: bool) {
         self.0.lock().unwrap().echo_first = value;
@@ -539,6 +542,7 @@ impl FakeBackend {
         raw["revision"] = self.revision().into();
         let deliver = self.0.lock().unwrap().deliver.clone();
         if let Some(d) = deliver {
+            d(StreamEvent::Connection(Ok(())));
             d(StreamEvent::Raw(raw));
         }
     }
@@ -552,12 +556,13 @@ impl FakeBackend {
             s.deliver.clone()
         };
         if let Some(d) = deliver {
+            d(StreamEvent::Connection(Ok(())));
             d(StreamEvent::Operation(op));
         }
     }
     fn online(&self) -> Result<()> {
         if self.0.lock().unwrap().offline {
-            Err(Error::Offline(NetCause::Unreachable))
+            Err(Failure::NotDelivered)
         } else {
             Ok(())
         }
@@ -569,14 +574,14 @@ impl Backend for FakeBackend {
     }
     fn session(&self) -> Result<bool> {
         if let Some(reason) = self.0.lock().unwrap().open_failure.clone() {
-            return Err(Error::SignIn(reason));
+            return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)));
         }
         Ok(self.has_session())
     }
     fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
         use crate::client::{desktop::assets::Pixels, pairing::Stage};
         if let Some(reason) = self.0.lock().unwrap().sign_in_failure.take() {
-            return Err(Error::SignIn(reason));
+            return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)));
         }
         deliver(PairEvent::Stage(Stage::Synthetic));
         if self.0.lock().unwrap().signed_out {
@@ -601,7 +606,9 @@ impl Backend for FakeBackend {
                 std::thread::sleep(Duration::from_millis(10));
             }
         }
-        Err(Error::SignIn(crate::client::error::SignInFailure::Server))
+        Err(Failure::SignedOut(SignOutReason::Unavailable(
+            crate::client::error::SignInFailure::Server,
+        )))
     }
 
     fn friends(&mut self) -> Result<Vec<crate::store::Friend>> {
@@ -610,7 +617,7 @@ impl Backend for FakeBackend {
             let mut s = self.0.lock().unwrap();
             s.friends_calls += 1;
             if std::mem::take(&mut s.fail_friends) {
-                return Err(Error::Rejected(RejectReason::SyntheticFriends));
+                return Err(Failure::Refused(Refusal::SyntheticFriends));
             }
         }
         if let Some(rows) = &self.0.lock().unwrap().friends {
@@ -651,12 +658,13 @@ impl Backend for FakeBackend {
             })
             .collect())
     }
-    fn start_assets(&mut self, _stop: Arc<AtomicBool>, deliver: Deliver) {
+    fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver) {
         self.0.lock().unwrap().assets = Some(deliver.clone());
         let fake = self.clone();
         let retry = self.clone();
         let output = deliver.clone();
         deliver(StreamEvent::AssetRequests(AssetRequests {
+            stop,
             request: Arc::new(move |asset, purpose| {
                 let mut fake = fake.clone();
                 let output = output.clone();
@@ -681,7 +689,7 @@ impl Backend for FakeBackend {
     fn authorize(
         &mut self,
         _asset: &crate::client::desktop::assets::Asset,
-    ) -> std::result::Result<Option<String>, crate::client::desktop::assets::Failure> {
+    ) -> Result<Option<String>> {
         Ok(None)
     }
     fn retry_asset(&mut self, key: &str) {
@@ -727,7 +735,10 @@ impl Backend for FakeBackend {
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>> {
         use crate::client::desktop::assets::{Payload, Pixels, Purpose};
-        if let Some(pixels) = asset.local_pixels().map_err(|_| Error::Decode)? {
+        if let Some(pixels) = asset
+            .local_pixels()
+            .map_err(|_| Failure::Bug("decode".into()))?
+        {
             return Ok(Some(Payload::Image(Arc::new(pixels))));
         }
 
@@ -810,7 +821,7 @@ impl Backend for FakeBackend {
                     ..Default::default()
                 })
             })
-            .ok_or(Error::Decode)
+            .ok_or(Failure::Bug("decode".into()))
     }
 
     fn notice(&mut self, _mid: &str) -> Result<Value> {
@@ -881,7 +892,7 @@ impl Backend for FakeBackend {
     fn profile(&mut self) -> Result<Profile> {
         self.rpc(FakeRpc::Profile)?;
         if self.0.lock().unwrap().signed_out {
-            return Err(Error::Auth);
+            return Err(Failure::SignedOut(SignOutReason::AuthenticationFailed));
         }
         Ok(Profile {
             mid: "self".into(),
@@ -965,10 +976,10 @@ impl Backend for FakeBackend {
         let mut fake = self.clone();
         Ok(Box::new(move |progress| {
             item.read(crate::attachments::FILE_LIMIT).map_err(|_| {
-                Error::Rejected(if item.path.is_file() {
-                    RejectReason::NotAccepted
+                Failure::Refused(if item.path.is_file() {
+                    Refusal::NotAccepted
                 } else {
-                    RejectReason::FileMissing
+                    Refusal::FileMissing
                 })
             })?;
             fake.online()?;
@@ -983,7 +994,7 @@ impl Backend for FakeBackend {
                 std::thread::sleep(delay / 11);
             }
             if fake.0.lock().unwrap().upload_failures.remove(&item.name) {
-                return Err(Error::Rejected(RejectReason::SyntheticSend));
+                return Err(Failure::Refused(Refusal::SyntheticSend));
             }
             Ok(Box::new(move |_backend: &mut dyn Backend| {
                 let row = fake.fake_send(&chat, item.content(), seq)?;
@@ -1150,18 +1161,23 @@ impl Backend for FakeBackend {
     }
     fn decode(&mut self, raw: Value) -> Result<LiveOp> {
         Ok(LiveOp {
-            revision: raw["revision"].as_i64().ok_or(Error::Decode)?,
+            revision: raw["revision"]
+                .as_i64()
+                .ok_or(Failure::Bug("decode".into()))?,
             replay: raw["replay"].as_bool().unwrap_or(false),
             op: match raw["type"].as_u64() {
                 Some(139 | 140) => reaction_operation(&raw, "self")?,
                 Some(64 | 65) => Op::Withdraw(ServerId(
-                    raw["param2"].as_str().ok_or(Error::Decode)?.into(),
+                    raw["param2"]
+                        .as_str()
+                        .ok_or(Failure::Bug("decode".into()))?
+                        .into(),
                 )),
                 _ => Op::Checkpoint,
             },
         })
     }
-    fn refresh_token(&mut self, _stop: &AtomicBool) -> Result<()> {
+    fn refresh_token(&mut self) -> Result<()> {
         Ok(())
     }
 }
@@ -1190,7 +1206,7 @@ impl LineBackend {
                 Err(error) => {
                     crate::reporting::log("saved-session", "open", error.as_ref());
                     let reason = match crate::client::error::classify(&error) {
-                        Error::SignIn(reason) => reason,
+                        Failure::SignedOut(SignOutReason::Unavailable(reason)) => reason,
                         _ => crate::client::error::SignInFailure::SavedSession(
                             crate::client::error::SavedSessionFailure::Corrupt,
                         ),
@@ -1211,22 +1227,8 @@ impl LineBackend {
         })
     }
 }
-fn rpc(error: anyhow::Error) -> Error {
-    crate::reporting::log("backend-rpc", "source", error.as_ref());
+fn rpc(error: anyhow::Error) -> Failure {
     crate::client::error::classify(&error)
-}
-fn send_rpc(e: anyhow::Error) -> Error {
-    crate::reporting::log("send", "source", e.as_ref());
-    if e.downcast_ref::<Error>().is_some()
-        || e.downcast_ref::<crate::client::RpcError>()
-            .is_some_and(|e| matches!(e.http, 401 | 403) || (500..600).contains(&e.http))
-    {
-        return rpc(e);
-    }
-    match crate::client::desktop::send_failure(&e) {
-        crate::client::desktop::SendFailure::Rejected => Error::Rejected(RejectReason::NotAccepted),
-        _ => rpc(e),
-    }
 }
 fn message_input(chat: &ChatId, m: crate::client::desktop::Message, rev: i64) -> MessageInput {
     MessageInput {
@@ -1269,7 +1271,9 @@ impl Backend for LineBackend {
     }
     fn session(&self) -> Result<bool> {
         match &self.session_failure {
-            Some(reason) => Err(Error::SignIn(reason.clone())),
+            Some(reason) => Err(Failure::SignedOut(SignOutReason::Unavailable(
+                reason.clone(),
+            ))),
             None => Ok(self.has_session()),
         }
     }
@@ -1303,7 +1307,10 @@ impl Backend for LineBackend {
         )
         .map_err(|error| {
             crate::reporting::log("sign-in", "pairing", error.as_ref());
-            Error::SignIn(pairing::failure(&error, cancel.load(Ordering::Relaxed)))
+            Failure::SignedOut(SignOutReason::Unavailable(pairing::failure(
+                &error,
+                cancel.load(Ordering::Relaxed),
+            )))
         })?;
         client.installed_at(&self.state);
         self.client = Some(client);
@@ -1314,16 +1321,15 @@ impl Backend for LineBackend {
     fn friends(&mut self) -> Result<Vec<crate::store::Friend>> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .friends()
             .map_err(rpc)
     }
     fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .members(&chat.0)
-            .map(|(m, _)| m)
             .map_err(rpc)
     }
     fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver) {
@@ -1331,6 +1337,7 @@ impl Backend for LineBackend {
         let Some(client) = self.client.as_mut() else {
             return;
         };
+        let queue_stop = stop.clone();
         self.fetchers = Some(Arc::new(client.asset_fetchers(
             stop,
             Arc::new(Default::default()),
@@ -1364,6 +1371,7 @@ impl Backend for LineBackend {
         let requests = self.fetchers.as_ref().unwrap().clone();
         let retry = requests.clone();
         deliver(StreamEvent::AssetRequests(AssetRequests {
+            stop: queue_stop,
             request: Arc::new(move |asset, purpose| {
                 requests.enqueue(asset, None, purpose);
             }),
@@ -1375,12 +1383,12 @@ impl Backend for LineBackend {
     fn authorize(
         &mut self,
         asset: &crate::client::desktop::assets::Asset,
-    ) -> std::result::Result<Option<String>, crate::client::desktop::assets::Failure> {
+    ) -> Result<Option<String>> {
         self.client
             .as_mut()
-            .ok_or(crate::client::desktop::assets::Failure::Cancelled)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .media_token(asset)
-            .map_err(|e| crate::client::desktop::assets::Failure::from_error(&e))
+            .map_err(rpc)
     }
     fn retry_asset(&mut self, key: &str) {
         self.fetchers.as_ref().unwrap().retry(key);
@@ -1422,21 +1430,21 @@ impl Backend for LineBackend {
     fn contact(&mut self, mid: &str) -> Result<crate::store::Friend> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .contact(mid)
             .map_err(rpc)
     }
     fn notice(&mut self, mid: &str) -> Result<Value> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .profile_notice(mid)
             .map_err(rpc)
     }
     fn full_chat(&mut self, chat: &ChatId) -> Result<Value> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .full_chat(&chat.0)
             .map_err(rpc)
     }
@@ -1445,22 +1453,22 @@ impl Backend for LineBackend {
             ProfileAction::Rename { mid, name } => self
                 .client
                 .as_mut()
-                .ok_or(Error::Auth)?
+                .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
                 .rename_contact(mid, name, seq),
             ProfileAction::AddFriend { mid, chat } => self
                 .client
                 .as_mut()
-                .ok_or(Error::Auth)?
+                .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
                 .add_friend(mid, chat, seq),
             ProfileAction::Mute { chat, disabled } => self
                 .client
                 .as_mut()
-                .ok_or(Error::Auth)?
+                .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
                 .mute_chat(&chat.0, *disabled, seq),
             ProfileAction::Leave { chat } => self
                 .client
                 .as_mut()
-                .ok_or(Error::Auth)?
+                .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
                 .leave_chat(&chat.0, seq),
         }
         .map_err(rpc)
@@ -1469,16 +1477,16 @@ impl Backend for LineBackend {
         let data = self
             .client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .online_profile()
             .map_err(rpc)?;
-        serde_json::from_value(data).map_err(|_| Error::Decode)
+        serde_json::from_value(data).map_err(|_| Failure::Bug("decode".into()))
     }
     fn chats(&mut self, cursor: Option<String>) -> Result<ChatPage> {
         let (rows, more, cursor) = self
             .client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .chats(cursor.as_deref())
             .map_err(rpc)?;
         let previews = rows
@@ -1501,7 +1509,7 @@ impl Backend for LineBackend {
         Ok(self
             .client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .chat_detail(&chat.0)
             .map_err(rpc)?
             .into_iter()
@@ -1513,7 +1521,7 @@ impl Backend for LineBackend {
             PageKind::Older { before } => self
                 .client
                 .as_mut()
-                .ok_or(Error::Auth)?
+                .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
                 .older(
                     &chat.0,
                     before.sort_id.trim_start_matches('0'),
@@ -1524,7 +1532,7 @@ impl Backend for LineBackend {
                 let rows = self
                     .client
                     .as_mut()
-                    .ok_or(Error::Auth)?
+                    .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
                     .refresh_messages(&chat.0)
                     .map_err(rpc)?;
                 let start = rows.len() < 50;
@@ -1552,22 +1560,16 @@ impl Backend for LineBackend {
         seq: u32,
     ) -> Result<UploadJob> {
         if !item.path.is_file() {
-            return Err(Error::Rejected(RejectReason::FileMissing));
+            return Err(Failure::Refused(Refusal::FileMissing));
         }
         let upload = self
             .client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .prepare_attachment(&chat.0, item, seq)
-            .map_err(|error| match rpc(error) {
-                e @ (Error::Auth | Error::SessionInvalid | Error::Rejected(_)) => e,
-                _ => Error::Rejected(RejectReason::UploadFailed),
-            })?;
+            .map_err(rpc)?;
         Ok(Box::new(move |progress| {
-            let uploaded = upload(progress).map_err(|e| match rpc(e) {
-                e @ (Error::Auth | Error::SessionInvalid | Error::Rejected(_)) => e,
-                _ => Error::Rejected(RejectReason::UploadFailed),
-            })?;
+            let uploaded = upload(progress).map_err(rpc)?;
             Ok(Box::new(move |backend: &mut dyn Backend| {
                 backend.finish_attachment(&chat, uploaded, seq)
             }) as FinishUpload)
@@ -1581,52 +1583,52 @@ impl Backend for LineBackend {
     ) -> Result<MessageInput> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .finish_attachment(&chat.0, uploaded, seq)
-            .map_err(send_rpc)
+            .map_err(rpc)
             .map(|m| message_input(chat, m, 0))
     }
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .send_text_with_request(&chat.0, text, seq)
-            .map_err(send_rpc)
+            .map_err(rpc)
             .map(|m| message_input(chat, m, 0))
     }
     fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .react(&id.0, kind, seq)
             .map_err(rpc)
     }
     fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .sticker_packages()
             .map_err(rpc)
     }
     fn send_sticker(&mut self, chat: &ChatId, sticker: &Content, seq: u32) -> Result<MessageInput> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .send_sticker(&chat.0, sticker, seq)
             .map(|m| message_input(chat, m, 0))
-            .map_err(send_rpc)
+            .map_err(rpc)
     }
     fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .create_chat(name, targets, seq)
             .map_err(rpc)
     }
     fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .unsend(&id.0, seq)
             .map_err(rpc)
     }
@@ -1634,7 +1636,7 @@ impl Backend for LineBackend {
         Ok(self
             .client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .read_ranges(&chat.0)
             .map_err(rpc)?
             .into_iter()
@@ -1644,7 +1646,7 @@ impl Backend for LineBackend {
     fn mark_read(&mut self, chat: &ChatId, id: &ServerId, seq: u32) -> Result<()> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .mark_read(&chat.0, &id.0, seq)
             .map_err(rpc)
     }
@@ -1657,21 +1659,27 @@ impl Backend for LineBackend {
         let replay_through = self
             .client
             .as_mut()
-            .ok_or(Error::Auth)?
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .latest_revision()
             .map_err(rpc)?;
-        let access = self.client.as_mut().ok_or(Error::Auth)?.stream_access();
+        let access = self
+            .client
+            .as_mut()
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
+            .stream_access();
         Ok(Box::new(move || {
             use crate::client::desktop::sync::{self, Event, SyncState};
             let refresh_deliver = deliver.clone();
-            let _ = sync::receive_with_auth(
+            let result = sync::receive_with_auth(
                 revision as u64,
                 &stop,
                 |renew| {
                     if renew {
                         let (reply, rx) = std::sync::mpsc::sync_channel(1);
                         if !refresh_deliver(StreamEvent::RefreshToken { reply }) {
-                            return Err(Error::Auth.into());
+                            return Err(
+                                Failure::SignedOut(SignOutReason::AuthenticationFailed).into()
+                            );
                         }
                         loop {
                             match rx.recv_timeout(Duration::from_millis(100)) {
@@ -1681,7 +1689,12 @@ impl Backend for LineBackend {
                                 }
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
                                     if !stop.load(Ordering::Relaxed) => {}
-                                Err(_) => return Err(Error::Auth.into()),
+                                Err(_) => {
+                                    return Err(Failure::SignedOut(
+                                        SignOutReason::AuthenticationFailed,
+                                    )
+                                    .into());
+                                }
                             }
                         }
                     }
@@ -1698,7 +1711,6 @@ impl Backend for LineBackend {
                         }
                         Event::State(s) => match s {
                             SyncState::Connected => StreamEvent::Connection(Ok(())),
-                            SyncState::AuthExpired => StreamEvent::Connection(Err(Error::Auth)),
                             SyncState::Reconnecting { attempt } => StreamEvent::Connecting(attempt),
                         },
                         Event::Failure { attempt, error } => StreamEvent::Retry { attempt, error },
@@ -1712,13 +1724,21 @@ impl Backend for LineBackend {
                     })
                 },
             );
+            if !stop.load(Ordering::Relaxed)
+                && let Err(error) = result
+            {
+                deliver(StreamEvent::Retry {
+                    attempt: 1,
+                    error: crate::client::error::classify(&error),
+                });
+            }
         }))
     }
     fn decode(&mut self, raw: Value) -> Result<LiveOp> {
         let revision = raw["revision"]
             .as_i64()
             .or_else(|| raw["revision"].as_str()?.parse().ok())
-            .ok_or(Error::Decode)?;
+            .ok_or(Failure::Bug("decode".into()))?;
         let chat = || ChatId(raw["param1"].as_str().unwrap_or_default().into());
         let id = || ServerId(raw["param2"].as_str().unwrap_or_default().into());
         let op = match raw["type"].as_u64() {
@@ -1726,9 +1746,10 @@ impl Backend for LineBackend {
                 let (c, mut m) = self
                     .client
                     .as_mut()
-                    .ok_or(Error::Auth)?
+                    .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
                     .operation(&raw)
-                    .ok_or(Error::Decode)?;
+                    .map_err(rpc)?
+                    .ok_or(Failure::Bug("decode".into()))?;
                 m.request_seq = raw["reqSeq"]
                     .as_u64()
                     .or_else(|| raw["reqSeq"].as_str()?.parse().ok())
@@ -1738,16 +1759,25 @@ impl Backend for LineBackend {
             }
             Some(55) => Op::Receipt {
                 chat: chat(),
-                up_to: ServerId(raw["param3"].as_str().ok_or(Error::Decode)?.into()),
+                up_to: ServerId(
+                    raw["param3"]
+                        .as_str()
+                        .ok_or(Failure::Bug("decode".into()))?
+                        .into(),
+                ),
             },
             Some(40) => Op::Read {
                 chat: chat(),
                 up_to: id(),
             },
             Some(64 | 65) => Op::Withdraw(id()),
-            Some(139 | 140) => {
-                reaction_operation(&raw, self.client.as_mut().ok_or(Error::Auth)?.local_mid())?
-            }
+            Some(139 | 140) => reaction_operation(
+                &raw,
+                self.client
+                    .as_mut()
+                    .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
+                    .local_mid(),
+            )?,
             _ => Op::Checkpoint,
         };
         Ok(LiveOp {
@@ -1756,23 +1786,27 @@ impl Backend for LineBackend {
             op,
         })
     }
-    fn refresh_token(&mut self, stop: &AtomicBool) -> Result<()> {
+    fn refresh_token(&mut self) -> Result<()> {
         self.client
             .as_mut()
-            .ok_or(Error::Auth)?
-            .refresh_token(stop)
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
+            .refresh_token()
             .map_err(rpc)
     }
 }
 
 fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
-    let data: Value = serde_json::from_str(raw["param2"].as_str().ok_or(Error::Decode)?)
-        .map_err(|_| Error::Decode)?;
+    let data: Value = serde_json::from_str(
+        raw["param2"]
+            .as_str()
+            .ok_or(Failure::Bug("decode".into()))?,
+    )
+    .map_err(|_| Failure::Bug("decode".into()))?;
     let chat = ChatId(
         data["chatMid"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or(Error::Decode)?
+            .ok_or(Failure::Bug("decode".into()))?
             .into(),
     );
     let actor = if raw["type"] == 139 {
@@ -1791,7 +1825,12 @@ fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
     };
     match actor.filter(|s| !s.is_empty()) {
         Some(actor) => Ok(Op::Reaction {
-            id: ServerId(raw["param1"].as_str().ok_or(Error::Decode)?.into()),
+            id: ServerId(
+                raw["param1"]
+                    .as_str()
+                    .ok_or(Failure::Bug("decode".into()))?
+                    .into(),
+            ),
             actor: actor.into(),
             curr: crate::client::desktop::reaction_kind(&data["curr"]),
         }),

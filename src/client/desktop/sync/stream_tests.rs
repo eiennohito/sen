@@ -249,15 +249,16 @@ fn statuses_preserve_auth_mapping_and_any_content_type_is_accepted_on_200() {
                 Ok(false)
             },
         );
-        // 401/403 remain statuses, so receive retains its refresh/expiry path.
-        if status == 503 {
+        if status != 200 {
+            let failure = crate::client::error::classify(&result.unwrap_err());
             assert!(matches!(
-                result.unwrap_err().downcast_ref::<crate::client::Error>(),
-                Some(crate::client::Error::Server(503))
+                failure,
+                crate::client::error::Failure::Unanswered | crate::client::error::Failure::Bug(_)
             ));
         } else {
             assert_eq!(result.unwrap(), status);
         }
+
         server.join().unwrap();
     }
 }

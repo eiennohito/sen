@@ -66,7 +66,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             d.sender.send(Intent::Unsend(Key(id.parse().unwrap())));
         }
         if action == "resend" {
-            d.sender.send(Intent::Resend(Key(id.parse().unwrap())));
+            d.sender.send(Intent::Retry(Key(id.parse().unwrap())));
         }
         if action == "replace" {
             d.sender.send(Intent::Copy(Key(id.parse().unwrap())));

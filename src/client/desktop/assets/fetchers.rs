@@ -165,9 +165,13 @@ impl Fetchers {
                 let cache = cache.clone();
                 let publish = publish.clone();
                 let authorize = authorize.clone();
+                let observer = crate::client::error::current_network_observer();
                 thread::Builder::new()
                     .name(format!("line-asset-{index}"))
                     .spawn(move || {
+                        if let Some(observer) = observer {
+                            crate::client::error::set_network_observer(observer);
+                        }
                         set_cancellation_token(shared.stop.clone());
                         loop {
                             let (key, job, blacklisted) = {

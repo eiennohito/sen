@@ -279,16 +279,16 @@ export component Message inherits VerticalLayout {
                             if State.unsend-feedback-id == root.message.id: Text { text: "Couldn't unsend."; color: Tokens.danger; font-size: Tokens.time; }
                             if root.message.recoverable: HorizontalLayout {
                                 spacing: 8px; alignment: start;
-                                Text { text: root.message.delivery == "Rejected" ? "Not sent" : "Maybe not sent"; color: Tokens.danger; font-size: Tokens.small; vertical-alignment: center; }
+                                Text { text: root.message.delivery == "Not sent" ? root.message.delivery-detail : "May not have been sent"; wrap: word-wrap; min-width: 0px; horizontal-stretch: 1; color: Tokens.danger; font-size: Tokens.small; vertical-alignment: center; }
                                 TextAction {
-                                    text: root.message.file-missing ? "File missing" : root.message.delivery == "Rejected" ? "Retry" : "Resend";
+                                    text: root.message.file-missing ? "File missing" : "Retry";
                                     focus-on-click: false;
                                     enabled: State.connected && !root.message.file-missing;
                                     clicked => { State.retry-message(root.message.id); }
                                     property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "resend";
                                     changed restore-action => { if self.restore-action { self.focus-action(); State.recovery-focus-id = ""; } }
                                 }
-                                TextAction { text: "Discard"; clicked => { State.discard-message(root.message.id); } }
+                                TextAction { text: "Delete"; clicked => { State.discard-message(root.message.id); } }
                             }
                             if root.message.reaction-count > 0: Rectangle {
                                 height: 28px; width: reaction-pill.preferred-width + 16px; horizontal-stretch: 0;
@@ -318,10 +318,10 @@ export component Message inherits VerticalLayout {
                                 Text { text: (root.message.group-start || root.message.recoverable) ? root.message.clock : ""; accessible-label: (root.message.group-start || root.message.recoverable) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
                                 if root.message.outgoing: Image {
                                     width: 16px; height: 16px;
-                                    source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/clock.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == "Rejected" ? @image-url("../assets/icons/error.svg") : root.message.delivery == "Unconfirmed" ? @image-url("../assets/icons/warning.svg") : @image-url("../assets/icons/check.svg");
+                                    source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/clock.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == "Not sent" ? @image-url("../assets/icons/error.svg") : root.message.delivery == "May not have been sent" ? @image-url("../assets/icons/warning.svg") : @image-url("../assets/icons/check.svg");
                                     accessible-role: image;
                                     accessible-label: root.message.delivery == "Sending…" ? "Sending" : root.message.delivery == "" ? "Sent" : root.message.delivery;
-                                    colorize: root.message.delivery == "Rejected" ? Tokens.danger : root.message.delivery == "Read" ? Tokens.accent-strong : Tokens.secondary;
+                                    colorize: root.message.delivery == "Not sent" ? Tokens.danger : root.message.delivery == "Read" ? Tokens.accent-strong : Tokens.secondary;
                                 }
                             }
                         }

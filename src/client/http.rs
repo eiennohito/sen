@@ -85,10 +85,8 @@ struct RequestState {
     connecting: bool,
     connector_depth: usize,
     attempt: u64,
-    reused: bool,
-    body_remaining: usize,
-    final_write_started: bool,
-    force_fresh: bool,
+    writing: bool,
+    write_started: bool,
     pool: bool,
     write_failure: Option<io::ErrorKind>,
     socket: Option<Arc<Socket>>,
@@ -124,10 +122,8 @@ impl RequestScope {
                 connecting: true,
                 connector_depth: 0,
                 attempt: 0,
-                reused: false,
-                body_remaining: 0,
-                final_write_started: false,
-                force_fresh: false,
+                writing: false,
+                write_started: false,
                 pool: true,
                 write_failure: None,
                 socket: None,
@@ -256,8 +252,6 @@ impl Connector for PollConnector {
                     Box::new(RequestTransport {
                         inner,
                         last_attempt: 0,
-                        header_match: 0,
-                        headers_done: false,
                     }) as Self::Out
                 } else {
                     inner
@@ -379,8 +373,6 @@ fn connect_polled(addr: std::net::SocketAddr, remaining: Duration) -> Result<Tcp
 struct RequestTransport {
     inner: Box<dyn UreqTransport>,
     last_attempt: u64,
-    header_match: usize,
-    headers_done: bool,
 }
 
 impl UreqTransport for RequestTransport {
@@ -398,39 +390,10 @@ impl UreqTransport for RequestTransport {
             let mut slot = slot.borrow_mut();
             let state = slot.as_mut().unwrap();
             if self.last_attempt != state.attempt {
-                state.reused = self.last_attempt != 0;
                 self.last_attempt = state.attempt;
-                self.header_match = 0;
-                self.headers_done = false;
-                // DNS and the selected TCP/TLS transport are now ready.
                 state.connecting = false;
             }
-            // NextTimeout.reason may be Global even during a body write.
-            // Count plaintext HTTP bytes above TLS instead of inferring the
-            // phase from the timeout. The delimiter may span multiple buffers.
-            let output = &self.inner.buffers().output()[..amount];
-            let mut body_start = 0;
-            if !self.headers_done {
-                body_start = output.len();
-                for (index, &byte) in output.iter().enumerate() {
-                    let delimiter = b"\r\n\r\n";
-                    if byte == delimiter[self.header_match] {
-                        self.header_match += 1;
-                    } else {
-                        self.header_match = usize::from(byte == b'\r');
-                    }
-                    if self.header_match == delimiter.len() {
-                        self.headers_done = true;
-                        body_start = index + 1;
-                        break;
-                    }
-                }
-            }
-            let body_bytes = output.len() - body_start;
-            // A TLS flush can fail after the final encrypted bytes reached the
-            // peer. Disable retry before attempting that final write, not after.
-            state.final_write_started |= self.headers_done && body_bytes >= state.body_remaining;
-            state.body_remaining = state.body_remaining.saturating_sub(body_bytes);
+            state.writing = true;
         });
         let result = self.inner.transmit_output(amount, timeout);
         // Check even after Ok: rustls Stream::write deliberately ignores the
@@ -449,7 +412,7 @@ impl UreqTransport for RequestTransport {
         let force_fresh = ACTIVE.with(|slot| {
             let slot = slot.borrow();
             let state = slot.as_ref().unwrap();
-            !state.pool || (state.force_fresh && self.last_attempt != state.attempt)
+            !state.pool
         });
         if force_fresh {
             return false;
@@ -516,6 +479,11 @@ impl UreqTransport for PollTransport {
                 Ok(0) => return Err(record_write_failure(io::ErrorKind::WriteZero)),
                 Ok(n) => {
                     sent += n;
+                    ACTIVE.with(|slot| {
+                        let mut slot = slot.borrow_mut();
+                        let state = slot.as_mut().unwrap();
+                        state.write_started |= state.writing;
+                    });
                     byte_progress();
                 }
                 Err(error) if retryable(&error) => continue,
@@ -720,7 +688,14 @@ impl Transport {
             });
         });
         if parts.status.is_server_error() {
-            return Err(super::Error::Server(i64::from(parts.status.as_u16())).into());
+            return Err(crate::client::RpcError {
+                gateway: 0,
+                method: "stream".into(),
+                http: parts.status.as_u16(),
+                code: 0,
+                status: 0,
+            }
+            .into());
         }
         consume(parts.status.as_u16(), &parts.headers, &mut reader)
     }
@@ -738,66 +713,19 @@ impl Transport {
         #[cfg(test)]
         let base = &self.base;
         let _scope = RequestScope::new(timeout, self.config);
-        let mut response = loop {
-            check_request().map_err(transport_error)?;
-            ACTIVE.with(|slot| {
-                let mut slot = slot.borrow_mut();
-                let state = slot.as_mut().unwrap();
-                state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
-                state.reused = false;
-                state.body_remaining = body.len();
-                state.final_write_started = false;
-                state.write_failure = None;
-                state.connecting = true;
-            });
-            let remaining = ACTIVE.with(|slot| {
-                slot.borrow()
-                    .as_ref()
-                    .unwrap()
-                    .deadline
-                    .saturating_duration_since(Instant::now())
-            });
-            let mut request = self
-                .agent
-                .post(format!("{base}{path}"))
-                .config()
-                .timeout_global(Some(remaining))
-                .build();
-            for (name, value) in &validated {
-                request = request.header(name.clone(), value.clone());
-            }
-            let response = request.send(body.as_bytes());
-            check_request().map_err(transport_error)?;
-            match response {
-                Ok(response) => break response,
-                Err(error) => {
-                    let retry = matches!(&error, ureq::Error::Io(e) if matches!(e.kind(),
-                        io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset |
-                        io::ErrorKind::ConnectionAborted | io::ErrorKind::NotConnected |
-                        io::ErrorKind::UnexpectedEof | io::ErrorKind::WriteZero))
-                        && ACTIVE.with(|slot| {
-                            let slot = slot.borrow();
-                            let state = slot.as_ref().unwrap();
-                            state.reused && !state.final_write_started && !state.force_fresh
-                        });
-                    if !retry {
-                        return Err(transport_error(error));
-                    }
-                    ACTIVE.with(|slot| {
-                        let mut slot = slot.borrow_mut();
-                        let state = slot.as_mut().unwrap();
-                        if let Some(socket) = state.socket.take() {
-                            socket.close();
-                        }
-                        state.force_fresh = true;
-                    });
-                }
-            }
-        };
-        let status = response.status().as_u16();
-        if (500..600).contains(&status) {
-            return Err(super::Error::Server(i64::from(status)).into());
+        check_request().map_err(transport_error)?;
+        ACTIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut().unwrap();
+            state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+        });
+        let mut request = self.agent.post(format!("{base}{path}"));
+        for (name, value) in validated {
+            request = request.header(name, value);
         }
+        let mut response = request.send(body.as_bytes()).map_err(transport_error)?;
+        check_request().map_err(transport_error)?;
+        let status = response.status().as_u16();
         ensure!(
             response
                 .headers()
@@ -815,7 +743,7 @@ impl Transport {
             let remaining = (MAX_BODY - bytes.len() + 1).min(chunk.len());
             let n = reader.read(&mut chunk[..remaining]);
             check_request().map_err(transport_error)?;
-            let n = n.map_err(|_| super::Error::Offline(super::error::NetCause::Unreachable))?;
+            let n = n.map_err(|error| transport_error(error.into()))?;
             if n == 0 {
                 return Ok((status, bytes));
             }
@@ -836,9 +764,13 @@ impl Transport {
         progress: &mut dyn FnMut(u64),
     ) -> Result<String> {
         let _scope = RequestScope::new(Duration::from_secs(60), self.config);
-        ACTIVE
-            .with(|slot| slot.borrow_mut().as_mut().unwrap().idle = Some(Duration::from_secs(60)));
-        check_request()?;
+        ACTIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut().unwrap();
+            state.idle = Some(Duration::from_secs(60));
+            state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+        });
+        check_request().map_err(transport_error)?;
         let mut request = self
             .agent
             .post(url)
@@ -870,18 +802,16 @@ impl Transport {
         let response = request
             .header("content-length", bytes.len().to_string())
             .send(ureq::SendBody::from_reader(&mut body))
-            .map_err(|error| {
-                let stalled = matches!(error, ureq::Error::Timeout(_))
-                    || ACTIVE
-                        .with(|slot| Instant::now() >= slot.borrow().as_ref().unwrap().deadline);
-                super::Error::Rejected(if stalled {
-                    super::error::RejectReason::UploadStalled
-                } else {
-                    super::error::RejectReason::UploadFailed
-                })
-            })?;
+            .map_err(transport_error)?;
         if response.status() != 201 {
-            return Err(super::Error::Rejected(super::error::RejectReason::UploadRefused).into());
+            return Err(crate::client::RpcError {
+                gateway: 0,
+                method: "upload".into(),
+                http: response.status().as_u16(),
+                code: 0,
+                status: 0,
+            }
+            .into());
         }
         Ok(response
             .headers()
@@ -892,67 +822,71 @@ impl Transport {
     }
 
     pub(super) fn asset(&self, url: &str, headers: &[(&str, &str)], cap: usize) -> Result<Vec<u8>> {
-        let timeout = self.config.asset_timeout;
-        let _scope = RequestScope::new(timeout, self.config);
-        ACTIVE.with(|slot| {
-            let mut slot = slot.borrow_mut();
-            let state = slot.as_mut().unwrap();
-            state.connect_deadline = Instant::now() + self.config.asset_connect;
-            state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
-        });
-        check_request().map_err(asset_error)?;
-        #[cfg(test)]
-        let local_url = format!(
-            "{}{}",
-            self.base,
-            url.split_once("://")
-                .unwrap()
-                .1
-                .split_once('/')
-                .map(|(_, path)| format!("/{path}"))
-                .unwrap_or_default()
-        );
-        #[cfg(test)]
-        let url = if self.base == BASE { url } else { &local_url };
-        let mut request = self.agent.get(url);
-        for (name, value) in headers {
-            ensure!(!value.contains(['\r', '\n']), "invalid media header");
-            let mut value = HeaderValue::from_str(value)
-                .map_err(|_| anyhow::anyhow!("invalid media header"))?;
-            value.set_sensitive(true);
-            request = request.header(*name, value);
-        }
-        let mut response = request.call().map_err(asset_error)?;
-        ensure!(
-            response.status() == 200,
-            super::desktop::assets::Failure::Http(response.status().as_u16())
-        );
-        ensure!(
-            response
-                .headers()
-                .get("content-length")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|v| v.parse::<u64>().ok())
-                .is_none_or(|n| n <= cap as u64),
-            super::desktop::assets::Failure::TooLarge
-        );
-        let mut reader = response.body_mut().as_reader();
-        let mut bytes = Vec::new();
-        let mut chunk = [0; 8192];
-        loop {
-            check_request().map_err(asset_error)?;
-            let n = reader.read(&mut chunk[..(cap - bytes.len() + 1).min(8192)]);
-            check_request().map_err(asset_error)?;
-            let n = n.map_err(|error| asset_error(error.into()))?;
+        let result = (|| {
+            let timeout = self.config.asset_timeout;
+            let _scope = RequestScope::new(timeout, self.config);
+            ACTIVE.with(|slot| {
+                let mut slot = slot.borrow_mut();
+                let state = slot.as_mut().unwrap();
+                state.connect_deadline = Instant::now() + self.config.asset_connect;
+                state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+            });
+            check_request().map_err(transport_error)?;
+            #[cfg(test)]
+            let local_url = format!(
+                "{}{}",
+                self.base,
+                url.split_once("://")
+                    .unwrap()
+                    .1
+                    .split_once('/')
+                    .map(|(_, path)| format!("/{path}"))
+                    .unwrap_or_default()
+            );
+            #[cfg(test)]
+            let url = if self.base == BASE { url } else { &local_url };
+            let mut request = self.agent.get(url);
+            for (name, value) in headers {
+                ensure!(!value.contains(['\r', '\n']), "invalid media header");
+                let mut value = HeaderValue::from_str(value)
+                    .map_err(|_| anyhow::anyhow!("invalid media header"))?;
+                value.set_sensitive(true);
+                request = request.header(*name, value);
+            }
+            let mut response = request.call().map_err(transport_error)?;
             ensure!(
-                bytes.len() + n <= cap,
+                response.status() == 200,
+                super::desktop::assets::Failure::Http(response.status().as_u16())
+            );
+            ensure!(
+                response
+                    .headers()
+                    .get("content-length")
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.parse::<u64>().ok())
+                    .is_none_or(|n| n <= cap as u64),
                 super::desktop::assets::Failure::TooLarge
             );
-            if n == 0 {
-                return Ok(bytes);
+            let mut reader = response.body_mut().as_reader();
+            let mut bytes = Vec::new();
+            let mut chunk = [0; 8192];
+            loop {
+                check_request().map_err(transport_error)?;
+                let n = reader.read(&mut chunk[..(cap - bytes.len() + 1).min(8192)]);
+                check_request().map_err(transport_error)?;
+                let n = n.map_err(|error| transport_error(error.into()))?;
+                ensure!(
+                    bytes.len() + n <= cap,
+                    super::desktop::assets::Failure::TooLarge
+                );
+                if n == 0 {
+                    return Ok(bytes);
+                }
+                bytes.extend_from_slice(&chunk[..n]);
             }
-            bytes.extend_from_slice(&chunk[..n]);
-        }
+        })();
+        super::error::network_result(&result.as_ref().map(|_| ()).map_err(super::error::classify));
+        result
     }
 
     #[cfg(test)]
@@ -1028,52 +962,20 @@ fn validate(path: &str, headers: &[(&str, &str)]) -> Result<Vec<(HeaderName, Hea
     Ok(validated)
 }
 
-fn asset_error(error: ureq::Error) -> anyhow::Error {
-    use super::desktop::assets::Failure;
-    if ACTIVE.with(|slot| {
-        slot.borrow()
-            .as_ref()
-            .and_then(|s| s.cancel.as_ref())
-            .is_some_and(|c| c.load(Ordering::Relaxed))
-    }) {
-        Failure::Cancelled
-    } else if matches!(error, ureq::Error::Timeout(_))
-        || ACTIVE.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .is_some_and(|s| Instant::now() >= s.deadline)
-        })
-    {
-        Failure::Timeout
-    } else {
-        Failure::Network
-    }
-    .into()
-}
-
 fn transport_error(error: ureq::Error) -> anyhow::Error {
-    use super::desktop::assets::Failure;
-    let failure = if ACTIVE.with(|slot| {
+    if ACTIVE.with(|slot| {
         slot.borrow()
             .as_ref()
             .and_then(|state| state.cancel.as_ref())
             .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
     }) {
-        Failure::Cancelled
-    } else if matches!(error, ureq::Error::Timeout(_)) {
-        Failure::Timeout
-    } else {
-        Failure::Network
-    };
-    let category = match error {
-        ureq::Error::Io(_)
-        | ureq::Error::Timeout(_)
-        | ureq::Error::ConnectionFailed
-        | ureq::Error::HostNotFound
-        | ureq::Error::Tls(_) => super::Error::Offline(super::error::NetCause::Unreachable),
-        _ => super::Error::Protocol,
-    };
-    anyhow::Error::new(category).context(failure.transport_error().to_string())
+        return crate::client::error::Cancelled.into();
+    }
+    crate::client::error::TransportFailure {
+        write_started: ACTIVE.with(|slot| slot.borrow().as_ref().unwrap().write_started),
+        source: error,
+    }
+    .into()
 }
 
 #[cfg(test)]

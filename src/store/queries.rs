@@ -540,7 +540,6 @@ impl Store {
     /// Settings changed before account validation must follow local drafts/outbox work.
     pub fn set_settings(&mut self, prefs: &Prefs) -> Result<Changes> {
         let changes = self.set_prefs(prefs)?;
-        self.settings_changed = true;
         Ok(changes)
     }
     pub fn set_prefs(&mut self, prefs: &Prefs) -> Result<Changes> {

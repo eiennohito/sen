@@ -61,8 +61,8 @@ fn dns_cancellation_is_prompt_and_helpers_are_bounded() {
     assert_eq!(result.unwrap_err().to_string(), "HTTPS request cancelled");
     assert!(elapsed < Duration::from_millis(200), "{elapsed:?}");
     assert_eq!(
-        again.unwrap_err().to_string(),
-        "HTTPS request timed out; response not logged"
+        crate::client::error::classify(&again.unwrap_err()),
+        crate::client::error::Failure::NotDelivered
     );
     assert_eq!(calls.load(Ordering::Relaxed), 1);
 }
@@ -292,8 +292,6 @@ impl Connector for WriteFaultConnector {
                 after_body: self.after_body,
             }),
             last_attempt: 0,
-            header_match: 0,
-            headers_done: false,
         })))
     }
 }
@@ -336,63 +334,44 @@ impl UreqTransport for WriteFault {
 }
 
 #[test]
-fn retries_reused_write_failure_once_on_fresh_connection() {
-    for failure_count in [1, 2] {
-        let (done, wait) = mpsc::channel();
-        let (mut transport, server) = local_server(move |listener| {
-            let mut stream = BufReader::new(accept(&listener));
-            assert!(read_request(&mut stream));
-            stream
-                .get_mut()
-                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
-                .unwrap();
-            assert!(
-                !read_request(&mut stream),
-                "failed attempt must close old socket"
-            );
-            let mut fresh = BufReader::new(accept(&listener));
-            if failure_count == 1 {
-                assert!(read_request(&mut fresh));
-                fresh
-                    .get_mut()
-                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
-                    .unwrap();
-            } else {
-                assert!(!read_request(&mut fresh));
-            }
-            wait.recv_timeout(Duration::from_secs(2)).unwrap();
-            assert_eq!(
-                listener.accept().unwrap_err().kind(),
-                io::ErrorKind::WouldBlock,
-                "must not retry twice"
-            );
-        });
-        let failures = Arc::new(AtomicUsize::new(0));
-        transport.agent = Agent::with_parts(
-            transport.agent.config().clone(),
-            WriteFaultConnector {
-                failures: failures.clone(),
-                after_body: false,
-            },
-            PollResolver::default(),
-        );
-        transport
-            .request("/api/test", "{}", &[], Duration::from_millis(400))
+fn reused_write_failure_returns_without_resending() {
+    let (done, wait) = mpsc::channel();
+    let (mut transport, server) = local_server(move |listener| {
+        let mut stream = BufReader::new(accept(&listener));
+        assert!(read_request(&mut stream));
+        stream
+            .get_mut()
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
             .unwrap();
-        failures.store(failure_count, Ordering::Relaxed);
-        let result = transport.request("/api/test", "{}", &[], Duration::from_millis(400));
-        done.send(()).unwrap();
-        server.join().unwrap();
-        if failure_count == 1 {
-            assert_eq!(result.unwrap(), (200, b"{}".to_vec()));
-        } else {
-            assert_eq!(
-                result.unwrap_err().to_string(),
-                "HTTPS transport failed; response not logged"
-            );
-        }
-        assert_eq!(failures.load(Ordering::Relaxed), 0);
-    }
+        assert!(!read_request(&mut stream));
+        wait.recv_timeout(Duration::from_secs(2)).unwrap();
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            io::ErrorKind::WouldBlock
+        );
+    });
+    let failures = Arc::new(AtomicUsize::new(0));
+    transport.agent = Agent::with_parts(
+        transport.agent.config().clone(),
+        WriteFaultConnector {
+            failures: failures.clone(),
+            after_body: false,
+        },
+        PollResolver::default(),
+    );
+    transport
+        .request("/api/test", "{}", &[], Duration::from_millis(400))
+        .unwrap();
+    failures.store(1, Ordering::Relaxed);
+    let error = transport
+        .request("/api/test", "{}", &[], Duration::from_millis(400))
+        .unwrap_err();
+    assert_eq!(
+        crate::client::error::classify(&error),
+        crate::client::error::Failure::NotDelivered
+    );
+    done.send(()).unwrap();
+    server.join().unwrap();
 }
 
 #[test]

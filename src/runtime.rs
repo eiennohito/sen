@@ -650,7 +650,7 @@ impl Runtime {
             .cloned()
             .with_context(|| format!("static {class}.{name}"))?;
         self.invoke(b, args)
-            .map_err(|error| error.context(crate::client::Error::Crypto))
+            .map_err(|error| error.context(crate::client::error::Failure::Bug("crypto".into())))
     }
     pub fn construct(&mut self, class: &str, args: &[u64]) -> Result<u32> {
         let b = self
@@ -661,7 +661,7 @@ impl Runtime {
             .cloned()
             .context("matching constructor")?;
         self.invoke(b, args)
-            .map_err(|error| error.context(crate::client::Error::Crypto))
+            .map_err(|error| error.context(crate::client::error::Failure::Bug("crypto".into())))
     }
     pub fn method(&mut self, class: &str, name: &str, this: u32, args: &[u64]) -> Result<u32> {
         let mut c = self.class(class)?;
@@ -683,7 +683,7 @@ impl Runtime {
         let mut a = vec![this as u64];
         a.extend_from_slice(args);
         self.invoke(b, &a)
-            .map_err(|error| error.context(crate::client::Error::Crypto))
+            .map_err(|error| error.context(crate::client::error::Failure::Bug("crypto".into())))
     }
     fn invoke(&mut self, b: Binding, args: &[u64]) -> Result<u32> {
         ensure!(args.len() == b.args, "binding argument count");

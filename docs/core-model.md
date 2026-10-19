@@ -267,10 +267,9 @@ enum Connection {
     Local,                         // store open, no network attempt yet
     Connecting { attempt: u32 },
     Online,
-    Offline { retry_at: Instant, cause: NetCause },
-    AuthExpired,                   // refresh failed; needs sign-in
-    SessionInvalid,                // MID mismatch / revoked
-    SigningIn { stage: PairStage },
+    Offline,
+    SignedOut { reason: SignOutReason },
+    SigningIn,
 }
 ```
 
@@ -285,28 +284,30 @@ Startup is two-phase:
   and SHA-256, ImageCache prune). Unread counts are marked stale
   (ux-model §150–155). A validated profile atomically updates `last-mid`.
 - **Online open** validates the profile, then resumes sync from the stored
-  revision. A MID mismatch moves to `SessionInvalid` and leaves the store
+  revision. A MID mismatch moves to `SignedOut` and leaves the store
   untouched.
 
-Intents that need the network while not `Online` are kept as refresh intents
-and run on the transition to `Online`. They are not dropped.
+Reads and in-session sends remain schedulable while Offline, with independent
+per-refresh backoff. SignedOut cancels queued work; old message rows require Retry
+after sign-in.
 
 ### Typed errors
 
-`client::Error { Offline(NetCause), Auth, SessionInvalid, Server(code),
-Rejected(RejectReason), Decode, Protocol, Crypto }`, built with `thiserror` at the
-`Client` boundary. The engine maps errors to connection transitions and
-per-row states. Transport I/O (including DNS, reset and timeout) is Offline; HTTP 5xx is
-Server even when its body is not JSON. Invalid responses/missing fields are
-Decode or Protocol; WASM failures are Crypto. Only Offline changes network
-availability; Auth and SessionInvalid remain terminal identity states. Other
-RPC failures retry their intent without changing the connection state. Rejected
-sends store a typed reason whose presentation preserves the existing wording.
-Store errors remain separate transaction errors.
+`client::error::classify` is the sole network-policy boundary. It returns
+`Failure::{NotDelivered, Unanswered, SignedOut, Refused, Bug}`. Transport evidence
+distinguishes failure before any request byte was written from failure after
+writing started. Gateway and TalkException codes keep their separate namespaces.
+The engine reschedules reads only for network failures, and sends only for
+NotDelivered in the same session. Unanswered sends require Retry/Delete; Refused
+and Bug terminate the item. One health object publishes Offline after 15 seconds
+without success following a network failure; success clears it. Refused and Bug
+do not affect health. SignedOut cancels queued work, preserves in-flight
+completions for their account, and requires explicit sign-in. Store errors remain
+separate transaction errors.
 
 Each refresh intent (including stream startup/restart) has its own exponential backoff: 2 seconds, 4, 8, 16,
 32, then a 60-second cap, reset after success. Profile reconnection uses the
-same policy and publishes the actual attempt in `Connecting`. `Timing` is
+same per-refresh policy without changing visible connection state during transient failures. `Timing` is
 passed at worker startup; tests inject millisecond delays and scheduler waits.
 Transport configuration separately supplies connect, socket polling, pool-idle
 and asset budgets; each RPC and stream supplies a duration for its request or
@@ -324,8 +325,8 @@ alone loads credentials, owns WASM, refreshes/persists tokens and updates that
 view; token values do not travel back through stream events. Standalone sync
 diagnostics construct their own owner outside the desktop engine.
 
-The SSE thread is restarted with backoff on every non-terminal exit. Terminal
-states are only `AuthExpired`, `SessionInvalid` and shutdown. The engine
+The SSE thread reconnects after network failures with backoff on its own thread.
+SignedOut, Refused, Bug and shutdown stop it without automatic restart. The engine
 persists the revision in the same transaction that applies an operation, and
 seeds `localRev` from it on start (D5). Operations replayed during catch-up
 carry `replay=true`, which suppresses notifications and unread increments. The

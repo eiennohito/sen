@@ -59,31 +59,6 @@ pub struct Message {
     pub skip_badge: bool,
 }
 
-#[derive(Debug)]
-pub enum SendFailure {
-    Rejected,
-    Uncertain,
-}
-impl std::fmt::Display for SendFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "send failure: {self:?}")
-    }
-}
-impl std::error::Error for SendFailure {}
-pub fn send_failure(error: &anyhow::Error) -> SendFailure {
-    if error
-        .downcast_ref::<SendFailure>()
-        .is_some_and(|v| matches!(v, SendFailure::Rejected))
-        || error
-            .downcast_ref::<RpcError>()
-            .is_some_and(|e| (400..500).contains(&e.http) || e.code != 0)
-    {
-        SendFailure::Rejected
-    } else {
-        SendFailure::Uncertain
-    }
-}
-
 /// Install the owning worker's cancellation token for all synchronous requests.
 pub fn set_cancellation_token(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     set_request_cancel(cancel);
@@ -91,11 +66,8 @@ pub fn set_cancellation_token(cancel: std::sync::Arc<std::sync::atomic::AtomicBo
 
 pub struct Client {
     api: Api,
-    session_path: PathBuf,
     cache_root: PathBuf,
     wasm: Vec<u8>,
-    state: Value,
-    stream_access: Arc<std::sync::RwLock<String>>,
     my_mid: String,
     obs_access: Option<String>,
     sequence: u64,
@@ -139,16 +111,16 @@ impl Client {
             if my_mid.is_empty() { "local" } else { &my_mid },
         )
         .context(super::error::SavedSessionFailure::ImageCache.error())?;
+        api.stream_access = Arc::new(std::sync::RwLock::new(
+            access(&state).unwrap_or_default().into(),
+        ));
+        api.state = state;
+        api.session_path = Some(state_path.into());
         let sequence = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         Ok(Self {
             api,
-            session_path: state_path.into(),
             cache_root: cache_root.into(),
             wasm,
-            stream_access: Arc::new(std::sync::RwLock::new(
-                access(&state).unwrap_or_default().into(),
-            )),
-            state,
             my_mid: my_mid.clone(),
             obs_access: None,
             sequence,
@@ -157,11 +129,12 @@ impl Client {
     }
 
     pub(crate) fn installed_at(&mut self, path: &Path) {
-        self.session_path = path.into();
+        self.api.session_path = Some(path.into());
     }
 
     fn talk(&mut self, method: &str, args: Value) -> Result<Value> {
-        chat::talk(&mut self.api, access(&self.state)?, method, args)
+        let token = access(&self.api.state)?.to_owned();
+        chat::talk(&mut self.api, &token, method, args)
     }
 
     pub fn open(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
@@ -173,25 +146,14 @@ impl Client {
         &self.my_mid
     }
     pub fn online_profile(&mut self) -> Result<Value> {
-        let token = access(&self.state).map_err(|_| crate::client::Error::Auth)?;
-        let profile = match self.api.profile(token) {
-            Ok(profile) => profile,
-            Err(error)
-                if error.downcast_ref::<RpcError>().is_some_and(|e| {
-                    matches!(e.http, 401 | 403) || matches!(e.code, 1 | 7 | 8 | 119)
-                }) =>
-            {
-                let cancel = REQUEST_CANCEL
-                    .with(|slot| slot.borrow().clone())
-                    .unwrap_or_default();
-                self.refresh_token(&cancel)?;
-                self.api.profile(access(&self.state)?)?
-            }
-            Err(error) => return Err(error),
-        };
+        let token = access(&self.api.state)?.to_owned();
+        let profile = self.api.profile(&token)?;
         let mid = required(&profile, "mid")?;
         if !self.my_mid.is_empty() && mid != self.my_mid {
-            return Err(crate::backend::Error::SessionInvalid.into());
+            return Err(crate::client::error::Failure::SignedOut(
+                crate::client::error::SignOutReason::IdentityChanged,
+            )
+            .into());
         }
         if self.my_mid.is_empty() {
             self.my_mid = mid.into();
@@ -200,9 +162,12 @@ impl Client {
                 mid,
             )?));
         }
-        *self.stream_access.write().unwrap() = access(&self.state)?.into();
-        self.state["profile"] = profile.clone();
-        save_state(&self.session_path, &self.state)?;
+        *self.api.stream_access.write().unwrap() = access(&self.api.state)?.to_owned();
+        self.api.state["profile"] = profile.clone();
+        save_state(
+            self.api.session_path.as_ref().context("session path")?,
+            &self.api.state,
+        )?;
         Ok(profile)
     }
     pub fn latest_revision(&mut self) -> Result<i64> {
@@ -222,33 +187,27 @@ impl Client {
             .filter(|range| range.reader != self.my_mid)
             .collect())
     }
-    pub fn operation(&mut self, operation: &Value) -> Option<(String, Message)> {
+    pub fn operation(&mut self, operation: &Value) -> Result<Option<(String, Message)>> {
         if !matches!(operation["type"].as_u64(), Some(25 | 26 | 43)) {
-            return None;
+            return Ok(None);
         }
         let raw = &operation["message"];
-        let from = raw["from"].as_str()?;
-        let to = raw["to"].as_str()?;
+        let from = required(raw, "from")?;
+        let to = required(raw, "to")?;
         let chat = if is_user(to) && from != self.my_mid {
             from
         } else {
             to
         }
         .to_owned();
-        Some((chat, self.message(raw)))
+        Ok(Some((chat, self.message(raw)?)))
     }
     pub fn stream_access(&self) -> Arc<std::sync::RwLock<String>> {
-        self.stream_access.clone()
+        self.api.stream_access.clone()
     }
-    pub fn refresh_token(&mut self, stop: &std::sync::atomic::AtomicBool) -> Result<()> {
-        sync::refresh(&mut self.api, &mut self.state, &self.session_path, stop).map_err(|e| {
-            if sync::expired_refresh(&e) {
-                crate::client::Error::Auth.into()
-            } else {
-                e
-            }
-        })?;
-        *self.stream_access.write().unwrap() = access(&self.state)?.into();
+    pub fn refresh_token(&mut self) -> Result<()> {
+        self.api.refresh_session()?;
+        *self.api.stream_access.write().unwrap() = access(&self.api.state)?.to_owned();
         self.obs_access = None;
         Ok(())
     }
@@ -256,7 +215,13 @@ impl Client {
     /// Reset only the poisoned WASM store, preserving validated public-key data.
     fn reset_runtime(&mut self) -> Result<()> {
         let keys = std::mem::take(&mut self.api.key_cache);
+        let state = std::mem::take(&mut self.api.state);
+        let session_path = self.api.session_path.take();
+        let stream_access = self.api.stream_access.clone();
         self.api = Api::new(&self.wasm)?;
+        self.api.state = state;
+        self.api.session_path = session_path;
+        self.api.stream_access = stream_access;
         self.api.key_cache = keys;
         Ok(())
     }
@@ -334,7 +299,7 @@ impl Client {
             });
             let timestamp_ms = last.map(message_timestamp).unwrap_or(0);
             let member_count = info.and_then(|chat| rich::group_member_count(chat, &self.my_mid));
-            let preview_message = last.map(|m| self.message(m));
+            let preview_message = last.map(|m| self.message(m)).transpose()?;
             chats.push(Chat {
                 group: !is_user(&id),
                 member_count,
@@ -362,10 +327,11 @@ impl Client {
         Ok(member.contact)
     }
     pub fn profile_notice(&mut self, mid: &str) -> Result<Value> {
+        let token = access(&self.api.state)?.to_owned();
         self.api.call(
             "/api/talk/thrift/Relation/RelationService/getTargetProfileNotice",
             &json!([{"targetUserMid":mid}]),
-            access(&self.state)?,
+            &token,
             "",
             0,
         )
@@ -375,7 +341,8 @@ impl Client {
         Ok(())
     }
     pub fn add_friend(&mut self, mid: &str, chat_mid: &str, seq: u32) -> Result<()> {
-        self.api.call("/api/talk/thrift/Relation/RelationService/addFriendByMid", &json!([{"reqSeq":seq,"userMid":mid,"tracking":{"reference":"","trackingMetaV2":{"chat":{"chatMid":chat_mid}}}}]), access(&self.state)?, "", 0)?;
+        let token = access(&self.api.state)?.to_owned();
+        self.api.call("/api/talk/thrift/Relation/RelationService/addFriendByMid", &json!([{"reqSeq":seq,"userMid":mid,"tracking":{"reference":"","trackingMetaV2":{"chat":{"chatMid":chat_mid}}}}]), &token, "", 0)?;
         Ok(())
     }
     pub fn full_chat(&mut self, mid: &str) -> Result<Value> {
@@ -471,7 +438,7 @@ impl Client {
         Ok(friends)
     }
 
-    pub fn members(&mut self, chat: &str) -> Result<(Vec<Member>, bool)> {
+    pub fn members(&mut self, chat: &str) -> Result<Vec<Member>> {
         ensure!(!is_user(chat), "not a group or room");
         let full = self.full_chat(chat)?;
         let mut ids = rich::member_mids(&full, &self.my_mid).context("missing members")?;
@@ -486,31 +453,25 @@ impl Client {
             }
         }
         let mut contacts = HashMap::new();
-        let mut failed = false;
         for chunk in ids.chunks(100) {
-            match self.talk(
+            let response = self.talk(
                 "getContactsV2",
                 json!([{"targetUserMids":chunk,"neededContactCalendarEvents":[]},0]),
-            ) {
-                Ok(response) if response["contacts"].is_object() => {
-                    for id in chunk {
-                        contacts.insert(id.clone(), response["contacts"][id]["contact"].clone());
-                    }
-                }
-                _ => failed = true,
+            )?;
+            ensure!(response["contacts"].is_object(), "missing contacts");
+            for id in chunk {
+                contacts.insert(id.clone(), response["contacts"][id]["contact"].clone());
             }
         }
-        Ok((
-            ids.iter()
-                .map(|id| {
-                    let mut member =
-                        member_identity(id, contacts.get(id).unwrap_or(&Value::Null), &self.my_mid);
-                    member.contact.profile.invited = invited.contains(id);
-                    member
-                })
-                .collect(),
-            failed,
-        ))
+        Ok(ids
+            .iter()
+            .map(|id| {
+                let mut member =
+                    member_identity(id, contacts.get(id).unwrap_or(&Value::Null), &self.my_mid);
+                member.contact.profile.invited = invited.contains(id);
+                member
+            })
+            .collect())
     }
 
     pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
@@ -532,46 +493,48 @@ impl Client {
         },0]))?;
         let raw = data.as_array().context("missing older messages")?;
         let reached_beginning = raw.len() < 50;
-        let messages: Vec<_> = raw.iter().take(50).map(|m| self.message(m)).collect();
+        let messages: Vec<_> = raw
+            .iter()
+            .take(50)
+            .map(|m| self.message(m))
+            .collect::<Result<_>>()?;
         let messages = normalize_older(before, messages);
         Ok((messages, reached_beginning))
     }
     pub fn refresh_messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
         let data = self.talk("getRecentMessagesV2", json!([chat_mid, 50]))?;
         let messages = data.as_array().context("missing recent messages")?;
-        let mut messages: Vec<_> = messages.iter().take(50).map(|m| self.message(m)).collect();
+        let mut messages: Vec<_> = messages
+            .iter()
+            .take(50)
+            .map(|m| self.message(m))
+            .collect::<Result<_>>()?;
         sort_messages(&mut messages);
         Ok(messages)
     }
 
-    fn message(&mut self, raw: &Value) -> Message {
+    fn confirmation(&mut self, raw: &Value) -> Result<Message> {
+        required(raw, "id")?;
+        let mut confirmation = raw.clone();
+        confirmation["chunks"] = Value::Null;
+        self.message(&confirmation)
+    }
+    fn message(&mut self, raw: &Value) -> Result<Message> {
         let fingerprint = format!("{:x}", Sha256::digest(raw.to_string()));
         let mut data = raw.clone();
         let encrypted = raw["chunks"].as_array().is_some_and(|c| !c.is_empty());
-        let mut failed = false;
         if encrypted {
-            let result = (|| -> Result<Value> {
-                let envelope = chat::Envelope::parse(raw)?;
-                let bytes =
-                    chat::decrypt(&mut self.api, &self.state, &self.my_mid, raw, &envelope)?;
-                let body: Value = serde_json::from_slice(&bytes)?;
-                ensure!(body.is_object(), "invalid decrypted message");
-                Ok(body)
-            })();
-            match result {
-                Ok(body) => merge_decrypted(&mut data, &body),
-                Err(_) => {
-                    failed = true;
-                    let _ = self.reset_runtime();
-                }
-            }
+            let envelope = chat::Envelope::parse(raw)?;
+            let state = self.api.state.clone();
+            let bytes = chat::decrypt(&mut self.api, &state, &self.my_mid, raw, &envelope)?;
+            let body: Value = serde_json::from_slice(&bytes)?;
+            ensure!(body.is_object(), "invalid decrypted message");
+            merge_decrypted(&mut data, &body);
         }
         let meta = &data["contentMetadata"];
         let details = rich::parse(&data);
         let content = if details.withdrawn {
             Content::Withdrawn
-        } else if failed {
-            Content::Undecryptable
         } else {
             match data["contentType"].as_i64().unwrap_or(0) {
                 0 => Content::Text {
@@ -626,7 +589,7 @@ impl Client {
                 },
             }
         };
-        Message {
+        Ok(Message {
             id: data["id"]
                 .as_str()
                 .filter(|id| !id.is_empty())
@@ -652,7 +615,7 @@ impl Client {
             mentioned: mentioned(meta, &self.my_mid),
             reply: details.reply,
             skip_badge: meta["SKIP_BADGE_COUNT"].as_str() == Some("true"),
-        }
+        })
     }
 
     pub fn image(&mut self, asset: &Asset) -> Result<Arc<assets::Pixels>> {
@@ -756,13 +719,13 @@ impl Client {
     }
     pub fn send_sticker(&mut self, to: &str, sticker: &Content, seq: u32) -> Result<Message> {
         let Content::Sticker { pkg, id, ver, .. } = sticker else {
-            return Err(SendFailure::Rejected.into());
+            return Err(crate::client::error::Failure::Bug("invalid send payload".into()).into());
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as i64;
         let result = self.talk("sendMessage", json!([seq, {"from":self.my_mid,"to":to,"toType":if is_user(to){0}else if to.starts_with(['C','c']){2}else{1},"id":format!("{now:015}"),"createdTime":now,"sessionId":0,"contentType":7,"contentMetadata":{"STKPKGID":pkg,"STKID":id,"STKVER":ver.as_deref().unwrap_or("1")},"hasContent":true}]))?;
-        Ok(self.message(&result))
+        self.confirmation(&result)
     }
     pub fn create_chat(
         &mut self,
@@ -788,10 +751,11 @@ impl Client {
         })
     }
     pub fn sticker_packages(&mut self) -> Result<Vec<crate::store::StickerPackage>> {
+        let token = access(&self.api.state)?.to_owned();
         let value = self.api.call(
             "/api/shop/thrift/ShopService/ShopService/getOwnedProductSummaries",
             &json!(["STICKER", 0, 100, [1, 2, 3, 4]]),
-            access(&self.state)?,
+            &token,
             "",
             0,
         )?;
@@ -854,7 +818,7 @@ impl Client {
             "invalid persisted send sequence"
         );
         if text.trim().is_empty() || text.len() > 10_000 {
-            return Err(SendFailure::Rejected.into());
+            return Err(crate::client::error::Failure::Bug("invalid send payload".into()).into());
         }
         let result = self.encrypted_text(to, text);
         let message = match result {
@@ -866,7 +830,7 @@ impl Client {
         };
         // Never automatically retry this RPC: a timeout can mean it was sent.
         let result = self.talk("sendMessage", json!([request_seq, message]))?;
-        Ok(self.message(&result))
+        self.confirmation(&result)
     }
 
     fn encrypted_text(&mut self, to: &str, text: &str) -> Result<Value> {
@@ -874,7 +838,7 @@ impl Client {
     }
 
     fn encrypted_payload(&mut self, to: &str, content_type: u64, payload: &Value) -> Result<Value> {
-        let key = self.state["e2ee_keys"]
+        let key = self.api.state["e2ee_keys"]
             .as_array()
             .context("missing own keys")?
             .iter()
@@ -882,7 +846,7 @@ impl Client {
             .context("missing own key")?
             .clone();
         let sender_id = key["id"].as_u64().context("missing own key ID")?;
-        let own = chat::own_key(&mut self.api.rt, &self.state, sender_id)?;
+        let own = chat::own_key(&mut self.api.rt, &self.api.state, sender_id)?;
         let (receiver_id, version, ch) = if is_user(to) {
             let negotiation = self.talk("negotiateE2EEPublicKey", json!([to]))?;
             ensure!(
@@ -908,13 +872,14 @@ impl Client {
             let creator_id = shared["creatorKeyId"]
                 .as_u64()
                 .context("missing group creator key")?;
+            let token = access(&self.api.state)?.to_owned();
             let public = chat::public_key(
                 &mut self.api,
-                access(&self.state)?,
+                &token,
                 required(&shared, "creator")?,
                 creator_id,
             )?;
-            let transfer_key = chat::own_key(&mut self.api.rt, &self.state, private_id)?;
+            let transfer_key = chat::own_key(&mut self.api.rt, &self.api.state, private_id)?;
             let transfer = chat::channel(&mut self.api.rt, transfer_key, &public)?;
             let h = self
                 .api
@@ -1118,27 +1083,6 @@ mod protocol_tests {
             assert!(member.is_self);
             assert!(member.contact.avatar.is_none());
         }
-    }
-
-    #[test]
-    fn send_rejected_response_shapes_and_unanswered_transport() {
-        for (http, code) in [(400, 0), (403, 10052), (200, 10102)] {
-            let error = anyhow::Error::new(RpcError {
-                method: "sendMessage".into(),
-                http,
-                code,
-                status: 0,
-            });
-            assert!(matches!(send_failure(&error), SendFailure::Rejected));
-        }
-        assert!(matches!(
-            send_failure(&anyhow::anyhow!("transport timeout")),
-            SendFailure::Uncertain
-        ));
-        assert!(matches!(
-            send_failure(&anyhow::Error::new(SendFailure::Rejected)),
-            SendFailure::Rejected
-        ));
     }
 }
 

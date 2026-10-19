@@ -30,10 +30,14 @@ fn chain(error: &(dyn Error + 'static)) -> String {
             format!("sqlite:{:?}", e.sqlite_error_code())
         } else if let Some(e) = e.downcast_ref::<crate::client::RpcError>() {
             format!("rpc:http={}:code={}", e.http, e.code)
+        } else if let Some(e) = e.downcast_ref::<crate::client::error::Failure>() {
+            match e {
+                crate::client::error::Failure::Bug(_) => "network-bug(details redacted)".into(),
+                _ => e.to_string(),
+            }
         } else if let Some(e) = e.downcast_ref::<crate::client::error::Error>() {
             match e {
                 crate::client::error::Error::SignIn(reason) => format!("sign-in:{}", reason.kind()),
-                _ => e.to_string(), // These variants contain only typed categories and numeric codes.
             }
         } else if let Some(e) = e.downcast_ref::<crate::store::StoreError>() {
             match e {

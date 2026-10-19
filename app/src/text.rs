@@ -1,5 +1,5 @@
 //! User-facing wording for typed library outcomes.
-use line_wasm_poc::client::{desktop::assets::Failure, error::RejectReason};
+use line_wasm_poc::client::{desktop::assets::Failure, error::Refusal};
 
 pub(crate) fn image_text(failure: Failure) -> &'static str {
     match failure {
@@ -17,19 +17,20 @@ pub(crate) fn image_text(failure: Failure) -> &'static str {
     }
 }
 
-pub(crate) fn rejection(reason: &RejectReason) -> &'static str {
+pub(crate) fn rejection(reason: &Refusal) -> String {
     match reason {
-        RejectReason::UploadStalled => "Upload stalled",
-        RejectReason::UploadRefused => "Server refused the file",
-        RejectReason::UploadFailed => "Upload failed",
-        RejectReason::FileMissing => "File missing",
-        RejectReason::SyntheticSend => "Synthetic send failure",
-        RejectReason::SyntheticFriends => "Synthetic friends failure",
-        RejectReason::SyntheticSignIn => "Synthetic sign-in is unavailable",
-        RejectReason::ReadFailed => "read failed",
-        RejectReason::SyntheticUnsend => "Synthetic unsend rejection",
-        RejectReason::NotAccepted => "Message was not accepted",
+        Refusal::Code(code) => return format!("server code {code}"),
+        Refusal::SignedOut => "signed out",
+        Refusal::AppClosed => "app closed before sending",
+        Refusal::Internal => "internal error",
+        Refusal::FileMissing => "File missing",
+        Refusal::SyntheticSend => "Synthetic send failure",
+        Refusal::SyntheticFriends => "Synthetic friends failure",
+        Refusal::ReadFailed => "read failed",
+        Refusal::SyntheticUnsend => "Synthetic unsend rejection",
+        Refusal::NotAccepted => "Message was not accepted",
     }
+    .into()
 }
 
 pub(crate) fn viewer_failure(failure: Failure) -> String {

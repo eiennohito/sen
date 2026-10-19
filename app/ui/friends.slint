@@ -51,6 +51,7 @@ export component Friends inherits Rectangle {
                 }
             }
         }
+        if State.friends-error != "": Text { text: State.friends-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
         list-focus := FocusScope {
             accessible-role: list; accessible-label: "Friends and groups"; accessible-description: self.has-focus ? "Focused friends and groups" : "";
             key-pressed(event) => {
