@@ -8,9 +8,9 @@ pub struct Background {
     autostart_value: bool,
 }
 impl Background {
-    pub fn apply(&mut self, ui: &AppWindow) {
+    pub fn preferences(&mut self, ui: &AppWindow, prefs: &DesktopPrefs) {
         let s = ui.global::<State>();
-        if s.get_background_mode() && self.tray.is_none() {
+        if prefs.background && self.tray.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
             self.tray = Some(tray::Tray::start(move |e| {
                 let _ = tx.send(e);
@@ -18,14 +18,14 @@ impl Background {
             }));
             self.events = Some(rx);
         }
-        if !s.get_background_mode() {
+        if !prefs.background {
             if let Some(tray) = self.tray.take() {
                 tray.shutdown();
             }
             self.events = None;
             s.set_tray_available(false);
         }
-        if s.get_autostart() != self.autostart_value {
+        if prefs.autostart != self.autostart_value {
             if self.autostart.is_none()
                 && !cfg!(feature = "ui-debug")
                 && let (Ok(dir), Ok(exe)) = (autostart::directory(), std::env::current_exe())
@@ -39,13 +39,16 @@ impl Background {
                 }));
             }
             if let Some(manager) = &self.autostart {
-                manager.request(s.get_autostart());
+                manager.request(prefs.autostart);
                 s.set_autostart_status(
                     format!("Updating autostart ({})", manager.revision()).into(),
                 );
             }
-            self.autostart_value = s.get_autostart();
+            self.autostart_value = prefs.autostart;
         }
+    }
+    pub fn drain(&mut self, ui: &AppWindow) {
+        let s = ui.global::<State>();
         if let Some(events) = &self.events {
             for event in events.try_iter() {
                 match event {

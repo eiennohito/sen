@@ -405,6 +405,7 @@ impl AppState {
             Delta::ReactionFailed(_)
             | Delta::CreatedChat(_)
             | Delta::Notify(_)
+            | Delta::AssetEvicted { .. }
             | Delta::Asset { .. }
             | Delta::File { .. }
             | Delta::Pair(_)

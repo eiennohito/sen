@@ -24,6 +24,29 @@ pub(crate) struct Reading {
     pub(crate) oldest: Option<(ChatId, Cursor)>,
 }
 
+impl Reading {
+    pub(crate) fn reset_for_chat(&mut self) {
+        self.latest_requested = false;
+        self.opening_history = true;
+        self.divider_top = None;
+        self.return_anchor = None;
+        self.jump_target = None;
+        self.highlight_timer.stop();
+        self.restore_anchor = None;
+        self.geometry.clear();
+        self.gap_geometry.clear();
+        self.requested_gaps.clear();
+        self.paging_anchor = None;
+    }
+    pub(crate) fn jump_to(&mut self, key: Key, offset: f32) {
+        self.restore_anchor = Some((key, offset));
+        self.restore_ready = self.geometry.contains_key(&key);
+        if !self.restore_ready {
+            self.geometry.clear();
+        }
+    }
+}
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Geometry {
     pub y: f32,

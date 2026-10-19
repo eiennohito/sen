@@ -344,7 +344,6 @@ impl Backend for LineBackend {
         let queue_stop = stop.clone();
         self.fetchers = Some(Arc::new(client.asset_fetchers(
             stop,
-            Arc::new(Default::default()),
             Default::default(),
             move |asset, cancel| {
                 let (reply, rx) = std::sync::mpsc::sync_channel(1);
@@ -377,7 +376,7 @@ impl Backend for LineBackend {
         deliver(StreamEvent::AssetRequests(AssetRequests {
             stop: queue_stop,
             request: Arc::new(move |asset, purpose| {
-                requests.enqueue(asset, None, purpose);
+                requests.enqueue(asset, purpose);
             }),
             retry: Arc::new(move |key| {
                 retry.retry(&key);

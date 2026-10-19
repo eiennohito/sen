@@ -24,14 +24,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         d.open_photo(&ui, key.as_str());
     });
     global_callback!(ui, actions, on_viewer_step, |ui, d, direction| {
-        let photos = d
-            .state
-            .rows()
-            .iter()
-            .filter(|m| matches!(m.body, Content::Photo { .. }))
-            .filter_map(|m| m.body.image().cloned())
-            .map(|a| a.key())
-            .collect::<Vec<_>>();
+        let photos = d.photos();
         if let Some(i) = photos
             .iter()
             .position(|k| k == ui.get_viewer_key().as_str())

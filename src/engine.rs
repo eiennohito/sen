@@ -322,6 +322,9 @@ pub enum Delta {
         chat: ChatId,
         rows: Vec<crate::store::Member>,
     },
+    AssetEvicted {
+        key: String,
+    },
     MediaFailed {
         key: String,
         failure: crate::client::desktop::assets::Failure,
@@ -2902,6 +2905,7 @@ impl Engine {
 fn asset_delta(c: crate::client::desktop::assets::Completion) -> Delta {
     use crate::client::desktop::assets::{Payload, Purpose};
     match c.result {
+        Ok(Payload::Evicted) => Delta::AssetEvicted { key: c.key },
         Ok(Payload::Image(pixels)) => Delta::Asset { key: c.key, pixels },
         Ok(Payload::File(bytes)) => Delta::File {
             name: match c.purpose {

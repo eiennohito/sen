@@ -9,7 +9,9 @@ use std::{
 use zbus::{blocking::Connection, zvariant::OwnedValue};
 
 pub const APP_ID: &str = "org.lineclient.Desktop";
-const OBJECT: &str = "/org/lineclient/Desktop";
+pub const DESKTOP_FILE: &str = "org.lineclient.Desktop.desktop";
+pub const APPLICATION_URI: &str = "application://org.lineclient.Desktop.desktop";
+pub const OBJECT: &str = "/org/lineclient/Desktop";
 #[derive(Debug, Clone)]
 pub enum Activation {
     Show,

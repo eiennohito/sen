@@ -26,6 +26,18 @@ pub(crate) fn message(text: &str) -> StoredMessage {
 fn test_window() -> AppWindow {
     let ui = window::create_app_window().unwrap();
     let weak = ui.as_weak();
+    ui.global::<State>().on_focus_settings_close(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_focus_settings_close();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_focus_profile_close(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_focus_profile_close();
+        }
+    });
+    let weak = ui.as_weak();
     ui.global::<State>().on_request_panel(move |panel| {
         if let Some(ui) = weak.upgrade() {
             ui.global::<State>().set_panel(panel);

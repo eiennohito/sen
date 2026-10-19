@@ -15,11 +15,6 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         ui.set_auth_stage("Cancelling sign-in…".into());
     });
     callback!(ui, actions, on_settings_changed, |ui, d| {
-        if !ui.global::<State>().get_notifications_enabled()
-            && let Some(n) = &d.notifications
-        {
-            n.service.withdraw_notifications();
-        }
         let s = ui.global::<State>();
         d.sender.send(Intent::Prefs(Prefs {
             text_size: ui.get_text_size(),
@@ -38,7 +33,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     });
     global_callback!(ui, actions, on_test_notification, |ui, d| {
         if let Some(n) = &d.notifications {
-            n.test(&ui);
+            n.test(&ui, &d.state);
         } else {
             ui.global::<State>()
                 .set_notification_status("Notification service not available".into());

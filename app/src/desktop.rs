@@ -1,6 +1,7 @@
 use crate::*;
 
 pub(crate) struct Desktop {
+    pub(crate) clipboard_root: std::path::PathBuf,
     pub(crate) history: reading::Reading,
     pub(crate) shown_composer: String,
     pub(crate) reveal: Option<ChatId>,
@@ -52,8 +53,13 @@ impl Desktop {
         }
     }
     pub(crate) fn drain_notifications(&mut self, ui: &AppWindow) {
-        if let Some(n) = &self.notifications {
-            n.drain(ui, &mut self.state, &self.sender);
+        let events = self
+            .notifications
+            .as_ref()
+            .map(|n| n.events())
+            .unwrap_or_default();
+        for event in events {
+            notifications::handle(event, ui, self);
         }
     }
     pub(crate) fn request_sticker_assets(&mut self, ui: &AppWindow) {
@@ -64,8 +70,8 @@ impl Desktop {
         );
     }
     pub(crate) fn render(&mut self, ui: &AppWindow) {
-        ui.global::<State>()
-            .set_device_scale(ui.window().scale_factor());
+        let scale = ui.window().scale_factor();
+        ui.global::<State>().set_device_scale(scale);
         #[cfg(feature = "ui-debug")]
         latency::RENDERS.set(latency::RENDERS.get() + 1);
         // Text typed or set without an edit event stays; only engine changes replace it.
@@ -86,9 +92,7 @@ impl Desktop {
                 .find(|m| m.server_id.is_some())
                 .map(|m| m.sort.clone()),
         );
-        self.background.apply(ui);
         if let Some(notifications) = &self.notifications {
-            notifications.drain(ui, &mut self.state, &self.sender);
             notifications.service.set_unread_count(
                 self.state
                     .chats
@@ -134,12 +138,8 @@ impl Desktop {
         );
         self.history.return_anchor = origin;
         self.history.opening_history = false;
-        self.history.restore_anchor = Some((key, ui.global::<State>().get_history_visible_top()));
-        let known = self.history.geometry.contains_key(&key);
-        self.history.restore_ready = known;
-        if !known {
-            self.history.geometry.clear();
-        }
+        self.history
+            .jump_to(key, ui.global::<State>().get_history_visible_top());
         ui.set_following(false);
         ui.global::<State>().set_return_visible(origin.is_some());
         ui.global::<State>()
@@ -162,26 +162,39 @@ impl Desktop {
             if let Some(n) = &self.notifications {
                 n.service.withdraw(&id.0);
             }
-            self.capture_draft(ui);
-            self.history.latest_requested = false;
-            self.history.opening_history = true;
-            self.history.divider_top = None;
-            self.history.return_anchor = None;
-            self.history.jump_target = None;
-            self.history.highlight_timer.stop();
+            self.open_chat(ui, id);
+            self.history.reset_for_chat();
             ui.global::<State>().set_return_visible(false);
             ui.global::<State>().set_highlight_message("".into());
-            self.history.restore_anchor = None;
-            self.history.geometry.clear();
-            self.history.gap_geometry.clear();
-            self.history.requested_gaps.clear();
-            self.history.paging_anchor = None;
-            let intent = self.state.select(id);
-            self.sender.send(intent);
             ui.set_show_conversation(true);
             ui.invoke_show_history(0., false);
             self.render(ui);
         }
+    }
+    pub(crate) fn open_chat(&mut self, ui: &AppWindow, chat: ChatId) {
+        self.capture_draft(ui);
+        let changed = self.state.selected.as_ref() != Some(&chat);
+        let draft = self.state.chats.get(&chat).and_then(|c| c.draft.clone());
+        self.sender.send(self.state.select(chat));
+        if changed {
+            self.state.composer = draft.as_ref().map(|d| d.text.clone()).unwrap_or_default();
+            self.state.composer_reply = draft.as_ref().and_then(|d| d.reply.clone());
+            ui.set_draft(self.state.composer.clone().into());
+            ui.invoke_restore_editor(
+                draft.as_ref().map_or(0, |d| d.anchor as i32),
+                draft.as_ref().map_or(0, |d| d.cursor as i32),
+            );
+        }
+        self.render(ui);
+    }
+    pub(crate) fn photos(&self) -> Vec<String> {
+        self.state
+            .rows()
+            .iter()
+            .filter(|m| matches!(m.body, Content::Photo { .. }))
+            .filter_map(|m| m.body.image().cloned())
+            .map(|asset| asset.key())
+            .collect()
     }
     pub(crate) fn open_photo(&mut self, ui: &AppWindow, key: &str) {
         let asset = self
@@ -192,14 +205,7 @@ impl Desktop {
             .find(|a| a.key() == key)
             .and_then(|a| a.original());
         if let Some(asset) = asset {
-            let photos = self
-                .state
-                .rows()
-                .iter()
-                .filter(|m| matches!(m.body, Content::Photo { .. }))
-                .filter_map(|m| m.body.image().cloned())
-                .map(|a| a.key())
-                .collect::<Vec<_>>();
+            let photos = self.photos();
             let index = photos.iter().position(|k| k == key);
             ui.global::<State>()
                 .set_viewer_has_previous(index.is_some_and(|i| i > 0));
@@ -223,15 +229,19 @@ impl Desktop {
     pub(crate) fn capture_draft(&mut self, ui: &AppWindow) {
         self.state.composer = ui.get_draft().to_string();
         if let Some(chat) = &self.state.selected {
+            let draft = Draft {
+                reply: self.state.composer_reply.clone(),
+                text: self.state.composer.clone(),
+                cursor: ui.get_editor_caret() as usize,
+                anchor: ui.get_editor_anchor() as usize,
+                updated: line::engine::now_ms(),
+            };
+            if let Some(item) = self.state.chats.get_mut(chat) {
+                item.draft = Some(draft.clone());
+            }
             self.sender.send(Intent::Draft {
                 chat: chat.clone(),
-                draft: Draft {
-                    reply: self.state.composer_reply.clone(),
-                    text: self.state.composer.clone(),
-                    cursor: ui.get_editor_caret() as usize,
-                    anchor: ui.get_editor_anchor() as usize,
-                    updated: line::engine::now_ms(),
-                },
+                draft,
             });
         }
     }
@@ -334,9 +344,7 @@ impl Desktop {
                 match result {
                     Ok(id) => {
                         ui.global::<State>().set_new_chat_open(false);
-                        self.capture_draft(ui);
-                        let intent = self.state.select(id.clone());
-                        self.sender.send(intent);
+                        self.open_chat(ui, id.clone());
                         self.reveal = Some(id.clone());
                         self.state.panel = Panel::Chats;
                         ui.set_section(0);
@@ -440,6 +448,7 @@ impl Desktop {
                 }
             }
             Delta::MoreChats(more) => ui.set_more_chats(*more),
+            Delta::AssetEvicted { key } => self.assets.evicted(key),
             Delta::MediaFailed { key, failure } => {
                 self.presenter.failures.insert(key.clone(), *failure);
                 self.presenter.patch_asset(ui, &self.state, key);
@@ -489,6 +498,13 @@ impl Desktop {
                 }
             }
             Delta::Prefs(prefs) => {
+                if self.state.prefs.desktop.notifications
+                    && !prefs.desktop.notifications
+                    && let Some(n) = &self.notifications
+                {
+                    n.service.withdraw_notifications();
+                }
+                self.background.preferences(ui, &prefs.desktop);
                 ui.set_text_size(prefs.text_size);
                 ui.set_enter_sends(prefs.enter_sends);
                 let s = ui.global::<State>();

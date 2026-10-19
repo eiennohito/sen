@@ -168,15 +168,13 @@ user intents, bounded live operations and deduplicated refreshes in that order.
 Disk reads and image decode/encode run outside the cache mutex; map, prune
 and atomic private-write bookkeeping remain serialised.
 The asset queue retains at most 256 distinct pending/active keys and de-duplicates
-in-flight requests. A latest-value mailbox carries the open chat and exposed
-asset keys directly from UI geometry: visible assets precede the open chat,
-background avatars, then closed chats; newest requests break ties. Queue overflow
-evicts lower-priority pending thumbnails. Reconnect/sign-in stops and joins the
+in-flight requests. Explicit requests precede thumbnails, with FIFO ordering
+within each class. Queue overflow evicts the oldest pending thumbnail.
+Reconnect/sign-in stops and joins the
 old fetchers before replacing credentials; shutdown cancels and joins them too.
 Media failures retain their class in at most 256 records, evicting the oldest
 when full. Permanent classes do not expire while retained; retriable failures
-become eligible again after 300 seconds. Timeout, network and 5xx thumbnails may
-also retry once when sync reconnects, at normal visibility priority. Item Retry bypasses
+become eligible again after 300 seconds. Item Retry bypasses
 both the retained failure and thumbnail cache and gets explicit-request priority.
 Chat-list previews carry the same typed message, emoji keys and media thumbnail
 keys as history. A measured single-line renderer is instantiated only for rows
@@ -188,9 +186,7 @@ box and small fallback font, so loading never reflows the conversation.
 Photos, video thumbnails and stickers use the existing preview/sticker routes;
 albums use optional GTOTAL counts and media captions. List thumbnails have no
 Retry control. Their descriptors are registered without downloading; exposed
-list keys join the fetchers' existing priority mailbox and request thumbnails.
-Shared emoji keys keep all chat owners. History page jobs always queue with
-chat identity; a deferred priority update cannot discard them. Preview pictures
+list keys request thumbnails. Shared emoji keys keep all chat owners. Preview pictures
 are reduced to twice their line height (at most 69 px) and shared by asset key.
 Retention favours visible rows, then the nearest two margin rows. Its byte budget
 comes from viewport rows, available image slots and text size, capped at 16 MiB;

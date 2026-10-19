@@ -161,28 +161,16 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     ui.on_quit(|| {
         let _ = slint::quit_event_loop();
     });
-    bridge!(on_focus_cycle_end, invoke_focus_cycle_end);
-    bridge!(on_focus_after_browser, invoke_focus_after_browser);
-    bridge!(on_focus_after_conversation, invoke_focus_after_conversation);
-    bridge!(on_focus_before_layer, invoke_focus_before_layer);
-    bridge!(on_focus_after_layer, invoke_focus_after_layer);
     bridge!(on_close_settings, invoke_close_settings);
-    bridge!(on_focus_friend_list, invoke_focus_friend_list);
     bridge!(on_quit, invoke_quit);
     bridge!(on_restore_editor, invoke_restore_editor, anchor, caret);
     bridge!(on_retry_message, invoke_retry_message, id);
     bridge!(on_resolve_recovery, invoke_resolve_recovery, action);
 
-    bridge!(
-        on_focus_reading_before_editor,
-        invoke_focus_reading_before_editor
-    );
     bridge!(on_filter_category, invoke_filter_category);
     bridge!(on_switch_chat, invoke_switch_chat, delta);
-    bridge!(on_focus_chat_list, invoke_focus_chat_list);
     bridge!(on_show_profile, invoke_focus_profile_close);
     bridge!(on_close_profile, invoke_close_profile);
-    bridge!(on_focus_composer, invoke_focus_composer);
     bridge!(on_show_viewer, invoke_show_viewer, key);
     bridge!(on_close_viewer, invoke_close_viewer);
     bridge!(on_account_ready, invoke_account_ready);
@@ -190,16 +178,6 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     bridge!(on_open_sign_in, invoke_open_sign_in);
     bridge!(on_show_history, invoke_show_history, y, latest);
     bridge!(on_latest, invoke_latest);
-    bridge!(on_focus_search, invoke_focus_search);
-    bridge!(on_focus_friend_search, invoke_focus_friend_search);
-    bridge!(on_focus_settings_opener, invoke_focus_settings_opener);
-    bridge!(on_focus_settings_close, invoke_focus_settings_close);
-    bridge!(on_focus_profile_close, invoke_focus_profile_close);
-    bridge!(on_focus_auth_start, invoke_focus_auth_start);
-    bridge!(on_focus_viewer_close, invoke_focus_viewer_close);
-    bridge!(on_focus_history, invoke_focus_history);
-    bridge!(on_focus_connection_first, invoke_focus_connection_first);
-    bridge!(on_focus_sign_in_opener, invoke_focus_sign_in_opener);
     bridge!(on_reset_viewer, invoke_reset_viewer);
     bridge!(on_history_scroll, invoke_history_scroll, delta);
     bridge!(on_history_jump, invoke_history_jump, y);

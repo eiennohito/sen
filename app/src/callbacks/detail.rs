@@ -45,10 +45,9 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     });
     global_callback!(ui, actions, on_detail_action, |ui, d, kind, value| {
         if kind == "member-chat" {
-            d.capture_draft(&ui);
             let id = ChatId(value.to_string());
             d.reveal = Some(id.clone());
-            d.sender.send(d.state.select(id));
+            d.open_chat(&ui, id);
             d.state.detail.clear();
             d.state.panel = Panel::Chats;
             ui.set_section(0);
@@ -120,8 +119,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         if group {
             let chat = ChatId(id);
             if d.state.selected.as_ref() != Some(&chat) {
-                d.capture_draft(&ui);
-                d.sender.send(d.state.select(chat.clone()));
+                d.open_chat(&ui, chat.clone());
             }
             ui.set_show_conversation(true);
             d.state
@@ -149,12 +147,10 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         ui.invoke_focus_profile_close();
     });
     callback!(ui, actions, on_start_friend_chat, |ui, d| {
-        d.capture_draft(&ui);
         if let Some(DetailPage::Profile(id)) = d.state.detail_page() {
             let id = ChatId(id.clone());
             d.reveal = Some(id.clone());
-            let intent = d.state.select(id);
-            d.sender.send(intent);
+            d.open_chat(&ui, id);
             d.state.detail.clear();
             d.state.panel = Panel::Chats;
             ui.set_section(0);

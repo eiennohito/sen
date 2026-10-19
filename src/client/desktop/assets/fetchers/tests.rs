@@ -147,7 +147,6 @@ fn parallel_downloads_overlap() {
         http,
         cache,
         Arc::default(),
-        Arc::default(),
         Failures::default(),
         |_, _| Ok(None),
         move |done, _| {
@@ -155,7 +154,7 @@ fn parallel_downloads_overlap() {
         },
     );
     for i in 0..THREADS {
-        assert!(fetchers.enqueue(avatar(&base, i), Some("chat".into()), Purpose::Thumbnail));
+        assert!(fetchers.enqueue(avatar(&base, i), Purpose::Thumbnail));
     }
     for _ in 0..THREADS {
         requests.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -182,65 +181,6 @@ fn parallel_downloads_overlap() {
 }
 
 #[test]
-fn latest_visible_keys_then_current_chat_precede_old_chats() {
-    let gates: Arc<Vec<Gate>> = Arc::new((0..THREADS).map(|_| Gate::default()).collect());
-    let release = gates.clone();
-    let (base, http, requests, server) = local_server(THREADS + 3, move |headers, stream| {
-        for i in 0..THREADS {
-            if headers.starts_with(&format!("GET /test-{i}/")) {
-                release[i].wait();
-            }
-        }
-        respond(stream, &png());
-    });
-    let (_root, cache) = Cache::new();
-    let priority = Arc::new(Priority::default());
-    let (tx, rx) = mpsc::channel();
-    let fetchers = Fetchers::start(
-        http,
-        cache,
-        Arc::default(),
-        priority.clone(),
-        Failures::default(),
-        |_, _| Ok(None),
-        move |done, _| {
-            tx.send(done).unwrap();
-        },
-    );
-    for i in 0..THREADS {
-        assert!(fetchers.enqueue(avatar(&base, i), None, Purpose::Thumbnail));
-    }
-    for _ in 0..THREADS {
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
-    }
-    assert!(fetchers.enqueue(avatar(&base, 10), Some("old".into()), Purpose::Thumbnail));
-    assert!(fetchers.enqueue(avatar(&base, 11), Some("open".into()), Purpose::Thumbnail));
-    assert!(fetchers.enqueue(avatar(&base, 12), Some("open".into()), Purpose::Thumbnail));
-    priority.set("old".into(), [avatar(&base, 10).key()]);
-    priority.set("open".into(), [avatar(&base, 12).key()]);
-    gates[0].release();
-    for id in [12, 11, 10] {
-        let request = requests.recv_timeout(Duration::from_secs(10)).unwrap();
-        assert!(
-            request.starts_with(&format!("GET /test-{id}/")),
-            "{request}"
-        );
-    }
-    for gate in gates.iter() {
-        gate.release();
-    }
-    for _ in 0..THREADS + 3 {
-        assert!(
-            rx.recv_timeout(Duration::from_secs(10))
-                .unwrap()
-                .result
-                .is_ok()
-        );
-    }
-    server.join().unwrap();
-}
-
-#[test]
 fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly() {
     let gate = Arc::new(Gate::default());
     let release = gate.clone();
@@ -253,14 +193,13 @@ fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly()
         http,
         cache,
         Arc::default(),
-        Arc::default(),
         failures.clone(),
         |_, _| Ok(None),
         |_, _| {},
     );
     for i in 0..THREADS {
         for _ in 0..20 {
-            assert!(fetchers.enqueue(avatar(&base, i), None, Purpose::Thumbnail));
+            assert!(fetchers.enqueue(avatar(&base, i), Purpose::Thumbnail));
         }
     }
     for _ in 0..THREADS {
@@ -268,7 +207,7 @@ fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly()
     }
     assert_eq!(fetchers.shared.queue.lock().unwrap().entries.len(), THREADS);
     for i in 100..100 + QUEUE_LIMIT + 20 {
-        fetchers.enqueue(avatar(&base, i), None, Purpose::Thumbnail);
+        fetchers.enqueue(avatar(&base, i), Purpose::Thumbnail);
     }
     assert_eq!(
         fetchers.shared.queue.lock().unwrap().entries.len(),
@@ -301,14 +240,13 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
         http,
         cache.clone(),
         Arc::default(),
-        Arc::default(),
         Failures::default(),
         |_, _| panic!("cache hit must not authorize"),
         move |done, _| {
             tx.send(done).unwrap();
         },
     );
-    fetchers.enqueue(photo.clone(), None, Purpose::Thumbnail);
+    fetchers.enqueue(photo.clone(), Purpose::Thumbnail);
     let cached = rx.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(cached.result.is_ok());
     assert!(
@@ -316,7 +254,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
         "cached pixels must not count as a network response"
     );
     for _ in 0..3 {
-        fetchers.enqueue(avatar(&base, 1), None, Purpose::Thumbnail);
+        fetchers.enqueue(avatar(&base, 1), Purpose::Thumbnail);
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
             Err(Failure::Http(404))
@@ -330,7 +268,6 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
             .get_mut(&avatar(&base, 1).key())
             .unwrap()
             .at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
-        fetchers.reconnected();
         assert!(!fetchers.retry(&avatar(&base, 1).key()));
     }
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -479,7 +416,7 @@ fn download_and_decoder_caps_remain_enforced() {
 }
 
 #[test]
-fn transient_retry_bypasses_failure_and_cached_pixels_and_reconnect_only_retries_once() {
+fn transient_retry_bypasses_failure_and_cached_pixels() {
     let (base, http, requests, server) = local_server(4, |_, mut stream| {
         stream
             .write_all(b"HTTP/1.1 500 Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
@@ -491,7 +428,6 @@ fn transient_retry_bypasses_failure_and_cached_pixels_and_reconnect_only_retries
         http,
         cache.clone(),
         Arc::default(),
-        Arc::default(),
         Failures::default(),
         |_, _| Ok(None),
         move |done, _| {
@@ -499,29 +435,19 @@ fn transient_retry_bypasses_failure_and_cached_pixels_and_reconnect_only_retries
         },
     );
     let asset = avatar(&base, 1);
-    fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
+    fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
     for step in 0..4 {
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
             Err(Failure::Http(500))
         ));
         requests.recv_timeout(Duration::from_secs(10)).unwrap();
-        match step {
-            0 => fetchers.reconnected(),
-            1 => {
-                fetchers.reconnected();
-                assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
-                // A deliberate retry must ignore even a newly cached thumbnail.
-                cache.lock().unwrap().store(&asset, &png()).unwrap();
-                assert!(fetchers.retry(&asset.key()));
-            }
-            2 => {
-                assert!(fetchers.retry(&asset.key()));
-            }
-            _ => {}
+        if step < 3 {
+            // A deliberate retry ignores even a newly cached thumbnail.
+            cache.lock().unwrap().store(&asset, &png()).unwrap();
+            assert!(fetchers.retry(&asset.key()));
         }
     }
-    fetchers.reconnected();
     assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
     server.join().unwrap();
 }
@@ -559,14 +485,13 @@ fn server_failures_keep_their_classes_through_completions() {
             http,
             cache,
             Arc::default(),
-            Arc::default(),
             Failures::default(),
             |_, _| Ok(None),
             move |done, _| {
                 tx.send(done).unwrap();
             },
         );
-        fetchers.enqueue(avatar(&base, 1), None, Purpose::Thumbnail);
+        fetchers.enqueue(avatar(&base, 1), Purpose::Thumbnail);
         assert!(
             matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if class == expected)
         );
@@ -592,14 +517,13 @@ fn local_timeout_network_and_route_failures_are_typed() {
             http,
             cache,
             Arc::default(),
-            Arc::default(),
             Failures::default(),
             |_, _| Ok(None),
             move |done, _| {
                 tx.send(done).unwrap();
             },
         );
-        fetchers.enqueue(avatar(&base, 1), None, Purpose::Thumbnail);
+        fetchers.enqueue(avatar(&base, 1), Purpose::Thumbnail);
         let expected = if timeout {
             Failure::Timeout
         } else {
@@ -634,7 +558,7 @@ fn local_timeout_network_and_route_failures_are_typed() {
 }
 
 #[test]
-fn every_permanent_class_blocks_explicit_and_automatic_retries() {
+fn every_permanent_class_blocks_explicit_retries() {
     let (base, http, requests, server) = local_server(3, |headers, mut stream| {
         if headers.contains("test-0/") {
             stream
@@ -654,7 +578,6 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
         http,
         cache,
         Arc::default(),
-        Arc::default(),
         Failures::default(),
         |_, _| Ok(None),
         move |done, _| {
@@ -670,7 +593,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
         .unwrap(),
     );
     for asset in &assets {
-        fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
+        fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
         assert!(
             matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retry_read())
         );
@@ -683,14 +606,11 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
             .get_mut(&asset.key())
             .unwrap()
             .at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
-        fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
+        fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
         assert!(
             matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retry_read())
         );
         assert!(!fetchers.retry(&asset.key()));
-    }
-    for _ in 0..3 {
-        fetchers.reconnected();
     }
     assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
     for _ in 0..3 {
@@ -710,14 +630,14 @@ fn retained_failures_never_follow_credentials_to_another_account() {
         Failed {
             class: Failure::Network,
             retry: Failure::Network.retry_read(),
-            automatic_retry: Failure::Network.retry_automatically(),
+
             at: Instant::now(),
-            retried: false,
+
             job: Job {
                 bypass: false,
-                boost: false,
+
                 asset: avatar(&base, 1),
-                chat: None,
+
                 purpose: Purpose::Thumbnail,
             },
         },
@@ -736,7 +656,6 @@ fn failure_records_evict_at_the_queue_bound() {
         http::Transport::local("9.8.7", "http://127.0.0.1:1".into()),
         cache,
         Arc::default(),
-        Arc::default(),
         Failures::default(),
         |_, _| Ok(None),
         move |done, _| {
@@ -751,7 +670,7 @@ fn failure_records_evict_at_the_queue_bound() {
             &json!({"id":id.to_string(), "contentMetadata":{"OID":format!("../{id}")}}),
         )
         .unwrap();
-        assert!(fetchers.enqueue(asset, None, Purpose::Thumbnail));
+        assert!(fetchers.enqueue(asset, Purpose::Thumbnail));
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
             Err(Failure::RejectedPath)
@@ -778,7 +697,6 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
         http,
         cache,
         Arc::default(),
-        Arc::default(),
         Failures::default(),
         |_, _| Ok(None),
         move |done, _| {
@@ -797,7 +715,7 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
     .enumerate()
     {
         let asset = avatar(&base, id);
-        fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
+        fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
         assert!(
             rx.recv_timeout(Duration::from_secs(10))
                 .unwrap()
@@ -812,7 +730,7 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
             failed.at = Instant::now() - FAILURE_TTL + Duration::from_secs(1);
         }
         let at = fetchers.shared.failures.0.lock().unwrap()[&asset.key()].at;
-        fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
+        fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
         assert!(
             matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(found) if found == class)
         );
@@ -830,116 +748,12 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
             .get_mut(&asset.key())
             .unwrap()
             .at = Instant::now() - FAILURE_TTL;
-        fetchers.enqueue(asset, None, Purpose::Thumbnail);
+        fetchers.enqueue(asset, Purpose::Thumbnail);
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
             Err(Failure::Http(500))
         ));
         requests.recv_timeout(Duration::from_secs(10)).unwrap();
-    }
-    server.join().unwrap();
-}
-
-#[test]
-fn reconnect_backlog_keeps_normal_rank_and_visible_requests_can_evict_it() {
-    let gates: Arc<Vec<Gate>> = Arc::new((0..QUEUE_LIMIT).map(|_| Gate::default()).collect());
-    let release = gates.clone();
-    let (base, http, requests, server) = local_server(THREADS + 1, move |headers, stream| {
-        if !headers.starts_with("GET /test-9999/") {
-            let id: usize = headers
-                .split("test-")
-                .nth(1)
-                .unwrap()
-                .split('/')
-                .next()
-                .unwrap()
-                .parse()
-                .unwrap();
-            release[id].wait();
-        } else {
-            respond(stream, &png());
-        }
-    });
-    let (_root, cache) = Cache::new();
-    let (tx, rx) = mpsc::channel();
-    let fetchers = Fetchers::start(
-        http,
-        cache,
-        Arc::default(),
-        Arc::default(),
-        Failures::default(),
-        |_, _| Ok(None),
-        move |done, _| {
-            let _ = tx.send(done);
-        },
-    );
-    for id in 0..QUEUE_LIMIT {
-        let asset = avatar(&base, id);
-        fetchers.shared.failures.0.lock().unwrap().insert(
-            asset.key(),
-            Failed {
-                class: Failure::Network,
-                retry: Failure::Network.retry_read(),
-                automatic_retry: Failure::Network.retry_automatically(),
-                at: Instant::now(),
-                retried: false,
-                job: Job {
-                    bypass: false,
-                    boost: false,
-                    asset,
-                    chat: None,
-                    purpose: Purpose::Thumbnail,
-                },
-            },
-        );
-    }
-    fetchers.reconnected();
-    let active: Vec<_> = (0..THREADS)
-        .map(|_| requests.recv_timeout(Duration::from_secs(10)).unwrap())
-        .collect();
-    {
-        let queue = fetchers.shared.queue.lock().unwrap();
-        assert_eq!(queue.entries.len(), QUEUE_LIMIT);
-        assert!(
-            queue
-                .entries
-                .values()
-                .filter_map(|entry| entry.job.as_ref())
-                .all(|job| job.bypass && !job.boost)
-        );
-    }
-    let visible = avatar(&base, 9999);
-    let visible_key = visible.key();
-    fetchers.shared.priority.set("open".into(), [visible.key()]);
-    assert!(fetchers.enqueue(visible, Some("open".into()), Purpose::Thumbnail));
-    // Release just one active slot, without allowing the other backlog to run.
-    let first: usize = active[0]
-        .split("test-")
-        .nth(1)
-        .unwrap()
-        .split('/')
-        .next()
-        .unwrap()
-        .parse()
-        .unwrap();
-    gates[first].release();
-    assert!(
-        requests
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .starts_with("GET /test-9999/")
-    );
-    loop {
-        let done = rx.recv_timeout(Duration::from_secs(10)).unwrap();
-        if done.key == visible_key {
-            assert!(done.result.is_ok());
-            break;
-        }
-    }
-    drop(fetchers);
-    drop(rx);
-    for gate in gates.iter() {
-        gate.release();
     }
     server.join().unwrap();
 }
@@ -969,46 +783,6 @@ fn photo_download_metadata_still_uses_obs_but_file_download_urls_are_refused() {
 }
 
 #[test]
-fn refused_visible_enqueue_retains_a_job_for_explicit_retry() {
-    let base = "https://profile.line-scdn.net".to_owned();
-    let fetchers = Fetchers {
-        shared: Arc::new(Shared {
-            queue: Mutex::default(),
-            ready: Condvar::new(),
-            stop: Arc::default(),
-            global_stop: Arc::default(),
-            priority: Arc::default(),
-            failures: Failures::default(),
-        }),
-        threads: Vec::new(),
-    };
-    for id in 0..QUEUE_LIMIT {
-        assert!(fetchers.enqueue(
-            avatar(&base, id),
-            None,
-            Purpose::Original { request: id as u64 }
-        ));
-    }
-    let asset = avatar(&base, 9999);
-    let key = asset.key();
-    fetchers.shared.priority.set("open".into(), [key.clone()]);
-    assert!(!fetchers.enqueue(asset, Some("open".into()), Purpose::Thumbnail));
-    assert_eq!(fetchers.failure(&key), Some(Failure::Network));
-    assert!(!fetchers.retry(&key));
-    fetchers
-        .shared
-        .queue
-        .lock()
-        .unwrap()
-        .entries
-        .remove(&avatar(&base, 0).key());
-    assert!(fetchers.retry(&key));
-    let queue = fetchers.shared.queue.lock().unwrap();
-    let job = queue.entries[&key].job.as_ref().unwrap();
-    assert!(job.bypass && job.boost);
-}
-
-#[test]
 fn official_image_urls_fetch_plain_bytes_without_line_headers() {
     let (base, http, requests, server) =
         local_server(2, |_, stream| respond(stream, b"plain image"));
@@ -1034,5 +808,168 @@ fn official_image_urls_fetch_plain_bytes_without_line_headers() {
                 && !request.contains("must-not-send")
         );
     }
+    server.join().unwrap();
+}
+
+// Keep the queue paused so ordering and capacity checks do not depend on worker timing.
+fn paused_fetchers() -> Fetchers {
+    Fetchers {
+        shared: Arc::new(Shared {
+            queue: Mutex::default(),
+            ready: Condvar::new(),
+            stop: Arc::default(),
+            global_stop: Arc::default(),
+            failures: Failures::default(),
+        }),
+        threads: Vec::new(),
+    }
+}
+
+#[test]
+fn explicit_requests_first_then_newest_first() {
+    let fetchers = paused_fetchers();
+    let assets: Vec<_> = (0..5).map(|i| avatar("http://127.0.0.1", i)).collect();
+    for (i, asset) in assets.iter().enumerate() {
+        assert!(fetchers.enqueue(
+            asset.clone(),
+            if i < 2 {
+                Purpose::Original { request: i as u64 }
+            } else {
+                Purpose::Thumbnail
+            }
+        ));
+    }
+    // Retry thumbnails are explicit too, even though their purpose stays Thumbnail.
+    assert!(fetchers.enqueue_job(Job {
+        asset: assets[2].clone(),
+        purpose: Purpose::Thumbnail,
+        bypass: true
+    }));
+    let mut queue = fetchers.shared.queue.lock().unwrap();
+    for i in [2, 1, 0, 4, 3] {
+        let key = queue.next_key().expect("queued job disappeared");
+        assert_eq!(
+            key,
+            assets[i].key(),
+            "fetch order must be explicit-first, then newest-first"
+        );
+        queue.entries.remove(&key);
+    }
+    assert!(queue.next_key().is_none());
+}
+
+#[test]
+fn eviction_publishes_completion_and_never_evicts_explicit_jobs() {
+    let fetchers = paused_fetchers();
+    let retry = avatar("http://127.0.0.1", 0);
+    assert!(fetchers.enqueue_job(Job {
+        asset: retry.clone(),
+        purpose: Purpose::Thumbnail,
+        bypass: true
+    }));
+    let original = avatar("http://127.0.0.1", 1);
+    assert!(fetchers.enqueue(original.clone(), Purpose::Original { request: 1 }));
+    let evicted = avatar("http://127.0.0.1", 2);
+    for i in 2..=QUEUE_LIMIT {
+        assert!(fetchers.enqueue(avatar("http://127.0.0.1", i), Purpose::Thumbnail));
+    }
+    let completion = fetchers
+        .shared
+        .queue
+        .lock()
+        .unwrap()
+        .evicted
+        .pop_front()
+        .expect("eviction did not queue a completion for the workers to publish");
+    assert_eq!(
+        completion.key,
+        evicted.key(),
+        "eviction must choose the oldest non-explicit thumbnail"
+    );
+    assert!(matches!(completion.result, Ok(Payload::Evicted)));
+    assert!(!completion.network);
+    let queue = fetchers.shared.queue.lock().unwrap();
+    assert!(
+        queue.entries.contains_key(&retry.key()),
+        "Retry job was evicted"
+    );
+    assert!(
+        queue.entries.contains_key(&original.key()),
+        "explicit original job was evicted"
+    );
+    drop(queue);
+    assert!(
+        fetchers.enqueue(evicted, Purpose::Thumbnail),
+        "evicted thumbnail could not be requested again"
+    );
+}
+
+#[test]
+fn refused_visible_enqueue_retains_a_job_for_explicit_retry() {
+    let fetchers = paused_fetchers();
+    for i in 0..QUEUE_LIMIT {
+        assert!(fetchers.enqueue(
+            avatar("http://127.0.0.1", i),
+            Purpose::Original { request: i as u64 }
+        ));
+    }
+    let asset = avatar("http://127.0.0.1", QUEUE_LIMIT);
+    let key = asset.key();
+    assert!(!fetchers.enqueue(asset, Purpose::Thumbnail));
+    assert_eq!(fetchers.failure(&key), Some(Failure::Network));
+    fetchers.shared.queue.lock().unwrap().entries.clear();
+    assert!(
+        fetchers.retry(&key),
+        "refused visible request did not retain a retryable job"
+    );
+    let queue = fetchers.shared.queue.lock().unwrap();
+    let job = queue.entries[&key].job.as_ref().unwrap();
+    assert!(
+        job.bypass,
+        "explicit Retry did not bypass the recorded refusal"
+    );
+}
+
+#[test]
+fn workers_publish_evictions_after_inflight_fetches_finish() {
+    let gate = Arc::new(Gate::default());
+    let release = gate.clone();
+    let (base, http, requests, server) = local_server(THREADS, move |_, stream| {
+        release.wait();
+        respond(stream, &png());
+    });
+    let (_root, cache) = Cache::new();
+    let (tx, completions) = mpsc::channel();
+    let fetchers = Fetchers::start(
+        http,
+        cache,
+        Arc::default(),
+        Failures::default(),
+        |_, _| Ok(None),
+        move |done, _| {
+            tx.send(done).unwrap();
+        },
+    );
+    for i in 0..THREADS {
+        assert!(fetchers.enqueue(avatar(&base, i), Purpose::Thumbnail));
+        requests
+            .recv_timeout(Duration::from_secs(3))
+            .expect("fetch worker did not reach the local server");
+    }
+    for i in THREADS..=QUEUE_LIMIT {
+        assert!(fetchers.enqueue(avatar(&base, i), Purpose::Thumbnail));
+    }
+    gate.release();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let completion = completions
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .expect("workers never published the thumbnail eviction");
+        if matches!(completion.result, Ok(Payload::Evicted)) {
+            assert_eq!(completion.key, avatar(&base, THREADS).key());
+            break;
+        }
+    }
+    drop(fetchers);
     server.join().unwrap();
 }

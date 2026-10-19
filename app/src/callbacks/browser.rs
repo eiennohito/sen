@@ -45,11 +45,9 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             .map(|f| f.id.to_string())
             .collect::<Vec<_>>();
         if targets.len() == 1 {
-            d.capture_draft(&ui);
             let id = ChatId(targets[0].clone());
             d.reveal = Some(id.clone());
-            let intent = d.state.select(id);
-            d.sender.send(intent);
+            d.open_chat(&ui, id);
             d.state.panel = Panel::Chats;
             ui.set_section(0);
             ui.set_show_conversation(true);

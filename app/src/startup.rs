@@ -67,7 +67,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                 .select()?;
         }
     }
-    slint::set_xdg_app_id("org.lineclient.Desktop")?;
+    slint::set_xdg_app_id(desktop_integration::APP_ID)?;
     #[cfg(feature = "demo")]
     if headless {
         fix_snapshot_clock();
@@ -94,6 +94,11 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         demo::configure(fake, &scene, case.as_deref());
     }
     let assets = assets::Assets::default();
+    let clipboard_root = locations
+        .session
+        .parent()
+        .unwrap()
+        .join("clipboard-attachments");
     let real_worker = || {
         let root = locations.session.parent().unwrap().join("accounts");
         Worker::start(
@@ -161,7 +166,8 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                         }
                     }
                     WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                        ui.global::<State>().set_device_scale(*scale_factor as f32)
+                        let scale = *scale_factor as f32;
+                        ui.global::<State>().set_device_scale(scale);
                     }
                     WindowEvent::Focused(active) => ui.global::<State>().set_window_active(*active),
                     WindowEvent::Ime(Ime::Preedit(text, _)) => ui.set_ime_active(!text.is_empty()),
@@ -182,6 +188,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         destination
     };
     let desktop = Desktop {
+        clipboard_root,
         history: reading::Reading {
             opening_history: true,
             ..Default::default()
@@ -258,8 +265,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                     let _ = ui.show();
                     if let desktop_integration::Activation::OpenChat(chat) = e {
                         d.update(|d| {
-                            let intent = d.state.select(ChatId(chat));
-                            d.sender.send(intent);
+                            d.open_chat(&ui, ChatId(chat));
                             d.render(&ui);
                             ui.set_show_conversation(true);
                         });
@@ -268,7 +274,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
             }
             d.update(|d| d.apply_batch(&ui, w.deltas.try_iter()));
             d.update(|d| {
-                d.background.apply(&ui);
+                d.background.drain(&ui);
                 d.observe_reading(&ui);
                 d.drain_notifications(&ui);
             });

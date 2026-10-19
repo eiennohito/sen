@@ -31,13 +31,8 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         d.history.jump_target = None;
         if let Some((key, offset, _)) = d.history.return_anchor.take() {
             // The origin is kept below the top cover, which may have changed.
-            d.history.restore_anchor =
-                Some((key, offset - ui.global::<State>().get_history_visible_top()));
-            let known = d.history.geometry.contains_key(&key);
-            d.history.restore_ready = known;
-            if !known {
-                d.history.geometry.clear();
-            }
+            d.history
+                .jump_to(key, offset - ui.global::<State>().get_history_visible_top());
             ui.set_following(false);
             ui.global::<State>().set_return_visible(false);
             ui.global::<State>().set_highlight_message("".into());

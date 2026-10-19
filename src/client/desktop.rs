@@ -599,7 +599,6 @@ impl Client {
     pub fn asset_fetchers(
         &self,
         stop: Arc<crate::client::http::CancelToken>,
-        priority: Arc<assets::Priority>,
         failures: assets::Failures,
         authorize: impl Fn(
             &Asset,
@@ -615,7 +614,6 @@ impl Client {
             self.api.http.assets(),
             self.cache.clone(),
             stop,
-            priority,
             failures,
             authorize,
             publish,

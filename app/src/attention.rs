@@ -65,6 +65,23 @@ pub(crate) struct Attention {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Attention {
+    #[cfg(test)]
+    pub(crate) fn disconnected() -> Self {
+        let (wake, _) = mpsc::sync_channel(1);
+        Self {
+            shared: Arc::new(Shared {
+                latest: AtomicU64::new(0),
+                pending: Mutex::new(Pending::default()),
+                available: AtomicBool::new(false),
+                handler: Mutex::new(None),
+                ids: Mutex::new(HashMap::new()),
+                closed: Mutex::new(HashSet::new()),
+                stop: AtomicBool::new(false),
+            }),
+            wake,
+            worker: None,
+        }
+    }
     pub(crate) fn start() -> Self {
         let (wake, receiver) = mpsc::sync_channel(1);
         let shared = Arc::new(Shared {
@@ -117,11 +134,11 @@ impl Attention {
                         && connection
                             .emit_signal(
                                 None::<&str>,
-                                "/org/lineclient/Desktop",
+                                crate::desktop_integration::OBJECT,
                                 "com.canonical.Unity.LauncherEntry",
                                 "Update",
                                 &(
-                                    "application://org.lineclient.Desktop.desktop",
+                                    crate::desktop_integration::APPLICATION_URI,
                                     badge_properties(count),
                                 ),
                             )
@@ -188,11 +205,11 @@ impl Attention {
                 if let Some(connection) = connection {
                     let _ = connection.emit_signal(
                         None::<&str>,
-                        "/org/lineclient/Desktop",
+                        crate::desktop_integration::OBJECT,
                         "com.canonical.Unity.LauncherEntry",
                         "Update",
                         &(
-                            "application://org.lineclient.Desktop.desktop",
+                            crate::desktop_integration::APPLICATION_URI,
                             badge_properties(0),
                         ),
                     );
@@ -642,7 +659,7 @@ mod service_tests {
         let badge = badges.next().unwrap().unwrap();
         let (uri, mut properties): (String, HashMap<String, OwnedValue>) =
             badge.body().deserialize().unwrap();
-        assert_eq!(uri, "application://org.lineclient.Desktop.desktop");
+        assert_eq!(uri, crate::desktop_integration::APPLICATION_URI);
         assert_eq!(
             i64::try_from(properties.remove("count").unwrap()).unwrap(),
             2

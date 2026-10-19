@@ -2,7 +2,6 @@ use super::*;
 use crate::client::error::media_failure;
 use crate::client::http::CancelToken;
 use std::{
-    collections::HashSet,
     sync::{Condvar, Mutex},
     thread::{self, JoinHandle},
     time::Instant,
@@ -12,23 +11,6 @@ const THREADS: usize = 3;
 const QUEUE_LIMIT: usize = 256;
 const FAILURE_TTL: Duration = Duration::from_secs(300);
 
-#[derive(Default)]
-pub struct Priority(Mutex<(String, HashSet<String>)>);
-
-impl Priority {
-    pub fn exposed(&self, chat: &str, key: &str) -> bool {
-        let priority = self.0.lock().unwrap();
-        priority.0 == chat || priority.1.contains(key)
-    }
-
-    pub fn set(&self, chat: String, keys: impl IntoIterator<Item = String>) {
-        *self.0.lock().unwrap() = (
-            chat,
-            keys.into_iter().filter(|key| !key.is_empty()).collect(),
-        );
-    }
-}
-
 #[derive(Clone, Default)]
 pub struct Failures(Arc<Mutex<HashMap<String, Failed>>>, Arc<Mutex<String>>);
 impl Failures {
@@ -37,7 +19,6 @@ impl Failures {
         if !replace && failed.contains_key(&key) {
             return;
         }
-        let retried = failed.get(&key).is_some_and(|f| f.retried);
         if !failed.contains_key(&key) && failed.len() >= QUEUE_LIMIT {
             let oldest = failed
                 .iter()
@@ -51,10 +32,8 @@ impl Failures {
             Failed {
                 class,
                 retry: class.retry_read(),
-                automatic_retry: class.retry_automatically(),
                 at: Instant::now(),
                 job,
-                retried,
             },
         );
     }
@@ -72,10 +51,8 @@ impl Failures {
 struct Failed {
     class: Failure,
     retry: bool,
-    automatic_retry: bool,
     at: Instant,
     job: Job,
-    retried: bool,
 }
 
 #[derive(Clone)]
@@ -87,6 +64,7 @@ pub enum Purpose {
 
 #[derive(Clone)]
 pub enum Payload {
+    Evicted,
     Image(Arc<Pixels>),
     File(Arc<Vec<u8>>),
 }
@@ -101,9 +79,7 @@ pub struct Completion {
 #[derive(Clone)]
 struct Job {
     bypass: bool,
-    boost: bool,
     asset: Asset,
-    chat: Option<String>,
     purpose: Purpose,
 }
 
@@ -116,7 +92,33 @@ struct Entry {
 #[derive(Default)]
 struct Queue {
     entries: HashMap<String, Entry>,
+    evicted: std::collections::VecDeque<Completion>,
     order: u64,
+}
+
+impl Entry {
+    fn explicit(&self) -> bool {
+        self.job.as_ref().is_some_and(|job| job.bypass)
+            || self
+                .listeners
+                .iter()
+                .any(|purpose| !matches!(purpose, Purpose::Thumbnail))
+    }
+}
+
+impl Queue {
+    fn next_key(&self) -> Option<String> {
+        self.entries
+            .iter()
+            .filter(|(_, entry)| entry.job.is_some())
+            .max_by_key(|(_, entry)| (entry.explicit(), entry.order))
+            .map(|(key, _)| key.clone())
+    }
+}
+
+enum Work {
+    Evicted(Completion),
+    Fetch(String, Job, Option<Failure>),
 }
 
 struct Shared {
@@ -124,7 +126,6 @@ struct Shared {
     ready: Condvar,
     stop: Arc<CancelToken>,
     global_stop: Arc<CancelToken>,
-    priority: Arc<Priority>,
     failures: Failures,
 }
 
@@ -144,7 +145,6 @@ impl Fetchers {
         http: http::Transport,
         cache: Arc<Mutex<ImageCache>>,
         global_stop: Arc<CancelToken>,
-        priority: Arc<Priority>,
         failures: Failures,
         authorize: impl Fn(&Asset, &CancelToken) -> std::result::Result<Option<String>, Failure>
         + Send
@@ -157,7 +157,6 @@ impl Fetchers {
             ready: Condvar::new(),
             stop: Arc::new(CancelToken::new()),
             global_stop,
-            priority,
             failures,
         });
         let publish = Arc::new(publish);
@@ -174,24 +173,16 @@ impl Fetchers {
                     .spawn(move || {
                         set_cancellation_token(shared.stop.clone());
                         loop {
-                            let (key, job, blacklisted) = {
+                            let work = {
                                 let mut queue = shared.queue.lock().unwrap();
                                 loop {
                                     if shared.stopped() {
                                         return;
                                     }
-                                    let priority = shared.priority.0.lock().unwrap();
-                                    let key = queue
-                                        .entries
-                                        .iter()
-                                        .filter_map(|(key, entry)| {
-                                            entry.job.as_ref().map(|job| {
-                                                (key, (rank(key, job, &priority), entry.order))
-                                            })
-                                        })
-                                        .max_by_key(|(_, rank)| *rank)
-                                        .map(|(key, _)| key.clone());
-                                    drop(priority);
+                                    if let Some(completion) = queue.evicted.pop_front() {
+                                        break Work::Evicted(completion);
+                                    }
+                                    let key = queue.next_key();
                                     if let Some(key) = key {
                                         let blacklisted = shared
                                             .failures
@@ -208,7 +199,7 @@ impl Fetchers {
                                             .job
                                             .take()
                                             .unwrap();
-                                        break (key, job, blacklisted);
+                                        break Work::Fetch(key, job, blacklisted);
                                     }
                                     queue = shared
                                         .ready
@@ -216,6 +207,13 @@ impl Fetchers {
                                         .unwrap()
                                         .0;
                                 }
+                            };
+                            let (key, job, blacklisted) = match work {
+                                Work::Evicted(completion) => {
+                                    publish(completion, &shared.stop);
+                                    continue;
+                                }
+                                Work::Fetch(key, job, blacklisted) => (key, job, blacklisted),
                             };
                             crate::client::take_network_touched();
                             let result = if let Some(class) = blacklisted.filter(|_| !job.bypass) {
@@ -291,40 +289,12 @@ impl Fetchers {
         job.is_some_and(|job| {
             self.enqueue_job(Job {
                 bypass: true,
-                boost: true,
                 ..job
             })
         })
     }
 
-    pub fn reconnected(&self) {
-        let jobs: Vec<_> = {
-            let mut failures = self.shared.failures.0.lock().unwrap();
-            failures
-                .values_mut()
-                .filter_map(|failed| {
-                    if failed.automatic_retry
-                        && !failed.retried
-                        && matches!(failed.job.purpose, Purpose::Thumbnail)
-                    {
-                        failed.retried = true;
-                        Some(Job {
-                            bypass: true,
-                            boost: false,
-                            ..failed.job.clone()
-                        })
-                    } else {
-                        None
-                    }
-                })
-                .collect()
-        };
-        for job in jobs {
-            self.enqueue_job(job);
-        }
-    }
-
-    pub fn enqueue(&self, asset: Asset, chat: Option<String>, purpose: Purpose) -> bool {
+    pub fn enqueue(&self, asset: Asset, purpose: Purpose) -> bool {
         let bypass = !matches!(purpose, Purpose::Thumbnail)
             && self
                 .shared
@@ -337,10 +307,8 @@ impl Fetchers {
         let key = asset.key();
         let job = Job {
             asset,
-            chat,
             purpose,
             bypass,
-            boost: false,
         };
         let accepted = self.enqueue_job(job.clone());
         if !accepted && self.failure(&key).is_none() {
@@ -366,14 +334,11 @@ impl Fetchers {
                 entry.listeners.push(purpose);
             }
             if let Some(pending) = &mut entry.job {
-                pending.chat = job.chat;
                 pending.bypass |= job.bypass;
-                pending.boost |= job.boost;
             }
             return true;
         }
         if queue.entries.len() >= QUEUE_LIMIT {
-            let priority = self.shared.priority.0.lock().unwrap();
             let oldest = queue
                 .entries
                 .iter()
@@ -381,17 +346,22 @@ impl Fetchers {
                     entry
                         .job
                         .as_ref()
-                        .filter(|job| matches!(job.purpose, Purpose::Thumbnail))
-                        .map(|job| (key.clone(), (rank(key, job, &priority), entry.order)))
+                        .filter(|_| !entry.explicit())
+                        .map(|_| (key.clone(), entry.order))
                 })
-                .min_by_key(|(_, rank)| *rank);
-            let Some((oldest, (old_rank, _))) = oldest else {
+                .min_by_key(|(_, order)| *order);
+            let Some((oldest, _)) = oldest else {
                 return false;
             };
-            if rank(&key, &job, &priority) < old_rank {
-                return false;
+            let entry = queue.entries.remove(&oldest).unwrap();
+            for purpose in entry.listeners {
+                queue.evicted.push_back(Completion {
+                    network: false,
+                    key: oldest.clone(),
+                    purpose,
+                    result: Ok(Payload::Evicted),
+                });
             }
-            queue.entries.remove(&oldest);
         }
         queue.order += 1;
         let order = queue.order;
@@ -415,20 +385,6 @@ impl Drop for Fetchers {
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
-    }
-}
-
-fn rank(key: &str, job: &Job, priority: &(String, HashSet<String>)) -> u8 {
-    if job.boost || !matches!(job.purpose, Purpose::Thumbnail) {
-        return 4;
-    }
-    if priority.1.contains(key) {
-        return 3;
-    }
-    match &job.chat {
-        Some(chat) if chat == &priority.0 => 2,
-        None => 1,
-        Some(_) => 0,
     }
 }
 

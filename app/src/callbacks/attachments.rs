@@ -12,7 +12,6 @@ struct Selection {
     chat: Option<ChatId>,
     items: Vec<Attachment>,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
 struct Prepared {
     generation: u64,
     items: Vec<Attachment>,
@@ -52,7 +51,7 @@ fn present(ui: &AppWindow, selection: &Selection) {
 fn begin(
     ui: &AppWindow,
     desktop: &Desktop,
-    selection: &mut Selection,
+    selected: &std::sync::Arc<std::sync::Mutex<Selection>>,
     input: impl FnOnce() -> Result<Vec<PathBuf>, String> + Send + 'static,
 ) {
     if desktop.state.selected.is_none()
@@ -61,6 +60,7 @@ fn begin(
     {
         return;
     }
+    let mut selection = selected.lock().unwrap();
     selection.generation += 1;
     selection.chat = desktop.state.selected.clone();
     for item in selection.items.drain(..) {
@@ -80,6 +80,8 @@ fn begin(
             .into(),
     );
     let weak = ui.as_weak();
+    let selected = selected.clone();
+    let root = desktop.clipboard_root.clone();
     std::thread::spawn(move || {
         let mut prepared = Prepared {
             generation,
@@ -91,14 +93,11 @@ fn begin(
                 for path in paths {
                     match Attachment::prepare(&path) {
                         Ok(mut item) => {
-                            item.clipboard = clipboard_root()
-                                .is_ok_and(|root| path.parent() == Some(root.as_path()));
+                            item.clipboard = path.parent() == Some(root.as_path());
                             prepared.items.push(item);
                         }
                         Err(error) => {
-                            if clipboard_root()
-                                .is_ok_and(|root| path.parent() == Some(root.as_path()))
-                            {
+                            if path.parent() == Some(root.as_path()) {
                                 let _ = std::fs::remove_file(&path);
                             }
                             prepared.errors.push(format!(
@@ -111,12 +110,27 @@ fn begin(
             }
             Err(error) => prepared.errors.push(error),
         }
-        let payload = serde_json::to_string(&prepared).expect("selection JSON");
         let _ = weak.upgrade_in_event_loop(move |ui| {
-            ui.global::<State>()
-                .invoke_attachments_prepared(payload.into());
+            complete(&ui, &mut selected.lock().unwrap(), prepared);
         });
     });
+}
+fn complete(ui: &AppWindow, selection: &mut Selection, prepared: Prepared) {
+    if selection.generation == prepared.generation {
+        for item in selection.items.drain(..) {
+            item.delete_clipboard();
+        }
+        selection.items = prepared.items;
+        present(ui, selection);
+        ui.global::<State>()
+            .set_attachments_error(prepared.errors.join("\n").into());
+        ui.global::<State>()
+            .set_attachments_open(!selection.items.is_empty() || !prepared.errors.is_empty());
+    } else {
+        for item in prepared.items {
+            item.delete_clipboard();
+        }
+    }
 }
 fn uri_paths(text: &str) -> Vec<PathBuf> {
     text.lines()
@@ -188,50 +202,28 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
         }};
     }
 
-    let selection = Rc::new(RefCell::new(Selection::default()));
+    let selection = std::sync::Arc::new(std::sync::Mutex::new(Selection::default()));
     let selected = selection.clone();
     bind!(on_attach, selected, |ui, d| {
-        begin(&ui, d, &mut selected.borrow_mut(), chooser);
+        begin(&ui, d, &selected, chooser);
     });
     let selected = selection.clone();
     bind!(on_drop_attachment, selected, |ui, d, uri| {
         let paths = uri_paths(&uri);
         if !paths.is_empty() {
-            begin(&ui, d, &mut selected.borrow_mut(), move || Ok(paths));
+            begin(&ui, d, &selected, move || Ok(paths));
         }
     });
     let selected = selection.clone();
     bind!(on_inject_attachments, selected, |ui, d, paths| {
         if cfg!(feature = "ui-debug") && ui.global::<State>().get_automation_background() {
             let paths: Vec<PathBuf> = serde_json::from_str(&paths).unwrap_or_default();
-            begin(&ui, d, &mut selected.borrow_mut(), move || Ok(paths));
-        }
-    });
-    let selected = selection.clone();
-    bind!(on_attachments_prepared, selected, |ui, _d, json| {
-        if let Ok(prepared) = serde_json::from_str::<Prepared>(&json) {
-            let mut selection = selected.borrow_mut();
-            if selection.generation == prepared.generation {
-                for item in selection.items.drain(..) {
-                    item.delete_clipboard();
-                }
-                selection.items = prepared.items;
-                present(&ui, &selection);
-                ui.global::<State>()
-                    .set_attachments_error(prepared.errors.join("\n").into());
-                ui.global::<State>().set_attachments_open(
-                    !selection.items.is_empty() || !prepared.errors.is_empty(),
-                );
-            } else {
-                for item in prepared.items {
-                    item.delete_clipboard();
-                }
-            }
+            begin(&ui, d, &selected, move || Ok(paths));
         }
     });
     let selected = selection.clone();
     bind!(on_remove_attachment, selected, |ui, _d, index| {
-        let mut selection = selected.borrow_mut();
+        let mut selection = selected.lock().unwrap();
         if (index as usize) < selection.items.len() {
             selection.items.remove(index as usize).delete_clipboard();
         }
@@ -239,7 +231,7 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
     });
     let selected = selection.clone();
     bind!(on_cancel_attachments, selected, |ui, _d| {
-        let mut selection = selected.borrow_mut();
+        let mut selection = selected.lock().unwrap();
         selection.generation += 1;
         for item in selection.items.drain(..) {
             item.delete_clipboard();
@@ -249,7 +241,7 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
     });
     let selected = selection.clone();
     bind!(on_send_attachments, selected, |ui, d| {
-        let mut selection = selected.borrow_mut();
+        let mut selection = selected.lock().unwrap();
         if let Some(chat) = selection.chat.take() {
             let items = std::mem::take(&mut selection.items)
                 .into_iter()
@@ -269,7 +261,9 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
     });
     let selected = selection.clone();
     bind!(on_paste_text, selected, |ui, d| {
-        if d.state.selected == selected.borrow().chat && !ui.global::<State>().get_modal_open() {
+        if d.state.selected == selected.lock().unwrap().chat
+            && !ui.global::<State>().get_modal_open()
+        {
             let global = ui.global::<State>();
             global.set_paste_text_serial(global.get_paste_text_serial() + 1);
         }
@@ -281,7 +275,8 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
         let selected = selection.clone();
         runtime.push(move |d| {
             if let Some(ui) = weak.upgrade() {
-                begin(&ui, d, &mut selected.borrow_mut(), move || {
+                let root = d.clipboard_root.clone();
+                begin(&ui, d, &selected, move || {
                     let paste_text = || {
                         weak.upgrade_in_event_loop(|ui| ui.global::<State>().invoke_paste_text())
                     };
@@ -290,7 +285,6 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
                         return Ok(vec![]);
                     };
                     if let Ok(image) = clipboard.get_image() {
-                        let root = clipboard_root()?;
                         use std::os::unix::fs::DirBuilderExt;
                         std::fs::DirBuilder::new()
                             .recursive(true)
@@ -324,11 +318,4 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
         });
         true
     });
-}
-fn clipboard_root() -> Result<PathBuf, String> {
-    Ok(line::locations::Locations::from_environment()?
-        .session
-        .parent()
-        .ok_or("Missing app data directory")?
-        .join("clipboard-attachments"))
 }

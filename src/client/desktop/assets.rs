@@ -10,7 +10,7 @@ const MAX_DOWNLOAD: usize = 16 * 1024 * 1024;
 mod failure;
 pub use failure::Failure;
 mod fetchers;
-pub use fetchers::{Completion, Failures, Fetchers, Payload, Priority, Purpose};
+pub use fetchers::{Completion, Failures, Fetchers, Payload, Purpose};
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Asset {
