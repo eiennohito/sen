@@ -58,12 +58,12 @@ impl Notifications {
             let title = state
                 .chats
                 .get(&m.chat_id)
-                .map(|c| presenter::chat_title(&c.chat, state))
+                .map(|c| presenter::chats::chat_title(&c.chat, state))
                 .unwrap_or("LINE");
             let text = policy::redact(
                 prefs.preview,
                 title,
-                &presenter::compact_text(&m.body, state, &m.sender_id),
+                &presenter::messages::compact_text(&m.body, state, &m.sender_id),
             );
             self.service.notify(attention::Notice {
                 chat: m.chat_id.0.clone(),

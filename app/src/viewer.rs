@@ -1,5 +1,5 @@
 //! Photo navigation and deliberate local exports. No network operations here.
-use crate::{AppWindow, State};
+use crate::{AppWindow, Content, Intent, State};
 use image::ImageEncoder;
 use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer};
 use std::{
@@ -210,6 +210,48 @@ fn portal_destination(name: &str) -> Result<Option<PathBuf>, Box<dyn std::error:
         .map_err(|_| "destination is not a local file")?;
     Ok(Some(path))
 }
+impl crate::Desktop {
+    pub(crate) fn photos(&self) -> Vec<String> {
+        self.state
+            .rows()
+            .iter()
+            .filter(|m| matches!(m.body, Content::Photo { .. }))
+            .filter_map(|m| m.body.image().cloned())
+            .map(|asset| asset.key())
+            .collect()
+    }
+    pub(crate) fn open_photo(&mut self, ui: &AppWindow, key: &str) {
+        let asset = self
+            .state
+            .rows()
+            .iter()
+            .filter_map(|m| m.body.image().cloned())
+            .find(|a| a.key() == key)
+            .and_then(|a| a.original());
+        if let Some(asset) = asset {
+            let photos = self.photos();
+            let index = photos.iter().position(|k| k == key);
+            ui.global::<State>()
+                .set_viewer_has_previous(index.is_some_and(|i| i > 0));
+            ui.global::<State>()
+                .set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
+            ui.global::<State>()
+                .set_viewer_name(asset.display_name().into());
+            self.viewer_asset = Some(asset.key());
+            if let Some(preview) = self.presenter.images.get(key) {
+                ui.set_viewer_image(preview.clone());
+            }
+            ui.set_viewer_status("Preview · loading original…".into());
+            ui.set_viewer_loading(true);
+            ui.set_viewer_error("".into());
+            if !ui.get_viewer_open() {
+                ui.invoke_show_viewer(key.into());
+            }
+            self.sender.send(Intent::Original(asset));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

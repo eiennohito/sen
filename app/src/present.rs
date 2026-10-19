@@ -300,9 +300,9 @@ pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> Messa
     };
     let detail = match &m.body {
         Content::Video { duration, .. } | Content::Voice { duration, .. } => {
-            duration.map(crate::rich_content::duration)
+            duration.map(crate::present::duration)
         }
-        Content::File { size, .. } => size.map(crate::rich_content::file_size),
+        Content::File { size, .. } => size.map(crate::present::file_size),
         _ => None,
     }
     .unwrap_or_default();
@@ -336,6 +336,65 @@ pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> Messa
         reactions: ModelRc::new(VecModel::from(reactions)),
         ..Default::default()
     }
+}
+
+pub(crate) fn duration(milliseconds: u64) -> String {
+    let seconds = milliseconds / 1000;
+    format!("{}:{:02}", seconds / 60, seconds % 60)
+}
+pub(crate) fn file_size(bytes: u64) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.1} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
+}
+
+pub(crate) fn name_tint(id: &str, background: slint::Color, dark: bool) -> slint::Color {
+    let tint = avatar_tint(id);
+    if dark {
+        return tint;
+    }
+    let luminance = |color: slint::Color| {
+        [color.red(), color.green(), color.blue()]
+            .into_iter()
+            .zip([0.2126, 0.7152, 0.0722])
+            .map(|(c, weight)| {
+                let c = f64::from(c) / 255.;
+                weight
+                    * if c <= 0.04045 {
+                        c / 12.92
+                    } else {
+                        ((c + 0.055) / 1.055).powf(2.4)
+                    }
+            })
+            .sum::<f64>()
+    };
+    let mut factor = 1.;
+    loop {
+        let color = slint::Color::from_rgb_u8(
+            (f64::from(tint.red()) * factor) as u8,
+            (f64::from(tint.green()) * factor) as u8,
+            (f64::from(tint.blue()) * factor) as u8,
+        );
+        if (luminance(background) + 0.05) / (luminance(color) + 0.05) >= 4.5 {
+            return color;
+        }
+        factor *= 0.95;
+    }
+}
+
+pub(crate) fn avatar_tint(id: &str) -> slint::Color {
+    let hash = id.bytes().fold(0u32, |hash, byte| {
+        hash.wrapping_mul(31).wrapping_add(byte as u32)
+    });
+    let hues = [
+        0xDCCEDC, 0xC6D9E8, 0xC9DDD0, 0xE7D4BD, 0xD2D2EA, 0xE8CCD0, 0xDADDBE, 0xBEDDDA,
+    ];
+    let rgb = hues[hash as usize % hues.len()];
+    slint::Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
 
 #[cfg(test)]

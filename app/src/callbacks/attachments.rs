@@ -40,7 +40,7 @@ fn present(ui: &AppWindow, selection: &Selection) {
             .iter()
             .map(|i| AttachmentItem {
                 name: i.name.clone().into(),
-                size: rich_content::file_size(i.size).into(),
+                size: present::file_size(i.size).into(),
                 photo: i.photo.is_some(),
                 picture: picture(&i.preview),
                 error: if i.too_large() { "Too large" } else { "" }.into(),
