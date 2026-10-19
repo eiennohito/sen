@@ -9,6 +9,12 @@ merge. "Branch" means the work exists but is not merged yet.
 |---|---|---|---|
 | 1 | Read markers (`sendChatChecked`) and reactions (`react`) failed on the real server: "response decode failed" | user log | merged; success is now the extension's `message == "OK"` rule. Needs confirmation in the real app |
 | 4 | Unread count with no visible messages (LINE official account) | user | merged; the read marker covers hidden events. Needs confirmation in the real app (depends on #1) |
+| 34 | A request fails with HTTP 400 every 2–4 s in the real app; the log line (`operation=backend-rpc … rpc:http=400:code=0`) doesn't say which request, and it retries in a loop | user log | investigating |
+| 35 | Sticker picker shows "No stickers" in the real app | user | investigating (possibly #34) |
+| 36 | The user's own profile shows as "Unknown member" in chats (the profile page itself is correct) | user | investigating |
+| 37 | Clicking a chat shows its profile page for a moment before the messages | user | investigating |
+| 38 | Profile pictures are low resolution; higher-resolution versions should be available | user | investigating |
+| 39 | React/reply button positioning on messages looks wrong | user | investigating |
 | 15 | God objects: `State` (213 properties), `AppWindow` with 85 forwarding aliases | user | R4, not started. The demo reset copies ~180 State properties by hand; R4 replaces it with a per-feature-global reset |
 | 16 | Generated Slint Rust is 10 MB | user | R4: interpreter in dev builds, compiled releases cut by source rules |
 | 17 | Global deslop pass, including a whole-suite test audit | user | next |
