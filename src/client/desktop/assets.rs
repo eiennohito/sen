@@ -299,7 +299,7 @@ impl Asset {
             return Err(failure.into());
         }
         ensure!(allowed_url(&self.url), Failure::UnsupportedHost);
-        let application = format!("CHROMEOS\t{VERSION}\tChrome_OS\t");
+        let application = format!("CHROMEOS\t{}\tChrome_OS\t", http.client_version);
         let mut headers = Vec::new();
         if self.private {
             let token = access_token.ok_or(Failure::Network)?;

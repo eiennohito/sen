@@ -80,6 +80,8 @@ pub(crate) fn classify(error: &anyhow::Error) -> Error {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignInFailure {
     CryptoModule(std::path::PathBuf),
+    ExtensionMissing,
+    CryptoChanged { version: String, missing: String },
     StateDirectory(std::path::PathBuf),
     Keyring,
     Network,
@@ -93,9 +95,17 @@ pub enum SignInFailure {
 }
 
 impl SignInFailure {
+    pub fn is_prerequisite(&self) -> bool {
+        matches!(
+            self,
+            Self::CryptoModule(_) | Self::ExtensionMissing | Self::CryptoChanged { .. }
+        )
+    }
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::CryptoModule(_) => "crypto-module",
+            Self::CryptoModule(_) | Self::ExtensionMissing | Self::CryptoChanged { .. } => {
+                "crypto-module"
+            }
             Self::StateDirectory(_) => "state-directory",
             Self::Keyring => "keyring",
             Self::Network => "network",
@@ -113,23 +123,42 @@ impl SignInFailure {
 /// Local saved-session failures, independent of LINE authentication.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SavedSessionFailure {
-    #[error("the saved crypto version is unsupported")]
-    Version,
-    #[error("Letter Sealing keys are missing or do not match")]
+    #[error("saved-session: {self:?}")]
     Keys,
-    #[error("the saved data is corrupt")]
+    #[error("saved-session: {self:?}")]
     Corrupt,
-    #[error("the credentials store does not match")]
+    #[error("saved-session: {self:?}")]
     CredentialsStore,
-    #[error("the keyring is locked or unavailable, or its key is missing")]
+    #[error("saved-session: {self:?}")]
     Keyring,
-    #[error("the saved session could not be read or written")]
+    #[error("saved-session: {self:?}")]
     Io,
-    #[error("the image cache could not be opened")]
+    #[error("saved-session: {self:?}")]
     ImageCache,
 }
 impl SavedSessionFailure {
     pub(crate) fn error(self) -> Error {
         Error::SignIn(SignInFailure::SavedSession(self))
+    }
+}
+
+impl wasmi::core::HostError for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn media_rejections_keep_their_wording_through_classification() {
+        for (reason, text) in [
+            (RejectReason::UploadStalled, "Upload stalled"),
+            (RejectReason::UploadRefused, "Server refused the file"),
+            (RejectReason::UploadFailed, "Upload failed"),
+        ] {
+            let error = anyhow::Error::new(Error::Rejected(reason)).context("upload worker");
+            let Error::Rejected(reason) = classify(&error) else {
+                panic!("lost upload reason")
+            };
+            assert_eq!(reason.to_string(), text);
+        }
     }
 }

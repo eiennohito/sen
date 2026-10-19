@@ -1,5 +1,5 @@
 //! Reading decisions use logical content coordinates, independent of Slint.
-use line_wasm_poc::{
+use line::{
     controller::AppState,
     engine::{Connection, Intent},
     store::*,

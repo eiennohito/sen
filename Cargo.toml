@@ -1,5 +1,5 @@
 [package]
-name = "line-wasm-poc"
+name = "line"
 version = "0.1.0"
 edition = "2024"
 description = "Rust host and client adapter for the unmodified LINE Chrome crypto WASM"
@@ -12,6 +12,11 @@ resolver = "3"
 [features]
 default = []
 native-crypto = []
+harness = []
+
+[[example]]
+name = "crypto-harness"
+required-features = ["harness"]
 
 [dependencies]
 anyhow = "1"
@@ -50,3 +55,7 @@ opt-level = 0
 
 [profile.fast.package.line-desktop-ui]
 opt-level = 0
+
+# The crypto module runs in wasmi; unoptimized it is ~10x slower in tests.
+[profile.dev.package."*"]
+opt-level = 2

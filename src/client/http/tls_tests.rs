@@ -52,6 +52,7 @@ fn fixture() -> (Transport, TcpListener, Arc<ServerConfig>) {
         )
         .build();
     let transport = Transport {
+        client_version: "9.8.7".into(),
         config: Config::testing(),
         agent: Agent::with_parts(config, PollConnector::default(), PollResolver::default()),
         base: format!(

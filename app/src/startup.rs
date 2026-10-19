@@ -1,6 +1,8 @@
 use crate::*;
 
 pub(crate) struct Options {
+    pub client_version: Option<String>,
+    pub wasm_override: Option<std::path::PathBuf>,
     pub demo: bool,
     pub snapshot_path: Option<String>,
     pub size: (u32, u32),
@@ -10,7 +12,7 @@ pub(crate) struct Options {
     pub dark: bool,
     pub snapshot_profile: bool,
     pub background: bool,
-    pub locations: line_wasm_poc::locations::Locations,
+    pub locations: line::locations::Locations,
 }
 
 pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> {
@@ -25,6 +27,8 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         snapshot_profile,
         background,
         locations,
+        client_version,
+        wasm_override,
     } = options;
     let automation = debug_launch::intent(
         background,
@@ -87,7 +91,14 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         let root = locations.session.parent().unwrap().join("accounts");
         Worker::start_projected(
             StoreLocation::Account { root, mid: None },
-            move || LineBackend::open_local(&locations.session, &locations.wasm, &locations.cache),
+            move || {
+                LineBackend::open_local(
+                    &locations.session,
+                    wasm_override.clone(),
+                    &locations.cache,
+                    client_version.clone(),
+                )
+            },
             Default::default(),
             move |delta| projection.project(delta),
         )

@@ -600,6 +600,9 @@ impl Backend for FakeBackend {
             while !cancel.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(10));
             }
+            return Err(Error::SignIn(
+                crate::client::error::SignInFailure::Cancelled,
+            ));
         }
         Err(Error::SignIn(crate::client::error::SignInFailure::Server))
     }
@@ -1172,34 +1175,55 @@ pub struct LineBackend {
     fetchers: Option<Arc<crate::client::desktop::assets::Fetchers>>,
     client: Option<crate::client::desktop::Client>,
     state: std::path::PathBuf,
-    wasm: std::path::PathBuf,
+    wasm_override: Option<std::path::PathBuf>,
+    version_override: Option<String>,
 }
 impl LineBackend {
     pub fn local_mid(&self) -> Option<String> {
-        let mid = self.client.as_ref()?.local_mid();
-        (!mid.is_empty()).then(|| mid.to_owned())
+        self.client
+            .as_ref()
+            .map(|client| client.local_mid().to_owned())
     }
     pub fn open_local(
         state: &std::path::Path,
-        wasm: &std::path::Path,
+        wasm_override: Option<std::path::PathBuf>,
         cache: &std::path::Path,
+        version_override: Option<String>,
     ) -> anyhow::Result<Self> {
-        let (client, session_failure) = if state.exists() {
-            match crate::client::desktop::Client::open_local(state, wasm, cache) {
-                Ok(client) => (Some(client), None),
-                Err(error) => {
-                    crate::reporting::log("saved-session", "open", error.as_ref());
-                    let reason = match crate::client::error::classify(&error) {
-                        Error::SignIn(reason) => reason,
-                        _ => crate::client::error::SignInFailure::SavedSession(
-                            crate::client::error::SavedSessionFailure::Corrupt,
-                        ),
-                    };
-                    (None, Some(reason))
-                }
+        let open = || -> anyhow::Result<Option<crate::client::desktop::Client>> {
+            let module =
+                crate::crypto_module::resolve(wasm_override.clone(), version_override.clone())?;
+            if state.try_exists()? {
+                crate::client::desktop::Client::open_local(state, module, cache).map(Some)
+            } else {
+                drop(module.runtime(&module.read()?)?);
+                Ok(None)
             }
-        } else {
-            (None, None)
+        };
+        let (client, session_failure) = match open() {
+            Ok(client) => (client, None),
+            Err(error) => {
+                crate::reporting::log("saved-session", "open", error.as_ref());
+                use crate::client::error::{SavedSessionFailure, SignInFailure};
+                let reason = match error.downcast_ref::<Error>() {
+                    Some(Error::SignIn(reason)) => reason.clone(),
+                    Some(Error::Offline(_)) => SignInFailure::Network,
+                    Some(Error::Auth) => SignInFailure::Expired,
+                    Some(Error::SessionInvalid) => SignInFailure::SessionIdentity,
+                    Some(Error::Server(_)) => SignInFailure::Server,
+                    Some(_) => SignInFailure::Internal,
+                    None if error.downcast_ref::<std::io::Error>().is_some() => {
+                        SignInFailure::SavedSession(SavedSessionFailure::Io)
+                    }
+                    None if error.downcast_ref::<crate::client::RpcError>().is_some()
+                        || error.downcast_ref::<ureq::Error>().is_some() =>
+                    {
+                        crate::client::pairing::failure(&error, false)
+                    }
+                    None => SignInFailure::SavedSession(SavedSessionFailure::Corrupt),
+                };
+                (None, Some(reason))
+            }
         };
         Ok(Self {
             fetchers: None,
@@ -1207,7 +1231,8 @@ impl LineBackend {
             client,
             session_failure,
             state: state.into(),
-            wasm: wasm.into(),
+            wasm_override,
+            version_override,
         })
     }
 }
@@ -1224,7 +1249,7 @@ fn send_rpc(e: anyhow::Error) -> Error {
         return rpc(e);
     }
     match crate::client::desktop::send_failure(&e) {
-        crate::client::desktop::SendFailure::Rejected => Error::Rejected(RejectReason::NotAccepted),
+        crate::client::desktop::SendFailure::Refused => Error::Rejected(RejectReason::NotAccepted),
         _ => rpc(e),
     }
 }
@@ -1279,9 +1304,15 @@ impl Backend for LineBackend {
             pairing,
         };
         desktop::set_cancellation_token(cancel.clone());
+        let module = crate::crypto_module::resolve(
+            self.wasm_override.clone(),
+            self.version_override.clone(),
+        )
+        .map_err(rpc)?;
+        self.client = None;
         let mut client = pairing::sign_in_validated(
             &self.state,
-            &self.wasm,
+            module,
             &cancel,
             move |event| {
                 deliver(match event {
@@ -1299,7 +1330,14 @@ impl Backend for LineBackend {
                     pairing::Event::Scanned => PairEvent::Scanned,
                 })
             },
-            |staged| desktop::Client::open_local(staged, &self.wasm, &self.cache),
+            |staged, api| {
+                desktop::Client::from_api(
+                    staged,
+                    &self.cache,
+                    crate::credentials::load(staged)?,
+                    api,
+                )
+            },
         )
         .map_err(|error| {
             crate::reporting::log("sign-in", "pairing", error.as_ref());
@@ -1660,11 +1698,18 @@ impl Backend for LineBackend {
             .ok_or(Error::Auth)?
             .latest_revision()
             .map_err(rpc)?;
+        let client_version = self
+            .client
+            .as_ref()
+            .ok_or(Error::Auth)?
+            .client_version()
+            .to_owned();
         let access = self.client.as_mut().ok_or(Error::Auth)?.stream_access();
         Ok(Box::new(move || {
             use crate::client::desktop::sync::{self, Event, SyncState};
             let refresh_deliver = deliver.clone();
             let _ = sync::receive_with_auth(
+                &client_version,
                 revision as u64,
                 &stop,
                 |renew| {
@@ -1728,6 +1773,7 @@ impl Backend for LineBackend {
                     .as_mut()
                     .ok_or(Error::Auth)?
                     .operation(&raw)
+                    .map_err(rpc)?
                     .ok_or(Error::Decode)?;
                 m.request_seq = raw["reqSeq"]
                     .as_u64()

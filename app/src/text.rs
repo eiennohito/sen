@@ -1,5 +1,5 @@
 //! User-facing wording for typed library outcomes.
-use line_wasm_poc::client::{desktop::assets::Failure, error::RejectReason};
+use line::client::{desktop::assets::Failure, error::RejectReason};
 
 pub(crate) fn image_text(failure: Failure) -> &'static str {
     match failure {
@@ -36,8 +36,8 @@ pub(crate) fn viewer_failure(failure: Failure) -> String {
     format!("media failure: {failure:?}")
 }
 
-pub(crate) fn create_failure(failure: &line_wasm_poc::engine::CreateFailure) -> &str {
-    use line_wasm_poc::engine::CreateFailure;
+pub(crate) fn create_failure(failure: &line::engine::CreateFailure) -> &str {
+    use line::engine::CreateFailure;
     match failure {
         CreateFailure::InvalidSelection => "Select at least two friends to create a group.",
         CreateFailure::Local => "Couldn't create group. Try again.",
@@ -48,8 +48,8 @@ pub(crate) fn create_failure(failure: &line_wasm_poc::engine::CreateFailure) -> 
     }
 }
 
-pub(crate) fn profile_failure(failure: line_wasm_poc::engine::ProfileFailure) -> &'static str {
-    use line_wasm_poc::engine::ProfileFailure;
+pub(crate) fn profile_failure(failure: line::engine::ProfileFailure) -> &'static str {
+    use line::engine::ProfileFailure;
     match failure {
         ProfileFailure::Rename => "Couldn't rename.",
         ProfileFailure::AddFriend => "Couldn't add friend.",
@@ -58,8 +58,8 @@ pub(crate) fn profile_failure(failure: line_wasm_poc::engine::ProfileFailure) ->
     }
 }
 
-pub(crate) fn pairing_stage(stage: line_wasm_poc::client::pairing::Stage) -> String {
-    use line_wasm_poc::client::pairing::Stage;
+pub(crate) fn pairing_stage(stage: line::client::pairing::Stage) -> String {
+    use line::client::pairing::Stage;
     match stage {
         Stage::WaitingKeyring => "Waiting for the keyring to unlock…".into(),
         Stage::RecoveringKeys => "Recovering E2EE keys from saved pairing metadata".into(),
@@ -75,9 +75,7 @@ pub(crate) fn pairing_stage(stage: line_wasm_poc::client::pairing::Stage) -> Str
             "Session credentials received; unwrapping Letter Sealing keychain in WASM".into()
         }
         Stage::KeysVerified => "Letter Sealing keys unwrapped and export/import verified".into(),
-        Stage::CheckingRecovery => {
-            "Authenticated getProfile succeeded; checking restart recovery".into()
-        }
+        Stage::CheckingKeys => "Authenticated getProfile succeeded; validating saved keys".into(),
         Stage::Synthetic => "Synthetic sign-in".into(),
         Stage::RestoredKeys(count) => {
             format!("Restored {count} Letter Sealing key(s) in a fresh WASM instance")
@@ -85,8 +83,8 @@ pub(crate) fn pairing_stage(stage: line_wasm_poc::client::pairing::Stage) -> Str
     }
 }
 
-pub fn storage_failure(reason: line_wasm_poc::engine::StorageFailure) -> &'static str {
-    use line_wasm_poc::engine::StorageFailure::*;
+pub fn storage_failure(reason: line::engine::StorageFailure) -> &'static str {
+    use line::engine::StorageFailure::*;
     match reason {
         Full => "Can't save messages: disk is full. New messages are shown but won't be kept.",
         ReadOnly => {
@@ -98,17 +96,30 @@ pub fn storage_failure(reason: line_wasm_poc::engine::StorageFailure) -> &'stati
         Io => "Can't save messages: disk I/O failed. New messages are shown but won't be kept.",
     }
 }
-pub fn sign_in_failure(reason: &line_wasm_poc::client::error::SignInFailure) -> String {
-    use line_wasm_poc::client::error::SignInFailure::*;
+pub fn sign_in_failure(reason: &line::client::error::SignInFailure) -> String {
+    use line::client::error::SignInFailure::*;
     match reason {
-        CryptoModule(path) => format!("Crypto module missing or unsupported. Install the supported module at {} and try again.", path.display()),
+        CryptoModule(path) => format!("Can't load the LINE crypto module at {}. Check LINE for Chrome or the developer override.", path.display()),
+        ExtensionMissing => "Install LINE for Chrome — this app uses its crypto module. Searched Chrome and Chromium profiles under $XDG_CONFIG_HOME (default $HOME/.config).".into(),
+        CryptoChanged { version, missing } => format!("LINE for Chrome {version} changed its crypto module (missing {missing}); this app doesn't support it yet"),
         StateDirectory(path) => format!("State directory is not writable: {}. Grant write permission and try again.", path.display()),
         Keyring => "Unlock your keyring (KWallet/GNOME Keyring) and try again. Ensure Secret Service is running with a default keyring.".into(),
         Network => "Can't reach LINE. Check your network connection and try again.".into(),
         Server => "LINE refused sign-in. Try again later.".into(),
         Phone => "Phone approval was rejected or timed out. Start again and approve sign-in on your phone.".into(),
         Cancelled => String::new(),
-        SavedSession(reason) => format!("Your saved sign-in can't be used: {reason}. Sign in again to replace it."),
+        SavedSession(reason) => {
+            use line::client::error::SavedSessionFailure;
+            let reason = match reason {
+                SavedSessionFailure::Keys => "Letter Sealing keys are missing or do not match",
+                SavedSessionFailure::Corrupt => "the saved data is corrupt",
+                SavedSessionFailure::CredentialsStore => "the credentials store does not match",
+                SavedSessionFailure::Keyring => "the keyring is locked or unavailable, or its key is missing",
+                SavedSessionFailure::Io => "the saved session could not be read or written",
+                SavedSessionFailure::ImageCache => "the image cache could not be opened",
+            };
+            format!("Your saved sign-in can't be used: {reason}. Sign in again to replace it.")
+        },
         Expired => "Sign-in expired. Sign in again.".into(),
         SessionIdentity => "The saved sign-in belongs to a different account. Sign in again.".into(),
         Internal => "Sign-in stopped because of an internal error. See the log and try again.".into(),

@@ -1,4 +1,4 @@
-use line_wasm_poc::{
+use line::{
     backend::{FakeBackend, LineBackend, ProfileAction},
     controller::{ActionQueue, AppState, DetailPage, Panel},
     engine::{Connection, Delta, Intent, Sender, StoreLocation, Worker},
@@ -52,8 +52,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dark = false;
     let mut snapshot_profile = false;
     let mut background = false;
-    let mut locations = line_wasm_poc::locations::Locations::from_environment()?;
-    let mut explicit_paths = false;
+    let mut client_version = None;
+    let mut wasm_override = None;
+    let mut locations = line::locations::Locations::from_environment()?;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -96,11 +97,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--snapshot-scene" => scene = args.next().ok_or("missing scene")?,
             "--state" => {
                 locations.session = args.next().ok_or("missing state")?.into();
-                explicit_paths = true;
+            }
+            "--client-version" => {
+                client_version = Some(args.next().ok_or("missing client version")?)
             }
             "--wasm" => {
-                locations.wasm = args.next().ok_or("missing wasm")?.into();
-                explicit_paths = true;
+                wasm_override = Some(args.next().ok_or("missing wasm")?.into());
             }
             "--cache-dir" => locations.cache = args.next().ok_or("missing cache directory")?.into(),
             "--demo-signed-out" | "--demo-rich" | "--demo-photos" | "--demo-groups"
@@ -110,9 +112,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             _ => return Err(format!("unknown option {arg}").into()),
         }
-    }
-    if !demo && !explicit_paths {
-        locations.load_existing()?;
     }
     startup::start(startup::Options {
         demo,
@@ -125,6 +124,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         snapshot_profile,
         background,
         locations,
+        client_version,
+        wasm_override,
     })
 }
 

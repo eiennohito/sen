@@ -99,57 +99,24 @@ fn pause(stop: &AtomicBool, duration: Duration) {
     }
 }
 
-/// Runs on a dedicated thread with its own WASM runtime. `deliver` must return
-/// false on cancellation; callers use a bounded channel with cancellable sends.
-/// The same stop token is installed for RPCs and passed directly to socket waits.
-pub fn receive(
-    state_path: &Path,
-    wasm_path: &Path,
-    stop: &Arc<AtomicBool>,
-    deliver: impl FnMut(Event) -> bool,
-) -> Result<()> {
-    receive_from(state_path, wasm_path, 0, stop, deliver)
-}
-
-pub fn receive_from(
-    state_path: &Path,
-    wasm_path: &Path,
-    revision: u64,
-    stop: &Arc<AtomicBool>,
-    deliver: impl FnMut(Event) -> bool,
-) -> Result<()> {
-    set_request_cancel(stop.clone());
-    let mut state = crate::credentials::load(state_path)?;
-    let mut api = Api::new(&fs::read(wasm_path)?)?;
-    receive_with_auth(
-        revision,
-        stop,
-        |renew| {
-            if renew {
-                refresh(&mut api, &mut state, state_path, stop)?;
-            }
-            Ok(access(&state)?.to_owned())
-        },
-        deliver,
-    )
-}
-
 /// The stream has its own HTTP connection and borrows authorization from the RPC owner.
 /// Neither credentials nor a WASM runtime are loaded on the stream thread.
 pub fn receive_with_auth(
+    client_version: &str,
     revision: u64,
     stop: &Arc<AtomicBool>,
     mut authorize: impl FnMut(bool) -> Result<String>,
     mut deliver: impl FnMut(Event) -> bool,
 ) -> Result<()> {
     set_request_cancel(stop.clone());
-    let transport = http::Transport::new()?;
+    let transport = http::Transport::new(client_version)?;
     let mut revisions = Revisions { local: revision };
     let mut refreshed_once = false;
     let mut attempt = 0;
     while !stop.load(Ordering::Relaxed) {
         let result = stream(
             &transport,
+            client_version,
             &authorize(false)?,
             revisions.local,
             stop,
@@ -369,8 +336,10 @@ fn dispatch(
 const MAX_LINE: u64 = 1024 * 1024;
 const PING_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[allow(clippy::too_many_arguments)]
 fn stream(
     transport: &http::Transport,
+    client_version: &str,
     access: &str,
     revision: u64,
     stop: &Arc<AtomicBool>,
@@ -379,7 +348,9 @@ fn stream(
 ) -> Result<u16> {
     // Source uses EventSource withCredentials, not the signed POST mapper.
     transport.stream(
-        &format!("/api/operation/receive?localRev={revision}&version={VERSION}&language=en_US"),
+        &format!(
+            "/api/operation/receive?localRev={revision}&version={client_version}&language=en_US"
+        ),
         &[
             ("Cookie", &format!("lct={access}")),
             ("Accept", "text/event-stream"),

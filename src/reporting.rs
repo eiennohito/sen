@@ -32,6 +32,9 @@ fn chain(error: &(dyn Error + 'static)) -> String {
             format!("rpc:http={}:code={}", e.http, e.code)
         } else if let Some(e) = e.downcast_ref::<crate::client::error::Error>() {
             match e {
+                crate::client::error::Error::SignIn(
+                    reason @ crate::client::error::SignInFailure::CryptoChanged { .. },
+                ) => format!("{reason:?}"),
                 crate::client::error::Error::SignIn(reason) => format!("sign-in:{}", reason.kind()),
                 _ => e.to_string(), // These variants contain only typed categories and numeric codes.
             }

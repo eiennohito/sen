@@ -3,9 +3,14 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use line_wasm_poc::{DEFAULT_WASM, HASH, VERSION, runtime::Runtime, sign};
+use line::test_support;
+use line::{
+    runtime::{Call, Runtime},
+    sign, signing_key,
+};
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::Path};
+use test_support::{FIXTURE_VERSION, fixture_path, read_fixture};
 
 const TO: &str = "u8ae764e8e69e6bd4ecdd9b6ea0c40fce";
 const FROM: &str = "uf1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6";
@@ -36,13 +41,15 @@ fn replay_har(rt: &mut Runtime, path: &Path) -> Result<usize> {
             continue;
         };
         ensure!(
-            get("x-line-chrome-version").unwrap_or(VERSION) == VERSION,
+            get("x-line-chrome-version").unwrap_or(FIXTURE_VERSION) == FIXTURE_VERSION,
             "unsupported captured version"
         );
         let body = req["postData"]["text"].as_str().unwrap_or("");
         // At startup Chrome signs with an empty token argument even while the
         // browser sends a session cookie. Do not substitute the cookie here.
-        let actual = sign(rt, &path, body, get("x-line-access").unwrap_or(""))?;
+        let key = signing_key(rt, get("x-line-access").unwrap_or(""), FIXTURE_VERSION)?;
+        let actual = sign(rt, &key, &path, body)?;
+        key.destroy(rt)?;
         ensure!(actual == expected, "signature mismatch for {path}");
         checked += 1;
     }
@@ -50,14 +57,8 @@ fn replay_har(rt: &mut Runtime, path: &Path) -> Result<usize> {
     println!("PASS: {checked}/{checked} captured Chrome request signatures match");
     Ok(checked)
 }
-fn method_bytes(
-    rt: &mut Runtime,
-    class: &str,
-    name: &str,
-    this: u32,
-    args: &[u64],
-) -> Result<Vec<u8>> {
-    let h = rt.method(class, name, this, args)?;
+fn method_bytes(rt: &mut Runtime, call: Call, this: u32, args: &[u64]) -> Result<Vec<u8>> {
+    let h = rt.method(call, this, args)?;
     rt.output(h)
 }
 
@@ -69,18 +70,18 @@ struct ChannelPair {
 }
 impl ChannelPair {
     fn new(rt: &mut Runtime) -> Result<Self> {
-        let alice = rt.static_call("Curve25519Key", "generate", &[1])?;
-        let bob = rt.static_call("Curve25519Key", "generate", &[1])?;
-        let alice_pub = method_bytes(rt, "Curve25519Key", "getPublicKey", alice, &[])?;
-        let bob_pub = method_bytes(rt, "Curve25519Key", "getPublicKey", bob, &[])?;
+        let alice = rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
+        let bob = rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
+        let alice_pub = method_bytes(rt, Call::Curve25519KeyGetPublicKey, alice, &[])?;
+        let bob_pub = method_bytes(rt, Call::Curve25519KeyGetPublicKey, bob, &[])?;
         ensure!(
             alice_pub.len() == 32 && bob_pub.len() == 32,
             "X25519 public-key length"
         );
         let a = rt.bytes(&alice_pub);
         let b = rt.bytes(&bob_pub);
-        let sender = rt.method("Curve25519Key", "createChannel", alice, &[b])?;
-        let receiver = rt.method("Curve25519Key", "createChannel", bob, &[a])?;
+        let sender = rt.method(Call::Curve25519KeyCreateChannel, alice, &[b])?;
+        let receiver = rt.method(Call::Curve25519KeyCreateChannel, bob, &[a])?;
         rt.release(a)?;
         rt.release(b)?;
         Ok(Self {
@@ -111,16 +112,16 @@ impl Mids {
         // A real client passes the opaque IDs returned by LINE directly.
         let wrapped = rt.read_memory(7376, 193)?;
         let h = rt.bytes(&wrapped);
-        let sk = rt.static_call("SecureKey", "loadKey", &[h])?;
+        let sk = rt.static_call(Call::SecureKeyLoadKey, &[h])?;
         rt.release(h)?;
-        let aes = rt.construct("AesKey", &[sk as u64])?;
+        let aes = rt.construct(Call::AesKeyNew, &[sk as u64])?;
         let mut encode = |mid: &str| -> Result<String> {
             let raw = (1..33)
                 .step_by(2)
                 .map(|i| Ok(u8::from_str_radix(&mid[i..i + 2], 16)?))
                 .collect::<Result<Vec<u8>>>()?;
             let h = rt.bytes(&raw);
-            let mut ct = method_bytes(rt, "AesKey", "encrypt", aes, &[h])?;
+            let mut ct = method_bytes(rt, Call::AesKeyEncrypt, aes, &[h])?;
             rt.release(h)?;
             ensure!(ct.len() == 44, "opaque MID ciphertext size");
             // MID obfuscation uses the first 4 bytes of the GCM tag.
@@ -142,14 +143,14 @@ impl Mids {
 }
 fn channel_crypt(
     rt: &mut Runtime,
-    name: &str,
+    call: Call,
     ch: u32,
     mids: &Mids,
     data: &[u8],
     seq: Option<u64>,
     sender_id: u64,
 ) -> Result<Vec<u8>> {
-    if name == "decryptV2" {
+    if call == Call::E2EEChannelDecryptV2 {
         ensure!(data.len() >= 44, "V2 ciphertext too short");
     }
     let to = rt.string(&mids.to)?;
@@ -160,7 +161,7 @@ fn channel_crypt(
         args.push(n)
     }
     args.push(h);
-    let out = rt.method("E2EEChannel", name, ch, &args)?;
+    let out = rt.method(call, ch, &args)?;
     // On a WASM exception Runtime is poisoned and must be discarded. The
     // early return above deliberately avoids calling into an unwound stack.
     rt.free_string(to)?;
@@ -170,14 +171,14 @@ fn channel_crypt(
 }
 fn roundtrips(rt: &mut Runtime, mids: &Mids) -> Result<()> {
     let empty = rt.bytes(&[]);
-    let aes = rt.static_call("AesKey", "generate", &[32, empty])?;
+    let aes = rt.static_call(Call::AesKeyGenerate, &[32, empty])?;
     rt.release(empty)?;
     let plaintext = "Native Rust + original LINE WASM: 日本語 🔐\0binary".as_bytes();
     let h = rt.bytes(plaintext);
-    let encrypted = method_bytes(rt, "AesKey", "encrypt", aes, &[h])?;
+    let encrypted = method_bytes(rt, Call::AesKeyEncrypt, aes, &[h])?;
     rt.release(h)?;
     let h = rt.bytes(&encrypted);
-    let decrypted = method_bytes(rt, "AesKey", "decrypt", aes, &[h])?;
+    let decrypted = method_bytes(rt, Call::AesKeyDecrypt, aes, &[h])?;
     rt.release(h)?;
     ensure!(decrypted == plaintext, "AES roundtrip");
     rt.destroy("AesKey", aes)?;
@@ -185,10 +186,10 @@ fn roundtrips(rt: &mut Runtime, mids: &Mids) -> Result<()> {
     let pair = ChannelPair::new(rt)?;
     let message = br#"{"text":"Hello from a browser-free Rust WASM host"}"#;
     let h = rt.bytes(message);
-    let encrypted = method_bytes(rt, "E2EEChannel", "encryptV1", pair.sender, &[h])?;
+    let encrypted = method_bytes(rt, Call::E2EEChannelEncryptV1, pair.sender, &[h])?;
     rt.release(h)?;
     let h = rt.bytes(&encrypted);
-    let decrypted = method_bytes(rt, "E2EEChannel", "decryptV1", pair.receiver, &[h])?;
+    let decrypted = method_bytes(rt, Call::E2EEChannelDecryptV1, pair.receiver, &[h])?;
     rt.release(h)?;
     ensure!(decrypted == message, "Letter Sealing V1 roundtrip");
     println!("PASS: WASM X25519 + Letter Sealing V1 across two independent keys");
@@ -196,7 +197,7 @@ fn roundtrips(rt: &mut Runtime, mids: &Mids) -> Result<()> {
     let sequence = 0x1_0000_0001;
     let encrypted = channel_crypt(
         rt,
-        "encryptV2",
+        Call::E2EEChannelEncryptV2,
         pair.sender,
         mids,
         message,
@@ -211,7 +212,15 @@ fn roundtrips(rt: &mut Runtime, mids: &Mids) -> Result<()> {
         u64::from_be_bytes(encrypted[16..24].try_into()?) == sequence,
         "64-bit sequence preservation"
     );
-    let decrypted = channel_crypt(rt, "decryptV2", pair.receiver, mids, &encrypted, None, 42)?;
+    let decrypted = channel_crypt(
+        rt,
+        Call::E2EEChannelDecryptV2,
+        pair.receiver,
+        mids,
+        &encrypted,
+        None,
+        42,
+    )?;
     ensure!(decrypted == message, "Letter Sealing V2 roundtrip");
     println!("PASS: WASM X25519 + Letter Sealing V2 (64-bit sequence preserved)");
     pair.destroy(rt)?;
@@ -227,15 +236,15 @@ fn fixture_bytes(f: &serde_json::Value, name: &str) -> Result<Vec<u8>> {
 }
 fn fixture_channel(rt: &mut Runtime, f: &serde_json::Value) -> Result<(u32, u32)> {
     let h = rt.bytes(&fixture_bytes(f, "exported_key")?);
-    let key = rt.static_call("Curve25519Key", "loadKey", &[h])?;
+    let key = rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
     rt.release(h)?;
-    let pubkey = method_bytes(rt, "Curve25519Key", "getPublicKey", key, &[])?;
+    let pubkey = method_bytes(rt, Call::Curve25519KeyGetPublicKey, key, &[])?;
     ensure!(
         pubkey == fixture_bytes(f, "public_key")?,
         "imported fixture public key"
     );
     let peer = rt.bytes(&fixture_bytes(f, "peer_public_key")?);
-    let channel = rt.method("Curve25519Key", "createChannel", key, &[peer])?;
+    let channel = rt.method(Call::Curve25519KeyCreateChannel, key, &[peer])?;
     rt.release(peer)?;
     Ok((key, channel))
 }
@@ -248,12 +257,20 @@ fn external_fixture(rt: &mut Runtime, mids: &Mids) -> Result<()> {
         .context("fixture plaintext")?
         .as_bytes();
     let h = rt.bytes(&fixture_bytes(&f, "ciphertext_v1")?);
-    let plaintext = method_bytes(rt, "E2EEChannel", "decryptV1", channel, &[h])?;
+    let plaintext = method_bytes(rt, Call::E2EEChannelDecryptV1, channel, &[h])?;
     rt.release(h)?;
     ensure!(plaintext == expected, "independent V1 plaintext");
 
     let ciphertext = fixture_bytes(&f, "ciphertext")?;
-    let plaintext = channel_crypt(rt, "decryptV2", channel, mids, &ciphertext, None, 42)?;
+    let plaintext = channel_crypt(
+        rt,
+        Call::E2EEChannelDecryptV2,
+        channel,
+        mids,
+        &ciphertext,
+        None,
+        42,
+    )?;
     ensure!(plaintext == expected, "independent V2 plaintext");
     println!("PASS: original WASM decrypted independent Go V1 and V2 ciphertext fixtures");
     println!("  {}", std::str::from_utf8(&plaintext)?);
@@ -267,21 +284,29 @@ fn rejection_checks(wasm: &[u8]) -> Result<()> {
         ("tampered authentication tag", true, 42),
         ("wrong sender key ID (AAD)", false, 43),
     ] {
-        let mut rt = Runtime::new(wasm)?;
+        let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
         let mids = Mids::synthetic(&mut rt)?;
         let (_, channel) = fixture_channel(&mut rt, &f)?;
         let mut ct = fixture_bytes(&f, "ciphertext")?;
         if mutate {
             *ct.last_mut().context("empty ciphertext")? ^= 1;
         }
-        let error = channel_crypt(&mut rt, "decryptV2", channel, &mids, &ct, None, sender_id)
-            .expect_err("invalid ciphertext accepted");
+        let error = channel_crypt(
+            &mut rt,
+            Call::E2EEChannelDecryptV2,
+            channel,
+            &mids,
+            &ct,
+            None,
+            sender_id,
+        )
+        .expect_err("invalid ciphertext accepted");
         ensure!(
             format!("{error:#}").contains("authentication failure"),
             "unexpected rejection reason: {error:#}"
         );
         ensure!(
-            rt.static_call("Curve25519Key", "generate", &[1]).is_err(),
+            rt.static_call(Call::Curve25519KeyGenerate, &[1]).is_err(),
             "exception did not poison instance"
         );
         println!("PASS: WASM rejects {label}; failed instance cannot be reused");
@@ -289,10 +314,10 @@ fn rejection_checks(wasm: &[u8]) -> Result<()> {
     Ok(())
 }
 fn export_test_key(wasm: &[u8], path: &str) -> Result<()> {
-    let mut rt = Runtime::new(wasm)?;
-    let key = rt.static_call("Curve25519Key", "generate", &[1])?;
-    let public = method_bytes(&mut rt, "Curve25519Key", "getPublicKey", key, &[])?;
-    let exported = method_bytes(&mut rt, "Curve25519Key", "exportKey", key, &[])?;
+    let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
+    let key = rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
+    let public = method_bytes(&mut rt, Call::Curve25519KeyGetPublicKey, key, &[])?;
+    let exported = method_bytes(&mut rt, Call::Curve25519KeyExportKey, key, &[])?;
     fs::write(
         path,
         serde_json::to_vec_pretty(
@@ -305,56 +330,100 @@ fn export_test_key(wasm: &[u8], path: &str) -> Result<()> {
 fn benchmark(wasm: &[u8]) -> Result<()> {
     use std::time::Instant;
     const COUNT: u32 = 20;
-    let started = Instant::now();
-    let mut rt = Runtime::new(wasm)?;
-    println!(
-        "runtime_init_ms={:.2}",
-        started.elapsed().as_secs_f64() * 1000.0
-    );
+    let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
     let mids = Mids::synthetic(&mut rt)?;
     let fixture = fixture()?;
-    let ciphertext = fixture_bytes(&fixture, "ciphertext")?;
-    let expected = fixture["plaintext"]
+    let plaintext = fixture["plaintext"]
         .as_str()
         .context("fixture text")?
         .as_bytes();
+    // Compare the previous send lifetime (import + channel per send) with the
+    // session's retained channel. RPC time is excluded from this offline probe.
+    let load_channel = |rt: &mut Runtime| -> Result<(u32, u32)> {
+        let h = rt.bytes(&fixture_bytes(&fixture, "exported_key")?);
+        let key = rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
+        rt.release(h)?;
+        let h = rt.bytes(&fixture_bytes(&fixture, "peer_public_key")?);
+        let ch = rt.method(Call::Curve25519KeyCreateChannel, key, &[h])?;
+        rt.release(h)?;
+        Ok((key, ch))
+    };
     let started = Instant::now();
-    for _ in 0..COUNT {
-        let (key, channel) = fixture_channel(&mut rt, &fixture)?;
-        let plaintext = channel_crypt(&mut rt, "decryptV2", channel, &mids, &ciphertext, None, 42)?;
-        ensure!(plaintext == expected, "benchmark fixture mismatch");
-        rt.destroy("E2EEChannel", channel)?;
+    for seq in 1..=COUNT {
+        let (key, ch) = load_channel(&mut rt)?;
+        channel_crypt(
+            &mut rt,
+            Call::E2EEChannelEncryptV2,
+            ch,
+            &mids,
+            plaintext,
+            Some(seq.into()),
+            42,
+        )?;
+        rt.destroy("E2EEChannel", ch)?;
         rt.destroy("Curve25519Key", key)?;
     }
-    println!(
-        "new_channel_each_message_ms={:.2}",
-        started.elapsed().as_secs_f64() * 1000.0 / f64::from(COUNT)
-    );
-    let (key, channel) = fixture_channel(&mut rt, &fixture)?;
+    let send_before = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT);
+    let (key, ch) = load_channel(&mut rt)?;
+    let started = Instant::now();
+    for seq in 1..=COUNT {
+        channel_crypt(
+            &mut rt,
+            Call::E2EEChannelEncryptV2,
+            ch,
+            &mids,
+            plaintext,
+            Some(seq.into()),
+            42,
+        )?;
+    }
+    let send_after = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT);
+    let history =
+        line::client::benchmark_history(wasm, FIXTURE_VERSION, &fixture, &mids.to, &mids.from)?;
+    let started = Instant::now();
+    let expected_key = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
+    let expected = sign(&mut rt, &expected_key, "/synthetic", "{}")?;
+    expected_key.destroy(&mut rt)?;
+    for _ in 0..COUNT {
+        let hmac = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
+        ensure!(
+            sign(&mut rt, &hmac, "/synthetic", "{}")? == expected,
+            "signature mismatch"
+        );
+        hmac.destroy(&mut rt)?;
+    }
+    let signing_before = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT + 1);
+    let hmac = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
     let started = Instant::now();
     for _ in 0..COUNT {
-        let plaintext = channel_crypt(&mut rt, "decryptV2", channel, &mids, &ciphertext, None, 42)?;
-        ensure!(plaintext == expected, "benchmark fixture mismatch");
+        ensure!(
+            sign(&mut rt, &hmac, "/synthetic", "{}")? == expected,
+            "cached signature mismatch"
+        );
     }
-    println!(
-        "reused_channel_message_ms={:.2}",
-        started.elapsed().as_secs_f64() * 1000.0 / f64::from(COUNT)
-    );
-    rt.destroy("E2EEChannel", channel)?;
+    let signing_after = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT);
+    hmac.destroy(&mut rt)?;
+    rt.destroy("E2EEChannel", ch)?;
     rt.destroy("Curve25519Key", key)?;
-    println!("Offline synthetic fixture only; no session or network access.");
+    println!("send_encrypt_ms={send_before:.2} -> {send_after:.2}");
+    println!("history_50_decrypt_including_5_undecryptable_ms={history:.2}");
+    println!("request_sign_ms={signing_before:.2} -> {signing_after:.2}");
+    println!(
+        "Offline fixture, release build; previous/current object lifetimes, no RPC time. History includes five missing device keys and retains its channel."
+    );
     Ok(())
 }
 fn main() -> Result<()> {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.first().is_some_and(|s| s == "--help" || s == "-h") {
         println!(
-            "Usage: line-wasm-poc [WASM [HAR]]\n       line-wasm-poc --export-test-key OUTPUT_JSON [WASM]\n       line-wasm-poc --bench [WASM]"
+            "Usage: crypto-harness [WASM [HAR]]\n       crypto-harness --export-test-key OUTPUT_JSON [WASM]\n       crypto-harness --bench [WASM]"
         );
         return Ok(());
     }
     let export = args.first().is_some_and(|s| s == "--export-test-key");
     let bench = args.first().is_some_and(|s| s == "--bench");
+    let default_wasm = fixture_path();
     let wasm = if export {
         args.get(2)
     } else if bench {
@@ -363,24 +432,20 @@ fn main() -> Result<()> {
         args.first()
     }
     .map(String::as_str)
-    .unwrap_or(DEFAULT_WASM);
-    let bytes = fs::read(wasm)
-        .with_context(|| format!("read {wasm}; run tools/extract_extension.py first"))?;
+    .map(Path::new)
+    .unwrap_or(&default_wasm);
+    let bytes = read_fixture(wasm).with_context(|| format!("read fixture {}", wasm.display()))?;
     let hash = format!("{:x}", Sha256::digest(&bytes));
-    ensure!(
-        hash == HASH,
-        "unsupported WASM hash {hash}; adapter pinned to Chrome {VERSION}"
-    );
     if export {
         return export_test_key(&bytes, args.get(1).context("missing output filename")?);
     }
     if bench {
-        ensure!(args.len() <= 2, "usage: line-wasm-poc --bench [WASM]");
+        ensure!(args.len() <= 2, "usage: crypto-harness --bench [WASM]");
         return benchmark(&bytes);
     }
-    ensure!(args.len() <= 2, "usage: line-wasm-poc [WASM [HAR]]");
-    println!("LINE Chrome {VERSION}, unmodified WASM SHA-256 {hash}");
-    let mut rt = Runtime::new(&bytes)?;
+    ensure!(args.len() <= 2, "usage: crypto-harness [WASM [HAR]]");
+    println!("LINE Chrome {FIXTURE_VERSION}, unmodified WASM SHA-256 {hash}");
+    let mut rt = Runtime::new(&bytes, FIXTURE_VERSION)?;
     println!(
         "PASS: instantiated WASM and discovered {} embind classes",
         rt.bindings().len()

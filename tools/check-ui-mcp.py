@@ -175,9 +175,9 @@ if args.signed_out:
     click("Close demo scenarios")
     if args.missing_module:
         click("Sign in")
-        message = "Crypto module missing or unsupported. Install the supported module at /demo/crypto.wasm and try again."
+        message = "Can't load the LINE crypto module at /demo/crypto.wasm. Check LINE for Chrome or the developer override."
         element(message, "Text")
-        element("Sign-in is unavailable until the crypto module is installed.", "Text")
+        element("Sign-in needs a supported LINE for Chrome installation.", "Text")
         for _ in range(2):
             click("Check again")
             element(message, "Text")

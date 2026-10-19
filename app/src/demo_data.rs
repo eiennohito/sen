@@ -1,6 +1,6 @@
 //! Original demo content, supplied as decoded RPC rows and backend assets.
 use crate::*;
-use line_wasm_poc::client::desktop::{
+use line::client::desktop::{
     assets::{Asset, Pixels},
     rich::RichContent,
 };
@@ -97,7 +97,7 @@ pub(super) fn avatar(index: usize) -> slint::Image {
         }
     }
     let pixels = std::thread::spawn(move || {
-        crate::assets::circular_avatar(&line_wasm_poc::client::desktop::assets::Pixels {
+        crate::assets::circular_avatar(&line::client::desktop::assets::Pixels {
             width: 80,
             height: 120,
             rgba,
@@ -400,7 +400,7 @@ pub fn seed(fake: &FakeBackend) {
     let mut friends = chats
         .iter()
         .enumerate()
-        .map(|(i, c)| line_wasm_poc::store::Friend {
+        .map(|(i, c)| line::store::Friend {
             profile: Default::default(),
             id: c.id.0.clone(),
             name: c.title.clone(),
@@ -415,7 +415,7 @@ pub fn seed(fake: &FakeBackend) {
             member_count: c.member_count.map(|n| n as usize),
         })
         .collect::<Vec<_>>();
-    friends.push(line_wasm_poc::store::Friend {
+    friends.push(line::store::Friend {
         profile: Default::default(),
         id: "new-friend".into(),
         name: "新しい友だち 🌸".into(),
@@ -427,10 +427,10 @@ pub fn seed(fake: &FakeBackend) {
     fake.set_friends(friends);
     fake.set_members(
         (0..26)
-            .map(|i| line_wasm_poc::store::Member {
+            .map(|i| line::store::Member {
                 resolved: true,
                 is_self: i == 0,
-                contact: line_wasm_poc::store::Friend {
+                contact: line::store::Friend {
                     profile: ContactProfile {
                         relation: Some(if i == 1 { 0 } else { 2 }),
                         invited: i == 25,
@@ -573,10 +573,7 @@ pub fn previews(fake: &FakeBackend) {
         for span in &emoji {
             let asset = Asset::inline_emoji(span).unwrap();
             if i == 4 {
-                fake.set_asset_failure(
-                    &asset,
-                    line_wasm_poc::client::desktop::assets::Failure::Http(404),
-                );
+                fake.set_asset_failure(&asset, line::client::desktop::assets::Failure::Http(404));
             } else {
                 let image = avatar(0).to_rgba8().unwrap();
                 fake.set_pixels(
@@ -648,10 +645,9 @@ pub fn previews(fake: &FakeBackend) {
             let mut asset =
                 serde_json::to_value(image_asset(fake, &chat, photo(content_type == 7))).unwrap();
             if i == 4 {
-                asset["failure"] = serde_json::to_value(
-                    line_wasm_poc::client::desktop::assets::Failure::Http(404),
-                )
-                .unwrap();
+                asset["failure"] =
+                    serde_json::to_value(line::client::desktop::assets::Failure::Http(404))
+                        .unwrap();
             }
             *row.body.image_mut() = Some(serde_json::from_value(asset).unwrap());
         }

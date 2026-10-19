@@ -79,7 +79,7 @@ export component Layers inherits Rectangle {
                 spacing: 16px; alignment: start;
                 Text { text: "LINE"; font-size: Tokens.heading + 8px; font-weight: 800; color: Tokens.accent; horizontal-alignment: center; }
                 Text { text: "Sign in"; font-size: Tokens.heading; font-weight: 600; horizontal-alignment: center; }
-                Text { text: State.auth-prerequisite-missing ? "Sign-in is unavailable until the crypto module is installed." : "Scan the code with LINE on your phone."; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
+                Text { text: State.auth-prerequisite-missing ? "Sign-in needs a supported LINE for Chrome installation." : "Scan the code with LINE on your phone."; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
                 if State.auth-qr.width > 0: HorizontalLayout { alignment: center;
                     Rectangle { width: 252px; height: 252px; background: white; border-radius: 12px;
                         Image { x: 16px; y: 16px; width: 220px; height: 220px; source: State.auth-qr; image-fit: contain; accessible-role: image; accessible-label: "Scan this QR code with LINE on your phone"; }

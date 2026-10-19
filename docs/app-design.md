@@ -26,7 +26,7 @@ migrated once or discarded, not supported in parallel.
 
 ## Everyday usability gate
 
-The current sketch is a PoC, not ready for daily use. The user's issue list is
+The current sketch is a prototype, not ready for daily use. The user's issue list is
 non-exhaustive; audit interaction sequences and asynchronous state changes as
 well as appearance. See the reference map's everyday-use requirements for
 per-message send/server-confirmation/read states, selection/copy, preview
@@ -37,7 +37,7 @@ behavior and toolkit deviations, is recorded in ux-acceptance.md.
 ## Rendering and input decision
 
 Pin Slint and slint-build to 1.18.1. Disable default features and enable `std`,
-`compat-1-18`, `backend-winit`, `renderer-software`, and `accessibility`.
+`backend-winit`, `renderer-software`, and `accessibility`.
 Normal launches select `winit` + `software` programmatically and fail if unavailable. Slint
 documents CPU rendering through this backend/renderer combination, and separate
 Wayland/X11 feature flags if a smaller platform-specific build is needed.
@@ -127,8 +127,30 @@ The desktop and CLI now share `src/client.rs` and `src/client/chat.rs`.
 owns authenticated media retrieval and private thumbnail caching. The CLI is
 a thin frontend over the same transport, session, and WASM implementation.
 
-The GUI thread owns Slint models and text editing. The account worker owns its
-WASM runtime, tokens, key caches and RPC requests. Three blocking asset threads
+The crypto module source is the installed LINE Chrome extension, ID
+`ophjlpahpchlmihnnnihgmmeilfjmjjc`. Startup searches
+Chrome and Chromium profiles under `$XDG_CONFIG_HOME` (default
+`$HOME/.config`), selecting the newest numeric
+manifest version across all profiles. The module is
+`static/js/ltsm.wasm` under that extension root. There is no app
+module copy or install script. The manifest's `version` is passed into signing,
+headers and receive URLs. `--wasm` and `--client-version` are developer overrides;
+only explicit test/oracle fixtures pin repository artifacts.
+
+Immediately after instantiation the host probes the required embind classes,
+constructors, methods and functions. Missing interfaces produce a typed
+“LINE for Chrome <ver> changed its crypto module (missing <name>); this app
+doesn't support it yet” error on both sign-in and the strip, and in the log.
+No extension produces “Install LINE for Chrome — this app uses its crypto
+module” with the Chrome and Chromium search locations. Sessions are independent
+of module builds. Failed key restore follows SessionUnusable with its reason. LINE could refuse an old client: shows as refused sign-in/session.
+
+The GUI thread owns Slint models and text editing. The account net worker owns
+one runtime, tokens, key caches and RPC requests. Live decode, history and
+signing call that runtime directly;
+the stream thread borrows authorization and requests token refresh from the
+worker, never instantiating WASM. Runtime recovery runs only when a WASM exception poisons the store. It builds a new instance, then assigns it, propagating any failure. Missing device keys, RPC errors and parse errors fail only their item and preserve runtime caches. Latest peer and group keys are fetched per send; key-ID data and channels are cached. Media file crypto stays native, and the optional
+`native-crypto` trial feature is unchanged. Three blocking asset threads
 share one asset HTTP agent and the thumbnail cache; they own media downloads,
 decryption and decoding. Three slots allow visible images to overlap while
 bounding simultaneous encoded downloads to 48 MiB. The asset agent uses the

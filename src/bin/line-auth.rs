@@ -1,3 +1,3 @@
 fn main() {
-    line_wasm_poc::client::cli_main();
+    line::client::cli_main();
 }

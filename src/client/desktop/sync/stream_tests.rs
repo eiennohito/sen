@@ -7,9 +7,7 @@ fn request(reader: &mut BufReader<TcpStream>) {
     reader.read_line(&mut line).unwrap();
     assert_eq!(
         line,
-        format!(
-            "GET /api/operation/receive?localRev=12&version={VERSION}&language=en_US HTTP/1.1\r\n"
-        )
+        "GET /api/operation/receive?localRev=12&version=9.8.7&language=en_US HTTP/1.1\r\n"
     );
     let mut headers = Vec::new();
     loop {
@@ -63,6 +61,7 @@ fn events_arrive_before_the_server_sends_the_next_line() {
     let mut seen = Vec::new();
     let status = stream(
         &transport,
+        "9.8.7",
         "synthetic-token",
         12,
         &Arc::new(AtomicBool::new(false)),
@@ -108,6 +107,7 @@ fn stop_interrupts_silent_headers_body_and_partial_line() {
             // Deliberately do not install a thread-local cancellation token.
             stream(
                 &transport,
+                "9.8.7",
                 "synthetic-token",
                 12,
                 &stop,
@@ -157,6 +157,7 @@ fn eof_and_reset_return_to_reconnect_without_waiting_for_ping() {
         });
         let result = stream(
             &transport,
+            "9.8.7",
             "synthetic-token",
             12,
             &Arc::new(AtomicBool::new(false)),
@@ -202,6 +203,7 @@ fn rejects_an_oversize_unterminated_line_while_server_stays_open() {
     });
     let error = stream(
         &transport,
+        "9.8.7",
         "synthetic-token",
         12,
         &Arc::new(AtomicBool::new(false)),
@@ -239,6 +241,7 @@ fn statuses_preserve_auth_mapping_and_any_content_type_is_accepted_on_200() {
         });
         let result = stream(
             &transport,
+            "9.8.7",
             "synthetic-token",
             12,
             &Arc::new(AtomicBool::new(false)),
@@ -286,6 +289,7 @@ fn stop_is_checked_for_each_already_buffered_line() {
     let mut messages = Vec::new();
     stream(
         &transport,
+        "9.8.7",
         "synthetic-token",
         12,
         &stop,
@@ -321,6 +325,7 @@ fn chunked_stream_accepts_lines_at_the_limit_and_exceeds_the_rpc_body_cap() {
     assert_eq!(
         stream(
             &transport,
+            "9.8.7",
             "synthetic-token",
             12,
             &Arc::new(AtomicBool::new(false)),
@@ -358,6 +363,7 @@ fn slow_open_and_delivery_callbacks_do_not_expire_buffered_pings() {
         let mut seen = Vec::new();
         let result = stream(
             &transport,
+            "9.8.7",
             "synthetic-token",
             12,
             &Arc::new(AtomicBool::new(false)),
@@ -388,6 +394,7 @@ fn silence_budget_starts_after_a_slow_callback_returns() {
     let mut resumed = None;
     let error = stream(
         &transport,
+        "9.8.7",
         "synthetic-token",
         12,
         &Arc::new(AtomicBool::new(false)),
@@ -426,6 +433,7 @@ fn decoded_ping_resets_the_watchdog_other_events_do_not_and_silence_expires() {
         let mut delivered = None;
         let error = stream(
             &transport,
+            "9.8.7",
             "synthetic-token",
             12,
             &Arc::new(AtomicBool::new(false)),
@@ -486,6 +494,7 @@ fn each_stream_attempt_uses_a_fresh_connection_and_closes_it_on_return() {
         assert_eq!(
             stream(
                 &transport,
+                "9.8.7",
                 "synthetic-token",
                 12,
                 &Arc::new(AtomicBool::new(false)),
@@ -516,6 +525,7 @@ fn partial_line_trickle_expires_without_waiting_for_an_empty_poll() {
     let started = Instant::now();
     let error = stream(
         &transport,
+        "9.8.7",
         "synthetic-token",
         12,
         &Arc::new(AtomicBool::new(false)),
