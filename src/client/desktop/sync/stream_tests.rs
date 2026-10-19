@@ -567,7 +567,7 @@ fn partial_line_trickle_expires_without_waiting_for_an_empty_poll() {
 }
 
 #[test]
-fn empty_close_waits_before_reconnecting_and_delivers_next_stream() {
+fn empty_close_waits_three_seconds_without_resync_and_delivers_next_stream() {
     let (transport, server) = local_server(|listener| {
         {
             let mut first = BufReader::new(accept(&listener));
@@ -615,8 +615,67 @@ fn empty_close_waits_before_reconnecting_and_delivers_next_stream() {
     )
     .unwrap();
     server.join().unwrap();
-    assert_eq!(waits, [backoff(1)]);
+    assert_eq!(waits, [Duration::from_secs(3)]);
     assert!(
-        matches!(events.as_slice(), [Event::Resync { .. }, Event::State(SyncState::Connected), Event::State(SyncState::Reconnecting { attempt: 0 }), Event::Resync { .. }, Event::State(SyncState::Connected), Event::State(SyncState::Connected), Event::Operation(value)] if value["revision"] == 13)
+        matches!(events.as_slice(), [Event::State(SyncState::Connected), Event::State(SyncState::Reconnecting { attempt: 0 }), Event::State(SyncState::Connected), Event::State(SyncState::Connected), Event::Operation(value)] if value["revision"] == 13)
     );
+}
+
+#[test]
+fn repeated_empty_closes_back_off_to_cap_and_events_reset_delay() {
+    // Empty streams hit the cap; a ping resets it; reconnect skips only its own wait.
+    let bodies = [
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "event: ping\n\n",
+        "",
+        "event: reconnect\n\n",
+        "",
+    ];
+    let (finished, done) = mpsc::channel();
+    let (transport, server) = local_server(move |listener| {
+        for body in bodies {
+            let mut socket = BufReader::new(accept(&listener));
+            request(&mut socket);
+            headers(&mut socket);
+            socket.get_mut().write_all(body.as_bytes()).unwrap();
+        }
+        finished.send(()).unwrap();
+    });
+    let stop = Arc::new(CancelToken::new());
+    let waits = std::cell::RefCell::new(Vec::new());
+    let mut opens_after_waits = Vec::new();
+    receive_on(
+        &transport,
+        "9.8.7",
+        12,
+        &stop,
+        |_| Ok("synthetic-token".into()),
+        |event| {
+            match event {
+                Event::State(SyncState::Connected) => {
+                    opens_after_waits.push(waits.borrow().len());
+                }
+                Event::State(SyncState::Reconnecting { .. }) => {}
+                _ => panic!("unexpected event: {event:?}"),
+            }
+            true
+        },
+        |_, delay| {
+            let mut waits = waits.borrow_mut();
+            waits.push(delay.as_secs());
+            if waits.len() == 9 {
+                stop.cancel();
+            }
+        },
+    )
+    .unwrap();
+    done.recv_timeout(Duration::from_secs(3)).unwrap();
+    server.join().unwrap();
+    assert_eq!(*waits.borrow(), [3, 6, 12, 24, 30, 30, 3, 3, 3]);
+    assert_eq!(opens_after_waits, [0, 1, 2, 3, 4, 5, 6, 6, 7, 8, 8]);
 }

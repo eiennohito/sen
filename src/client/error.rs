@@ -175,7 +175,9 @@ pub fn classify(error: &anyhow::Error) -> Failure {
                 1 => Failure::SignedOut(SignOutReason::AuthenticationFailed),
                 7 => Failure::SignedOut(SignOutReason::NotAvailableUser),
                 8 => Failure::SignedOut(SignOutReason::NotAuthorizedDevice),
-                code if code != 0 => Failure::Refused(Refusal::Server(ServerRefusal::Talk(code))),
+                code if code != 0 || error.gateway == TALK_EXCEPTION => {
+                    Failure::Refused(Refusal::Server(ServerRefusal::Talk(code)))
+                }
                 _ if error.http != 200 => {
                     Failure::Refused(Refusal::Server(ServerRefusal::Http(error.http)))
                 }
@@ -255,6 +257,16 @@ pub fn sign_in_failure(error: &anyhow::Error, cancelled: bool) -> SignInFailure 
 impl wasmi::core::HostError for SignInFailure {}
 
 impl Failure {
+    /// Invalid chat requests should not be repeated automatically by resync.
+    pub fn suppress_resync_refresh(&self) -> bool {
+        matches!(
+            self,
+            Self::Refused(Refusal::Server(
+                ServerRefusal::Http(400) | ServerRefusal::Talk(0)
+            ))
+        )
+    }
+
     pub fn key_rotated(&self) -> bool {
         matches!(
             self,
@@ -359,7 +371,13 @@ pub(crate) fn saved_session_failure(error: &anyhow::Error) -> anyhow::Result<Sig
 
 pub(crate) fn diagnostic(error: &(dyn std::error::Error + 'static)) -> Option<String> {
     if let Some(rpc) = error.downcast_ref::<RpcError>() {
-        return Some(format!("rpc:http={}:code={}", rpc.http, rpc.code));
+        return Some(format!(
+            "rpc:{}:http={}:gateway={}:code={}",
+            rpc.method.rsplit('/').next().unwrap_or(&rpc.method),
+            rpc.http,
+            rpc.gateway,
+            rpc.code
+        ));
     }
     if let Some(failure) = error.downcast_ref::<Failure>() {
         return Some(match failure {

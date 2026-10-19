@@ -60,7 +60,17 @@ Send: `TalkService/sendMessage` `[<reqSeq>, {"from","to","toType":0,"id":"<str:1
 
 Picker data: `ShopService/ShopService/getOwnedProductSummaries`
 (`POST …/api/shop/thrift/ShopService/ShopService/getOwnedProductSummaries`,
-`["<str:10|11 product type>", 0, <num>, [4 items]]`) → `productList[]` with
+`["stickershop", offset, 1000, {"language":"<mapped locale first 2 letters>","country":"<profile regionCode>"}]`) → `productList[]`, `offset`, `totalSize`.
+Start at offset 0, add 1000 while `offset + productList.length < totalSize`.
+We choose to exclude expired `validUntil` (epoch milliseconds) from the picker;
+the extension displays those packages with an expired status. -1 means unlimited,
+and a missing expiry is not expired (extension `ez`: NaN is not expired).
+Language follows extension `aw(navigator.language)`: normalize case and underscores,
+match exactly, then match the first supported language prefix, else use en-US.
+Supported locales in order: en-US, ja-JP, ko-KR, zh-CN, zh-TW, th-TH, tr-TR,
+ru-RU, id-ID, es-419, es-ES. We strip POSIX encoding/modifier suffixes first;
+C/POSIX falls back to en-US. The shop receives the mapped locale's first two letters.
+Products have
 `id`, `name`, `latestVersion`, `productTypeSummary.stickerSummary.stickerIdRanges[{start,size}]`
 (or `sticonSummary`). Package metadata:
 `https://stickershop.line-scdn.net/stickershop/v1/product/<pkg>/android/productInfo.meta`;

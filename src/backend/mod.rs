@@ -212,7 +212,7 @@ impl LineBackend {
 fn rpc(error: anyhow::Error) -> Failure {
     let failure = crate::client::error::classify(&error);
     if !matches!(failure, Failure::Bug(_)) {
-        crate::reporting::log("backend-rpc", "source", error.as_ref());
+        crate::reporting::source(error.as_ref());
     }
     failure
 }

@@ -6,6 +6,8 @@ use std::{collections::HashMap, sync::Arc};
 pub mod assets;
 #[cfg(test)]
 mod members_tests;
+#[cfg(test)]
+mod sticker_tests;
 
 pub mod read;
 pub mod rich;
@@ -71,6 +73,102 @@ pub struct Client {
     obs_access: Option<String>,
     sequence: u64,
     cache: Arc<std::sync::Mutex<ImageCache>>,
+}
+
+fn sticker_language(locale: Option<&str>) -> String {
+    // Match extension aw(navigator.language), then settings.locale.slice(0, 2).
+    const SUPPORTED: &[&str] = &[
+        "en-US", "ja-JP", "ko-KR", "zh-CN", "zh-TW", "th-TH", "tr-TR", "ru-RU", "id-ID", "es-419",
+        "es-ES",
+    ];
+    let normalized = locale
+        .unwrap_or("")
+        .split(['.', '@'])
+        .next()
+        .unwrap_or("")
+        .replace('_', "-")
+        .to_ascii_lowercase();
+    let mapped = SUPPORTED
+        .iter()
+        .find(|s| s.eq_ignore_ascii_case(&normalized))
+        .or_else(|| {
+            SUPPORTED
+                .iter()
+                .find(|s| s[..2] == *normalized.split('-').next().unwrap_or(""))
+        })
+        .copied()
+        .unwrap_or("en-US");
+    mapped[..2].to_owned()
+}
+
+fn load_sticker_packages(
+    language: &str,
+    country: &str,
+    mut request: impl FnMut(Value) -> Result<Value>,
+) -> Result<Vec<crate::store::StickerPackage>> {
+    let mut packages = Vec::new();
+    let mut offset = 0u64;
+    loop {
+        let value =
+            request(json!(["stickershop", offset, 1000, {"language":language,"country":country}]))?;
+        let products = value["productList"]
+            .as_array()
+            .context("missing sticker packages")?;
+        for p in products {
+            let valid_until = p["validUntil"]
+                .as_i64()
+                .or_else(|| p["validUntil"].as_str()?.parse().ok());
+            let now = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as i64;
+            if valid_until.is_some_and(|expiry| expiry != -1 && expiry < now) {
+                continue;
+            }
+            let id = required(p, "id")?.to_owned();
+            let version = p["latestVersion"]
+                .as_str()
+                .map(str::to_owned)
+                .unwrap_or_else(|| p["latestVersion"].to_string());
+            let mut stickers = Vec::new();
+            if let Some(ranges) =
+                p["productTypeSummary"]["stickerSummary"]["stickerIdRanges"].as_array()
+            {
+                for range in ranges {
+                    let number = |key: &str| {
+                        range[key]
+                            .as_u64()
+                            .or_else(|| range[key].as_str()?.parse().ok())
+                            .unwrap_or(0)
+                    };
+                    let start = number("start");
+                    for n in start..start.saturating_add(number("size").min(1000)) {
+                        let sticker_id = n.to_string();
+                        stickers.push(Content::Sticker {
+                            pkg: id.clone(),
+                            id: sticker_id.clone(),
+                            ver: Some(version.clone()),
+                            asset: Asset::sticker(&json!({"STKID":sticker_id})),
+                            text: None,
+                        });
+                    }
+                }
+                packages.push(crate::store::StickerPackage {
+                    id,
+                    name: p["name"].as_str().unwrap_or("Stickers").into(),
+                    version,
+                    stickers,
+                });
+            }
+        }
+        let page_offset = value["offset"].as_u64().context("missing sticker offset")?;
+        let total = value["totalSize"]
+            .as_u64()
+            .context("missing sticker total")?;
+        if page_offset + products.len() as u64 >= total {
+            break;
+        }
+        ensure!(!products.is_empty(), "empty sticker page before total");
+        offset += 1000;
+    }
+    Ok(packages)
 }
 
 impl Client {
@@ -139,7 +237,7 @@ impl Client {
             )?));
         }
         *self.api.stream_access.write().unwrap() = access(&self.api.state)?.to_owned();
-        self.api.state.profile.mid = mid.into();
+        self.api.state.profile = serde_json::from_value(profile.clone())?;
         save_state(
             self.api.session_path.as_ref().context("session path")?,
             &self.api.state,
@@ -285,7 +383,10 @@ impl Client {
     }
 
     pub fn contact(&mut self, mid: &str) -> Result<Option<Friend>> {
-        let response = self.talk("getContactsV2", json!([{"targetUserMids":[mid]}, 2]))?;
+        let response = self.talk(
+            "getContactsV2",
+            json!([{"targetUserMids":[mid],"neededContactCalendarEvents":[]}, 2]),
+        )?;
         let contact = &response["contacts"][mid]["contact"];
         let member = member_identity(mid, contact, &self.my_mid);
         Ok(member.contact.name.is_some().then_some(member.contact))
@@ -704,54 +805,24 @@ impl Client {
         })
     }
     pub fn sticker_packages(&mut self) -> Result<Vec<crate::store::StickerPackage>> {
-        let value = self.api.call(
-            "/api/shop/thrift/ShopService/ShopService/getOwnedProductSummaries",
-            &json!(["STICKER", 0, 100, [1, 2, 3, 4]]),
-            "",
-            0,
-        )?;
-        let mut packages = Vec::new();
-        for p in value["productList"]
-            .as_array()
-            .context("missing sticker packages")?
-        {
-            let id = required(p, "id")?.to_owned();
-            let version = p["latestVersion"]
-                .as_str()
-                .map(str::to_owned)
-                .unwrap_or_else(|| p["latestVersion"].to_string());
-            let mut stickers = Vec::new();
-            if let Some(ranges) =
-                p["productTypeSummary"]["stickerSummary"]["stickerIdRanges"].as_array()
-            {
-                for range in ranges {
-                    let number = |key: &str| {
-                        range[key]
-                            .as_u64()
-                            .or_else(|| range[key].as_str()?.parse().ok())
-                            .unwrap_or(0)
-                    };
-                    let start = number("start");
-                    for n in start..start.saturating_add(number("size").min(1000)) {
-                        let sticker_id = n.to_string();
-                        stickers.push(Content::Sticker {
-                            pkg: id.clone(),
-                            id: sticker_id.clone(),
-                            ver: Some(version.clone()),
-                            asset: Asset::sticker(&json!({"STKID":sticker_id})),
-                            text: None,
-                        });
-                    }
-                }
-                packages.push(crate::store::StickerPackage {
-                    id,
-                    name: p["name"].as_str().unwrap_or("Stickers").into(),
-                    version,
-                    stickers,
-                });
-            }
-        }
-        Ok(packages)
+        let country = self
+            .api
+            .state
+            .profile
+            .rest
+            .get("regionCode")
+            .and_then(Value::as_str)
+            .context("missing profile regionCode")?
+            .to_owned();
+        let language = sticker_language(sys_locale::get_locale().as_deref());
+        load_sticker_packages(&language, &country, |args| {
+            self.api.call(
+                "/api/shop/thrift/ShopService/ShopService/getOwnedProductSummaries",
+                &args,
+                "",
+                0,
+            )
+        })
     }
     pub fn unsend(&mut self, id: &str, seq: u32) -> Result<()> {
         self.talk("unsendMessage", json!([seq, id]))?;

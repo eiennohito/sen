@@ -72,6 +72,7 @@ impl Presenter {
                 .cloned()
                 .unwrap_or_default()
         };
+        global.set_stickers_failed(state.sticker_packages_failed);
         global.set_sticker_tabs(ModelRc::new(VecModel::from(
             state
                 .sticker_packages
