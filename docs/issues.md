@@ -15,6 +15,7 @@ merge. "Branch" means the work exists but is not merged yet.
 | 37 | Clicking a chat shows its profile page for a moment before the messages | user | investigating |
 | 38 | Clicking a profile picture opens the viewer with the small avatar instead of the original full-resolution image (circled avatars themselves are fine) | user | investigating |
 | 39 | React/reply button positioning on messages looks wrong | user | investigating |
+| 40 | Photos ignore EXIF orientation: a preview and its original can show different orientations (the EXIF one is correct) | user | fix: apply the decoder's EXIF orientation when decoding every photo (thumbnail, preview, original, viewer, export unchanged bytes) |
 | 15 | God objects: `State` (213 properties), `AppWindow` with 85 forwarding aliases | user | R4, not started. The demo reset copies ~180 State properties by hand; R4 replaces it with a per-feature-global reset |
 | 16 | Generated Slint Rust is 10 MB | user | R4: interpreter in dev builds, compiled releases cut by source rules |
 | 17 | Global deslop pass, including a whole-suite test audit | user | next |
