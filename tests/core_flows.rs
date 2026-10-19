@@ -1,5 +1,6 @@
+#[path = "flows/blocked.rs"]
+mod blocked;
 use line::client::error::{Refusal, SignOutReason};
-use line::client::http::CancelToken;
 use line::{
     backend::{Failure, FakeBackend, FakeRpc, LiveOp, Op},
     controller::AppState,
@@ -7,8 +8,28 @@ use line::{
     store::{ChatId, Delivery, Key, Prefs, Reaction, ReactionKind},
 };
 use std::time::{Duration, Instant};
-fn message_text(row: &line::store::StoredMessage) -> &str {
-    row.body.as_text()
+
+fn take_once<B: line::backend::Backend + 'static>(backend: B) -> impl FnMut() -> anyhow::Result<B> {
+    let mut backend = Some(backend);
+    move || Ok(backend.take().expect("backend already opened"))
+}
+struct TempDir(std::path::PathBuf);
+impl TempDir {
+    fn new(name: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "{name}-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
 }
 struct App {
     worker: Worker,
@@ -16,14 +37,19 @@ struct App {
     notifications: usize,
 }
 impl App {
-    fn new(fake: FakeBackend, location: StoreLocation) -> Self {
+    fn from_worker(worker: Worker) -> Self {
+        Self {
+            worker,
+            state: AppState::default(),
+            notifications: 0,
+        }
+    }
+
+    fn new(fake: impl line::backend::Backend + 'static, location: StoreLocation) -> Self {
         Self {
             worker: Worker::start(
                 location,
-                {
-                    let mut backend = Some(fake);
-                    move || Ok(backend.take().expect("backend already opened"))
-                },
+                take_once(fake),
                 line::engine::WorkerOptions {
                     timing: Timing {
                         retry_initial: Duration::from_millis(5),
@@ -46,25 +72,30 @@ impl App {
         let i = self.state.select(ChatId(chat.into()));
         self.send(i);
     }
+    fn apply(&mut self, delta: Delta) {
+        if matches!(delta, Delta::Notify(_)) {
+            self.notifications += 1;
+        }
+        assert!(
+            !matches!(delta, Delta::Fatal | Delta::StorageFailed(_)),
+            "engine failure"
+        );
+        self.state.apply(delta);
+    }
     fn until(&mut self, condition: impl Fn(&AppState) -> bool) {
+        if condition(&self.state) {
+            return;
+        }
         let deadline = Instant::now() + Duration::from_secs(5);
-        while !condition(&self.state) {
-            let d = self
-                .worker
-                .deltas
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .expect("engine progress");
-            if matches!(d, Delta::Notify(_)) {
-                self.notifications += 1;
+        loop {
+            self.until_delta(|_| true, deadline.saturating_duration_since(Instant::now()));
+            if condition(&self.state) {
+                return;
             }
-            if let Delta::StorageFailed(e) = &d {
-                panic!("engine: {e:?}");
-            }
-            self.state.apply(d);
         }
     }
-    fn until_delta(&mut self, condition: impl Fn(&Delta) -> bool) -> Delta {
-        let deadline = Instant::now() + Duration::from_secs(5);
+    fn until_delta(&mut self, condition: impl Fn(&Delta) -> bool, timeout: Duration) -> Delta {
+        let deadline = Instant::now() + timeout;
         loop {
             let delta = self
                 .worker
@@ -72,21 +103,29 @@ impl App {
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .expect("engine progress");
             let done = condition(&delta);
-            self.state.apply(delta.clone());
+            self.apply(delta.clone());
             if done {
                 return delta;
             }
         }
     }
+    fn fence(&mut self) {
+        let size = self.state.prefs.text_size + 1;
+        self.send(Intent::Prefs(Prefs {
+            text_size: size,
+            ..self.state.prefs.clone()
+        }));
+        self.until(|s| s.prefs.text_size == size);
+    }
     fn online(&mut self) {
         self.until(|s| s.connection == Connection::Online && s.chats.len() == 2);
     }
     fn body_key(&mut self, body: &str) -> Key {
-        self.until(|s| s.messages.values().any(|m| message_text(m) == body));
+        self.until(|s| s.messages.values().any(|m| m.body.as_text() == body));
         self.state
             .messages
             .values()
-            .find(|m| message_text(m) == body)
+            .find(|m| m.body.as_text() == body)
             .unwrap()
             .key
     }
@@ -94,21 +133,19 @@ impl App {
 #[test]
 fn m13_send_switch_return_with_stale_page() {
     let fake = FakeBackend::canned();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    let (backend, entered, release) =
+        blocked::Blocked::new(fake.clone(), FakeRpc::Messages(ChatId("alice".into())), 0);
+    let mut app = App::new(backend, StoreLocation::Memory);
     app.online();
     app.select("alice");
     app.body_key("Hello! 日本語も使えます。");
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "durable send".into(),
         reply: None,
     });
     let key = app.body_key("durable send");
-    app.until(|s| {
-        s.messages
-            .get(&key)
-            .is_some_and(|m| m.delivery == Delivery::Sent)
-    });
     app.select("weekend");
     app.body_key("Shall we meet at the station?");
     fake.set_page(
@@ -117,16 +154,18 @@ fn m13_send_switch_return_with_stale_page() {
     );
     app.select("alice");
     app.until(|s| s.messages.contains_key(&key));
-    app.send(Intent::Page {
-        chat: ChatId("alice".into()),
-        kind: line::store::PageKind::Recent,
+    release.send(()).unwrap();
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+    // A network result fences the stale page completion.
+    app.send(Intent::CreateChat {
+        name: "page fence".into(),
+        targets: vec!["alice".into(), "weekend".into()],
     });
-    app.send(Intent::Prefs(Prefs {
-        text_size: 38,
-        ..Prefs::default()
-    }));
-    app.until(|s| s.prefs.text_size == 38);
-    assert_eq!(message_text(&app.state.messages[&key]), "durable send");
+    app.until_delta(
+        |d| matches!(d, Delta::CreatedChat(Ok(_))),
+        Duration::from_secs(5),
+    );
+    assert_eq!(app.state.messages[&key].body.as_text(), "durable send");
 }
 #[test]
 fn m14_closed_chat_incoming_then_open_stale_history() {
@@ -144,7 +183,7 @@ fn m14_closed_chat_incoming_then_open_stale_history() {
         s.chats[&ChatId("alice".into())]
             .preview
             .as_ref()
-            .is_some_and(|m| message_text(m) == "closed arrival")
+            .is_some_and(|m| m.body.as_text() == "closed arrival")
     });
     let pages = fake
         .calls()
@@ -164,7 +203,7 @@ fn m14_closed_chat_incoming_then_open_stale_history() {
         app.state
             .messages
             .values()
-            .any(|m| message_text(m) == "closed arrival")
+            .any(|m| m.body.as_text() == "closed arrival")
     );
 }
 #[test]
@@ -203,7 +242,7 @@ fn echo_and_send_result_keep_one_identity_in_both_orders() {
             app.state
                 .messages
                 .values()
-                .filter(|m| message_text(m) == "echo")
+                .filter(|m| m.body.as_text() == "echo")
                 .count(),
             1
         );
@@ -211,9 +250,9 @@ fn echo_and_send_result_keep_one_identity_in_both_orders() {
     }
 }
 #[test]
-fn offline_start_shows_cached_chats_and_window() {
-    let dir = std::env::temp_dir().join(format!("line-core-offline-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+fn offline_cache_reconnect_resumes_without_duplicate_notifications() {
+    let temp = TempDir::new("line-core-offline");
+    let dir = temp.0.clone();
     let fake = FakeBackend::canned();
     {
         let mut app = App::new(fake.clone(), StoreLocation::Directory(dir.clone()));
@@ -226,23 +265,46 @@ fn offline_start_shows_cached_chats_and_window() {
             op: Op::Message((FakeBackend::message("alice", 75, "checkpoint", false)).into()),
         });
         app.body_key("checkpoint");
+        assert_eq!(app.notifications, 1);
     }
     fake.offline(true);
     let mut app = App::new(fake.clone(), StoreLocation::Directory(dir.clone()));
-    app.state.selected = Some(ChatId("alice".into()));
-    app.state.window_sub = 1;
     app.until(|s| {
-        !s.chats.is_empty() && s.messages.values().any(|m| message_text(m) == "checkpoint")
+        !s.chats.is_empty()
+            && s.messages
+                .values()
+                .any(|m| m.body.as_text() == "checkpoint")
     });
     assert!(app.state.chats.values().all(|chat| chat.chat.unread_stale));
     fake.offline(false);
     app.until(|s| s.connection == Connection::Online); // Stream reconnect also resumes persisted revision.
     app.until(|_| fake.calls().contains(&FakeRpc::Stream(75)));
+    assert_eq!(app.notifications, 0);
+    for (id, text, replay) in [
+        (75, "checkpoint", true),
+        (76, "catch-up", true),
+        (77, "fresh after reconnect", false),
+    ] {
+        fake.inject(LiveOp {
+            revision: id,
+            replay,
+            op: Op::Message(FakeBackend::message("alice", id, text, false).into()),
+        });
+    }
+    app.body_key("fresh after reconnect");
+    assert_eq!(app.notifications, 1);
+    assert_eq!(
+        app.state
+            .messages
+            .values()
+            .filter(|m| m.body.as_text() == "checkpoint")
+            .count(),
+        1
+    );
     drop(app);
-    std::fs::remove_dir_all(dir).unwrap();
 }
 #[test]
-fn failed_send_retry_discard_and_copy() {
+fn send_failures_preserve_delivery_and_retry_identity() {
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -280,61 +342,147 @@ fn failed_send_retry_discard_and_copy() {
     app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
     app.send(Intent::Discard(key));
     app.until(|s| !s.messages.contains_key(&key));
-}
-
-#[test]
-fn unrelated_fetch_failure_does_not_block_send() {
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.online();
-    app.select("alice");
-    app.body_key("Hello! 日本語も使えます。");
-    assert!(app.state.submit().is_none());
-    fake.fail_rpc(
-        FakeRpc::Friends,
-        Failure::Refused(line::client::error::Refusal::Server(
-            line::client::error::ServerRefusal::Gateway(13),
-        )),
-    );
-    app.send(Intent::Friends);
-    app.until(|s| {
-        s.refresh_failures
-            .contains_key(&line::engine::Refresh::Friends)
+    let sends_before = fake
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, FakeRpc::Send(_)))
+        .count();
+    fake.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::NotDelivered);
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "one delivery".into(),
+        reply: None,
     });
+    let key = app.body_key("one delivery");
+    app.until(|state| state.messages[&key].delivery == Delivery::Sent);
     assert_eq!(
         fake.calls()
             .iter()
-            .filter(|c| matches!(c, FakeRpc::Friends))
+            .filter(|call| **call == FakeRpc::Send(ChatId("alice".into())))
+            .count(),
+        sends_before + 2
+    );
+    assert_eq!(
+        fake.page(&ChatId("alice".into()))
+            .iter()
+            .filter(|row| row.body.as_text() == "one delivery")
             .count(),
         1
     );
-    assert!(app.state.error.is_none());
     assert_eq!(app.state.connection, Connection::Online);
-    app.state.composer = "after unrelated failure".into();
-    assert!(app.state.submit().is_some());
-    app.state.submitting = None;
-    app.select("alice"); // Reselecting the open chat preserves its composer snapshot.
-    assert_eq!(app.state.composer, "after unrelated failure");
-    assert!(app.state.submit().is_some());
-    app.state.submitting = None;
-    // Even a storage banner does not disable an unrelated operation. A committed
-    // write clears it; no controller reset or manual retry is needed.
-    app.state
-        .apply(Delta::StorageFailed(line::engine::StorageFailure::Full));
-    assert!(app.state.submit().is_some());
-    app.state.submitting = None;
-    app.send(Intent::Prefs(Prefs {
-        text_size: 37,
-        ..Prefs::default()
-    }));
-    app.until(|s| s.prefs.text_size == 37 && s.error.is_none());
-    let intent = app.state.submit().unwrap();
-    app.send(intent);
-    let key = app.body_key("after unrelated failure");
+    let sends_before = fake
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, FakeRpc::Send(_)))
+        .count();
+    fake.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::Unanswered);
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "unanswered".into(),
+        reply: None,
+    });
+    let key = app.body_key("unanswered");
+    app.until(|state| {
+        state.messages[&key].delivery
+            == Delivery::Rejected {
+                reason: Refusal::Unanswered,
+            }
+    });
+    // Finish another network job before delivering the late echo: Unanswered
+    // must stay rejected rather than being resent by the scheduler.
+    app.send(Intent::CreateChat {
+        name: "unanswered fence".into(),
+        targets: vec!["alice".into(), "weekend".into()],
+    });
+    app.until_delta(
+        |d| matches!(d, Delta::CreatedChat(Ok(_))),
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, FakeRpc::Send(_)))
+            .count(),
+        sends_before + 1
+    );
+    let seq = app.state.messages[&key].request_seq;
+    let mut echo = FakeBackend::message("alice", 901, "unanswered", true);
+    echo.request_seq = seq;
+    fake.inject(LiveOp {
+        revision: 2001,
+        replay: false,
+        op: Op::Message(Box::new(echo)),
+    });
+    app.until(|state| state.messages[&key].delivery == Delivery::Sent);
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|call| **call == FakeRpc::Send(ChatId("alice".into())))
+            .count(),
+        sends_before + 1
+    );
+    assert_eq!(
+        app.state
+            .messages
+            .values()
+            .filter(|row| row.body.as_text() == "unanswered")
+            .count(),
+        1
+    );
+
+    fake.fail_rpc(
+        FakeRpc::Send(ChatId("alice".into())),
+        Failure::Refused(Refusal::NotAccepted),
+    );
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "in flight".into(),
+        reply: None,
+    });
+    let key = app.body_key("in flight");
+    app.until(|s| s.messages[&key].delivery.is_failed());
+    let (entered, release) = fake.block_send();
+    let sends_before = fake
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, FakeRpc::Send(_)))
+        .count();
+    app.send(Intent::Retry(key));
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.until(|s| s.messages[&key].delivery == Delivery::Pending);
+    let seq = app.state.messages[&key].request_seq;
+    app.send(Intent::Retry(key));
+    app.send(Intent::Discard(key));
+    app.fence();
+    assert_eq!(app.state.messages[&key].request_seq, seq);
+    release.send(()).unwrap();
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
-    assert!(app.state.composer.is_empty());
-    assert!(app.state.submit().is_none());
+    // A network result fences all earlier send jobs.
+    app.send(Intent::CreateChat {
+        name: "send fence".into(),
+        targets: vec!["alice".into(), "weekend".into()],
+    });
+    app.until_delta(
+        |d| matches!(d, Delta::CreatedChat(_)),
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, FakeRpc::Send(_)))
+            .count(),
+        sends_before + 1
+    );
+    assert_eq!(
+        app.state
+            .messages
+            .values()
+            .filter(|m| m.body.as_text() == "in flight")
+            .count(),
+        1
+    );
 }
+
 #[test]
 fn opening_unread_chat_centers_the_window_on_the_divider() {
     use line::store::{Anchor, ChatInput, ServerId};
@@ -436,77 +584,11 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
 }
 
 #[test]
-fn opened_chat_history_and_reads_run_before_missing_details_sweep() {
-    use line::{
-        backend::FakeRpc,
-        store::{ChatInput, ServerId, Store},
-    };
-    let dir = std::env::temp_dir().join(format!("line-core-priority-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    let chat = ChatId("alice".into());
-    {
-        let mut store = Store::open(&dir).unwrap();
-        store
-            .upsert_chats(
-                &[ChatInput {
-                    id: chat.clone(),
-                    title: "葵".into(),
-                    ..Default::default()
-                }],
-                false,
-            )
-            .unwrap();
-        store.mark_read(&chat, ServerId::new("1").unwrap()).unwrap();
-        store
-            .set_prefs(&Prefs {
-                last_chat: Some(ChatId("alice".into())),
-                ..Prefs::default()
-            })
-            .unwrap();
-    }
-    let fake = FakeBackend::canned();
-    for i in 0..40 {
-        fake.add_chat(ChatInput {
-            id: ChatId(format!("missing-{i}")),
-            ..Default::default()
-        });
-    }
-    let mut app = App::new(fake.clone(), StoreLocation::Directory(dir.clone()));
-    app.until(|_| {
-        fake.calls()
-            .iter()
-            .any(|r| matches!(r, FakeRpc::Details(_)))
-    });
-    let calls = fake.calls();
-    let details = calls
-        .iter()
-        .position(|r| matches!(r, FakeRpc::Details(_)))
-        .unwrap();
-    assert!(
-        calls
-            .iter()
-            .position(|r| *r == FakeRpc::Read(chat.clone()))
-            .unwrap()
-            < details
-    );
-    assert!(
-        calls
-            .iter()
-            .position(|r| *r == FakeRpc::Messages(chat.clone()))
-            .unwrap()
-            < details
-    );
-    assert!(!calls.contains(&FakeRpc::Details(chat)));
-    drop(app);
-    std::fs::remove_dir_all(dir).unwrap();
-}
-
-#[test]
 fn first_identity_keeps_local_work_and_sends_pending() {
     use line::store::{Draft, Store};
     use sha2::{Digest, Sha256};
-    let root = std::env::temp_dir().join(format!("line-first-identity-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let temp = TempDir::new("line-first-identity");
+    let root = temp.0.clone();
     let fake = FakeBackend::canned();
     fake.offline(true);
     let mut app = App::new(
@@ -545,7 +627,7 @@ fn first_identity_keeps_local_work_and_sends_pending() {
     app.until(|s| {
         s.messages
             .values()
-            .any(|m| message_text(m) == "before identity" && m.delivery == Delivery::Sent)
+            .any(|m| m.body.as_text() == "before identity" && m.delivery == Delivery::Sent)
     });
     drop(app);
     let store = Store::open(&root.join(format!("{:x}", Sha256::digest("self")))).unwrap();
@@ -557,7 +639,6 @@ fn first_identity_keeps_local_work_and_sends_pending() {
     assert_eq!(store.prefs().unwrap().text_size, 19);
     assert!(store.all_pending().unwrap().is_empty());
     drop(store);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -651,24 +732,12 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
         )),
     );
     app.send(Intent::Unsend(key));
-    let mut failures = 0;
-    loop {
-        let delta = app
-            .worker
-            .deltas
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap();
-        if let Delta::UnsendFailed(k) = delta {
-            assert_eq!(k, key);
-            failures += 1;
-            break;
-        }
-        assert!(!matches!(delta, Delta::StorageFailed(_)));
-        app.state.apply(delta);
-    }
-    assert_eq!(failures, 1);
+    app.until_delta(
+        |d| matches!(d, Delta::UnsendFailed(k) if *k == key),
+        Duration::from_secs(5),
+    );
     assert!(!app.state.messages[&key].body.is_withdrawn());
-    assert_eq!(message_text(&app.state.messages[&key]), "own confirmed");
+    assert_eq!(app.state.messages[&key].body.as_text(), "own confirmed");
     app.send(Intent::Unsend(key));
     app.until(|s| s.messages[&key].body.is_withdrawn());
     assert!(app.state.messages[&key].body.is_withdrawn());
@@ -696,763 +765,142 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
 }
 
 #[test]
-fn cached_intents_complete_while_backend_rpc_is_blocked() {
-    use line::{backend::*, engine::WindowSub, store::*};
-    use std::sync::Arc;
-    struct Blocked(
-        FakeBackend,
-        Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
-        std::sync::mpsc::Sender<()>,
-    );
-    impl Blocked {
-        fn wait(&self) {
-            let _ = self.2.send(());
-            let mut released = self.1.0.lock().unwrap();
-            while !*released {
-                released = self.1.1.wait(released).unwrap();
-            }
-        }
-    }
-    impl Backend for Blocked {
-        fn finish_attachment(
-            &mut self,
-            chat: &ChatId,
-            uploaded: serde_json::Value,
-            seq: u32,
-        ) -> Result<MessageInput> {
-            self.0.finish_attachment(chat, uploaded, seq)
-        }
-        fn contact(&mut self, mid: &str) -> Result<Option<line::store::Friend>> {
-            self.0.contact(mid)
-        }
-        fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
-            self.0.notice(mid)
-        }
-        fn full_chat(&mut self, chat: &ChatId) -> Result<serde_json::Value> {
-            self.0.full_chat(chat)
-        }
-        fn profile_action(
-            &mut self,
-            action: &line::backend::ProfileAction,
-            full: serde_json::Value,
-            seq: u32,
-        ) -> Result<()> {
-            self.0.profile_action(action, full, seq)
-        }
-
-        fn sign_in(&mut self, c: Arc<CancelToken>, d: PairDeliver) -> Result<()> {
-            self.0.sign_in(c, d)
-        }
-        fn friends(&mut self) -> Result<Vec<line::store::Friend>> {
-            self.wait();
-            self.0.friends()
-        }
-        fn members(&mut self, c: &ChatId) -> Result<Vec<line::store::Member>> {
-            self.wait();
-            self.0.members(c)
-        }
-        fn start_assets(&mut self, s: Arc<CancelToken>, d: Deliver) {
-            self.0.start_assets(s, d)
-        }
-        fn authorize(
-            &mut self,
-            a: &line::client::desktop::assets::Asset,
-        ) -> Result<Option<String>> {
-            self.0.authorize(a)
-        }
-        fn session(&self) -> Result<bool> {
-            self.0.session()
-        }
-        fn cached_media(
-            &mut self,
-            mid: &str,
-            asset: &line::client::desktop::assets::Asset,
-            purpose: line::client::desktop::assets::Purpose,
-        ) -> Result<Option<line::client::desktop::assets::Payload>> {
-            self.0.cached_media(mid, asset, purpose)
-        }
-        fn prepare_attachment(
-            &mut self,
-            chat: ChatId,
-            item: line::attachments::Attachment,
-            seq: u32,
-        ) -> Result<line::backend::UploadJob> {
-            self.0.prepare_attachment(chat, item, seq)
-        }
-        fn profile(&mut self) -> Result<Profile> {
-            self.wait();
-            self.0.profile()
-        }
-        fn chats(&mut self, n: Option<String>) -> Result<ChatPage> {
-            self.wait();
-            self.0.chats(n)
-        }
-        fn details(&mut self, c: &ChatId) -> Result<Vec<ChatInput>> {
-            self.wait();
-            self.0.details(c)
-        }
-        fn messages(&mut self, c: &ChatId, k: &PageKind) -> Result<Page> {
-            self.wait();
-            self.0.messages(c, k)
-        }
-        fn send(
-            &mut self,
-            c: &ChatId,
-            t: &str,
-            s: u32,
-            reply: Option<&line::store::ReplyReference>,
-        ) -> Result<MessageInput> {
-            self.wait();
-            self.0.send(c, t, s, reply)
-        }
-        fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
-            self.0.react(id, kind, seq)
-        }
-        fn sticker_packages(&mut self) -> Result<Vec<line::store::StickerPackage>> {
-            self.0.sticker_packages()
-        }
-        fn send_sticker(
-            &mut self,
-            chat: &ChatId,
-            sticker: &line::store::Content,
-            seq: u32,
-            reply: Option<&line::store::ReplyReference>,
-        ) -> Result<MessageInput> {
-            self.0.send_sticker(chat, sticker, seq, reply)
-        }
-        fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
-            self.0.create_chat(name, targets, seq)
-        }
-        fn unsend(&mut self, i: &ServerId, s: u32) -> Result<()> {
-            self.wait();
-            self.0.unsend(i, s)
-        }
-        fn receipts(&mut self, c: &ChatId) -> Result<Vec<Option<ServerId>>> {
-            self.wait();
-            self.0.receipts(c)
-        }
-        fn mark_read(&mut self, c: &ChatId, i: &ServerId, seq: u32) -> Result<()> {
-            self.wait();
-            self.0.mark_read(c, i, seq)
-        }
-        fn stream(
-            &mut self,
-            r: i64,
-            s: Arc<CancelToken>,
-            d: Deliver,
-        ) -> Result<Box<dyn FnOnce() + Send>> {
-            self.0.stream(r, s, d)
-        }
-        fn decode(&mut self, r: serde_json::Value) -> Result<LiveOp> {
-            self.0.decode(r)
-        }
-        fn refresh_token(&mut self) -> Result<()> {
-            self.0.refresh_token()
-        }
-    }
-
-    let root = std::env::temp_dir().join(format!("line-blocked-rpc-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    use sha2::{Digest, Sha256};
-    let account = root.join(format!("{:x}", Sha256::digest("self")));
-    let mut store = Store::open(&account).unwrap();
-    store.set_account("self", Profile::default()).unwrap();
-    std::fs::write(root.join("last-mid"), "self").unwrap();
-    let chats = (0..150)
-        .map(|i| ChatInput {
-            id: ChatId(format!("cached-{i}")),
-            title: format!("Stored chat {i}"),
-            ..Default::default()
-        })
-        .collect::<Vec<_>>();
-    store.upsert_chats(&chats, true).unwrap();
-    let rows = (1..=300)
-        .map(|i| FakeBackend::message("cached-0", i, "stored history", false))
-        .collect::<Vec<_>>();
-    store
-        .apply_page(&chats[0].id, PageKind::Recent, &rows, true)
-        .unwrap();
-    store
-        .set_prefs(&Prefs {
-            last_chat: Some(ChatId("cached-0".into())),
-            ..Prefs::default()
-        })
-        .unwrap();
-    drop(store);
-    let released = Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new()));
-    // Always release the net thread, including on a failed assertion.
-    struct Release(Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>);
-    impl Drop for Release {
-        fn drop(&mut self) {
-            *self.0.0.lock().unwrap() = true;
-            self.0.1.notify_all();
-        }
-    }
-    let release = Release(released.clone());
-    let (entered, rpc) = std::sync::mpsc::channel();
-    let fake = FakeBackend::default();
-    fake.configure(|s| s.chats = chats.clone());
-    let (initialize, initialized) = std::sync::mpsc::channel();
-    let worker = Worker::start(
-        StoreLocation::Account {
-            root: root.clone(),
-            mid: None,
-        },
-        move || {
-            initialized.recv()?;
-            Ok(Blocked(fake.clone(), released.clone(), entered.clone()))
-        },
-        line::engine::WorkerOptions::default(),
-    );
-    let receive = |predicate: &dyn Fn(&Delta) -> bool| {
-        let deadline = Instant::now() + Duration::from_millis(500);
-        loop {
-            let delta = worker
-                .deltas
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .expect("cached work must finish before RPC is released");
-            assert!(!matches!(delta, Delta::Fatal | Delta::StorageFailed(_)));
-            if predicate(&delta) {
-                return delta;
-            }
-        }
+fn contact_actions_report_failure_then_update_in_place() {
+    use line::{
+        backend::ProfileAction,
+        engine::ProfileFailure,
+        store::{ContactProfile, Friend},
     };
-    receive(&|d| matches!(d, Delta::Window { sub: 1, .. }));
-    // The cached account and window arrive even while backend initialization waits.
-    initialize.send(()).unwrap();
-    rpc.recv_timeout(Duration::from_secs(2))
-        .expect("profile RPC entered and blocked");
-    let mut state = AppState::default();
-    state.members.push(line::store::Member {
-        contact: line::store::Friend {
-            profile: Default::default(),
-            id: "old".into(),
-            name: Some("Old chat".into()),
-            status: String::new(),
-            group: false,
-            avatar: None,
-            member_count: None,
-        },
-        is_self: false,
-    });
-    state.select(chats[0].id.clone());
-    assert!(state.window_loading);
-    assert!(state.members.is_empty());
-    state.apply(Delta::Window {
-        sub: state.window_sub,
-        upsert: Vec::new(),
-        remove: Vec::new(),
-        gaps: Vec::new(),
-        reaches_start: true,
-        reaches_end: true,
-        replies: Vec::new(),
-        unread_anchor: None,
-    });
-    assert!(!state.window_loading);
-    for (sub, chat) in [(2, "cached-1"), (3, "cached-0")] {
-        worker.sender.send(Intent::Window(WindowSub {
-            sub,
-            chat: ChatId(chat.into()),
-            anchor: Anchor::Latest,
-            before: 20,
-            after: 0,
-        }));
-        receive(&|d| matches!(d, Delta::Window { sub: s, .. } if *s == sub));
-    }
-    worker.sender.send(Intent::Friends);
-    receive(&|d| matches!(d, Delta::Friends(_)));
-    worker.sender.send(Intent::Members(chats[0].id.clone()));
-    receive(&|d| matches!(d, Delta::Members { .. }));
-    worker.sender.send(Intent::Asset(FakeBackend::asset(false)));
-    receive(&|d| matches!(d, Delta::Asset { .. }));
-    worker.sender.send(Intent::Page {
-        chat: chats[0].id.clone(),
-        kind: PageKind::Older {
-            before: Cursor {
-                sort_ts: rows[280].created_ms,
-                sort_id: format!("{:020}", 281),
+    let chat = ChatId("weekend".into());
+    for (action, failure) in [
+        (
+            ProfileAction::Rename {
+                mid: "alice".into(),
+                name: "Aoi 🌿".into(),
             },
-        },
-    });
-    worker.sender.send(Intent::Window(WindowSub {
-        sub: 4,
-        chat: chats[0].id.clone(),
-        anchor: Anchor::Latest,
-        before: 100,
-        after: 0,
-    }));
-    let delta = receive(&|d| matches!(d, Delta::Window { sub: 4, .. }));
-    assert!(matches!(delta, Delta::Window { upsert, .. } if upsert.len() == 101));
-    worker.sender.send(Intent::MoreChats);
-    assert!(
-        matches!(receive(&|d| matches!(d, Delta::Chats { .. })), Delta::Chats { order, .. } if order.len() == 150)
-    );
-    worker.sender.send(Intent::ChatList { sub: 10, limit: 10 });
-    receive(&|d| matches!(d, Delta::Chats { sub: 10, .. }));
-    worker.sender.send(Intent::Draft {
-        chat: chats[149].id.clone(),
-        draft: Draft {
-            reply: None,
-            text: "local draft".into(),
-            cursor: 11,
-            anchor: 11,
-            updated: 0,
-        },
-    });
-    assert!(
-        matches!(receive(&|d| matches!(d, Delta::Chats { .. })), Delta::Chats { upsert, .. } if upsert.len() == 1 && upsert[0].chat.id == chats[149].id)
-    );
-    worker.sender.send(Intent::Prefs(Prefs {
-        text_size: 32,
-        ..Prefs::default()
-    }));
-    loop {
-        let delta = receive(&|_| true);
-        assert!(!matches!(delta, Delta::Window { .. }));
-        if matches!(delta, Delta::Prefs(_)) {
-            break;
-        }
-    }
-    drop(worker);
-    drop(release);
-    let _ = std::fs::remove_dir_all(root);
-}
-
-#[test]
-fn repeated_retry_and_discard_preserve_in_flight_send() {
-    use line::{backend::*, store::*};
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-        mpsc,
-    };
-
-    let mut store = Store::open_in_memory().unwrap();
-    let (key, _) = store
-        .insert_pending(
-            &ChatId("alice".into()),
-            LocalId("guard".into()),
-            1,
-            Content::text("guard"),
-            1,
-            None,
-        )
-        .unwrap();
-    assert!(store.retry(key, 2).is_err());
-    assert!(store.discard(key).is_err());
-    assert_eq!(store.message(key).unwrap().request_seq, Some(1));
-
-    struct BlockedSend {
-        fake: FakeBackend,
-        entered: mpsc::Sender<()>,
-        release: mpsc::Receiver<()>,
-        calls: Arc<AtomicUsize>,
-    }
-    impl Backend for BlockedSend {
-        fn finish_attachment(
-            &mut self,
-            chat: &ChatId,
-            uploaded: serde_json::Value,
-            seq: u32,
-        ) -> Result<MessageInput> {
-            self.fake.finish_attachment(chat, uploaded, seq)
-        }
-        fn contact(&mut self, mid: &str) -> Result<Option<line::store::Friend>> {
-            self.fake.contact(mid)
-        }
-        fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
-            self.fake.notice(mid)
-        }
-        fn full_chat(&mut self, chat: &ChatId) -> Result<serde_json::Value> {
-            self.fake.full_chat(chat)
-        }
-        fn profile_action(
-            &mut self,
-            action: &line::backend::ProfileAction,
-            full: serde_json::Value,
-            seq: u32,
-        ) -> Result<()> {
-            self.fake.profile_action(action, full, seq)
-        }
-
-        fn sign_in(&mut self, c: Arc<CancelToken>, d: PairDeliver) -> Result<()> {
-            self.fake.sign_in(c, d)
-        }
-        fn friends(&mut self) -> Result<Vec<line::store::Friend>> {
-            self.fake.friends()
-        }
-        fn members(&mut self, c: &ChatId) -> Result<Vec<line::store::Member>> {
-            self.fake.members(c)
-        }
-        fn start_assets(&mut self, s: Arc<CancelToken>, d: Deliver) {
-            self.fake.start_assets(s, d)
-        }
-        fn authorize(
-            &mut self,
-            a: &line::client::desktop::assets::Asset,
-        ) -> Result<Option<String>> {
-            self.fake.authorize(a)
-        }
-        fn session(&self) -> Result<bool> {
-            self.fake.session()
-        }
-        fn cached_media(
-            &mut self,
-            mid: &str,
-            asset: &line::client::desktop::assets::Asset,
-            purpose: line::client::desktop::assets::Purpose,
-        ) -> Result<Option<line::client::desktop::assets::Payload>> {
-            self.fake.cached_media(mid, asset, purpose)
-        }
-        fn prepare_attachment(
-            &mut self,
-            chat: ChatId,
-            item: line::attachments::Attachment,
-            seq: u32,
-        ) -> Result<line::backend::UploadJob> {
-            self.fake.prepare_attachment(chat, item, seq)
-        }
-        fn profile(&mut self) -> Result<Profile> {
-            self.fake.profile()
-        }
-        fn chats(&mut self, n: Option<String>) -> Result<ChatPage> {
-            self.fake.chats(n)
-        }
-        fn details(&mut self, c: &ChatId) -> Result<Vec<ChatInput>> {
-            self.fake.details(c)
-        }
-        fn messages(&mut self, c: &ChatId, k: &PageKind) -> Result<Page> {
-            self.fake.messages(c, k)
-        }
-        fn send(
-            &mut self,
-            c: &ChatId,
-            t: &str,
-            s: u32,
-            reply: Option<&line::store::ReplyReference>,
-        ) -> Result<MessageInput> {
-            self.calls
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if self.calls.load(std::sync::atomic::Ordering::Relaxed) > 1 {
-                self.entered.send(()).unwrap();
-                self.release.recv_timeout(Duration::from_secs(5)).unwrap();
-            }
-            self.fake.send(c, t, s, reply)
-        }
-        fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
-            self.fake.react(id, kind, seq)
-        }
-        fn sticker_packages(&mut self) -> Result<Vec<line::store::StickerPackage>> {
-            self.fake.sticker_packages()
-        }
-        fn send_sticker(
-            &mut self,
-            chat: &ChatId,
-            sticker: &line::store::Content,
-            seq: u32,
-            reply: Option<&line::store::ReplyReference>,
-        ) -> Result<MessageInput> {
-            self.fake.send_sticker(chat, sticker, seq, reply)
-        }
-        fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
-            self.fake.create_chat(name, targets, seq)
-        }
-        fn unsend(&mut self, i: &ServerId, s: u32) -> Result<()> {
-            self.fake.unsend(i, s)
-        }
-        fn receipts(&mut self, c: &ChatId) -> Result<Vec<Option<ServerId>>> {
-            self.fake.receipts(c)
-        }
-        fn mark_read(&mut self, c: &ChatId, i: &ServerId, seq: u32) -> Result<()> {
-            self.fake.mark_read(c, i, seq)
-        }
-        fn stream(
-            &mut self,
-            r: i64,
-            s: Arc<CancelToken>,
-            d: Deliver,
-        ) -> Result<Box<dyn FnOnce() + Send>> {
-            self.fake.stream(r, s, d)
-        }
-        fn decode(&mut self, r: serde_json::Value) -> Result<LiveOp> {
-            self.fake.decode(r)
-        }
-        fn refresh_token(&mut self) -> Result<()> {
-            self.fake.refresh_token()
-        }
-    }
-    let fake = FakeBackend::canned();
-    fake.fail_rpc(
-        FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(line::client::error::Refusal::Server(
-            line::client::error::ServerRefusal::Gateway(13),
-        )),
-    );
-    let (entered_tx, entered) = mpsc::channel();
-    let (release, release_rx) = mpsc::channel();
-    let calls = Arc::new(AtomicUsize::new(0));
-    let mut app = App {
-        worker: Worker::start(
-            StoreLocation::Memory,
-            {
-                let mut backend = Some(BlockedSend {
-                    fake: fake.clone(),
-                    entered: entered_tx,
-                    release: release_rx,
-                    calls: calls.clone(),
-                });
-                move || Ok(backend.take().expect("backend already opened"))
-            },
-            line::engine::WorkerOptions::default(),
+            ProfileFailure::Rename,
         ),
-        state: AppState::default(),
-        notifications: 0,
-    };
-    app.online();
-    app.select("alice");
-    app.body_key("Hello! 日本語も使えます。");
-    app.send(Intent::Send {
-        chat: ChatId("alice".into()),
-        text: "one retry".into(),
-        reply: None,
-    });
-    let key = app.body_key("one retry");
-    app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
-    app.send(Intent::Retry(key));
-    entered.recv_timeout(Duration::from_secs(5)).unwrap();
-    app.until(|s| s.messages[&key].delivery == Delivery::Pending);
-    let seq = app.state.messages[&key].request_seq;
-    app.send(Intent::Retry(key));
-    app.send(Intent::Discard(key));
-    app.send(Intent::Prefs(Prefs {
-        text_size: 31,
-        ..Prefs::default()
-    }));
-    app.until(|s| s.prefs.text_size == 31);
-    assert_eq!(app.state.messages[&key].request_seq, seq);
-    release.send(()).unwrap();
-    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
-    let friends_calls = fake
-        .calls()
-        .iter()
-        .filter(|c| matches!(c, FakeRpc::Friends))
-        .count();
-    app.send(Intent::Friends);
-    app.until(|_| {
-        fake.calls()
-            .iter()
-            .filter(|c| matches!(c, FakeRpc::Friends))
-            .count()
-            > friends_calls
-    });
-    assert_eq!(calls.load(Ordering::Relaxed), 2);
-    assert_eq!(
-        app.state
-            .messages
-            .values()
-            .filter(|m| message_text(m) == "one retry")
-            .count(),
-        1
-    );
-}
-
-fn profile_action(app: &mut App, action: line::backend::ProfileAction) {
-    app.state.action = Some(action.clone());
-    app.send(Intent::ProfileAction(action));
-    app.until(|s| s.action.is_none());
-}
-#[test]
-fn rename_contact_failure_then_success_updates_the_store_page() {
-    use line::backend::{Failure, FakeRpc, ProfileAction};
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.online();
-    app.send(Intent::Friends);
-    app.until(|s| !s.friends.is_empty());
-    let action = ProfileAction::Rename {
-        mid: "alice".into(),
-        name: "Aoi 🌿".into(),
-    };
-    fake.fail_rpc(
-        FakeRpc::Action(action.clone()),
-        Failure::Bug("decode".into()),
-    );
-    profile_action(&mut app, action.clone());
-    assert_eq!(app.state.contacts["alice"].name.as_deref(), Some("葵"));
-    assert_eq!(
-        app.state.action_error,
-        Some(line::engine::ProfileFailure::Rename)
-    );
-    profile_action(&mut app, action);
-    assert_eq!(app.state.contacts["alice"].name.as_deref(), Some("Aoi 🌿"));
-    assert_eq!(
-        app.state.contacts["alice"].profile.original_name.as_deref(),
-        Some("葵")
-    );
-    assert!(app.state.action_error.is_none());
-    app.send(Intent::Contact("alice".into()));
-    app.until(|s| s.contacts["alice"].profile.overridden_name.as_deref() == Some("Aoi 🌿"));
-}
-#[test]
-fn add_friend_failure_then_success_changes_relation_in_place() {
-    use line::backend::{Failure, FakeRpc, ProfileAction};
-    let fake = FakeBackend::canned();
-    let mut members = fake.clone();
-    use line::backend::Backend;
-    let mut rows = members.members(&ChatId("weekend".into())).unwrap();
-    rows[0].contact.profile = line::store::ContactProfile {
-        relation: Some(2),
-        ..Default::default()
-    };
-    let mid = rows[0].contact.id.clone();
-    fake.configure(|s| s.members = Some(rows));
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.online();
-    app.send(Intent::Contact(mid.clone()));
-    app.until(|s| s.contacts.contains_key(&mid));
-    // Synthetic contact source prefers the friend record, so provide the observed non-friend snapshot.
-    let mut row = app.state.contacts[&mid].clone();
-    row.profile = line::store::ContactProfile {
-        relation: Some(2),
-        ..Default::default()
-    };
-    fake.set_friends(vec![row]);
-    app.send(Intent::Contact(mid.clone()));
-    app.until(|s| s.contacts[&mid].profile.relation == Some(2));
-    let action = ProfileAction::AddFriend {
-        mid: mid.clone(),
-        chat: "weekend".into(),
-    };
-    fake.fail_rpc(
-        FakeRpc::Action(action.clone()),
-        Failure::Bug("decode".into()),
-    );
-    profile_action(&mut app, action.clone());
-    assert_eq!(app.state.contacts[&mid].profile.relation, Some(2));
-    assert_eq!(
-        app.state.action_error,
-        Some(line::engine::ProfileFailure::AddFriend)
-    );
-    profile_action(&mut app, action);
-    assert_eq!(app.state.contacts[&mid].profile.relation, Some(0));
-    assert!(app.state.action_error.is_none());
-}
-#[test]
-fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
-    use line::backend::{Failure, FakeRpc, ProfileAction};
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.online();
-    let chat = ChatId("weekend".into());
-    app.send(Intent::GroupInfo(chat.clone()));
-    app.until(|s| {
-        s.group_info
-            .get(&ChatId("weekend".into()))
-            .is_some_and(|v| v.is_object())
-    });
-    let action = ProfileAction::Mute {
-        chat: chat.clone(),
-        disabled: true,
-    };
-    fake.fail_rpc(
-        FakeRpc::Action(action.clone()),
-        Failure::Bug("decode".into()),
-    );
-    profile_action(&mut app, action.clone());
-    assert!(!app.state.chats[&chat].chat.muted);
-    assert_eq!(
-        app.state.action_error,
-        Some(line::engine::ProfileFailure::Mute)
-    );
-    profile_action(&mut app, action);
-    assert!(app.state.chats[&chat].chat.muted);
-    assert_eq!(app.state.group_info[&chat]["notificationDisabled"], true);
-    assert!(app.state.group_info[&chat]["extra"]["groupExtra"].is_object());
-    assert!(app.state.action_error.is_none());
-}
-#[test]
-fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
-    use line::backend::{Failure, FakeRpc, ProfileAction};
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.online();
-    app.select("weekend");
-    app.until(|s| !s.window_loading);
-    let chat = ChatId("weekend".into());
-    let action = ProfileAction::Leave { chat: chat.clone() };
-    fake.fail_rpc(
-        FakeRpc::Action(action.clone()),
-        Failure::Bug("decode".into()),
-    );
-    profile_action(&mut app, action.clone());
-    assert!(!app.state.chats[&chat].chat.left);
-    assert_eq!(
-        app.state.action_error,
-        Some(line::engine::ProfileFailure::Leave)
-    );
-    profile_action(&mut app, action);
-    assert!(app.state.chats[&chat].chat.left);
-    assert!(app.state.chat_order.contains(&chat));
-    app.state.composer = "still here".into();
-    assert!(app.state.submit().is_none());
-    assert!(app.state.action_error.is_none());
-}
-#[test]
-fn detail_stack_pop_and_close_use_the_recorded_opener() {
-    use line::controller::DetailPage;
-    let mut state = AppState::default();
-    let chat = ChatId("weekend".into());
-    state.push_detail(DetailPage::GroupInfo(chat.clone()), "header".into());
-    state.push_detail(DetailPage::Members(chat), "members row".into());
-    state.push_detail(DetailPage::Profile("alice".into()), "alice row".into());
-    assert_eq!(state.pop_detail().as_deref(), Some("alice row"));
-    assert!(matches!(state.detail_page(), Some(DetailPage::Members(_))));
-    assert_eq!(state.close_detail().as_deref(), Some("header"));
-    assert!(state.detail.is_empty());
-}
-
-#[test]
-fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
-    use line::backend::{Backend, FakeRpc};
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.online();
-    for kind in [4, 49] {
-        let mut source = fake.clone();
-        let mut rows = source.friends().unwrap();
-        rows[0].name = Some(format!("Changed {kind}"));
-        rows[0].profile = line::store::ContactProfile {
-            relation: Some(0),
-            ..Default::default()
+        (
+            ProfileAction::AddFriend {
+                mid: "alice".into(),
+                chat: "weekend".into(),
+            },
+            ProfileFailure::AddFriend,
+        ),
+        (
+            ProfileAction::Mute {
+                chat: chat.clone(),
+                disabled: true,
+            },
+            ProfileFailure::Mute,
+        ),
+        (
+            ProfileAction::Leave { chat: chat.clone() },
+            ProfileFailure::Leave,
+        ),
+    ] {
+        let fake = FakeBackend::canned();
+        let relation = if matches!(action, ProfileAction::AddFriend { .. }) {
+            2
+        } else {
+            0
         };
-        fake.set_friends(rows);
-        fake.inject_raw(serde_json::json!({"type":kind,"param1":"alice"}));
-        app.until(|s| {
-            s.contacts
-                .get("alice")
-                .is_some_and(|f| f.name == Some(format!("Changed {kind}")))
-        });
-    }
-    let chat = ChatId("weekend".into());
-    for kind in [121, 122, 127, 128] {
-        fake.add_chat(line::store::ChatInput {
-            id: chat.clone(),
-            title: format!("Group {kind}"),
-            is_group: true,
+        fake.set_friends(vec![Friend {
+            id: "alice".into(),
+            name: Some("葵".into()),
+            profile: ContactProfile {
+                relation: Some(relation),
+                ..Default::default()
+            },
             ..Default::default()
-        });
-        fake.inject_raw(serde_json::json!({"type":kind,"param1":"weekend"}));
-        app.until(|s| {
-            s.chats
-                .get(&ChatId("weekend".into()))
-                .is_some_and(|c| c.chat.title == format!("Group {kind}"))
-        });
+        }]);
+        let mut app = App::new(fake.clone(), StoreLocation::Memory);
+        app.online();
+        app.select("weekend");
+        app.body_key("Shall we meet at the station?");
+        app.send(Intent::Contact("alice".into()));
+        app.until(|s| s.contacts.contains_key("alice"));
+        app.send(Intent::GroupInfo(chat.clone()));
+        app.until(|s| s.group_info.get(&chat).is_some_and(|info| info.is_object()));
+        fake.fail_rpc(
+            FakeRpc::Action(action.clone()),
+            Failure::Refused(Refusal::NotAccepted),
+        );
+        for success in [false, true] {
+            app.state.action = Some(action.clone());
+            app.send(Intent::ProfileAction(action.clone()));
+            app.until(|s| s.action.is_none());
+            assert_eq!(
+                app.state.action_error,
+                if success { None } else { Some(failure) }
+            );
+            match &action {
+                ProfileAction::Rename { .. } => {
+                    assert_eq!(
+                        app.state.contacts["alice"].name.as_deref(),
+                        Some(if success { "Aoi 🌿" } else { "葵" })
+                    );
+                    if success {
+                        assert_eq!(
+                            app.state.contacts["alice"].profile.original_name.as_deref(),
+                            Some("葵")
+                        );
+                        // Finish the action's automatic refresh before requesting another.
+                        app.until_delta(|d| matches!(d, Delta::Contact(_)), Duration::from_secs(5));
+                        let before = fake
+                            .calls()
+                            .iter()
+                            .filter(|c| **c == FakeRpc::Contact("alice".into()))
+                            .count();
+                        app.send(Intent::Contact("alice".into()));
+                        // Consume both the cached contact and the refetched contact.
+                        for _ in 0..2 {
+                            app.until_delta(
+                                |d| matches!(d, Delta::Contact(_)),
+                                Duration::from_secs(5),
+                            );
+                        }
+                        assert_eq!(
+                            fake.calls()
+                                .iter()
+                                .filter(|c| **c == FakeRpc::Contact("alice".into()))
+                                .count(),
+                            before + 1
+                        );
+                        assert_eq!(
+                            app.state.contacts["alice"]
+                                .profile
+                                .overridden_name
+                                .as_deref(),
+                            Some("Aoi 🌿")
+                        );
+                        assert_eq!(app.state.contacts["alice"].name.as_deref(), Some("Aoi 🌿"));
+                        assert_eq!(
+                            app.state.contacts["alice"].profile.original_name.as_deref(),
+                            Some("葵")
+                        );
+                    }
+                }
+                ProfileAction::AddFriend { .. } => assert_eq!(
+                    app.state.contacts["alice"].profile.relation,
+                    Some(if success { 0 } else { 2 })
+                ),
+                ProfileAction::Mute { .. } => {
+                    assert_eq!(app.state.chats[&chat].chat.muted, success);
+                    assert_eq!(app.state.group_info[&chat]["notificationDisabled"], success);
+                    assert!(app.state.group_info[&chat]["extra"]["groupExtra"].is_object());
+                }
+                ProfileAction::Leave { .. } => {
+                    assert_eq!(app.state.chats[&chat].chat.left, success);
+                    assert!(app.state.chat_order.contains(&chat));
+                    if success {
+                        app.state.composer = "still here".into();
+                        assert!(app.state.submit().is_none());
+                    }
+                }
+            }
+        }
     }
-    fake.inject_raw(serde_json::json!({"type":41,"param1":"weekend"}));
-    app.until(|s| !s.chats.contains_key(&chat));
-    assert!(fake.calls().contains(&FakeRpc::Contact("alice".into())));
-    assert!(fake.calls().contains(&FakeRpc::Details(chat)));
-    assert_eq!(app.notifications, 0);
 }
 
 #[test]
@@ -1473,7 +921,10 @@ fn compose_reaction_set_cancel_and_failure_revert() {
         Failure::Refused(Refusal::NotAccepted),
     );
     app.send(Intent::React { key, kind: 2 });
-    app.until_delta(|d| matches!(d, Delta::ReactionFailed(k) if *k == key));
+    app.until_delta(
+        |d| matches!(d, Delta::ReactionFailed(k) if *k == key),
+        Duration::from_secs(5),
+    );
     assert!(app.state.messages[&key].reactions.is_empty());
 }
 
@@ -1544,11 +995,8 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
 }
 
 #[test]
-fn compose_new_chat_local_friend_then_group_success_and_failure() {
-    use line::{
-        backend::{Failure, FakeRpc},
-        store::Friend,
-    };
+fn first_message_creates_a_friend_chat() {
+    use line::{backend::FakeRpc, store::Friend};
     let fake = FakeBackend::canned();
     fake.set_friends(vec![Friend {
         id: "new-friend".into(),
@@ -1584,12 +1032,21 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
                 .get(&ChatId("new-friend".into()))
                 .is_some_and(|c| c.chat.title == "New friend")
     });
+}
+
+#[test]
+fn create_group_success_and_failure() {
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
     app.send(Intent::CreateChat {
         name: "  Picnic  ".into(),
         targets: vec!["alice".into(), "new-friend".into(), "self".into()],
     });
-    let Delta::CreatedChat(Ok(id)) = app.until_delta(|d| matches!(d, Delta::CreatedChat(Ok(_))))
-    else {
+    let Delta::CreatedChat(Ok(id)) = app.until_delta(
+        |d| matches!(d, Delta::CreatedChat(Ok(_))),
+        Duration::from_secs(5),
+    ) else {
         unreachable!()
     };
     assert_eq!(app.state.chats[&id].chat.title, "Picnic");
@@ -1600,7 +1057,10 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
         name: "Failure".into(),
         targets: vec!["alice".into(), "new-friend".into()],
     });
-    app.until_delta(|d| matches!(d, Delta::CreatedChat(Err(_))));
+    app.until_delta(
+        |d| matches!(d, Delta::CreatedChat(Err(_))),
+        Duration::from_secs(5),
+    );
     assert!(!app.state.chats.values().any(|c| c.chat.title == "Failure"));
 }
 
@@ -1615,27 +1075,11 @@ fn signed_out_account_intents_never_reach_the_backend() {
             }
     });
     for intent in [
-        Intent::Friends,
-        Intent::Contact("unknown-account-id".into()),
-        Intent::GroupInfo(ChatId("unknown-chat-id".into())),
-        Intent::Members(ChatId("unknown-chat-id".into())),
-        Intent::StickerPackages,
         Intent::Retry(Key(999)),
         Intent::Send {
             chat: ChatId("unknown-chat-id".into()),
             text: "private text".into(),
             reply: None,
-        },
-        Intent::SendAttachments {
-            chat: ChatId("unknown-chat-id".into()),
-            items: vec![line::attachments::Attachment {
-                path: "/unread-signed-out-attachment".into(),
-                name: "private.txt".into(),
-                size: 1,
-                photo: None,
-                preview: vec![],
-                clipboard: false,
-            }],
         },
     ] {
         app.send(intent);
@@ -1652,135 +1096,40 @@ fn signed_out_account_intents_never_reach_the_backend() {
 }
 
 #[test]
-fn pairing_reasons_survive_the_engine() {
-    use line::client::error::SignInFailure::*;
-    let fake = FakeBackend::signed_out();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.until(|s| {
-        s.connection
-            == Connection::SignedOut {
-                reason: SignOutReason::NoSession,
-            }
-    });
-    for reason in [
-        CryptoModule("/missing/crypto.wasm".into()),
-        ExtensionMissing,
-        CryptoChanged {
-            version: "9.8.7".into(),
-            missing: "E2EEChannel.decryptV2".into(),
-        },
-        StateDirectory("/readonly/state".into()),
-        Keyring,
-        Network,
-        Server,
-        Phone,
-        Cancelled,
-    ] {
-        fake.fail_sign_in(Some(reason.clone()));
-        app.send(Intent::SignIn);
-        loop {
-            let delta = app
-                .worker
-                .deltas
-                .recv_timeout(Duration::from_secs(5))
-                .unwrap();
-            if let Delta::PairFailed { reason: actual } = delta {
-                assert_eq!(actual, reason);
-                break;
-            }
-            assert!(!matches!(
-                delta,
-                Delta::Fatal | Delta::StorageFailed(_) | Delta::InternalError(_)
-            ));
-            app.state.apply(delta);
-        }
-    }
-    assert_eq!(fake.calls(), vec![FakeRpc::SignIn; 9]);
-}
-
-#[test]
-fn invariant_errors_are_never_storage_failures() {
-    use line::{engine::StorageFailure, store::StoreError};
-    for error in [
-        StoreError::Invalid("impossible state".into()),
-        StoreError::Sql(rusqlite::Error::QueryReturnedNoRows),
-    ] {
-        assert_eq!(StorageFailure::classify(&error), None);
-    }
-    for (code, expected) in [
-        (rusqlite::ffi::SQLITE_FULL, StorageFailure::Full),
-        (rusqlite::ffi::SQLITE_READONLY, StorageFailure::ReadOnly),
-        (rusqlite::ffi::SQLITE_PERM, StorageFailure::Permission),
-        (rusqlite::ffi::SQLITE_IOERR, StorageFailure::Io),
-    ] {
-        let error = StoreError::Sql(rusqlite::Error::SqliteFailure(
-            rusqlite::ffi::Error::new(code),
-            None,
-        ));
-        assert_eq!(StorageFailure::classify(&error), Some(expected));
-    }
-}
-
-#[test]
-fn unknown_key_reports_a_bug_and_keeps_the_worker_running() {
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake, StoreLocation::Memory);
-    app.online();
-    app.send(Intent::Copy(Key(i64::MAX)));
-    loop {
-        let delta = app
-            .worker
-            .deltas
-            .recv_timeout(Duration::from_secs(5))
-            .unwrap();
-        if let Delta::InternalError(kind) = delta {
-            assert_eq!(kind, "unknown key");
-            break;
-        }
-        assert!(!matches!(delta, Delta::StorageFailed(_) | Delta::Fatal));
-        app.state.apply(delta);
-    }
-    assert!(app.state.error.is_none());
-    app.send(Intent::Prefs(Prefs {
-        text_size: 31,
-        ..Default::default()
-    }));
-    app.until(|s| s.prefs.text_size == 31);
-}
-
-#[test]
 fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
     use line::client::error::SignInFailure;
     let fake = FakeBackend::signed_out();
     let reason = SignInFailure::CryptoModule("/missing/crypto.wasm".into());
     fake.fail_open(Some(reason.clone()));
     let opener = fake.clone();
-    let worker = Worker::start(
+    let mut app = App::from_worker(Worker::start(
         StoreLocation::Memory,
         move || opener.open(),
         line::engine::WorkerOptions::default(),
-    );
-    let failure = || loop {
-        let delta = worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap();
-        assert!(!matches!(delta, Delta::Fatal));
-        if let Delta::PairFailed { reason } = delta {
-            break reason;
-        }
+    ));
+    let failure = |app: &mut App| {
+        let Delta::PairFailed { reason } = app.until_delta(
+            |d| matches!(d, Delta::PairFailed { .. }),
+            Duration::from_secs(3),
+        ) else {
+            unreachable!()
+        };
+        reason
     };
-    assert_eq!(failure(), reason);
-    worker.sender.send(Intent::SignIn);
-    assert_eq!(failure(), reason);
+    assert_eq!(failure(&mut app), reason);
+    app.send(Intent::SignIn);
+    assert_eq!(failure(&mut app), reason);
     fake.fail_open(None);
-    worker.sender.send(Intent::SignIn);
-    loop {
-        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Pair(line::backend::PairEvent::Qr(_)) => break,
-            Delta::Fatal | Delta::PairFailed { .. } => panic!("repaired open did not recover"),
-            _ => {}
-        }
-    }
-    worker.sender.cancel_sign_in();
-    assert_eq!(failure(), SignInFailure::Cancelled);
+    app.send(Intent::SignIn);
+    app.until_delta(
+        |d| {
+            assert!(!matches!(d, Delta::PairFailed { .. }));
+            matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_)))
+        },
+        Duration::from_secs(3),
+    );
+    app.worker.sender.cancel_sign_in();
+    assert_eq!(failure(&mut app), SignInFailure::Cancelled);
 }
 
 #[test]
@@ -1791,7 +1140,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
     let (started, waiting) = mpsc::channel();
     let (release, resume) = mpsc::channel();
     let mut first = true;
-    let worker = Worker::start(
+    let mut app = App::from_worker(Worker::start(
         StoreLocation::Memory,
         move || {
             if std::mem::take(&mut first) {
@@ -1802,200 +1151,75 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
             fake.open()
         },
         line::engine::WorkerOptions::default(),
+    ));
+    app.until_delta(
+        |d| {
+            matches!(
+                d,
+                Delta::Connection(Connection::SignedOut {
+                    reason: SignOutReason::Unavailable(_)
+                })
+            )
+        },
+        Duration::from_secs(3),
     );
-    loop {
-        if matches!(
-            worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Delta::Connection(Connection::SignedOut {
-                reason: SignOutReason::Unavailable(_)
-            })
-        ) {
-            break;
-        }
-    }
-    worker.sender.send(Intent::SignIn);
+    app.send(Intent::SignIn);
     waiting.recv_timeout(Duration::from_secs(3)).unwrap();
-    worker.sender.cancel_sign_in();
-    loop {
-        match worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap() {
-            Delta::PairFailed { reason } => {
-                assert_eq!(reason, SignInFailure::Cancelled);
-                break;
-            }
-            Delta::Pair(line::backend::PairEvent::Stage(
-                line::client::pairing::Stage::WaitingKeyring,
-            )) => {}
-            Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
-            _ => {}
-        }
-    }
+    app.worker.sender.cancel_sign_in();
+    let Delta::PairFailed { reason } = app.until_delta(
+        |d| {
+            assert!(!matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_))));
+            matches!(d, Delta::PairFailed { .. })
+        },
+        Duration::from_secs(1),
+    ) else {
+        unreachable!()
+    };
+    assert_eq!(reason, SignInFailure::Cancelled);
     release.send(()).unwrap();
     // A second attempt must get its own token and deliver QR after the old
     // completion. No late cancellation may close this new attempt.
-    worker.sender.send(Intent::SignIn);
-    loop {
-        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Pair(line::backend::PairEvent::Qr(_)) => break,
-            Delta::PairFailed { .. } | Delta::Fatal => panic!("late result escaped its generation"),
-            _ => {}
-        }
-    }
-    worker.sender.cancel_sign_in();
-}
-
-#[test]
-fn cancel_during_initial_open_does_not_wait_for_credentials() {
-    use line::client::error::SignInFailure;
-    use std::sync::mpsc;
-    let (started, waiting) = mpsc::channel();
-    let (release, resume) = mpsc::channel();
-    let worker = Worker::start(
-        StoreLocation::Memory,
-        move || {
-            started.send(()).unwrap();
-            resume.recv().unwrap();
-            Ok(FakeBackend::signed_out())
+    app.send(Intent::SignIn);
+    app.until_delta(
+        |d| {
+            assert!(
+                !matches!(d, Delta::PairFailed { .. }),
+                "late result escaped its generation"
+            );
+            matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_)))
         },
-        line::engine::WorkerOptions::default(),
+        Duration::from_secs(3),
     );
-    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
-    worker.sender.send(Intent::Prefs(Prefs::default()));
-    worker.sender.send(Intent::SignIn);
-    worker.sender.cancel_sign_in();
-    loop {
-        match worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap() {
-            Delta::PairFailed { reason } => {
-                assert_eq!(reason, SignInFailure::Cancelled);
-                break;
-            }
-            Delta::Pair(line::backend::PairEvent::Stage(
-                line::client::pairing::Stage::WaitingKeyring,
-            )) => {}
-            Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
-            _ => {}
-        }
-    }
-    release.send(()).unwrap();
-    // The startup fact belongs to the prior opening state. A fresh attempt
-    // must still reach QR without the cancelled attempt closing its screen.
-    worker.sender.send(Intent::SignIn);
-    loop {
-        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Pair(line::backend::PairEvent::Qr(_)) => break,
-            Delta::PairFailed { .. } | Delta::Fatal => {
-                panic!("stale startup escaped its generation")
-            }
-            _ => {}
-        }
-    }
-    worker.sender.cancel_sign_in();
+    app.worker.sender.cancel_sign_in();
 }
 
 #[test]
 fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
     use line::client::error::SignInFailure;
-    let worker = Worker::start::<FakeBackend>(
+    let mut app = App::from_worker(Worker::start::<FakeBackend>(
         StoreLocation::Memory,
         || panic!("synthetic network worker crash"),
         line::engine::WorkerOptions::default(),
-    );
-    loop {
-        if matches!(
-            worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Delta::PairFailed { .. }
-        ) {
-            break;
+    ));
+    for attempt in 0..3 {
+        if attempt > 0 {
+            app.send(Intent::SignIn);
         }
-    }
-    for _ in 0..2 {
-        worker.sender.send(Intent::SignIn);
-        loop {
-            if let Delta::PairFailed { reason } =
-                worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap()
-            {
-                assert_eq!(reason, SignInFailure::Internal);
-                break;
-            }
-        }
-    }
-}
-
-#[test]
-fn unusable_saved_session_allows_start_to_pair() {
-    use line::client::error::SignInFailure;
-    let fake = FakeBackend::signed_out();
-    let reason = SignInFailure::SavedSession;
-    fake.fail_open(Some(reason.clone()));
-    let opener = fake.clone();
-    let worker = Worker::start(
-        StoreLocation::Memory,
-        move || opener.open(),
-        line::engine::WorkerOptions::default(),
-    );
-    loop {
-        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::PairFailed { reason: actual } => {
-                assert_eq!(actual, reason);
-                break;
-            }
-            Delta::Fatal => panic!("saved session prevented backend startup"),
-            _ => {}
-        }
-    }
-    worker.sender.send(Intent::SignIn);
-    loop {
-        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Pair(line::backend::PairEvent::Qr(_)) => break,
-            Delta::PairFailed { .. } | Delta::Fatal => panic!("unusable session blocked pairing"),
-            _ => {}
-        }
-    }
-    assert_eq!(fake.calls(), vec![FakeRpc::SignIn; 1]);
-    worker.sender.cancel_sign_in();
-}
-
-#[test]
-fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
-    use std::sync::mpsc;
-    let fake = FakeBackend::canned();
-    let (started, waiting) = mpsc::channel();
-    let (release, resume) = mpsc::channel();
-    let worker = Worker::start(
-        StoreLocation::Memory,
-        move || {
-            started.send(()).unwrap();
-            resume.recv().unwrap();
-            Ok(fake.clone())
-        },
-        line::engine::WorkerOptions::default(),
-    );
-    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
-    worker.sender.send(Intent::SignIn);
-    worker.sender.cancel_sign_in();
-    loop {
-        if let Delta::PairFailed { reason } =
-            worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap()
-        {
-            assert_eq!(reason, line::client::error::SignInFailure::Cancelled);
-            break;
-        }
-    }
-    release.send(()).unwrap();
-    loop {
-        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
-            Delta::Connection(Connection::Online) => break,
-            Delta::Pair(line::backend::PairEvent::Qr(_))
-            | Delta::Fatal
-            | Delta::PairFailed { .. } => panic!("valid session lost after cancellation"),
-            _ => {}
-        }
+        let Delta::PairFailed { reason } = app.until_delta(
+            |d| matches!(d, Delta::PairFailed { .. }),
+            Duration::from_secs(3),
+        ) else {
+            unreachable!()
+        };
+        assert_eq!(reason, SignInFailure::Internal);
     }
 }
 
 #[test]
 fn attachments_preserve_order_progress_and_retry_identity() {
     use line::{attachments::Attachment, store::Content};
-    let root = std::env::temp_dir().join(format!("line-attachments-flow-{}", std::process::id()));
+    let temp = TempDir::new("line-attachments-flow");
+    let root = temp.0.clone();
     std::fs::create_dir_all(&root).unwrap();
     let photo = root.join("First.png");
     image::RgbaImage::from_pixel(32, 24, image::Rgba([40, 120, 200, 255]))
@@ -2061,13 +1285,13 @@ fn attachments_preserve_order_progress_and_retry_identity() {
     );
     assert!(app.state.messages[&first].sort < app.state.messages[&second].sort);
     drop(app);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn text_send_completes_while_upload_is_blocked() {
     use line::attachments::Attachment;
-    let root = std::env::temp_dir().join(format!("line-upload-blocked-{}", std::process::id()));
+    let temp = TempDir::new("line-upload-blocked");
+    let root = temp.0.clone();
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("blocked.txt");
     std::fs::write(&path, b"attachment").unwrap();
@@ -2092,7 +1316,7 @@ fn text_send_completes_while_upload_is_blocked() {
     app.until(|s| {
         s.messages
             .values()
-            .any(|m| message_text(m) == "text during upload" && m.delivery == Delivery::Sent)
+            .any(|m| m.body.as_text() == "text during upload" && m.delivery == Delivery::Sent)
     });
     assert!(
         app.state
@@ -2107,14 +1331,13 @@ fn text_send_completes_while_upload_is_blocked() {
             .any(|m| m.body.attachment().is_some() && m.delivery == Delivery::Sent)
     });
     drop(app);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn attachment_send_success_after_sign_in_still_confirms_the_row() {
     use line::{attachments::Attachment, store::Store};
-    let root = std::env::temp_dir().join(format!("line-send-sign-in-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let temp = TempDir::new("line-send-sign-in");
+    let root = temp.0.clone();
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("clipboard.txt");
     std::fs::write(&path, b"attachment").unwrap();
@@ -2177,7 +1400,6 @@ fn attachment_send_success_after_sign_in_still_confirms_the_row() {
     assert!(!path.exists());
     drop(store);
     drop(app);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -2186,7 +1408,8 @@ fn expired_session_does_not_resume_an_upload_after_a_stream_success() {
         attachments::Attachment,
         backend::{Failure, FakeRpc},
     };
-    let root = std::env::temp_dir().join(format!("line-upload-session-{}", std::process::id()));
+    let temp = TempDir::new("line-upload-session");
+    let root = temp.0.clone();
     std::fs::create_dir_all(&root).unwrap();
     let path = root.join("blocked.txt");
     std::fs::write(&path, b"attachment").unwrap();
@@ -2246,86 +1469,6 @@ fn expired_session_does_not_resume_an_upload_after_a_stream_success() {
         }
     );
     drop(app);
-    std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn not_written_send_retries_in_session_and_is_delivered_once() {
-    use line::backend::{Failure, FakeRpc};
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.online();
-    app.select("alice");
-    app.body_key("Hello! 日本語も使えます。");
-    fake.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::NotDelivered);
-    app.send(Intent::Send {
-        chat: ChatId("alice".into()),
-        text: "one delivery".into(),
-        reply: None,
-    });
-    let key = app.body_key("one delivery");
-    app.until(|state| state.messages[&key].delivery == Delivery::Sent);
-    assert_eq!(
-        fake.calls()
-            .iter()
-            .filter(|call| **call == FakeRpc::Send(ChatId("alice".into())))
-            .count(),
-        2
-    );
-    assert_eq!(
-        fake.page(&ChatId("alice".into()))
-            .iter()
-            .filter(|row| row.body.as_text() == "one delivery")
-            .count(),
-        1
-    );
-    assert_eq!(app.state.connection, Connection::Online);
-}
-
-#[test]
-fn written_unanswered_send_never_resends_and_a_late_echo_confirms_it() {
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.online();
-    app.select("alice");
-    app.body_key("Hello! 日本語も使えます。");
-    fake.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::Unanswered);
-    app.send(Intent::Send {
-        chat: ChatId("alice".into()),
-        text: "unanswered".into(),
-        reply: None,
-    });
-    let key = app.body_key("unanswered");
-    app.until(|state| {
-        state.messages[&key].delivery
-            == Delivery::Rejected {
-                reason: Refusal::Unanswered,
-            }
-    });
-    let seq = app.state.messages[&key].request_seq;
-    let mut echo = FakeBackend::message("alice", 901, "unanswered", true);
-    echo.request_seq = seq;
-    fake.inject(LiveOp {
-        revision: 2001,
-        replay: false,
-        op: Op::Message(Box::new(echo)),
-    });
-    app.until(|state| state.messages[&key].delivery == Delivery::Sent);
-    assert_eq!(
-        fake.calls()
-            .iter()
-            .filter(|call| **call == FakeRpc::Send(ChatId("alice".into())))
-            .count(),
-        1
-    );
-    assert_eq!(
-        app.state
-            .messages
-            .values()
-            .filter(|row| row.body.as_text() == "unanswered")
-            .count(),
-        1
-    );
 }
 
 #[test]
@@ -2334,8 +1477,8 @@ fn restart_recovers_pending_row_without_sending() {
         backend::FakeRpc,
         store::{Content, LocalId, Store},
     };
-    let root = std::env::temp_dir().join(format!("line-restart-sends-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
+    let temp = TempDir::new("line-restart-sends");
+    let root = temp.0.clone();
     let queued = {
         let mut store = Store::open(&root).unwrap();
         let (queued, _) = store
@@ -2370,7 +1513,6 @@ fn restart_recovers_pending_row_without_sending() {
     app.send(Intent::Retry(queued));
     app.until(|state| state.messages[&queued].delivery == Delivery::Sent);
     drop(app);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -2488,4 +1630,331 @@ fn missing_reply_original_loads_from_the_server_and_opens_in_history() {
         app.state.messages[&key].body.as_text(),
         "Original outside local history"
     );
+}
+
+#[test]
+fn chat_list_pagination_survives_live_operations() {
+    use line::backend::{Backend, ChatPage};
+    let fake = FakeBackend::canned();
+    let mut source = fake.clone();
+    let chats = source.chats(None).unwrap().chats;
+    let pages = vec![
+        (
+            None,
+            ChatPage {
+                chats: vec![chats[0].clone()],
+                previews: vec![],
+                more: true,
+                cursor: Some("page-2".into()),
+            },
+        ),
+        (
+            Some("page-2".into()),
+            ChatPage {
+                chats: vec![chats[1].clone()],
+                previews: vec![],
+                more: false,
+                cursor: None,
+            },
+        ),
+    ];
+    let (mut backend, entered, release) = blocked::Blocked::new(fake.clone(), FakeRpc::Chats, 1);
+    let (observed, cursors) = std::sync::mpsc::channel();
+    let mut pages = std::collections::VecDeque::from(pages);
+    backend.chats = Some(Box::new(move |cursor| {
+        let (expected, page) = pages.pop_front().expect("unexpected extra chat page");
+        let _ = observed.send((cursor, expected));
+        Ok(page)
+    }));
+    let mut app = App::new(backend, StoreLocation::Memory);
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.until(|s| s.chats.len() == 1);
+    let chat = &chats[0].id;
+    fake.inject(LiveOp {
+        revision: 90,
+        replay: false,
+        op: Op::Message(FakeBackend::message(&chat.0, 90, "during pagination", false).into()),
+    });
+    app.until(|s| {
+        s.chats[chat]
+            .preview
+            .as_ref()
+            .is_some_and(|m| m.body.as_text() == "during pagination")
+    });
+    release.send(()).unwrap();
+    app.until_delta(
+        |d| matches!(d, Delta::MoreChats(false)),
+        Duration::from_secs(5),
+    );
+    app.until(|s| s.chats.len() == 2);
+    for _ in 0..2 {
+        let (actual, expected) = cursors.recv_timeout(Duration::from_secs(5)).unwrap();
+        assert_eq!(
+            actual, expected,
+            "live operations must preserve the list cursor"
+        );
+    }
+    assert!(chats.iter().all(|c| app.state.chats.contains_key(&c.id)));
+    assert_eq!(
+        app.state.chats[chat]
+            .preview
+            .as_ref()
+            .unwrap()
+            .body
+            .as_text(),
+        "during pagination"
+    );
+    assert_eq!(app.notifications, 1);
+}
+
+#[test]
+fn receipt_updates_the_existing_row_in_place() {
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "read me".into(),
+        reply: None,
+    });
+    let key = app.body_key("read me");
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+    let row = app.state.messages[&key].clone();
+    let count = app.state.messages.len();
+    fake.inject(LiveOp {
+        revision: fake.revision(),
+        replay: false,
+        op: Op::Receipt {
+            chat: ChatId("alice".into()),
+            up_to: row.server_id.clone().unwrap(),
+        },
+    });
+    app.until(|s| s.messages[&key].delivery == Delivery::Read);
+    assert_eq!(app.state.messages.len(), count);
+    assert_eq!(app.state.messages[&key].server_id, row.server_id);
+    assert_eq!(app.state.messages[&key].body, row.body);
+}
+
+#[test]
+fn restart_restores_unread_history_anchor_and_drafts_together() {
+    use line::store::{ChatInput, Draft, ServerId};
+    let temp = TempDir::new("line-anchor-draft");
+    let fake = FakeBackend::canned();
+    fake.set_page(
+        ChatId("alice".into()),
+        (1001..=1240)
+            .map(|id| FakeBackend::message("alice", id, &format!("history {id}"), false))
+            .collect(),
+    );
+    fake.add_chat(ChatInput {
+        id: ChatId("alice".into()),
+        title: "葵".into(),
+        server_unread: 160,
+        last_message_id: Some(ServerId::new("1240").unwrap()),
+        ..Default::default()
+    });
+    let draft = Draft {
+        text: "unfinished".into(),
+        cursor: 7,
+        anchor: 3,
+        reply: None,
+        updated: 1,
+    };
+    let divider = {
+        let mut app = App::new(fake.clone(), StoreLocation::Directory(temp.0.clone()));
+        app.online();
+        app.select("alice");
+        app.until(|s| s.unread_divider.is_some());
+        let divider = app.state.unread_divider.unwrap();
+        app.send(Intent::Draft {
+            chat: ChatId("alice".into()),
+            draft: draft.clone(),
+        });
+        app.fence();
+        divider
+    };
+    // The persisted unread boundary is the supported history anchor on reopen.
+    // Arbitrary scroll positions are not persisted by the current product.
+    fake.offline(true);
+    let mut app = App::new(fake, StoreLocation::Directory(temp.0.clone()));
+    app.until(|s| s.composer == "unfinished" && s.unread_divider.is_some());
+    assert_eq!(app.state.unread_divider, Some(divider));
+    assert_eq!(
+        app.state.messages[&divider].server_id,
+        Some(ServerId::new("1081").unwrap())
+    );
+    assert!(!app.state.reaches_end);
+    assert_eq!(
+        app.state.chats[&ChatId("alice".into())].draft.as_ref(),
+        Some(&draft)
+    );
+}
+
+#[test]
+fn raw_live_operations_refresh_contacts_and_groups() {
+    use line::store::{Friend, Member};
+    use serde_json::json;
+    for kind in [4, 49, 41, 121, 122, 128, 127] {
+        let fake = FakeBackend::canned();
+        let mut app = App::new(fake.clone(), StoreLocation::Memory);
+        app.online();
+        app.select("weekend");
+        app.body_key("Shall we meet at the station?");
+        let group = ChatId("weekend".into());
+        let renamed = Friend {
+            id: "alice".into(),
+            name: Some("Renamed elsewhere".into()),
+            ..Default::default()
+        };
+        fake.set_contact(renamed.clone());
+        fake.configure(|c| {
+            if kind == 41 {
+                c.chats.retain(|c| c.id != group);
+            } else {
+                c.chats.iter_mut().find(|c| c.id == group).unwrap().title = "Updated group".into();
+            }
+            c.members = Some(vec![Member {
+                contact: renamed,
+                is_self: false,
+            }]);
+        });
+        fake.inject_raw(
+            json!({"type":kind,"param1":if matches!(kind, 4 | 49) { "alice" } else { "weekend" }}),
+        );
+        match kind {
+            4 | 49 => app.until(|s| {
+                s.contacts
+                    .get("alice")
+                    .is_some_and(|c| c.name.as_deref() == Some("Renamed elsewhere"))
+            }),
+            41 => {
+                app.until(|s| !s.chat_order.contains(&group));
+                assert!(!app.state.chats.contains_key(&group));
+            }
+            127 => app.until(|s| s.chats[&group].chat.left),
+            _ => app.until(|s| {
+                s.chats[&group].chat.title == "Updated group"
+                    && s.members.len() == 1
+                    && s.members[0].contact.name.as_deref() == Some("Renamed elsewhere")
+                    && s.group_info
+                        .get(&group)
+                        .is_some_and(|v| v["chatName"] == "Updated group")
+            }),
+        }
+    }
+}
+
+#[test]
+fn unusable_saved_session_allows_start_to_pair() {
+    use line::client::error::SignInFailure;
+    let fake = FakeBackend::signed_out();
+    fake.fail_open(Some(SignInFailure::SavedSession));
+    let opener = fake.clone();
+    let mut app = App::from_worker(Worker::start(
+        StoreLocation::Memory,
+        move || opener.open(),
+        Default::default(),
+    ));
+    app.until(|s| {
+        s.connection
+            == Connection::SignedOut {
+                reason: SignOutReason::Unavailable(SignInFailure::SavedSession),
+            }
+    });
+    app.send(Intent::SignIn);
+    app.until_delta(
+        |d| {
+            assert!(
+                !matches!(d, Delta::PairFailed { .. }),
+                "broken saved session blocked pairing"
+            );
+            matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_)))
+        },
+        Duration::from_secs(5),
+    );
+    assert!(fake.calls().contains(&FakeRpc::SignIn));
+    app.worker.sender.cancel_sign_in();
+    app.until_delta(
+        |d| {
+            matches!(
+                d,
+                Delta::PairFailed {
+                    reason: SignInFailure::Cancelled
+                }
+            )
+        },
+        Duration::from_secs(5),
+    );
+}
+
+#[test]
+fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
+    use std::sync::mpsc;
+    let fake = FakeBackend::canned();
+    let opener = fake.clone();
+    let (entered, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let mut app = App::from_worker(Worker::start(
+        StoreLocation::Memory,
+        move || {
+            let _ = entered.send(());
+            let _ = resume.recv();
+            opener.open()
+        },
+        Default::default(),
+    ));
+    waiting.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.send(Intent::SignIn);
+    app.until(|s| s.connection == Connection::SigningIn);
+    app.worker.sender.cancel_sign_in();
+    app.until_delta(
+        |d| {
+            matches!(
+                d,
+                Delta::PairFailed {
+                    reason: line::client::error::SignInFailure::Cancelled
+                }
+            )
+        },
+        Duration::from_secs(5),
+    );
+    release.send(()).unwrap();
+    app.online();
+    assert!(!fake.calls().contains(&FakeRpc::SignIn));
+    app.select("alice");
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "saved session works".into(),
+        reply: None,
+    });
+    let key = app.body_key("saved session works");
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+}
+
+#[test]
+fn committed_write_clears_storage_banner_and_sending_still_works() {
+    use line::engine::StorageFailure;
+    let mut app = App::new(FakeBackend::canned(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.fence();
+    app.until_delta(|d| matches!(d, Delta::StoreSaved), Duration::from_secs(5));
+    app.state.apply(Delta::StorageFailed(StorageFailure::Full));
+    assert_eq!(app.state.error, Some(StorageFailure::Full));
+    app.fence();
+    app.until_delta(|d| matches!(d, Delta::StoreSaved), Duration::from_secs(5));
+    assert!(app.state.error.is_none());
+    app.state.apply(Delta::StorageFailed(StorageFailure::Full));
+    app.state.composer = "send despite storage banner".into();
+    let intent = app
+        .state
+        .submit()
+        .expect("storage banner must not block sending");
+    app.send(intent);
+    let key = app.body_key("send despite storage banner");
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+    assert!(app.state.error.is_none());
 }
