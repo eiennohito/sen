@@ -5,9 +5,14 @@ use std::path::PathBuf;
 pub struct Locations {
     pub config_home: PathBuf,
     pub session: PathBuf,
+    pub data: PathBuf,
     pub cache: PathBuf,
 }
 impl Locations {
+    pub fn fonts(&self) -> PathBuf {
+        self.data.join("fonts")
+    }
+
     pub fn config_home() -> anyhow::Result<PathBuf> {
         Self::resolve(|key| std::env::var_os(key).map(PathBuf::from))
             .map(|locations| locations.config_home)
@@ -30,6 +35,7 @@ impl Locations {
         Ok(Self {
             config_home: base("XDG_CONFIG_HOME", ".config"),
             session: data.join("session.json"),
+            data,
             cache: base("XDG_CACHE_HOME", ".cache").join("line-desktop"),
         })
     }

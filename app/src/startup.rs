@@ -76,6 +76,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     } else {
         None
     };
+    emoji::load();
     let activations = instance.as_ref().map(|i| i.take_events());
     #[cfg(feature = "demo")]
     let fake = demo.then(|| {

@@ -149,3 +149,13 @@ WASM and provenance from an explicitly supplied CRX3 for oracle work.
 Credentials under `artifacts/auth/`, proprietary artifacts and sensitive HARs
 under `dumps/` must stay out of logs, prompts and Git. Checked-in fixtures are
 synthetic.
+
+Colour emoji uses Noto Color Emoji 2.057 (OFL-1.1), loaded from disk.
+Run `python3 tools/fetch_emoji_font.py` to fetch and verify the pinned font and
+licence into gitignored `fonts/`. For development, run
+`LINE_EMOJI_FONT="$PWD/fonts/NotoColorEmoji.ttf" cargo run -p line-desktop`.
+The UI launcher and check runner set `LINE_EMOJI_FONT` automatically.
+The desktop installer copies verified files to `$XDG_DATA_HOME/line-desktop/fonts/`
+(default `~/.local/share/line-desktop/fonts/`), warning if they are unavailable.
+Missing or unusable fonts log a startup diagnostic and leave system fallback
+available. See `third_party/README.md` for the renderer and shaping patches.

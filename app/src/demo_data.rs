@@ -391,6 +391,18 @@ pub fn seed(fake: &FakeBackend) {
                 true,
             )],
         ),
+        (
+            "emoji",
+            "Emoji 🌸 😀",
+            vec![message(
+                fake,
+                "emoji",
+                400,
+                "🌸 😀 ❤️ ❤︎ 👩‍💻 🇯🇵 1️⃣",
+                "2025/10/18 17:00",
+                true,
+            )],
+        ),
     ];
     let mut chats = Vec::new();
     for (i, (chat, title, rows)) in pages.iter().enumerate() {
@@ -420,6 +432,7 @@ pub fn seed(fake: &FakeBackend) {
                 "散歩とコーヒーが好き 🌿",
                 "Saturday by the river",
                 "Ideas for a quiet afternoon",
+                "Colour emoji samples 🌸",
             ][i]
                 .into(),
             group: c.is_group,

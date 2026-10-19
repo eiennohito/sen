@@ -2224,8 +2224,6 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.18.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2f8c641e138a2cc96537cac4481f5c7c8bb8dcc66d09acaed269329c8738628a"
 dependencies = [
  "bytemuck",
  "clru",
@@ -3642,8 +3640,6 @@ checksum = "73072a9470554c8e794778acece2312661218aaabb635600957d952cf01c716e"
 [[package]]
 name = "parley"
 version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22d2ff88bd3f7d68d1d9b09c7e6209f9a8e8c05088295140a2bcf2e9b17038c5"
 dependencies = [
  "accesskit",
  "fontique",

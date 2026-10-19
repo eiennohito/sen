@@ -141,3 +141,12 @@ spooling/proxy workarounds.
 If another pairing is required, use the app's Sign in flow. It preserves the
 previous session before installing the newly validated one. Pairing uses the
 Chrome secondary-device slot and requires an explicit device-slot assignment.
+
+Colour emoji: run `python3 tools/fetch_emoji_font.py` for the pinned Noto Color
+Emoji 2.057 and OFL licence in `fonts/` (gitignored). The UI launcher requires
+verified copies and sets `LINE_EMOJI_FONT` in its private demo environment.
+`tools/install-desktop.py` installs both files alongside user data. The render
+regression reads `fonts/NotoColorEmoji.ttf` directly from the checkout, ignoring
+`LINE_EMOJI_FONT` and the user data directory. It skips with the missing path and
+fetch command if that file is absent; no CI download is required.
+Rebase both `third_party/` patches on every Slint upgrade.
