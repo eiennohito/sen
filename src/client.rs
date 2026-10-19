@@ -79,8 +79,8 @@ impl fmt::Display for RpcError {
     }
 }
 impl std::error::Error for RpcError {}
-thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) }; }
-fn set_request_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<crate::client::CancelToken>>> = const { std::cell::RefCell::new(None) }; }
+fn set_request_cancel(cancel: std::sync::Arc<crate::client::CancelToken>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
 }
 
@@ -381,3 +381,5 @@ pub(crate) fn network_touched() {
 pub(crate) fn take_network_touched() -> bool {
     NETWORK_TOUCHED.replace(false)
 }
+
+pub use http::CancelToken;

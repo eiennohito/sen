@@ -66,7 +66,8 @@ impl Client {
                 )
             };
             let application = format!("CHROMEOS\t{}\tChrome_OS\t", http.client_version);
-            let total = (encrypted.len() + preview.len()) as f32;
+            let encrypted_len = encrypted.len();
+            let total = (encrypted_len + preview.len()) as f32;
             progress(0.);
             let oid = http.upload(
                 &format!("https://obs.line-apps.com/r/talk/{sid}/{request_id}"),
@@ -75,7 +76,7 @@ impl Client {
                     ("x-line-access", &token),
                     ("x-line-application", &application),
                 ],
-                &encrypted,
+                encrypted,
                 &mut |sent| progress((sent as f32 / total).min(0.99)),
             )?;
             ensure!(
@@ -94,10 +95,8 @@ impl Client {
                         ("x-line-access", &token),
                         ("x-line-application", &application),
                     ],
-                    &preview,
-                    &mut |sent| {
-                        progress(((encrypted.len() as u64 + sent) as f32 / total).min(0.99))
-                    },
+                    preview,
+                    &mut |sent| progress(((encrypted_len as u64 + sent) as f32 / total).min(0.99)),
                 )?;
             }
             let mut message = json!({"keyMaterial": STANDARD.encode(material), "fileName": item.name,
