@@ -15,6 +15,15 @@ belong to that store. See [core-model.md](core-model.md) for ownership,
 merge rules and startup behavior.
 `--demo` and `--snapshot` use synthetic conversations without account access.
 
+## No compatibility code
+
+Nothing has been released and nothing outside this repository calls it, so
+there is nothing to stay compatible with. When something is renamed, moved
+or redesigned, every caller changes in the same commit. No aliases,
+re-exports, forwarding `<=>` properties, shims, fallbacks for old formats or
+"preserves the old API" layers. Old on-disk data that no longer fits is
+migrated once or discarded, not supported in parallel.
+
 ## Everyday usability gate
 
 The current sketch is a PoC, not ready for daily use. The user's issue list is
