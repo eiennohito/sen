@@ -6,7 +6,7 @@
 //!
 //! `LINE_DESKTOP_CREDENTIALS=plaintext-file` is the development store for
 //! agent and debug instances without a keyring (e.g. the private D-Bus session
-//! of `tools/run-ui-debug.py`): it keeps the mode-0600 plaintext file and
+//! of `tools/run_ui_debug.py`): it keeps the mode-0600 plaintext file and
 //! refuses sealed files.
 use crate::client::{error::SignInFailure, private_write};
 use aes_gcm::{

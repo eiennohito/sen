@@ -47,7 +47,7 @@ entries with a local retry explanation. Adding friends, recommendations, group
 creation, membership changes, and profile editing remain unavailable.
 
 Preview this flow without accessing the account with `--demo-friends`.
-`tools/check-ui-mcp.py --friends` exercises it in a running `--demo` debug UI.
+`python3 tools/check-ui-mcp.py --group friends` exercises it in an owned offline demo.
 
 Group and room headers open a read-only Members view with name search and
 member profiles with Back to members. Non-friends use the existing contact
@@ -260,53 +260,48 @@ configured.
 ## Development
 
 ```sh
-cargo fmt --all --check
-cargo test --release --workspace
-cargo clippy --release --workspace --all-targets -- -D warnings
+cargo fmt --all -- --check
+cargo test --offline --workspace
+cargo clippy --offline --workspace --all-targets -- -D warnings
+cargo clippy --offline -p line-desktop --all-targets --features ui-debug -- -D warnings
 ```
 
-Slint MCP inspection is opt-in and disabled in normal builds. Agent verification
-uses a private virtual compositor so launching a preview cannot take focus from
-the user's desktop. Normal app launches remain foreground.
+Slint MCP inspection is opt-in and disabled in normal builds. The check command
+builds nothing and launches its own offline demos on Slint’s headless software
+backend with a private D-Bus session and temporary XDG directories, including
+data and cache. Normal app launches remain foreground.
 
 ```sh
 cargo build --release --offline -p line-desktop --features ui-debug
-cp target/release/line-desktop /tmp/line-ui-debug-9447
-python3 tools/run-ui-debug.py --binary /tmp/line-ui-debug-9447 --port 9447 --log /tmp/line-ui-9447.log -- --demo
-# In another terminal:
-python3 tools/check-ui-mcp.py --port 9447 --scenarios --layout-photos --friends --auth-recovery --reading --layers --rich --focus --screenshot /tmp/line-ui.png
+python3 tools/check-ui-mcp.py --all --binary target/release/line-desktop
+# Individual groups, with optional screenshots:
+python3 tools/check-ui-mcp.py --group rich --screenshots /tmp/line-ui-shots
+python3 tools/check-ui-mcp.py --group layers --wide
+python3 tools/check-ui-mcp.py --group signed-out --group missing-module
 ```
 
-The wrapper requires `dbus-run-session` and `kwin_wayland`, accepts offline demo
-arguments, and supplies the guarded `--debug-background` mode. It refuses a host
-window fallback when its private scope cannot start. Use a unique MCP port,
-binary copy and log per session; the wrapper prints owned PIDs and a unique PID
-file. Stop only that scope. Run `check-browser-mcp.py` and
-`check-composer-mcp.py` against fresh owned previews; the composer check quits
-its preview. `--paging` adds the bounded 1,000-message history scenario.
+`--all` runs every group at 980×720 and repeats smoke, layers, focus, friends and
+scenarios at 1280×900. It prints a random seed; `--seed N` reproduces the group
+order. One app instance per size uses the named, ui-debug/demo-only F12 Reset demo
+hook between groups. Reset stops the previous worker, replaces the fixture and UI
+state, preserves the original demo text size, and publishes a new completion marker.
+Signed-out and missing-module checks each use a separate signed-out demo.
+Each group prints PASS/FAIL and elapsed seconds, followed by a total; failures
+exit nonzero. `--screenshots DIRECTORY` writes both intermediate surfaces and
+completed groups. The default binary is `target/release/line-desktop`.
 
-The server listens on `http://127.0.0.1:9447/mcp`. The feature also enables Slint
-element debug information. The UI check refuses a connected-account window,
-and exercises chat selection, filtering, draft retention, and multiline editing.
-With `--scenarios`, it also dispatches simulated pointer scrolling and keyboard
-selection/copy/paste, checking burst counts, reading position, delayed media,
-and uncertain-send recovery. These checks do not validate OS pointer routing,
-physical scrollbar dragging, or Fcitx composition. Normal installed builds omit
-the server.
+The launcher requires `dbus-run-session`. Startup waits by retrying MCP
+`initialize` for up to 30 seconds, followed by waiting for the window; no log
+line or PID file determines readiness. After connecting, the checker verifies the
+demo marker and the random per-launch instance token. For manual MCP inspection,
+`python3 tools/run_ui_debug.py --binary target/release/line-desktop --port 9447
+-- --demo` owns a private headless scope; Ctrl+C stops that scope and cleans
+its temporary directories; SIGTERM and SIGHUP do the same. Demo exports and
+attachments use the private directory passed in `LINE_DEMO_DIRECTORY`. MCP listens
+only on loopback.
 
-Remaining limits and deviations are tracked in the acceptance record: physical
-IME/compositor checks, live account compatibility, native mute sourcing,
-attachment sending, animated stickers and reaction editing remain incomplete or
-unverified. Rich messages retain intact fallback-body copy/selection through
-Select text; cross-run drag selection and contextual shaping are toolkit limits.
-
-Submission creates a durable pending item and frees the composer immediately.
-Sent does not imply Read. Definite rejection offers Retry and Edit; an uncertain
-result requires an explicit duplicate-risk confirmation before Resend. Edit
-requires a Replace/Append decision when a newer draft exists. Request identities
-and known server IDs reconcile confirmations without using identical text as
-proof of delivery. Physical Japanese composition remains a release gate.
-
-The app architecture and input acceptance checks are described in
-[docs/app-design.md](docs/app-design.md). IME acceptance must be verified on the
-actual desktop before treating the GUI as ready for messaging.
+Checks cover visible actions and results: drafts, selection/filtering, focus
+chains, reactions/replies, stickers, attachments, profiles, recovery, reading,
+rich fallback copy/save, media retry, viewer controls and unread arrivals.
+They use only synthetic accounts and local fixtures. They do not validate OS
+pointer routing or Fcitx composition. Normal installed builds omit the server.

@@ -55,6 +55,8 @@ component ProfileActionButton inherits Rectangle {
     Text { y: 48px; width: parent.width; text: root.label; horizontal-alignment: center; font-size: Tokens.small; color: Tokens.text; }
 }
 export component Detail inherits FocusScope {
+    property <int> demo-reset: State.demo-reset-generation;
+    changed demo-reset => { menu.close(); rename-value.text = ""; }
     property <length> name-width: 288px;
     focus-on-tab-navigation: false;
     public function focus-first() { if State.detail-depth > 1 { back.focus-button(); } else { root.focus-open(); } }

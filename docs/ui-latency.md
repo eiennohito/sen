@@ -54,20 +54,64 @@ individual row update, below the 16 ms threshold.
 ## Verification
 
 - `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets --features ui-debug --offline -- -D warnings`
+- `cargo clippy --workspace --all-targets --offline -- -D warnings`
+- `cargo clippy -p line-desktop --all-targets --features ui-debug --offline -- -D warnings`
 - `cargo test --workspace --offline`
 - `cargo build --release --offline -p line-desktop --features ui-debug`
-- Fresh owned headless instances for every `check-ui-mcp.py` group: default,
-  unread, scenarios, friends, layout-photos, reading, rich, media, auth-recovery,
-  layers, focus; also wide instances for layers, focus, friends, scenarios.
+- `python3 tools/check-ui-mcp.py --all --binary target/release/line-desktop`
+  runs all behavioural groups, reusing one normal and one wide headless demo
+  with fresh synthetic state between groups; signed-out and missing-module
+  each have their own launch. Run this command three consecutive times for
+  the tooling gate. Each group and the full command report seconds.
 
-Additional standalone scripts were investigated separately. The saved pre-change
-binary reproduces the same browser native-context-menu assertion, composer
-Alt+Down/profile assertion, and unreachable “Group members” fixture assertion.
-The search script's launcher supplies `--demo-text-size` and
-`--demo-color-scheme`, which this checkout does not accept. These pre-existing
-script failures are outside the latency changes; the requested check-ui groups
-are the UI acceptance checks above.
+For focused iteration, use `--group rich` (or another group), `--wide` for the
+wide window, and `--screenshots DIRECTORY` for intermediate and final captures.
+The runner builds nothing and uses private temporary XDG directories. MCP
+`initialize` retries determine startup readiness, with a 30-second deadline.
 
 No tests were added. Library `src/` was left unchanged. No real account,
 external network access, or git commands were used.
+
+## UI check tooling timings (2026-10-19)
+
+The original groups all passed before editing (90.131 seconds). The saved old
+runner and launcher were then measured against the final release ui-debug
+binary, followed by three consecutive passes of the new `--all` command against
+that same unchanged binary. The table uses this second baseline. Seconds include
+launch/reset work; the first group in an instance includes startup, and totals
+include teardown. The old matrix launched 18 demos; the new matrix launches four.
+
+| Group | Before | After 1 | After 2 | After 3 |
+| --- | ---: | ---: | ---: | ---: |
+| smoke | 1.287 | 1.055 | 0.855 | 0.876 |
+| focus | 12.047 | 13.494 | 8.614 | 8.801 |
+| compose | 5.537 | 4.964 | 4.663 | 4.972 |
+| scenarios | 6.237 | 1.321 | 1.296 | 1.393 |
+| sticker | 3.233 | 1.394 | 1.377 | 1.368 |
+| friends | 4.686 | 1.539 | 1.579 | 1.616 |
+| layers | 6.238 | 3.318 | 3.280 | 3.907 |
+| reading | 2.282 | 1.427 | 1.493 | 2.357 |
+| rich | 3.785 | 2.637 | 2.649 | 3.802 |
+| media | 3.634 | 0.681 | 0.674 | 0.956 |
+| unread | 1.632 | 0.644 | 0.564 | 1.065 |
+| detail-stack | included | 2.287 | 2.284 | 3.433 |
+| auth-recovery | 2.333 | 1.481 | 1.356 | 2.019 |
+| layers-wide | 7.289 | 3.747 | 3.720 | 5.679 |
+| focus-wide | 14.851 | 11.880 | 11.338 | 21.913 |
+| friends-wide | 5.286 | 1.635 | 1.608 | 1.642 |
+| scenarios-wide | 6.487 | 1.448 | 1.379 | 1.352 |
+| signed-out | 2.082 | 1.117 | 1.105 | 1.108 |
+| missing-module | 0.830 | 0.288 | 0.303 | 0.295 |
+| total | 89.756 | 56.363 | 50.144 | 68.566 |
+
+The old `layout-photos` row maps to `sticker`; its viewer checks now run in
+`layers`. Detail-stack was included in both friends and layers (also wide); it
+now runs once as its own group. The wide matrix retains layers, focus, friends
+and scenarios. The merged screenshot option is `--screenshots DIRECTORY`.
+Reset uses `reset-demo` through the existing F12 attachment injection hook,
+replacing the synthetic backend and in-memory store while retaining the window.
+
+Release build, fmt, workspace all-target clippy, ui-debug all-target clippy
+(with warnings denied), offline workspace tests, and the existing demo-dialog
+keyboard test passed. Additional checks covered reset after terminal sign-in
+failure, attachment arrays, screenshots, and rich content at wide size.

@@ -16,13 +16,22 @@ The UI build script tracks that directory and `app/assets/`, including additions
 slint-build also tracks imported files and embedded resources. Keep the small
 Slint test in `app/src/rich_content.rs` with its Rust tests.
 
-For MCP iteration, add `--features ui-debug` to the fast build and run
-`python3 tools/check-ui-mcp.py --launch --profile fast --port PORT`, or another
-`check-*-mcp.py`. `--profile` and `--demo-size` require `--launch`; otherwise
-connect using only the existing preview's port and check options. Release is
-the default; `--profile dev` selects `target/debug`. The app forwards ui-debug
-to the UI crate's `slint/mcp`; `--build-info` and the installer's debug-build
-rejection still apply. Installation paths are unchanged.
+For MCP iteration, build once and pass that binary explicitly:
+
+```sh
+cargo build --profile fast --offline -p line-desktop --features ui-debug
+python3 tools/check-ui-mcp.py --group rich --binary target/fast/line-desktop
+python3 tools/check-ui-mcp.py --all --binary target/fast/line-desktop
+```
+
+The check command builds nothing. It owns headless demos and temporary XDG data
+and cache directories, waits for MCP `initialize`, and resets synthetic state
+between groups in each window. `--all` includes the normal and wide matrix plus
+separate signed-out and missing-module groups. `--wide` selects 1280×900 for an
+individual group; `--screenshots DIRECTORY` captures surfaces. Release is the
+default binary and is required for final timings. See the README for the full
+command. The app forwards ui-debug to the UI crate’s `slint/mcp`; `--build-info`
+and the installer’s debug-build rejection still apply.
 
 ## Generated source costs
 

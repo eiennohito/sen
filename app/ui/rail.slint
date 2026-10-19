@@ -20,6 +20,8 @@ component RailButton inherits Rectangle {
 }
 
 export component Rail inherits Rectangle {
+    property <int> demo-reset: State.demo-reset-generation;
+    changed demo-reset => { root.cursor = 0; }
     background: Tokens.surface;
     out property <bool> has-focus: rail-focus.has-focus;
     public function focus-navigation() { rail-focus.focus(); }

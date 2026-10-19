@@ -1,3 +1,4 @@
+import { DemoAutomation } from "types.slint";
 import { AttachmentItem } from "types.slint";
 import { StickerTab, StickerItem, ComposeFriend } from "types.slint";
 import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
@@ -114,6 +115,7 @@ export global State {
     callback back-to-members();
     callback pop-detail(bool);
     callback remember-detail-focus(bool);
+    callback forget-detail-focus();
     callback restore-detail-focus(bool);
     callback finish-detail-restore(bool);
     callback detail-action(string, string);
@@ -275,6 +277,10 @@ export global State {
     in-out property <string> session-cause;
     in-out property <bool> auth-prerequisite-missing;
     in-out property <bool> demo;
+    in-out property <string> demo-instance;
+    in-out property <int> demo-reset-generation;
+    in-out property <bool> demo-reset-enabled;
+    callback demo-automation(DemoAutomation);
     in-out property <string> title-override;
     in-out property <string> link-feedback;
     in-out property <bool> demo-scenarios-open: false;

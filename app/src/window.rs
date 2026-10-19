@@ -78,6 +78,9 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     {
         use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
         let saved = Rc::new(RefCell::new(Vec::new()));
+        let reset = saved.clone();
+        ui.global::<State>()
+            .on_forget_detail_focus(move || reset.borrow_mut().clear());
         let record = saved.clone();
         let weak = ui.as_weak();
         ui.global::<State>().on_remember_detail_focus(move |reset| {

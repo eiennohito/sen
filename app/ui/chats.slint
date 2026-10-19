@@ -13,6 +13,8 @@ import { PreviewLine } from "preview-line.slint";
 import { SearchField } from "search-field.slint";
 
 export component Chats inherits Rectangle {
+    property <int> demo-reset: State.demo-reset-generation;
+    changed demo-reset => { reveal-settle.stop(); root.reveal-y = 0px; chips-focus.cursor = 0; chat-list.jump(0px); }
     visible: State.section == 0;
     out property <bool> has-focus: search.contains-focus || chips-focus.has-focus || list-focus.has-focus;
     public function scroll(delta: length) { chat-list.scroll(delta); }

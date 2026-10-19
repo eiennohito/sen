@@ -42,6 +42,8 @@ component HistoryPill inherits Rectangle {
 }
 
 export component Conversation inherits Rectangle {
+    property <int> demo-reset: State.demo-reset-generation;
+    changed demo-reset => { more-menu.close(); }
     out property <FeedbackRect> header-bounds: { x: header.absolute-position.x, y: header.absolute-position.y, width: root.visible ? header.width : 0px, height: header.height };
     out property <FeedbackRect> composer-bounds: { x: composer-surface.absolute-position.x, y: composer-surface.absolute-position.y, width: root.visible ? composer-surface.width : 0px, height: composer-surface.height };
     property <bool> latest-visible: !State.following && State.has-chat;
