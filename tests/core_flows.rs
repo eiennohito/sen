@@ -18,15 +18,21 @@ struct App {
 impl App {
     fn new(fake: FakeBackend, location: StoreLocation) -> Self {
         Self {
-            worker: Worker::start_timed(
-                fake,
+            worker: Worker::start(
                 location,
-                Timing {
-                    retry_initial: Duration::from_millis(5),
-                    retry_max: Duration::from_millis(50),
-                    poll: Duration::from_millis(1),
-                    offline_after: Duration::from_millis(100),
-                    health_now: Instant::now,
+                {
+                    let mut backend = Some(fake);
+                    move || Ok(backend.take().expect("backend already opened"))
+                },
+                line::engine::WorkerOptions {
+                    timing: Timing {
+                        retry_initial: Duration::from_millis(5),
+                        retry_max: Duration::from_millis(50),
+                        poll: Duration::from_millis(1),
+                        offline_after: Duration::from_millis(100),
+                        health_now: Instant::now,
+                    },
+                    ..Default::default()
                 },
             ),
             state: AppState::default(),
@@ -887,7 +893,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     let fake = FakeBackend::default();
     fake.configure(|s| s.chats = chats.clone());
     let (initialize, initialized) = std::sync::mpsc::channel();
-    let worker = Worker::start_with(
+    let worker = Worker::start(
         StoreLocation::Account {
             root: root.clone(),
             mid: None,
@@ -896,6 +902,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             initialized.recv()?;
             Ok(Blocked(fake.clone(), released.clone(), entered.clone()))
         },
+        line::engine::WorkerOptions::default(),
     );
     let receive = |predicate: &dyn Fn(&Delta) -> bool| {
         let deadline = Instant::now() + Duration::from_millis(500);
@@ -1186,13 +1193,17 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
     let calls = Arc::new(AtomicUsize::new(0));
     let mut app = App {
         worker: Worker::start(
-            BlockedSend {
-                fake: fake.clone(),
-                entered: entered_tx,
-                release: release_rx,
-                calls: calls.clone(),
-            },
             StoreLocation::Memory,
+            {
+                let mut backend = Some(BlockedSend {
+                    fake: fake.clone(),
+                    entered: entered_tx,
+                    release: release_rx,
+                    calls: calls.clone(),
+                });
+                move || Ok(backend.take().expect("backend already opened"))
+            },
+            line::engine::WorkerOptions::default(),
         ),
         state: AppState::default(),
         notifications: 0,
@@ -1744,7 +1755,11 @@ fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
     let reason = SignInFailure::CryptoModule("/missing/crypto.wasm".into());
     fake.fail_open(Some(reason.clone()));
     let opener = fake.clone();
-    let worker = Worker::start_with(StoreLocation::Memory, move || opener.open());
+    let worker = Worker::start(
+        StoreLocation::Memory,
+        move || opener.open(),
+        line::engine::WorkerOptions::default(),
+    );
     let failure = || loop {
         let delta = worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap();
         assert!(!matches!(delta, Delta::Fatal));
@@ -1776,14 +1791,18 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
     let (started, waiting) = mpsc::channel();
     let (release, resume) = mpsc::channel();
     let mut first = true;
-    let worker = Worker::start_with(StoreLocation::Memory, move || {
-        if std::mem::take(&mut first) {
-            return Err(SignInFailure::CryptoModule("/missing/crypto.wasm".into()).into());
-        }
-        started.send(()).unwrap();
-        resume.recv().unwrap();
-        fake.open()
-    });
+    let worker = Worker::start(
+        StoreLocation::Memory,
+        move || {
+            if std::mem::take(&mut first) {
+                return Err(SignInFailure::CryptoModule("/missing/crypto.wasm".into()).into());
+            }
+            started.send(()).unwrap();
+            resume.recv().unwrap();
+            fake.open()
+        },
+        line::engine::WorkerOptions::default(),
+    );
     loop {
         if matches!(
             worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
@@ -1830,11 +1849,15 @@ fn cancel_during_initial_open_does_not_wait_for_credentials() {
     use std::sync::mpsc;
     let (started, waiting) = mpsc::channel();
     let (release, resume) = mpsc::channel();
-    let worker = Worker::start_with(StoreLocation::Memory, move || {
-        started.send(()).unwrap();
-        resume.recv().unwrap();
-        Ok(FakeBackend::signed_out())
-    });
+    let worker = Worker::start(
+        StoreLocation::Memory,
+        move || {
+            started.send(()).unwrap();
+            resume.recv().unwrap();
+            Ok(FakeBackend::signed_out())
+        },
+        line::engine::WorkerOptions::default(),
+    );
     waiting.recv_timeout(Duration::from_secs(3)).unwrap();
     worker.sender.send(Intent::Prefs(Prefs::default()));
     worker.sender.send(Intent::SignIn);
@@ -1871,9 +1894,11 @@ fn cancel_during_initial_open_does_not_wait_for_credentials() {
 #[test]
 fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
     use line::client::error::SignInFailure;
-    let worker = Worker::start_with::<FakeBackend>(StoreLocation::Memory, || {
-        panic!("synthetic network worker crash")
-    });
+    let worker = Worker::start::<FakeBackend>(
+        StoreLocation::Memory,
+        || panic!("synthetic network worker crash"),
+        line::engine::WorkerOptions::default(),
+    );
     loop {
         if matches!(
             worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
@@ -1902,7 +1927,11 @@ fn unusable_saved_session_allows_start_to_pair() {
     let reason = SignInFailure::SavedSession;
     fake.fail_open(Some(reason.clone()));
     let opener = fake.clone();
-    let worker = Worker::start_with(StoreLocation::Memory, move || opener.open());
+    let worker = Worker::start(
+        StoreLocation::Memory,
+        move || opener.open(),
+        line::engine::WorkerOptions::default(),
+    );
     loop {
         match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
             Delta::PairFailed { reason: actual } => {
@@ -1931,11 +1960,15 @@ fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
     let fake = FakeBackend::canned();
     let (started, waiting) = mpsc::channel();
     let (release, resume) = mpsc::channel();
-    let worker = Worker::start_with(StoreLocation::Memory, move || {
-        started.send(()).unwrap();
-        resume.recv().unwrap();
-        Ok(fake.clone())
-    });
+    let worker = Worker::start(
+        StoreLocation::Memory,
+        move || {
+            started.send(()).unwrap();
+            resume.recv().unwrap();
+            Ok(fake.clone())
+        },
+        line::engine::WorkerOptions::default(),
+    );
     waiting.recv_timeout(Duration::from_secs(3)).unwrap();
     worker.sender.send(Intent::SignIn);
     worker.sender.cancel_sign_in();
