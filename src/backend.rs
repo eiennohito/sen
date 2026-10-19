@@ -1,10 +1,8 @@
 //! RPC boundary shared by the real account and synthetic runs.
+use crate::client::CancelToken;
 use crate::store::*;
 use serde_json::{Value, json};
-use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 pub use crate::client::error::{Failure, Refusal, SignOutReason};
@@ -43,7 +41,7 @@ pub type PairDeliver = Arc<dyn Fn(PairEvent) + Send + Sync>;
 /// Asset queue handles are independent of the backend's RPC owner.
 #[derive(Clone)]
 pub struct AssetRequests {
-    pub stop: Arc<AtomicBool>,
+    pub stop: Arc<CancelToken>,
     pub request: Arc<
         dyn Fn(crate::client::desktop::assets::Asset, crate::client::desktop::assets::Purpose)
             + Send
@@ -88,12 +86,12 @@ pub trait Backend: Send {
     fn session(&self) -> Result<bool> {
         Ok(self.has_session())
     }
-    fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()>;
+    fn sign_in(&mut self, cancel: Arc<CancelToken>, deliver: PairDeliver) -> Result<()>;
     fn friends(&mut self) -> Result<Vec<crate::store::Friend>>;
     fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>>;
     /// Publish AssetRequests before returning. Its handles enqueue independently
     /// of RPCs, and asset completions use this delivery channel directly.
-    fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver);
+    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver);
     fn authorize(
         &mut self,
         asset: &crate::client::desktop::assets::Asset,
@@ -160,7 +158,7 @@ pub trait Backend: Send {
     fn stream(
         &mut self,
         revision: i64,
-        stop: Arc<AtomicBool>,
+        stop: Arc<CancelToken>,
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>>;
     fn decode(&mut self, raw: Value) -> Result<LiveOp>;
@@ -591,7 +589,7 @@ impl Backend for FakeBackend {
         }
         Ok(self.has_session())
     }
-    fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
+    fn sign_in(&mut self, cancel: Arc<CancelToken>, deliver: PairDeliver) -> Result<()> {
         use crate::client::{desktop::assets::Pixels, pairing::Stage};
         if let Some(reason) = self.0.lock().unwrap().sign_in_failure.take() {
             return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)));
@@ -615,7 +613,7 @@ impl Backend for FakeBackend {
                 rgba,
             })));
             deliver(PairEvent::Stage(Stage::AwaitScan));
-            while !cancel.load(Ordering::Relaxed) {
+            while !cancel.is_cancelled() {
                 std::thread::sleep(Duration::from_millis(10));
             }
             return Err(Failure::SignedOut(SignOutReason::Unavailable(
@@ -674,7 +672,7 @@ impl Backend for FakeBackend {
             })
             .collect())
     }
-    fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver) {
+    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) {
         self.0.lock().unwrap().assets = Some(deliver.clone());
         let fake = self.clone();
         let retry = self.clone();
@@ -1181,7 +1179,7 @@ impl Backend for FakeBackend {
     fn stream(
         &mut self,
         revision: i64,
-        stop: Arc<AtomicBool>,
+        stop: Arc<CancelToken>,
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>> {
         let mut s = self.0.lock().unwrap();
@@ -1192,7 +1190,7 @@ impl Backend for FakeBackend {
             if !deliver(StreamEvent::Connection(Ok(()))) {
                 return;
             }
-            while !stop.load(Ordering::Relaxed) {
+            while !stop.is_cancelled() {
                 std::thread::park_timeout(Duration::from_millis(20));
             }
         }))
@@ -1346,7 +1344,7 @@ impl Backend for LineBackend {
             None => Ok(self.has_session()),
         }
     }
-    fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
+    fn sign_in(&mut self, cancel: Arc<CancelToken>, deliver: PairDeliver) -> Result<()> {
         use crate::client::{
             desktop::{self, assets::Pixels},
             pairing,
@@ -1391,7 +1389,7 @@ impl Backend for LineBackend {
             crate::reporting::log("sign-in", "pairing", error.as_ref());
             Failure::SignedOut(SignOutReason::Unavailable(pairing::failure(
                 &error,
-                cancel.load(Ordering::Relaxed),
+                cancel.is_cancelled(),
             )))
         })?;
         client.installed_at(&self.state);
@@ -1406,7 +1404,7 @@ impl Backend for LineBackend {
     fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>> {
         self.client()?.members(&chat.0).map_err(rpc)
     }
-    fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver) {
+    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) {
         let auth = deliver.clone();
         let Some(client) = self.client.as_mut() else {
             return;
@@ -1425,7 +1423,7 @@ impl Backend for LineBackend {
                     return Err(crate::client::desktop::assets::Failure::Cancelled);
                 }
                 loop {
-                    if cancel.load(Ordering::Relaxed) {
+                    if cancel.is_cancelled() {
                         return Err(crate::client::desktop::assets::Failure::Cancelled);
                     }
                     match rx.recv_timeout(Duration::from_millis(50)) {
@@ -1672,7 +1670,7 @@ impl Backend for LineBackend {
     fn stream(
         &mut self,
         revision: i64,
-        stop: Arc<AtomicBool>,
+        stop: Arc<CancelToken>,
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>> {
         let replay_through = self.client()?.latest_revision().map_err(rpc)?;
@@ -1700,7 +1698,7 @@ impl Backend for LineBackend {
                                     break;
                                 }
                                 Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                                    if !stop.load(Ordering::Relaxed) => {}
+                                    if !stop.is_cancelled() => {}
                                 Err(_) => {
                                     return Err(Failure::SignedOut(
                                         SignOutReason::AuthenticationFailed,
@@ -1736,7 +1734,7 @@ impl Backend for LineBackend {
                     })
                 },
             );
-            if !stop.load(Ordering::Relaxed)
+            if !stop.is_cancelled()
                 && let Err(error) = result
             {
                 deliver(StreamEvent::Retry {

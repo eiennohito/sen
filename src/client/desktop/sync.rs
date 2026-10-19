@@ -1,13 +1,9 @@
 //! Cancellable SSE transport. Credentials never enter arguments or diagnostics.
 use super::*;
+use crate::client::CancelToken;
 use std::{
     io::{BufRead, BufReader, Read},
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc,
-    },
-    thread,
+    sync::{Arc, mpsc},
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -91,11 +87,10 @@ fn number(value: &Value) -> Option<u64> {
 pub fn backoff(attempt: u32) -> Duration {
     Duration::from_secs(2u64.saturating_pow(attempt.clamp(1, 6)).min(60))
 }
-fn pause(stop: &AtomicBool, duration: Duration) {
-    let end = Instant::now() + duration;
-    while !stop.load(Ordering::Relaxed) && Instant::now() < end {
-        thread::park_timeout(Duration::from_millis(50));
-    }
+fn pause(stop: &CancelToken, duration: Duration) {
+    async_io::block_on(futures_lite::future::or(stop.cancelled(), async {
+        async_io::Timer::after(duration).await;
+    }));
 }
 
 /// The stream has its own HTTP connection and borrows authorization from the RPC owner.
@@ -103,7 +98,7 @@ fn pause(stop: &AtomicBool, duration: Duration) {
 pub fn receive_with_auth(
     client_version: &str,
     revision: u64,
-    stop: &Arc<AtomicBool>,
+    stop: &Arc<CancelToken>,
     authorize: impl FnMut(bool) -> Result<String>,
     deliver: impl FnMut(Event) -> bool,
 ) -> Result<()> {
@@ -123,16 +118,16 @@ fn receive_on(
     transport: &http::Transport,
     client_version: &str,
     revision: u64,
-    stop: &Arc<AtomicBool>,
+    stop: &Arc<CancelToken>,
     mut authorize: impl FnMut(bool) -> Result<String>,
     mut deliver: impl FnMut(Event) -> bool,
-    mut wait: impl FnMut(&AtomicBool, Duration),
+    mut wait: impl FnMut(&CancelToken, Duration),
 ) -> Result<()> {
     set_request_cancel(stop.clone());
     let mut revisions = Revisions { local: revision };
     let mut refreshed_once = false;
     let mut attempt = 0;
-    while !stop.load(Ordering::Relaxed) {
+    while !stop.is_cancelled() {
         let mut delivered = false;
         let mut result = stream(
             transport,
@@ -160,7 +155,7 @@ fn receive_on(
                 )
             },
         );
-        if stop.load(Ordering::Relaxed) {
+        if stop.is_cancelled() {
             break;
         }
         if crate::client::error::needs_refresh(&result) {
@@ -192,9 +187,7 @@ fn receive_on(
         } else if !delivered {
             wait(stop, backoff(1));
         }
-        if !stop.load(Ordering::Relaxed)
-            && !deliver(Event::State(SyncState::Reconnecting { attempt }))
-        {
+        if !stop.is_cancelled() && !deliver(Event::State(SyncState::Reconnecting { attempt })) {
             break;
         }
     }
@@ -206,7 +199,7 @@ fn dispatch(
     data: Value,
     revisions: &mut Revisions,
     attempt: &mut u32,
-    stop: &AtomicBool,
+    stop: &CancelToken,
     deliver: &mut impl FnMut(Event) -> bool,
 ) -> Result<bool> {
     if name == "message"
@@ -236,7 +229,7 @@ fn dispatch(
                 return Ok(false);
             }
             loop {
-                if stop.load(Ordering::Relaxed) {
+                if stop.is_cancelled() {
                     return Ok(false);
                 }
                 match rx.recv_timeout(Duration::from_millis(100)) {
@@ -291,7 +284,7 @@ fn dispatch(
                 return Ok(false);
             }
             loop {
-                if stop.load(Ordering::Relaxed) {
+                if stop.is_cancelled() {
                     return Ok(false);
                 }
                 match rx.recv_timeout(Duration::from_millis(100)) {
@@ -324,7 +317,7 @@ fn stream(
     client_version: &str,
     access: &str,
     revision: u64,
-    stop: &Arc<AtomicBool>,
+    stop: &Arc<CancelToken>,
     ping_timeout: Duration,
     mut event: impl FnMut(&str, Value) -> Result<bool>,
 ) -> Result<u16> {
@@ -350,14 +343,14 @@ fn stream(
                 }
                 .into());
             }
-            if stop.load(Ordering::Relaxed) || !event("open", Value::Null)? {
+            if stop.is_cancelled() || !event("open", Value::Null)? {
                 return Ok(status);
             }
             let mut reader = BufReader::new(body);
             let mut decoder = Decoder::default();
             let mut line = Vec::new();
             let mut discarding = false;
-            while !stop.load(Ordering::Relaxed) {
+            while !stop.is_cancelled() {
                 line.clear();
                 let count = reader
                     .by_ref()
@@ -368,7 +361,7 @@ fn stream(
                     discarding = true;
                     continue;
                 }
-                if count == 0 || stop.load(Ordering::Relaxed) {
+                if count == 0 || stop.is_cancelled() {
                     break;
                 }
                 let line = String::from_utf8_lossy(&line);
@@ -426,7 +419,7 @@ mod transport_tests {
     use super::*;
     #[test]
     fn fake_transport_orders_replay_catchup_and_named_sync() -> Result<()> {
-        let stop = AtomicBool::new(false);
+        let stop = CancelToken::new();
         let mut r = Revisions { local: 10 };
         let mut attempt = 4;
         let mut seen = Vec::new();
@@ -473,7 +466,7 @@ mod transport_tests {
     }
     #[test]
     fn failed_full_sync_never_advances_and_cancellation_does_not_block() {
-        let stop = AtomicBool::new(false);
+        let stop = CancelToken::new();
         let mut r = Revisions { local: 9 };
         let mut attempt = 0;
         assert!(
@@ -495,7 +488,7 @@ mod transport_tests {
             .is_err()
         );
         assert_eq!(r.local, 9);
-        stop.store(true, Ordering::Relaxed);
+        stop.cancel();
         let started = Instant::now();
         assert!(
             !dispatch(

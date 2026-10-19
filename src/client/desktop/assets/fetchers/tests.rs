@@ -2,7 +2,10 @@ use super::*;
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
-    sync::{atomic::AtomicU64, mpsc},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        mpsc,
+    },
 };
 
 struct Cache(PathBuf);
@@ -24,8 +27,10 @@ impl Drop for Cache {
     }
 }
 
-fn avatar(id: usize) -> Asset {
-    Asset::avatar(&format!("/test-{id}")).unwrap()
+fn avatar(base: &str, id: usize) -> Asset {
+    let mut asset = Asset::avatar(&format!("/test-{id}")).unwrap();
+    asset.url = format!("{base}/test-{id}/preview");
+    asset
 }
 fn png() -> Vec<u8> {
     let mut bytes = Cursor::new(Vec::new());
@@ -34,6 +39,16 @@ fn png() -> Vec<u8> {
         .unwrap();
     bytes.into_inner()
 }
+fn local_asset(base: &str, mut asset: Asset) -> Asset {
+    let path = url::Url::parse(&asset.url).unwrap();
+    asset.url = format!("{base}{}", &path[url::Position::BeforePath..]);
+    if let Some(original) = &mut asset.original_url {
+        let path = url::Url::parse(original).unwrap();
+        *original = format!("{base}{}", &path[url::Position::BeforePath..]);
+    }
+    asset
+}
+
 fn respond(mut stream: TcpStream, bytes: &[u8]) {
     write!(
         stream,
@@ -47,13 +62,16 @@ fn respond(mut stream: TcpStream, bytes: &[u8]) {
 fn local_server(
     count: usize,
     serve: impl Fn(String, TcpStream) + Send + Sync + 'static,
-) -> (http::Transport, mpsc::Receiver<String>, JoinHandle<()>) {
+) -> (
+    String,
+    http::Transport,
+    mpsc::Receiver<String>,
+    JoinHandle<()>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let http = http::Transport::local(
-        "9.8.7",
-        format!("http://{}", listener.local_addr().unwrap()),
-    );
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let http = http::Transport::local_assets(base.clone());
     let (tx, rx) = mpsc::channel();
     let serve = Arc::new(serve);
     let thread = thread::spawn(move || {
@@ -93,7 +111,7 @@ fn local_server(
             thread.join().unwrap();
         }
     });
-    (http, rx, thread)
+    (base, http, rx, thread)
 }
 
 #[derive(Default)]
@@ -117,7 +135,7 @@ impl Gate {
 fn parallel_downloads_overlap() {
     let gate = Arc::new(Gate::default());
     let release = gate.clone();
-    let (http, requests, server) = local_server(THREADS, move |_, stream| {
+    let (base, http, requests, server) = local_server(THREADS, move |_, stream| {
         release.wait();
         thread::sleep(Duration::from_millis(300));
         respond(stream, &png());
@@ -136,7 +154,7 @@ fn parallel_downloads_overlap() {
         },
     );
     for i in 0..THREADS {
-        assert!(fetchers.enqueue(avatar(i), Some("chat".into()), Purpose::Thumbnail));
+        assert!(fetchers.enqueue(avatar(&base, i), Some("chat".into()), Purpose::Thumbnail));
     }
     for _ in 0..THREADS {
         requests.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -166,7 +184,7 @@ fn parallel_downloads_overlap() {
 fn latest_visible_keys_then_current_chat_precede_old_chats() {
     let gates: Arc<Vec<Gate>> = Arc::new((0..THREADS).map(|_| Gate::default()).collect());
     let release = gates.clone();
-    let (http, requests, server) = local_server(THREADS + 3, move |headers, stream| {
+    let (base, http, requests, server) = local_server(THREADS + 3, move |headers, stream| {
         for i in 0..THREADS {
             if headers.starts_with(&format!("GET /test-{i}/")) {
                 release[i].wait();
@@ -189,16 +207,16 @@ fn latest_visible_keys_then_current_chat_precede_old_chats() {
         },
     );
     for i in 0..THREADS {
-        assert!(fetchers.enqueue(avatar(i), None, Purpose::Thumbnail));
+        assert!(fetchers.enqueue(avatar(&base, i), None, Purpose::Thumbnail));
     }
     for _ in 0..THREADS {
         requests.recv_timeout(Duration::from_secs(10)).unwrap();
     }
-    assert!(fetchers.enqueue(avatar(10), Some("old".into()), Purpose::Thumbnail));
-    assert!(fetchers.enqueue(avatar(11), Some("open".into()), Purpose::Thumbnail));
-    assert!(fetchers.enqueue(avatar(12), Some("open".into()), Purpose::Thumbnail));
-    priority.set("old".into(), [avatar(10).key()]);
-    priority.set("open".into(), [avatar(12).key()]);
+    assert!(fetchers.enqueue(avatar(&base, 10), Some("old".into()), Purpose::Thumbnail));
+    assert!(fetchers.enqueue(avatar(&base, 11), Some("open".into()), Purpose::Thumbnail));
+    assert!(fetchers.enqueue(avatar(&base, 12), Some("open".into()), Purpose::Thumbnail));
+    priority.set("old".into(), [avatar(&base, 10).key()]);
+    priority.set("open".into(), [avatar(&base, 12).key()]);
     gates[0].release();
     for id in [12, 11, 10] {
         let request = requests.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -225,7 +243,7 @@ fn latest_visible_keys_then_current_chat_precede_old_chats() {
 fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly() {
     let gate = Arc::new(Gate::default());
     let release = gate.clone();
-    let (http, requests, server) = local_server(THREADS, move |_, _stream| {
+    let (base, http, requests, server) = local_server(THREADS, move |_, _stream| {
         release.wait();
     });
     let (_root, cache) = Cache::new();
@@ -241,7 +259,7 @@ fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly()
     );
     for i in 0..THREADS {
         for _ in 0..20 {
-            assert!(fetchers.enqueue(avatar(i), None, Purpose::Thumbnail));
+            assert!(fetchers.enqueue(avatar(&base, i), None, Purpose::Thumbnail));
         }
     }
     for _ in 0..THREADS {
@@ -249,7 +267,7 @@ fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly()
     }
     assert_eq!(fetchers.shared.queue.lock().unwrap().entries.len(), THREADS);
     for i in 100..100 + QUEUE_LIMIT + 20 {
-        fetchers.enqueue(avatar(i), None, Purpose::Thumbnail);
+        fetchers.enqueue(avatar(&base, i), None, Purpose::Thumbnail);
     }
     assert_eq!(
         fetchers.shared.queue.lock().unwrap().entries.len(),
@@ -269,13 +287,13 @@ fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly()
 
 #[test]
 fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
-    let (http, requests, server) = local_server(1, |_, mut stream| {
+    let (base, http, requests, server) = local_server(1, |_, mut stream| {
         stream
             .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .unwrap();
     });
     let (_root, cache) = Cache::new();
-    let photo = Asset::photo(&json!({"id":"42"})).unwrap();
+    let photo = local_asset(&base, Asset::photo(&json!({"id":"42"})).unwrap());
     cache.lock().unwrap().store(&photo, &png()).unwrap();
     let (tx, rx) = mpsc::channel();
     let fetchers = Fetchers::start(
@@ -297,7 +315,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
         "cached pixels must not count as a network response"
     );
     for _ in 0..3 {
-        fetchers.enqueue(avatar(1), None, Purpose::Thumbnail);
+        fetchers.enqueue(avatar(&base, 1), None, Purpose::Thumbnail);
         assert!(matches!(
             rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
             Err(Failure::Http(404))
@@ -308,11 +326,11 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
             .0
             .lock()
             .unwrap()
-            .get_mut(&avatar(1).key())
+            .get_mut(&avatar(&base, 1).key())
             .unwrap()
             .at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
         fetchers.reconnected();
-        assert!(!fetchers.retry(&avatar(1).key()));
+        assert!(!fetchers.retry(&avatar(&base, 1).key()));
     }
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(requests.try_recv().is_err());
@@ -338,7 +356,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
 
 #[test]
 fn shared_http_preserves_asset_hosts_paths_headers_and_no_redirects() {
-    let (http, requests, server) = local_server(5, |headers, stream| {
+    let (base, http, requests, server) = local_server(5, |headers, stream| {
         assert!(headers.starts_with("GET "));
         let lower = headers.to_ascii_lowercase();
         assert!(!lower.contains("x-line-locale:"));
@@ -354,12 +372,13 @@ fn shared_http_preserves_asset_hosts_paths_headers_and_no_redirects() {
         respond(stream, b"synthetic body");
     });
     let assets = [
-        avatar(1),
+        avatar(&base, 1),
         Asset::sticker(&json!({"STKID":"123"})).unwrap(),
         Asset::paid_reaction(&json!({"productId":"abc", "emojiId":"001"})).unwrap(),
         Asset::photo(&json!({"id":"42"})).unwrap(),
         Asset::attachment(&json!({"id":"43", "contentType":14})).unwrap(),
-    ];
+    ]
+    .map(|asset| local_asset(&base, asset));
     for asset in &assets {
         assert_eq!(
             asset.fetch(&http, Some("synthetic")).unwrap(),
@@ -411,10 +430,14 @@ fn shared_http_preserves_asset_hosts_paths_headers_and_no_redirects() {
                 == Some(Failure::RejectedPath)
         );
     }
-    let (http, requests, server) = local_server(1, |_, mut stream| {
+    let (base, http, requests, server) = local_server(1, |_, mut stream| {
         stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: https://line-chrome-gw.line-apps.com/api/TalkService.do\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
     });
-    assert!(assets[3].fetch(&http, Some("synthetic")).is_err());
+    assert!(
+        local_asset(&base, assets[3].clone())
+            .fetch(&http, Some("synthetic"))
+            .is_err()
+    );
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
     server.join().unwrap();
 }
@@ -422,7 +445,7 @@ fn shared_http_preserves_asset_hosts_paths_headers_and_no_redirects() {
 #[test]
 fn download_and_decoder_caps_remain_enforced() {
     for chunked in [false, true] {
-        let (http, requests, server) = local_server(1, move |_, mut stream| {
+        let (base, http, requests, server) = local_server(1, move |_, mut stream| {
             if chunked {
                 write!(stream, "HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n\r\n{:x}\r\n", MAX_DOWNLOAD + 1).unwrap();
                 let chunk = [0; 8192];
@@ -440,7 +463,7 @@ fn download_and_decoder_caps_remain_enforced() {
             }
         });
         assert_eq!(
-            avatar(1).fetch(&http, None).unwrap_err().to_string(),
+            avatar(&base, 1).fetch(&http, None).unwrap_err().to_string(),
             "media failure: TooLarge"
         );
         requests.recv_timeout(Duration::from_secs(10)).unwrap();
@@ -456,7 +479,7 @@ fn download_and_decoder_caps_remain_enforced() {
 
 #[test]
 fn transient_retry_bypasses_failure_and_cached_pixels_and_reconnect_only_retries_once() {
-    let (http, requests, server) = local_server(4, |_, mut stream| {
+    let (base, http, requests, server) = local_server(4, |_, mut stream| {
         stream
             .write_all(b"HTTP/1.1 500 Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .unwrap();
@@ -474,7 +497,7 @@ fn transient_retry_bypasses_failure_and_cached_pixels_and_reconnect_only_retries
             tx.send(done).unwrap();
         },
     );
-    let asset = avatar(1);
+    let asset = avatar(&base, 1);
     fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
     for step in 0..4 {
         assert!(matches!(
@@ -526,7 +549,7 @@ fn server_failures_keep_their_classes_through_completions() {
             Failure::Decode,
         ),
     ] {
-        let (http, requests, server) = local_server(1, move |_, mut stream| {
+        let (base, http, requests, server) = local_server(1, move |_, mut stream| {
             stream.write_all(response.as_bytes()).unwrap();
         });
         let (_root, cache) = Cache::new();
@@ -542,7 +565,7 @@ fn server_failures_keep_their_classes_through_completions() {
                 tx.send(done).unwrap();
             },
         );
-        fetchers.enqueue(avatar(1), None, Purpose::Thumbnail);
+        fetchers.enqueue(avatar(&base, 1), None, Purpose::Thumbnail);
         assert!(
             matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if class == expected)
         );
@@ -556,7 +579,7 @@ fn local_timeout_network_and_route_failures_are_typed() {
     for timeout in [false, true] {
         let gate = Arc::new(Gate::default());
         let release = gate.clone();
-        let (http, requests, server) = local_server(1, move |_, _stream| {
+        let (base, http, requests, server) = local_server(1, move |_, _stream| {
             if timeout {
                 release.wait();
             }
@@ -575,7 +598,7 @@ fn local_timeout_network_and_route_failures_are_typed() {
                 tx.send(done).unwrap();
             },
         );
-        fetchers.enqueue(avatar(1), None, Purpose::Thumbnail);
+        fetchers.enqueue(avatar(&base, 1), None, Purpose::Thumbnail);
         let expected = if timeout {
             Failure::Timeout
         } else {
@@ -611,7 +634,7 @@ fn local_timeout_network_and_route_failures_are_typed() {
 
 #[test]
 fn every_permanent_class_blocks_explicit_and_automatic_retries() {
-    let (http, requests, server) = local_server(3, |headers, mut stream| {
+    let (base, http, requests, server) = local_server(3, |headers, mut stream| {
         if headers.contains("test-0/") {
             stream
                 .write_all(b"HTTP/1.1 404 Missing\r\nContent-Length: 0\r\n\r\n")
@@ -637,7 +660,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
             tx.send(done).unwrap();
         },
     );
-    let mut assets: Vec<_> = (0..3).map(avatar).collect();
+    let mut assets: Vec<_> = (0..3).map(|id| avatar(&base, id)).collect();
     assets.push(Asset::photo(&json!({"id":"42", "contentMetadata":{"OID":"../no"}})).unwrap());
     assets.push(
         Asset::attachment(
@@ -678,6 +701,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
 
 #[test]
 fn retained_failures_never_follow_credentials_to_another_account() {
+    let base = "https://profile.line-scdn.net".to_owned();
     let failures = Failures::default();
     failures.scope("first-account");
     failures.0.lock().unwrap().insert(
@@ -691,7 +715,7 @@ fn retained_failures_never_follow_credentials_to_another_account() {
             job: Job {
                 bypass: false,
                 boost: false,
-                asset: avatar(1),
+                asset: avatar(&base, 1),
                 chat: None,
                 purpose: Purpose::Thumbnail,
             },
@@ -742,7 +766,7 @@ fn failure_records_evict_at_the_queue_bound() {
 
 #[test]
 fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
-    let (http, requests, server) = local_server(12, |_, mut stream| {
+    let (base, http, requests, server) = local_server(12, |_, mut stream| {
         stream
             .write_all(b"HTTP/1.1 500 Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
             .unwrap();
@@ -771,7 +795,7 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
     .into_iter()
     .enumerate()
     {
-        let asset = avatar(id);
+        let asset = avatar(&base, id);
         fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
         assert!(
             rx.recv_timeout(Duration::from_secs(10))
@@ -819,7 +843,7 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
 fn reconnect_backlog_keeps_normal_rank_and_visible_requests_can_evict_it() {
     let gates: Arc<Vec<Gate>> = Arc::new((0..QUEUE_LIMIT).map(|_| Gate::default()).collect());
     let release = gates.clone();
-    let (http, requests, server) = local_server(THREADS + 1, move |headers, stream| {
+    let (base, http, requests, server) = local_server(THREADS + 1, move |headers, stream| {
         if !headers.starts_with("GET /test-9999/") {
             let id: usize = headers
                 .split("test-")
@@ -849,7 +873,7 @@ fn reconnect_backlog_keeps_normal_rank_and_visible_requests_can_evict_it() {
         },
     );
     for id in 0..QUEUE_LIMIT {
-        let asset = avatar(id);
+        let asset = avatar(&base, id);
         fetchers.shared.failures.0.lock().unwrap().insert(
             asset.key(),
             Failed {
@@ -883,7 +907,7 @@ fn reconnect_backlog_keeps_normal_rank_and_visible_requests_can_evict_it() {
                 .all(|job| job.bypass && !job.boost)
         );
     }
-    let visible = avatar(9999);
+    let visible = avatar(&base, 9999);
     let visible_key = visible.key();
     fetchers.shared.priority.set("open".into(), [visible.key()]);
     assert!(fetchers.enqueue(visible, Some("open".into()), Purpose::Thumbnail));
@@ -921,13 +945,16 @@ fn reconnect_backlog_keeps_normal_rank_and_visible_requests_can_evict_it() {
 
 #[test]
 fn photo_download_metadata_still_uses_obs_but_file_download_urls_are_refused() {
-    let (http, requests, server) = local_server(2, |headers, stream| {
+    let (base, http, requests, server) = local_server(2, |headers, stream| {
         assert!(headers.starts_with("GET /r/talk/m/object/preview "));
         respond(stream, &png());
     });
     for key in ["DOWNLOAD_URL", "DOWNLOAD_URL_RENEWAL"] {
         let meta = json!({"OID":"object", key:"https://unsupported.invalid/image"});
-        let asset = Asset::photo(&json!({"id":"42", "contentMetadata":meta})).unwrap();
+        let asset = local_asset(
+            &base,
+            Asset::photo(&json!({"id":"42", "contentMetadata":meta})).unwrap(),
+        );
         assert!(asset.fetch(&http, Some("synthetic")).is_ok());
         let file = Asset::attachment(&json!({"id":"42", "contentType":14, "contentMetadata":meta}))
             .unwrap();
@@ -942,6 +969,7 @@ fn photo_download_metadata_still_uses_obs_but_file_download_urls_are_refused() {
 
 #[test]
 fn refused_visible_enqueue_retains_a_job_for_explicit_retry() {
+    let base = "https://profile.line-scdn.net".to_owned();
     let fetchers = Fetchers {
         shared: Arc::new(Shared {
             queue: Mutex::default(),
@@ -954,9 +982,13 @@ fn refused_visible_enqueue_retains_a_job_for_explicit_retry() {
         threads: Vec::new(),
     };
     for id in 0..QUEUE_LIMIT {
-        assert!(fetchers.enqueue(avatar(id), None, Purpose::Original { request: id as u64 }));
+        assert!(fetchers.enqueue(
+            avatar(&base, id),
+            None,
+            Purpose::Original { request: id as u64 }
+        ));
     }
-    let asset = avatar(9999);
+    let asset = avatar(&base, 9999);
     let key = asset.key();
     fetchers.shared.priority.set("open".into(), [key.clone()]);
     assert!(!fetchers.enqueue(asset, Some("open".into()), Purpose::Thumbnail));
@@ -968,7 +1000,7 @@ fn refused_visible_enqueue_retains_a_job_for_explicit_retry() {
         .lock()
         .unwrap()
         .entries
-        .remove(&avatar(0).key());
+        .remove(&avatar(&base, 0).key());
     assert!(fetchers.retry(&key));
     let queue = fetchers.shared.queue.lock().unwrap();
     let job = queue.entries[&key].job.as_ref().unwrap();
@@ -977,12 +1009,16 @@ fn refused_visible_enqueue_retains_a_job_for_explicit_retry() {
 
 #[test]
 fn official_image_urls_fetch_plain_bytes_without_line_headers() {
-    let (http, requests, server) = local_server(2, |_, stream| respond(stream, b"plain image"));
+    let (base, http, requests, server) =
+        local_server(2, |_, stream| respond(stream, b"plain image"));
     let asset = Asset::photo(&json!({"id":"99","contentMetadata":{
         "PREVIEW_URL":"https://manager.line-scdn.net/id/clearpreview",
         "DOWNLOAD_URL":"https://manager.line-scdn.net/id/original"}}))
     .unwrap();
-    for asset in [asset.clone(), asset.original().unwrap()] {
+    for asset in [
+        local_asset(&base, asset.clone()),
+        local_asset(&base, asset.original().unwrap()),
+    ] {
         assert_eq!(
             asset.fetch(&http, Some("must-not-send")).unwrap(),
             b"plain image"

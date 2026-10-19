@@ -1,4 +1,5 @@
 //! A store thread schedules work; a network thread owns the backend.
+use crate::client::CancelToken;
 use crate::{backend::*, store::*};
 use serde_json::Value;
 use std::{
@@ -6,7 +7,7 @@ use std::{
     path::PathBuf,
     sync::{
         Arc, Condvar, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
         mpsc,
     },
     thread,
@@ -430,7 +431,7 @@ struct Lanes {
 }
 #[derive(Default)]
 struct Inbox {
-    pair_cancel: Mutex<Arc<AtomicBool>>,
+    pair_cancel: Mutex<Arc<CancelToken>>,
     lanes: Mutex<Lanes>,
     wake: Condvar,
 }
@@ -438,11 +439,7 @@ struct Inbox {
 pub struct Sender(Arc<Inbox>);
 impl Sender {
     pub fn cancel_sign_in(&self) {
-        self.0
-            .pair_cancel
-            .lock()
-            .unwrap()
-            .store(true, Ordering::Relaxed);
+        self.0.pair_cancel.lock().unwrap().cancel();
         self.send(Intent::CancelSignIn);
     }
     pub fn send(&self, intent: Intent) {
@@ -455,15 +452,12 @@ impl Inbox {
     fn live(&self, event: StreamEvent) -> bool {
         self.live_with_cancel(event, None)
     }
-    fn live_with_cancel(&self, event: StreamEvent, cancel: Option<&AtomicBool>) -> bool {
+    fn live_with_cancel(&self, event: StreamEvent, cancel: Option<&CancelToken>) -> bool {
         let mut q = self.lanes.lock().unwrap();
-        while q.live.len() == 256
-            && !q.stopped
-            && !cancel.is_some_and(|stop| stop.load(Ordering::Relaxed))
-        {
+        while q.live.len() == 256 && !q.stopped && !cancel.is_some_and(|stop| stop.is_cancelled()) {
             q = self.wake.wait(q).unwrap();
         }
-        if q.stopped || cancel.is_some_and(|stop| stop.load(Ordering::Relaxed)) {
+        if q.stopped || cancel.is_some_and(|stop| stop.is_cancelled()) {
             return false;
         }
         q.live.push_back(event);
@@ -532,7 +526,7 @@ impl DeltaSender {
 }
 pub struct Worker {
     wake: DeltaWake,
-    cancel: Arc<AtomicBool>,
+    cancel: Arc<CancelToken>,
     pub sender: Sender,
     pub deltas: mpsc::Receiver<Delta>,
     join: Option<thread::JoinHandle<()>>,
@@ -595,7 +589,7 @@ impl Worker {
             wake: wake.clone(),
             project: Arc::new(project),
         };
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = Arc::new(CancelToken::new());
         let worker_cancel = cancel.clone();
         let join = thread::spawn(move || {
             let fatal = tx.clone();
@@ -732,7 +726,7 @@ impl Worker {
 }
 impl Drop for Worker {
     fn drop(&mut self) {
-        self.cancel.store(true, Ordering::Relaxed);
+        self.cancel.cancel();
         self.sender.cancel_sign_in();
         self.sender.send(Intent::Stop);
         if let Some(j) = self.join.take() {
@@ -780,8 +774,8 @@ struct Engine {
     chat_keys: BTreeSet<ChatId>,
     message_keys: BTreeSet<Key>,
     seq: u32,
-    stream: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
-    assets_stop: Arc<AtomicBool>,
+    stream: Option<(Arc<CancelToken>, thread::JoinHandle<()>)>,
+    assets_stop: Arc<CancelToken>,
 }
 type Result<T> = std::result::Result<T, StoreError>;
 impl Engine {
@@ -859,7 +853,7 @@ impl Engine {
             return;
         }
         let inbox = self.inbox.clone();
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(CancelToken::new());
         self.rpc(
             move |backend| {
                 backend.start_assets(stop, Arc::new(move |event| inbox.live(event)));
@@ -949,7 +943,7 @@ impl Engine {
                 self.generation.fetch_add(1, Ordering::SeqCst);
                 self.stop_stream();
                 if let Some(media) = self.media.take() {
-                    media.stop.store(true, Ordering::Relaxed);
+                    media.stop.cancel();
                 }
                 self.continuous = false;
                 self.inbox.lanes.lock().unwrap().refresh.clear();
@@ -1156,7 +1150,7 @@ impl Engine {
             lanes.completed.clear();
         }
         self.inbox.wake.notify_all();
-        self.assets_stop.store(true, Ordering::Relaxed);
+        self.assets_stop.cancel();
         self.stop_stream();
         Ok(())
     }
@@ -1164,7 +1158,7 @@ impl Engine {
         if let Some((stop, j)) = self.stream.take() {
             {
                 let _q = self.inbox.lanes.lock().unwrap();
-                stop.store(true, Ordering::Relaxed);
+                stop.cancel();
                 self.inbox.wake.notify_all();
             }
             j.thread().unpark();
@@ -1173,7 +1167,7 @@ impl Engine {
     }
     fn start_stream(&mut self) -> Result<()> {
         self.stop_stream();
-        let stop = Arc::new(AtomicBool::new(false));
+        let stop = Arc::new(CancelToken::new());
         let inbox = self.inbox.clone();
         let deliver_stop = stop.clone();
         let deliver: Deliver = Arc::new(move |e| inbox.live_with_cancel(e, Some(&deliver_stop)));
@@ -1198,7 +1192,7 @@ impl Engine {
                     .name("line-sync".into())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
-                        if !stream_stop.load(Ordering::Relaxed) {
+                        if !stream_stop.is_cancelled() {
                             if result.is_err() {
                                 deliver(StreamEvent::Retry {
                                     attempt: 1,
@@ -1493,9 +1487,9 @@ impl Engine {
                 self.waiting_assets.clear();
                 self.waiting_retries.clear();
                 if let Some(media) = self.media.take() {
-                    media.stop.store(true, Ordering::Relaxed);
+                    media.stop.cancel();
                 }
-                let cancel = Arc::new(AtomicBool::new(false));
+                let cancel = Arc::new(CancelToken::new());
                 *self.inbox.pair_cancel.lock().unwrap() = cancel.clone();
                 let previous = std::mem::replace(&mut self.account, AccountSession::NoSession);
                 let reuse = matches!(
@@ -1519,7 +1513,7 @@ impl Engine {
                 self.rpc(
                     move |backend| {
                         if reuse && matches!(backend.session(), Ok(true)) { return Ok(false); }
-                        if cancel.load(Ordering::Relaxed) {
+                        if cancel.is_cancelled() {
                             return Err(Failure::SignedOut(SignOutReason::Unavailable(crate::client::error::SignInFailure::Cancelled)));
                         }
                         backend.sign_in(
@@ -1596,11 +1590,7 @@ impl Engine {
             }
             Intent::CancelSignIn => {
                 if self.account.signing_in() {
-                    self.inbox
-                        .pair_cancel
-                        .lock()
-                        .unwrap()
-                        .store(true, Ordering::Relaxed);
+                    self.inbox.pair_cancel.lock().unwrap().cancel();
                     let previous =
                         match std::mem::replace(&mut self.account, AccountSession::NoSession) {
                             AccountSession::SigningIn { previous, .. } => *previous,
@@ -2745,7 +2735,7 @@ impl Engine {
             }
             match e {
                 StreamEvent::AssetRequests(media) => {
-                    media.stop.store(true, Ordering::Relaxed);
+                    media.stop.cancel();
                     return Ok(());
                 }
                 StreamEvent::Connection(_)
@@ -3126,7 +3116,7 @@ impl Drop for Engine {
             lanes.completed.clear();
         }
         self.inbox.wake.notify_all();
-        self.assets_stop.store(true, Ordering::Relaxed);
+        self.assets_stop.cancel();
         self.stop_stream();
     }
 }
