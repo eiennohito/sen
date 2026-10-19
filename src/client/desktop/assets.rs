@@ -15,6 +15,8 @@ pub use fetchers::{Completion, Failures, Fetchers, Payload, Priority, Purpose};
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Asset {
     url: String,
+    #[serde(default)]
+    local: Option<Box<crate::attachments::Attachment>>,
     pub(super) private: bool,
     key_material: Option<String>,
     talk_meta: Option<String>,
@@ -30,6 +32,31 @@ pub struct Asset {
 }
 
 impl Asset {
+    pub fn local(item: crate::attachments::Attachment) -> Self {
+        Self {
+            url: format!("local:{}", item.path.display()),
+            private: true,
+            key_material: None,
+            talk_meta: None,
+            dimension: 384,
+            original_suffix: None,
+            original_url: None,
+            failure: None,
+            name: Some(item.name.clone()),
+            local: Some(Box::new(item)),
+        }
+    }
+    pub fn local_attachment(&self) -> Option<&crate::attachments::Attachment> {
+        self.local.as_deref()
+    }
+    pub fn local_pixels(&self) -> Result<Option<Pixels>> {
+        self.local
+            .as_ref()
+            .filter(|item| !item.preview.is_empty())
+            .map(|item| pixels(&item.preview, 384))
+            .transpose()
+    }
+
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or_else(|| {
             self.url
@@ -83,6 +110,7 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 256,
+            local: None,
             original_url: None,
             original_suffix: None,
             name: None,
@@ -108,6 +136,7 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 256,
+            local: None,
             original_url: None,
             original_suffix: None,
             name: None,
@@ -130,6 +159,7 @@ impl Asset {
             key_material: None,
             talk_meta: None,
             dimension: 32,
+            local: None,
             original_url: None,
             original_suffix: None,
             name: None,
@@ -152,6 +182,7 @@ impl Asset {
                 talk_meta: None,
                 dimension: 384,
                 original_suffix: None,
+                local: None,
                 original_url: download.map(str::to_owned),
                 name: None,
                 failure: (!official_url(url) || download.is_some_and(|u| !official_url(u)))
@@ -175,6 +206,7 @@ impl Asset {
             dimension: 384,
             name: None,
             failure,
+            local: None,
             original_url: None,
             original_suffix: Some(
                 if meta["MEDIA_CONTENT_INFO"]
@@ -213,6 +245,7 @@ impl Asset {
             key_material: key,
             talk_meta: Some(talk_meta(id)),
             dimension: 0,
+            local: None,
             original_url: None,
             original_suffix: None,
             name: None,
@@ -259,6 +292,9 @@ impl Asset {
         http: &http::Transport,
         access_token: Option<&str>,
     ) -> Result<Vec<u8>> {
+        if let Some(item) = &self.local {
+            return Ok(item.preview.clone());
+        }
         if let Some(failure) = self.failure {
             return Err(failure.into());
         }
@@ -324,6 +360,24 @@ fn talk_meta(id: &str) -> String {
     STANDARD.encode(
         serde_json::to_vec(&json!({"message":STANDARD.encode(bytes)})).expect("JSON string"),
     )
+}
+
+pub(super) fn encrypt_media(mut ciphertext: Vec<u8>, material: &[u8]) -> Result<Vec<u8>> {
+    use aes::cipher::{KeyIvInit, StreamCipher};
+    use hmac::{Hmac, Mac};
+    ensure!(material.len() == 32, "invalid media key material");
+    let mut keys = [0_u8; 76];
+    hkdf::Hkdf::<Sha256>::new(None, material)
+        .expand(b"FileEncryption", &mut keys)
+        .map_err(|_| anyhow::anyhow!("media key derivation failed"))?;
+    let mut counter = [0_u8; 16];
+    counter[..12].copy_from_slice(&keys[64..]);
+    ctr::Ctr32BE::<aes::Aes256>::new_from_slices(&keys[..32], &counter)?
+        .apply_keystream(&mut ciphertext);
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&keys[32..64])?;
+    mac.update(&ciphertext);
+    ciphertext.extend(mac.finalize().into_bytes());
+    Ok(ciphertext)
 }
 
 fn decrypt_media(bytes: &[u8], material: &[u8]) -> Result<Vec<u8>> {
@@ -628,6 +682,14 @@ mod tests {
             serde_json::from_str(include_str!("../../../fixtures/media.json")).unwrap();
         let bytes = decode(fixture["ciphertext"].as_str().unwrap()).unwrap();
         let material = decode(fixture["material"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            encrypt_media(
+                fixture["plaintext"].as_str().unwrap().as_bytes().to_vec(),
+                &material
+            )
+            .unwrap(),
+            bytes
+        );
         assert_eq!(
             decrypt_media(&bytes, &material).unwrap(),
             fixture["plaintext"].as_str().unwrap().as_bytes()

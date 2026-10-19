@@ -8,9 +8,11 @@ export component DemoScenarios inherits Rectangle {
     // Keep the scenario surface in the main window on every backend.
     callback scenario-selected();
     property <bool> media-menu;
+    property <int> first-focus-request;
+    property <bool> first-scenario-focused;
     property <int> media-focus-last;
     property <bool> media-last-focused;
-    function reset-focus() { root.last-focus-request = 0; root.last-scenario-focused = false; root.media-focus-last = 0; root.media-last-focused = false; }
+    function reset-focus() { root.first-scenario-focused = false; root.last-focus-request = 0; root.last-scenario-focused = false; root.media-focus-last = 0; root.media-last-focused = false; }
     public function handle-key(event: KeyEvent) -> EventResult {
         if event.text == Key.F12 && root.open() { return accept; }
         return reject;
@@ -32,6 +34,7 @@ export component DemoScenarios inherits Rectangle {
         [{text:"Photo preview",label:"Photo preview",kind:5},{text:"Sticker preview",label:"Sticker preview",kind:6}],
         [{text:"Long chat list",label:"Long chat list",kind:15}],
         [{text:"Group preview",label:"Group preview",kind:7},{text:"Unread scenario",label:"Unread scenario",kind:14}],
+        [{text:"Attachments",label:"Synthetic attachments",kind:34}],
         [{text:"Protocol fixtures",label:"Protocol fixtures",kind:32},{text:"Live reaction",label:"Live reaction",kind:33}],
         [{text:"Crypto",label:"Sign-in crypto failure",kind:40},{text:"State",label:"Sign-in state failure",kind:41},{text:"Keyring",label:"Sign-in keyring failure",kind:42}],
         [{text:"Network",label:"Sign-in network failure",kind:43},{text:"Server",label:"Sign-in server failure",kind:44},{text:"Phone",label:"Sign-in phone failure",kind:45},{text:"Cancelled",label:"Sign-in cancelled",kind:46}],
@@ -57,6 +60,8 @@ export component DemoScenarios inherits Rectangle {
                 key-pressed(event) => {
                     if event.text == Key.Escape { root.dismiss(); return accept; }
                     if event.text == Key.Tab {
+                        if !root.media-menu && !event.modifiers.shift && close.has-focus { root.first-focus-request += 1; return accept; }
+                        if !root.media-menu && event.modifiers.shift && root.first-scenario-focused { close.focus(); return accept; }
                         if event.modifiers.shift && close.has-focus { if root.media-menu { root.media-focus-last += 1; } else { root.last-focus-request += 1; } return accept; }
                         if !event.modifiers.shift && ((root.media-menu && root.media-last-focused) || (!root.media-menu && root.last-scenario-focused)) { close.focus(); return accept; }
                     }
@@ -70,6 +75,15 @@ export component DemoScenarios inherits Rectangle {
                         horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             padding-right: 12px; spacing: 8px; alignment: start;
+                            if State.automation-background && !root.media-menu: HorizontalLayout { spacing: 8px;
+                                Rectangle { height: 32px; background: Tokens.surface-2;
+                                    TextInput { text <=> State.attachment-injection-paths; accessible-label: "Attachment paths"; single-line: true; color: Tokens.text; font-size: Tokens.small; }
+                                }
+                                Rectangle { width: 140px; height: 32px; background: Tokens.surface-2;
+                                    Text { text: "Preview attachments"; color: Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+                                    TouchArea { accessible-role: button; accessible-label: "Preview attachments"; clicked => { root.dismiss(); State.inject-attachments(State.attachment-injection-paths); } }
+                                }
+                            }
                             demo-marker := Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.small; }
                             VerticalLayout {
                                 visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
@@ -81,9 +95,11 @@ export component DemoScenarios inherits Rectangle {
                                             text: scenario.text; accessible-label: scenario.label;
                                             accessible-description: self.has-focus ? "Focused" : "";
                                             horizontal-stretch: row.length == 1 ? 1 : 0;
+                                            property <int> first-request: root.first-focus-request;
+                                            changed first-request => { if scenario.kind == 0 && State.demo-scenarios-open && !root.media-menu { self.focus(); } }
                                             property <int> focus-request: root.last-focus-request;
                                             changed focus-request => { if self.focus-request > 0 && State.demo-scenarios-open && scenario.kind == 17 { self.focus(); } }
-                                            changed has-focus => { if scenario.kind == 17 { root.last-scenario-focused = self.has-focus; } }
+                                            changed has-focus => { if scenario.kind == 0 { root.first-scenario-focused = self.has-focus; } if scenario.kind == 17 { root.last-scenario-focused = self.has-focus; } }
                                             clicked => { if scenario.kind == -1 { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } else { root.run(scenario.kind); } }
                                         }
                                     }

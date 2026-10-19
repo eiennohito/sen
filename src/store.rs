@@ -26,6 +26,46 @@ impl Store {
             .create(dir)?;
         Self::initialize(Connection::open(dir.join("store.sqlite3"))?)
     }
+    /// Remove clipboard files only after collecting unsent references from all accounts.
+    pub(crate) fn prune_clipboard(&self, root: &Path, accounts: &Path) -> Result<()> {
+        let mut referenced = std::collections::BTreeSet::new();
+        let mut collect = |rows: Vec<StoredMessage>| {
+            for row in rows {
+                if let Some(item) = row
+                    .body
+                    .image()
+                    .or_else(|| row.body.attachment())
+                    .and_then(|asset| asset.local_attachment())
+                {
+                    referenced.insert(item.path.clone());
+                }
+            }
+        };
+        collect(self.all_pending()?);
+        if accounts.exists() {
+            for entry in std::fs::read_dir(accounts)? {
+                let database = entry?.path().join("store.sqlite3");
+                if database.is_file() {
+                    let conn = Connection::open_with_flags(
+                        database,
+                        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+                    )?;
+                    collect(messages::select_rows(&conn, "WHERE server_id IS NULL", [])?);
+                }
+            }
+        }
+        if root.exists() {
+            // Prepared attachments persist canonical paths, including when app data
+            // is reached through a symlink.
+            for entry in std::fs::read_dir(root.canonicalize()?)? {
+                let path = entry?.path();
+                if !referenced.contains(&path) && path.is_file() {
+                    std::fs::remove_file(path)?;
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn open_in_memory() -> Result<Self> {
         Self::initialize(Connection::open_in_memory()?)
     }

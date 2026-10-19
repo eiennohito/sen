@@ -30,6 +30,14 @@ pub enum Error {
 /// Stable rejection categories; diagnostic errors never become row text.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
 pub enum RejectReason {
+    #[error("Upload stalled")]
+    UploadStalled,
+    #[error("Server refused the file")]
+    UploadRefused,
+    #[error("Upload failed")]
+    UploadFailed,
+    #[error("File missing")]
+    FileMissing,
     #[serde(rename = "Synthetic send failure")]
     #[error("rejection: {self:?}")]
     SyntheticSend,

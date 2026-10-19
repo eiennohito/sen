@@ -77,6 +77,8 @@ pub enum StreamEvent {
     },
 }
 pub type Deliver = Arc<dyn Fn(StreamEvent) -> bool + Send + Sync>;
+pub type FinishUpload = Box<dyn FnOnce(&mut dyn Backend) -> Result<MessageInput> + Send>;
+pub type UploadJob = Box<dyn FnOnce(&mut dyn FnMut(f32)) -> Result<FinishUpload> + Send>;
 /// Each stream invocation runs on its own thread. Returning is supervised by the engine.
 pub trait Backend: Send {
     fn has_session(&self) -> bool {
@@ -118,6 +120,22 @@ pub trait Backend: Send {
     fn chats(&mut self, cursor: Option<String>) -> Result<ChatPage>;
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>>;
     fn messages(&mut self, chat: &ChatId, kind: &PageKind) -> Result<Page>;
+    fn prepare_attachment(
+        &mut self,
+        _chat: ChatId,
+        _item: crate::attachments::Attachment,
+        _seq: u32,
+    ) -> Result<UploadJob> {
+        Err(Error::Protocol)
+    }
+    fn finish_attachment(
+        &mut self,
+        _chat: &ChatId,
+        _uploaded: Value,
+        _seq: u32,
+    ) -> Result<MessageInput> {
+        Err(Error::Protocol)
+    }
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput>;
     fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()>;
     fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>>;
@@ -163,6 +181,10 @@ struct FakeState {
     open_failure: Option<crate::client::error::SignInFailure>,
     sign_in_failure: Option<crate::client::error::SignInFailure>,
     fail_send: bool,
+    upload_delay: Duration,
+    send_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    upload_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
+    upload_failures: std::collections::BTreeSet<String>,
     fail_friends: bool,
     friends_calls: u64,
     receipts: std::collections::BTreeMap<ChatId, ServerId>,
@@ -208,7 +230,31 @@ impl FakeBackend {
         }
         Ok(self.clone())
     }
+    pub fn block_send(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered, wait) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        self.0.lock().unwrap().send_gate = Some((entered, blocked));
+        (wait, release)
+    }
+    pub fn block_upload(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (entered, wait) = std::sync::mpsc::channel();
+        let (release, blocked) = std::sync::mpsc::channel();
+        self.0.lock().unwrap().upload_gate = Some((entered, blocked));
+        (wait, release)
+    }
+    pub fn upload_delay(&self, delay: Duration) {
+        self.0.lock().unwrap().upload_delay = delay;
+    }
+    pub fn fail_upload(&self, name: &str) {
+        self.0.lock().unwrap().upload_failures.insert(name.into());
+    }
+
     fn fake_send(&mut self, chat: &ChatId, body: Content, seq: u32) -> Result<MessageInput> {
+        let gate = self.0.lock().unwrap().send_gate.take();
+        if let Some((entered, blocked)) = gate {
+            let _ = entered.send(());
+            let _ = blocked.recv();
+        }
         self.online()?;
         let (row, echo, revision, deliver) = {
             let mut s = self.0.lock().unwrap();
@@ -226,7 +272,10 @@ impl FakeBackend {
             s.next_revision += 1;
             (row, s.echo_first, s.next_revision, s.deliver.clone())
         };
-        if echo && let Some(d) = deliver {
+        if echo
+            && !matches!(row.body, Content::Photo { .. } | Content::File { .. })
+            && let Some(d) = deliver
+        {
             d(StreamEvent::Operation(LiveOp {
                 revision,
                 replay: false,
@@ -678,6 +727,10 @@ impl Backend for FakeBackend {
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>> {
         use crate::client::desktop::assets::{Payload, Pixels, Purpose};
+        if let Some(pixels) = asset.local_pixels().map_err(|_| Error::Decode)? {
+            return Ok(Some(Payload::Image(Arc::new(pixels))));
+        }
+
         if let Some(failure) = asset.failure().or_else(|| {
             self.0
                 .lock()
@@ -902,6 +955,62 @@ impl Backend for FakeBackend {
             rows,
             reaches_start: !matches!(kind, PageKind::Newer { .. }),
         })
+    }
+    fn prepare_attachment(
+        &mut self,
+        chat: ChatId,
+        item: crate::attachments::Attachment,
+        seq: u32,
+    ) -> Result<UploadJob> {
+        let mut fake = self.clone();
+        Ok(Box::new(move |progress| {
+            item.read(crate::attachments::FILE_LIMIT).map_err(|_| {
+                Error::Rejected(if item.path.is_file() {
+                    RejectReason::NotAccepted
+                } else {
+                    RejectReason::FileMissing
+                })
+            })?;
+            fake.online()?;
+            let gate = fake.0.lock().unwrap().upload_gate.take();
+            if let Some((entered, blocked)) = gate {
+                let _ = entered.send(());
+                let _ = blocked.recv();
+            }
+            let delay = fake.0.lock().unwrap().upload_delay;
+            for tick in 0..=10 {
+                progress(tick as f32 / 10.);
+                std::thread::sleep(delay / 11);
+            }
+            if fake.0.lock().unwrap().upload_failures.remove(&item.name) {
+                return Err(Error::Rejected(RejectReason::SyntheticSend));
+            }
+            Ok(Box::new(move |_backend: &mut dyn Backend| {
+                let row = fake.fake_send(&chat, item.content(), seq)?;
+                // SEND_MESSAGE carries the persisted request identity; SEND_CONTENT repeats
+                // the same server identity after storage, without a matching request seq.
+                let (deliver, revision) = {
+                    let mut state = fake.0.lock().unwrap();
+                    state.next_revision += 2;
+                    (state.deliver.clone(), state.next_revision)
+                };
+                if let Some(deliver) = deliver {
+                    deliver(StreamEvent::Operation(LiveOp {
+                        revision: revision - 1,
+                        replay: false,
+                        op: Op::Message(row.clone().into()),
+                    }));
+                    let mut content_echo = row.clone();
+                    content_echo.request_seq = Some(0);
+                    deliver(StreamEvent::Operation(LiveOp {
+                        revision,
+                        replay: false,
+                        op: Op::Message(content_echo.into()),
+                    }));
+                }
+                Ok(row)
+            }) as FinishUpload)
+        }))
     }
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput> {
         self.fake_send(chat, Content::text(text), seq)
@@ -1435,6 +1544,47 @@ impl Backend for LineBackend {
                 .collect(),
             reaches_start,
         })
+    }
+    fn prepare_attachment(
+        &mut self,
+        chat: ChatId,
+        item: crate::attachments::Attachment,
+        seq: u32,
+    ) -> Result<UploadJob> {
+        if !item.path.is_file() {
+            return Err(Error::Rejected(RejectReason::FileMissing));
+        }
+        let upload = self
+            .client
+            .as_mut()
+            .ok_or(Error::Auth)?
+            .prepare_attachment(&chat.0, item, seq)
+            .map_err(|error| match rpc(error) {
+                e @ (Error::Auth | Error::SessionInvalid | Error::Rejected(_)) => e,
+                _ => Error::Rejected(RejectReason::UploadFailed),
+            })?;
+        Ok(Box::new(move |progress| {
+            let uploaded = upload(progress).map_err(|e| match rpc(e) {
+                e @ (Error::Auth | Error::SessionInvalid | Error::Rejected(_)) => e,
+                _ => Error::Rejected(RejectReason::UploadFailed),
+            })?;
+            Ok(Box::new(move |backend: &mut dyn Backend| {
+                backend.finish_attachment(&chat, uploaded, seq)
+            }) as FinishUpload)
+        }))
+    }
+    fn finish_attachment(
+        &mut self,
+        chat: &ChatId,
+        uploaded: Value,
+        seq: u32,
+    ) -> Result<MessageInput> {
+        self.client
+            .as_mut()
+            .ok_or(Error::Auth)?
+            .finish_attachment(&chat.0, uploaded, seq)
+            .map_err(send_rpc)
+            .map(|m| message_input(chat, m, 0))
     }
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput> {
         self.client

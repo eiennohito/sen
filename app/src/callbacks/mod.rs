@@ -14,6 +14,7 @@ macro_rules! focus_bridge {
     };
 }
 
+pub(crate) mod attachments;
 mod browser;
 mod composer;
 mod detail;
@@ -24,6 +25,7 @@ mod viewer;
 
 use crate::*;
 pub(crate) fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
+    attachments::install(ui, &actions);
     composer::install(ui, &actions);
     history::install(ui, &actions);
     browser::install(ui, &actions);

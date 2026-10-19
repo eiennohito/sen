@@ -1,3 +1,4 @@
+import { Attachments } from "attachments.slint";
 import { NewChat } from "new-chat.slint";
 import { PanelState } from "types.slint";
 export { State } from "state.slint";
@@ -168,7 +169,7 @@ export component AppWindow inherits Window {
         conversation.jump(-State.history-extent);
     }
     shell := FocusScope {
-        enabled: !State.new-chat-open;
+        enabled: !State.new-chat-open && !State.attachments-open;
         focus-on-tab-navigation: false;
         key-pressed(event) => { if scenarios.handle-key(event) == accept { return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
         y: 0px;
@@ -271,6 +272,7 @@ export component AppWindow inherits Window {
             }
         }
     }
+    Attachments { }
     RecoveryDialog { }
     scenarios := DemoScenarios { width: root.width; height: root.height; scenario-selected => { shell.focus(); } }
 }

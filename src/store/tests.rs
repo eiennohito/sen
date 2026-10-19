@@ -753,3 +753,59 @@ fn reaction(actor: &str) -> Vec<Reaction> {
         kind: ReactionKind::Predefined(2),
     }]
 }
+
+#[test]
+fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
+    let root = std::env::temp_dir().join(format!("line-clipboard-prune-{}", std::process::id()));
+    let accounts = root.join("accounts");
+    let clipboard = root.join("clipboard-attachments");
+    std::fs::create_dir_all(&clipboard).unwrap();
+    let current = Store::open(&accounts.join("current")).unwrap();
+    let mut other = Store::open(&accounts.join("other")).unwrap();
+    for (index, delivery) in [
+        Delivery::Pending,
+        Delivery::Uncertain,
+        Delivery::Rejected {
+            reason: crate::backend::RejectReason::UploadFailed,
+        },
+        Delivery::Sent,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let path = clipboard.join(format!("{index}.txt"));
+        std::fs::write(&path, b"retry source").unwrap();
+        let mut item = crate::attachments::Attachment::prepare(&path).unwrap();
+        item.clipboard = true;
+        let seq = index as u32 + 1;
+        let (key, _) = other
+            .insert_pending(
+                &chat(),
+                LocalId(format!("local-{index}")),
+                seq,
+                item.content(),
+                100,
+            )
+            .unwrap();
+        match delivery {
+            Delivery::Pending => (),
+            Delivery::Sent => {
+                other.link_sent(seq, id(100), 100).unwrap();
+            }
+            failure => {
+                other.mark_failed(key, failure).unwrap();
+            }
+        }
+    }
+    let orphan = clipboard.join("orphan.png");
+    std::fs::write(&orphan, b"abandoned selection").unwrap();
+    drop(other);
+    current.prune_clipboard(&clipboard, &accounts).unwrap();
+    for index in 0..3 {
+        assert!(clipboard.join(format!("{index}.txt")).exists());
+    }
+    assert!(!clipboard.join("3.txt").exists());
+    assert!(!orphan.exists());
+    drop(current);
+    std::fs::remove_dir_all(root).unwrap();
+}

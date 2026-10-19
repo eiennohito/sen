@@ -119,6 +119,10 @@ pub enum Intent {
         kind: u32,
     },
     StickerPackages,
+    SendAttachments {
+        chat: ChatId,
+        items: Vec<crate::attachments::Attachment>,
+    },
     SendSticker {
         chat: ChatId,
         sticker: Box<Content>,
@@ -166,6 +170,7 @@ impl Intent {
             Self::RetryAsset(_) => "retry-asset",
             Self::Page { .. } => "page",
             Self::Send { .. } => "send",
+            Self::SendAttachments { .. } => "send-attachments",
             Self::React { .. } => "react",
             Self::StickerPackages => "sticker-packages",
             Self::SendSticker { .. } => "send-sticker",
@@ -264,6 +269,11 @@ impl StorageFailure {
 }
 #[derive(Clone)]
 pub enum Delta {
+    UploadFinished(Key),
+    UploadProgress {
+        key: Key,
+        fraction: f32,
+    },
     ReactionFailed(Key),
     StickerPackages(Vec<StickerPackage>),
     CreatedChat(std::result::Result<ChatId, CreateFailure>),
@@ -443,6 +453,35 @@ impl Inbox {
 type Completion = Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>;
 type NetJob = Box<dyn FnOnce(std::result::Result<&mut dyn Backend, Error>) -> Completion + Send>;
 
+type UploadTask = Box<dyn FnOnce() + Send>;
+fn upload_workers() -> mpsc::Sender<UploadTask> {
+    let (tx, rx) = mpsc::channel::<UploadTask>();
+    let rx = Arc::new(Mutex::new(rx));
+    for index in 0..2 {
+        let rx = rx.clone();
+        thread::Builder::new()
+            .name(format!("line-upload-{index}"))
+            .spawn(move || {
+                loop {
+                    let task = rx.lock().unwrap().recv();
+                    match task {
+                        Ok(task) => task(),
+                        Err(_) => break,
+                    }
+                }
+            })
+            .expect("upload worker");
+    }
+    tx
+}
+fn upload_completed(inbox: &Inbox, completed: Completion) {
+    let mut lanes = inbox.lanes.lock().unwrap();
+    if !lanes.stopped {
+        lanes.completed.push_back(completed);
+        inbox.wake.notify_all();
+    }
+}
+
 pub enum StoreLocation {
     Memory,
     Directory(PathBuf),
@@ -608,6 +647,8 @@ impl Worker {
                                     )?;
                                     jobs
                                 },
+                                uploads: upload_workers(),
+                                upload_stop: Arc::new(AtomicBool::new(false)),
                                 net_pending: 0,
                                 generation: 0,
                                 in_flight: BTreeSet::new(),
@@ -690,6 +731,8 @@ struct Engine {
     list_cursor: Option<String>,
     list_more: bool,
     net: mpsc::Sender<NetJob>,
+    uploads: mpsc::Sender<UploadTask>,
+    upload_stop: Arc<AtomicBool>,
     net_pending: usize,
     generation: u64,
     in_flight: BTreeSet<Key>,
@@ -822,6 +865,11 @@ impl Engine {
         let _ = self.tx.send(d);
     }
     fn connection(&mut self, c: Connection) {
+        if !self.account.ready() {
+            self.upload_stop.store(true, Ordering::Relaxed);
+        } else if self.upload_stop.load(Ordering::Relaxed) {
+            self.upload_stop = Arc::new(AtomicBool::new(false));
+        }
         self.connection = c.clone();
         self.emit(Delta::Connection(c));
     }
@@ -904,6 +952,15 @@ impl Engine {
         }
     }
     fn run(&mut self) -> Result<()> {
+        if let Some(accounts) = &self.account_root
+            && let Some(data) = accounts.parent()
+        {
+            // Retain retry sources from every account sharing this clipboard directory.
+            // If any store cannot be read, leave the files alone.
+            let _ = self
+                .store
+                .prune_clipboard(&data.join("clipboard-attachments"), accounts);
+        }
         self.seq = self.store.prefs()?.request_seq;
         self.emit(Delta::Connection(Connection::Local));
         self.emit(Delta::Profile(self.store.account()?.profile));
@@ -1037,6 +1094,7 @@ impl Engine {
         }
         self.inbox.lanes.lock().unwrap().stopped = true;
         self.inbox.wake.notify_all();
+        self.upload_stop.store(true, Ordering::Relaxed);
         self.assets_stop.store(true, Ordering::Relaxed);
         self.stop_stream();
         Ok(())
@@ -1324,6 +1382,26 @@ impl Engine {
                     return Ok(());
                 }
                 self.generation += 1;
+                self.upload_stop.store(true, Ordering::Relaxed);
+                self.upload_stop = Arc::new(AtomicBool::new(false));
+                for row in self.store.all_pending()? {
+                    if row.delivery == Delivery::Pending
+                        && row
+                            .body
+                            .image()
+                            .or_else(|| row.body.attachment())
+                            .is_some_and(|a| a.local_attachment().is_some())
+                    {
+                        self.store.mark_failed(
+                            row.key,
+                            Delivery::Rejected {
+                                reason: crate::backend::RejectReason::UploadFailed,
+                            },
+                        )?;
+                        self.in_flight.remove(&row.key);
+                        self.emit(Delta::UploadFinished(row.key));
+                    }
+                }
                 self.stop_stream();
                 let cancel = Arc::new(AtomicBool::new(false));
                 *self.inbox.pair_cancel.lock().unwrap() = cancel.clone();
@@ -1707,6 +1785,34 @@ impl Engine {
                     },
                 );
             }
+            Intent::SendAttachments { chat, items } => {
+                if self.store.chat(&chat)?.is_some_and(|c| c.left) {
+                    return Ok(());
+                }
+                for item in items
+                    .into_iter()
+                    .filter(|item| !item.too_large(crate::attachments::FILE_LIMIT))
+                {
+                    if let Ok(Some(pixels)) =
+                        crate::client::desktop::assets::Asset::local(item.clone()).local_pixels()
+                    {
+                        self.emit(Delta::Asset {
+                            key: crate::client::desktop::assets::Asset::local(item.clone()).key(),
+                            pixels: Arc::new(pixels),
+                        });
+                    }
+                    let seq = self.next_seq()?;
+                    let (key, _) = self.store.insert_pending(
+                        &chat,
+                        LocalId(format!("{}-{seq}", now_ms())),
+                        seq,
+                        item.content(),
+                        now_ms(),
+                    )?;
+                    self.inbox.refresh(Refresh::Send(key));
+                }
+                self.publish()?;
+            }
             Intent::SendSticker { chat, sticker } => {
                 if !matches!(*sticker, Content::Sticker { .. })
                     || self.store.chat(&chat)?.is_some_and(|c| c.left)
@@ -1762,6 +1868,7 @@ impl Engine {
                     old.body,
                     now_ms(),
                 )?;
+                self.emit(Delta::UploadFinished(key));
                 self.store.discard(key)?;
                 self.publish()?;
                 self.inbox.refresh(Refresh::Send(new));
@@ -1771,6 +1878,7 @@ impl Engine {
                     return Ok(());
                 }
                 let seq = self.next_seq()?;
+                self.emit(Delta::UploadFinished(key));
                 self.store.retry(key, seq)?;
                 self.publish()?;
                 self.inbox.refresh(Refresh::Send(key));
@@ -1779,6 +1887,8 @@ impl Engine {
                 if self.in_flight.contains(&key) || !self.store.message(key)?.delivery.is_failed() {
                     return Ok(());
                 }
+                self.emit(Delta::UploadFinished(key));
+                self.cleanup_clipboard(key)?;
                 self.store.discard(key)?;
                 self.inbox
                     .lanes
@@ -1853,56 +1963,187 @@ impl Engine {
             .ok_or_else(|| StoreError::Invalid("send sequence missing".into()))?;
         let chat = m.chat_id.clone();
         self.in_flight.insert(key);
-        self.rpc_completion(
-            move |backend| {
-                if matches!(body, Content::Sticker { .. }) {
-                    backend.send_sticker(&chat, &body, seq)
-                } else {
-                    backend.send(&chat, body.as_text(), seq)
-                }
-            },
-            move |engine, result, current| {
-                engine.in_flight.remove(&key);
-                match result {
-                    Ok(row) => {
-                        // Apply queued live operations before the result, preserving an echo-first RPC.
-                        if current {
-                            loop {
-                                let event = engine.inbox.lanes.lock().unwrap().live.pop_front();
-                                engine.inbox.wake.notify_all();
-                                match event {
-                                    Some(e) => engine.live(e)?,
-                                    None => break,
-                                }
+        let attachment = body
+            .image()
+            .or_else(|| body.attachment())
+            .and_then(|a| a.local_attachment())
+            .cloned();
+        if let Some(item) = attachment {
+            let cancel = self.upload_stop.clone();
+            let prepare_cancel = cancel.clone();
+            self.rpc(
+                move |backend| {
+                    if prepare_cancel.load(Ordering::Relaxed) {
+                        return Err(Error::Rejected(crate::backend::RejectReason::UploadFailed));
+                    }
+                    backend.prepare_attachment(chat, item, seq)
+                },
+                move |engine, prepared| {
+                    let upload = match prepared {
+                        Ok(upload) => upload,
+                        Err(error) => return engine.sent(key, seq, Err(error), true),
+                    };
+                    if !engine.account.ready() || cancel.load(Ordering::Relaxed) {
+                        return engine.sent(
+                            key,
+                            seq,
+                            Err(Error::Rejected(crate::backend::RejectReason::UploadFailed)),
+                            true,
+                        );
+                    }
+                    let inbox = engine.inbox.clone();
+                    let generation = engine.generation;
+                    let _ = engine.uploads.send(Box::new(move || {
+                        crate::client::desktop::set_cancellation_token(cancel.clone());
+                        let mut last_percent = -1;
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if cancel.load(Ordering::Relaxed) {
+                                return Err(Error::Rejected(
+                                    crate::backend::RejectReason::UploadFailed,
+                                ));
                             }
-                        }
-                        if engine
-                            .store
-                            .chat(&row.chat_id)?
-                            .is_none_or(|c| c.title.is_empty())
-                        {
-                            engine.inbox.refresh(Refresh::Details(row.chat_id.clone()));
-                        }
-                        engine.store.link_sent(seq, row.server_id, row.created_ms)?;
+                            upload(&mut |fraction| {
+                                let percent = (fraction.clamp(0., 1.) * 100.) as i32;
+                                if percent != last_percent {
+                                    last_percent = percent;
+                                    let progress_cancel = cancel.clone();
+                                    upload_completed(
+                                        &inbox,
+                                        Box::new(move |engine| {
+                                            if engine.generation == generation
+                                                && engine.account.ready()
+                                                && !progress_cancel.load(Ordering::Relaxed)
+                                            {
+                                                engine
+                                                    .emit(Delta::UploadProgress { key, fraction });
+                                            }
+                                            Ok(())
+                                        }),
+                                    );
+                                }
+                            })
+                        }))
+                        .unwrap_or(Err(Error::Internal));
+                        upload_completed(
+                            &inbox,
+                            Box::new(move |engine| {
+                                if generation != engine.generation {
+                                    return Ok(());
+                                }
+                                if !engine.account.ready() || cancel.load(Ordering::Relaxed) {
+                                    return engine.sent(
+                                        key,
+                                        seq,
+                                        Err(Error::Rejected(
+                                            crate::backend::RejectReason::UploadFailed,
+                                        )),
+                                        true,
+                                    );
+                                }
+                                if matches!(result, Err(Error::Internal)) {
+                                    engine.emit(Delta::InternalError("upload job panicked"));
+                                }
+                                match result {
+                                    Ok(finish) => engine.rpc_completion(
+                                        move |backend| {
+                                            if cancel.load(Ordering::Relaxed) {
+                                                return Err(Error::Rejected(
+                                                    crate::backend::RejectReason::UploadFailed,
+                                                ));
+                                            }
+                                            finish(backend)
+                                        },
+                                        move |engine, result, current| {
+                                            engine.sent(key, seq, result, current)
+                                        },
+                                    ),
+                                    Err(error) => return engine.sent(key, seq, Err(error), true),
+                                }
+                                Ok(())
+                            }),
+                        );
+                    }));
+                    Ok(())
+                },
+            );
+        } else {
+            self.rpc_completion(
+                move |backend| {
+                    if matches!(body, Content::Sticker { .. }) {
+                        backend.send_sticker(&chat, &body, seq)
+                    } else {
+                        backend.send(&chat, body.as_text(), seq)
                     }
-                    Err(e) => {
-                        let delivery = match &e {
-                            Error::Rejected(reason) => Delivery::Rejected {
-                                reason: reason.clone(),
-                            },
-                            _ => Delivery::Uncertain,
-                        };
-                        engine.store.mark_failed(key, delivery)?;
-                        if current && !matches!(e, Error::Rejected(_)) {
-                            engine.error(e);
-                        }
-                    }
-                };
-                engine.publish()
-            },
-        );
+                },
+                move |engine, result, current| engine.sent(key, seq, result, current),
+            );
+        }
         Ok(())
     }
+    fn cleanup_clipboard(&self, key: Key) -> Result<()> {
+        let row = self.store.message(key)?;
+        if let Some(item) = row
+            .body
+            .image()
+            .or_else(|| row.body.attachment())
+            .and_then(|a| a.local_attachment())
+        {
+            item.delete_clipboard();
+        }
+        Ok(())
+    }
+    fn sent(
+        &mut self,
+        key: Key,
+        seq: u32,
+        result: std::result::Result<crate::store::MessageInput, Error>,
+        current: bool,
+    ) -> Result<()> {
+        let engine = self;
+        engine.in_flight.remove(&key);
+        if current {
+            engine.emit(Delta::UploadFinished(key));
+        }
+        match result {
+            Ok(row) => {
+                // Apply queued live operations before the result, preserving an echo-first RPC.
+                if current {
+                    loop {
+                        let event = engine.inbox.lanes.lock().unwrap().live.pop_front();
+                        engine.inbox.wake.notify_all();
+                        match event {
+                            Some(e) => engine.live(e)?,
+                            None => break,
+                        }
+                    }
+                }
+                if current
+                    && engine
+                        .store
+                        .chat(&row.chat_id)?
+                        .is_none_or(|c| c.title.is_empty())
+                {
+                    engine.inbox.refresh(Refresh::Details(row.chat_id.clone()));
+                }
+                engine.cleanup_clipboard(key)?;
+                engine.store.link_sent(seq, row.server_id, row.created_ms)?;
+            }
+            Err(e) => {
+                let delivery = match &e {
+                    Error::Rejected(reason) => Delivery::Rejected {
+                        reason: reason.clone(),
+                    },
+                    _ => Delivery::Uncertain,
+                };
+                engine.store.mark_failed(key, delivery)?;
+                if current && !matches!(e, Error::Rejected(_)) {
+                    engine.error(e);
+                }
+            }
+        };
+        if current { engine.publish() } else { Ok(()) }
+    }
+
     fn load_chats(&mut self, next: bool) -> Result<()> {
         if !next && self.list_more {
             self.inbox.refresh(Refresh::MoreChats);
@@ -2363,7 +2604,32 @@ impl Engine {
                     if let Op::Message(m) = &op.op {
                         self.resolve_senders(std::slice::from_ref(m.as_ref()))?;
                     }
+                    let clipboard = if let Op::Message(message) = &op.op
+                        && message.outgoing
+                        && message.request_seq.is_some_and(|seq| seq > 0)
+                    {
+                        self.store
+                            .all_pending()?
+                            .into_iter()
+                            .find(|row| {
+                                row.chat_id == message.chat_id
+                                    && row.request_seq == message.request_seq
+                            })
+                            .and_then(|row| {
+                                row.body
+                                    .image()
+                                    .or_else(|| row.body.attachment())
+                                    .and_then(|a| a.local_attachment())
+                                    .filter(|item| item.clipboard)
+                                    .cloned()
+                            })
+                    } else {
+                        None
+                    };
                     self.store.apply_operation(&op, self.continuous)?;
+                    if let Some(item) = clipboard {
+                        item.delete_clipboard();
+                    }
                     if fresh
                         && !op.replay
                         && let Op::Message(m) = &op.op
@@ -2630,6 +2896,7 @@ impl Drop for Engine {
     fn drop(&mut self) {
         self.inbox.lanes.lock().unwrap().stopped = true;
         self.inbox.wake.notify_all();
+        self.upload_stop.store(true, Ordering::Relaxed);
         self.assets_stop.store(true, Ordering::Relaxed);
         self.stop_stream();
     }

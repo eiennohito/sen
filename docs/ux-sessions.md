@@ -33,6 +33,8 @@ credentials stay sealed (T11). The implemented ownership and storage model is de
 
 ## P — Protocol gaps
 
+Known gap: files outside the extension whitelist are not zipped.
+
 Decided 2026-10-18: the traces for T5, P1–P3, P5 and P6 come from a live Chrome
 capture that the user drives, recorded through the approved 127.0.0.1:9222
 debugger. Keep only request/response shapes (methods, paths, field names,
@@ -40,7 +42,6 @@ debugger. Keep only request/response shapes (methods, paths, field names,
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| P3 | Attachment sending, paste and drop of media do not exist (CMP8 media, CMP9, OS10). | composer | After P2. Traced 2026-10-18: `acquireEncryptedAccessToken`, `negotiateE2EEPublicKey`, `determineMediaMessageFlow`, encrypted upload to `obs…/r/talk/emi/<oid>` (image + preview) or `/emf/<oid>` (file) with `x-obs-params`, then `sendMessage` (contentType 1 or 14, `SID`/`OID`, key material in E2EE chunks). The encrypted file format and key-material JSON still need checking against the WASM. Chrome zips files with extensions outside the server's `function.file.extension.whitelist` after a "Send compressed" prompt; decide whether to mirror that. |
 | P5 | Phase 6 implements group info, members/invitees, mute via full-object `updateChat` and confirmed leave via `deleteSelfFromChat`; operations 121/122, 127/128 and 41 queue chat refreshes. **live unverified**. | `detail.slint`, engine, Backend, migration 002 | Invite, accept/reject invitations and remove member remain blocked: untraced. Group editing remains out of scope. |
 | P6 | Phase 6 implements relation-aware profiles, Rename (`updateContactSetting`), Add friend (`addFriendByMid`), fraud notice and Notifications; contact operations 4/49 queue contact refreshes. **live unverified**. | `detail.slint`, engine, Backend | Block, Report and Unblock remain untraced. Favourite is read-only; optional cover skipped (new channel auth); shared media remains blocked pending traces. |
 
@@ -77,6 +78,7 @@ Phase 7 basic chat flows follow [the decided visual design](visual-design.md#flo
 
 | ID | Resolution |
 | --- | --- |
+| P3 | Phase 8: portal multiple-file chooser, clipboard images/file URIs and batched winit drops open the decided attachment dialog without sending. Original-quality photos (10 MB, over 1e8 pixels treated as files) and files (300 MB fallback; configurations are not fetched) retain the source path and worker-generated thumbnail. Ordered pending rows use the network worker, persisted request sequences, op 25/43 dedup, local progress deltas, Retry/re-upload, Discard and File missing. Media encrypts with the existing HKDF/AES-CTR/HMAC envelope; keyMaterial and fileName are sealed, with traced original/preview uploads and MEDIA_CONTENT_INFO/MEDIA_THUMB_INFO. FakeBackend supports delayed/failing uploads; one core flow covers two attachments and retry. **live unverified**; physical portal/clipboard/drop verification remains pending. |
 | P2 | Phase 7: composer Sticker popover, cached owned packages with background refresh, package tabs and four-column image grid through the media cache. Sticker activation sends plain contentType 7 with STKPKGID/STKID/STKVER and no E2EE chunks, using the text-send Pending/Rejected/Uncertain and Retry/Discard lifecycle. Two procedural, original demo packages; core flow covers echo dedup and retry. **live unverified**. |
 | New chat | Phase 7: Chats title action opens searchable friends, removable selected chips and Chat/Create group. One friend opens locally, with the first send creating the conversation; groups call createChat type 0 without self, show progress/failure and open the returned chat before details refresh. Core flow covers first send and group success/failure. **live unverified**. |
 | U0 | Phase 6: user-approved §3.4 is the normative design, including relations, stack, focus, responsive placement and traced action states. |

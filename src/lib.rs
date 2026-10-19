@@ -39,4 +39,5 @@ pub fn sign(rt: &mut Runtime, path: &str, body: &str, access: &str) -> Result<St
     Ok(signature)
 }
 
+pub mod attachments;
 pub mod reporting;

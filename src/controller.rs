@@ -23,6 +23,7 @@ pub struct DetailEntry {
     pub opener: String,
 }
 pub struct AppState {
+    pub uploads: BTreeMap<Key, f32>,
     pub sticker_packages: Vec<StickerPackage>,
     pub reaction_failure: Option<Key>,
     pub created_chat: Option<std::result::Result<ChatId, crate::engine::CreateFailure>>,
@@ -59,6 +60,7 @@ pub struct AppState {
 impl Default for AppState {
     fn default() -> Self {
         Self {
+            uploads: BTreeMap::new(),
             sticker_packages: vec![],
             reaction_failure: None,
             created_chat: None,
@@ -197,6 +199,18 @@ impl AppState {
     }
     pub fn apply(&mut self, delta: Delta) {
         match delta {
+            Delta::UploadFinished(key) => {
+                self.uploads.remove(&key);
+            }
+            Delta::UploadProgress { key, fraction } => {
+                if self
+                    .messages
+                    .get(&key)
+                    .is_none_or(|row| row.delivery == crate::store::Delivery::Pending)
+                {
+                    self.uploads.insert(key, fraction);
+                }
+            }
             Delta::StickerPackages(rows) => self.sticker_packages = rows,
             Delta::ReactionFailed(key) => self.reaction_failure = Some(key),
             Delta::CreatedChat(result) => self.created_chat = Some(result),
@@ -287,9 +301,13 @@ impl AppState {
             } if sub == self.window_sub => {
                 self.window_loading = false;
                 for key in remove {
+                    self.uploads.remove(&key);
                     self.messages.remove(&key);
                 }
                 for row in upsert {
+                    if row.delivery != crate::store::Delivery::Pending {
+                        self.uploads.remove(&row.key);
+                    }
                     self.messages.insert(row.key, row);
                 }
                 self.reply_targets = replies

@@ -1478,6 +1478,17 @@ fn signed_out_account_intents_never_reach_the_backend() {
             chat: ChatId("unknown-chat-id".into()),
             text: "private text".into(),
         },
+        Intent::SendAttachments {
+            chat: ChatId("unknown-chat-id".into()),
+            items: vec![line_wasm_poc::attachments::Attachment {
+                path: "/unread-signed-out-attachment".into(),
+                name: "private.txt".into(),
+                size: 1,
+                photo: None,
+                preview: vec![],
+                clipboard: false,
+            }],
+        },
     ] {
         app.send(intent);
     }
@@ -1805,4 +1816,231 @@ fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
             _ => {}
         }
     }
+}
+
+#[test]
+fn attachments_preserve_order_progress_and_retry_identity() {
+    use line_wasm_poc::{attachments::Attachment, store::Content};
+    let root = std::env::temp_dir().join(format!("line-attachments-flow-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let photo = root.join("First.png");
+    image::RgbaImage::from_pixel(32, 24, image::Rgba([40, 120, 200, 255]))
+        .save(&photo)
+        .unwrap();
+    let file = root.join("Second.txt");
+    std::fs::write(&file, b"synthetic attachment").unwrap();
+    let items = vec![
+        Attachment::prepare(&photo).unwrap(),
+        Attachment::prepare(&file).unwrap(),
+    ];
+    let fake = FakeBackend::canned();
+    fake.upload_delay(Duration::from_millis(80));
+    fake.fail_upload("Second.txt");
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    assert_eq!(
+        fake.page(&ChatId("alice".into())).len(),
+        1,
+        "selection must not send"
+    );
+    app.send(Intent::SendAttachments {
+        chat: ChatId("alice".into()),
+        items,
+    });
+    app.until(|s| s.messages.values().filter(|m| m.outgoing).count() == 2);
+    let mut rows = app
+        .state
+        .rows()
+        .into_iter()
+        .filter(|m| m.outgoing)
+        .collect::<Vec<_>>();
+    rows.sort_by_key(|m| m.key);
+    let first = rows[0].key;
+    let second = rows[1].key;
+    assert!(matches!(rows[0].body, Content::Photo { .. }));
+    assert!(
+        matches!(&rows[1].body, Content::File { name: Some(name), .. } if name == "Second.txt")
+    );
+    app.until(|s| s.uploads.values().any(|p| *p > 0. && *p < 1.));
+    app.until(|s| {
+        s.messages[&first].delivery == Delivery::Sent && s.messages[&second].delivery.is_failed()
+    });
+    assert_eq!(fake.page(&ChatId("alice".into())).len(), 2);
+    let old_seq = app.state.messages[&second].request_seq;
+    app.send(Intent::Retry(second));
+    app.until(|s| s.messages[&second].delivery == Delivery::Sent);
+    assert_ne!(app.state.messages[&second].request_seq, old_seq);
+    assert_eq!(app.state.messages[&first].key, first);
+    assert_eq!(app.state.messages[&second].key, second);
+    let sent = fake.page(&ChatId("alice".into()));
+    assert_eq!(sent.len(), 3);
+    assert!(matches!(sent[1].body, Content::Photo { .. }));
+    assert!(
+        matches!(&sent[2].body, Content::File { name: Some(name), .. } if name == "Second.txt")
+    );
+    assert!(app.state.messages[&first].sort < app.state.messages[&second].sort);
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn text_send_completes_while_upload_is_blocked() {
+    use line_wasm_poc::attachments::Attachment;
+    let root = std::env::temp_dir().join(format!("line-upload-blocked-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("blocked.txt");
+    std::fs::write(&path, b"attachment").unwrap();
+    let fake = FakeBackend::canned();
+    let (entered, release) = fake.block_upload();
+    let mut app = App::new(fake, StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.send(Intent::SendAttachments {
+        chat: ChatId("alice".into()),
+        items: vec![Attachment::prepare(&path).unwrap()],
+    });
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("upload blocked");
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "text during upload".into(),
+    });
+    app.until(|s| {
+        s.messages
+            .values()
+            .any(|m| message_text(m) == "text during upload" && m.delivery == Delivery::Sent)
+    });
+    assert!(
+        app.state
+            .messages
+            .values()
+            .any(|m| m.body.attachment().is_some() && m.delivery == Delivery::Pending)
+    );
+    release.send(()).unwrap();
+    app.until(|s| {
+        s.messages
+            .values()
+            .any(|m| m.body.attachment().is_some() && m.delivery == Delivery::Sent)
+    });
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn attachment_send_success_after_sign_in_still_confirms_the_row() {
+    use line_wasm_poc::{attachments::Attachment, store::Store};
+    let root = std::env::temp_dir().join(format!("line-send-sign-in-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("clipboard.txt");
+    std::fs::write(&path, b"attachment").unwrap();
+    let fake = FakeBackend::canned();
+    let (entered, release) = fake.block_send();
+    let mut app = App::new(fake.clone(), StoreLocation::Directory(root.join("store")));
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    let mut item = Attachment::prepare(&path).unwrap();
+    item.clipboard = true;
+    app.send(Intent::SendAttachments {
+        chat: ChatId("alice".into()),
+        items: vec![item],
+    });
+    entered
+        .recv_timeout(Duration::from_secs(5))
+        .expect("send blocked after upload");
+    app.until(|s| {
+        s.messages
+            .values()
+            .any(|m| m.outgoing && m.delivery == Delivery::Pending)
+    });
+    let key = app
+        .state
+        .messages
+        .values()
+        .find(|m| m.outgoing)
+        .unwrap()
+        .key;
+    app.send(Intent::SignIn);
+    app.until(|s| s.connection == Connection::SigningIn);
+    let store = Store::open(&root.join("store")).unwrap();
+    assert_eq!(
+        store.message(key).unwrap().delivery,
+        Delivery::Rejected {
+            reason: RejectReason::UploadFailed
+        }
+    );
+    release.send(()).unwrap();
+    // Sign-in runs behind the send on the FIFO network queue. Its failure is a barrier
+    // proving the stale send completion has been applied, without relying on UI updates.
+    app.until(|s| s.connection == Connection::SessionInvalid);
+    assert_eq!(store.message(key).unwrap().delivery, Delivery::Sent);
+    assert_eq!(fake.page(&ChatId("alice".into())).len(), 2);
+    assert!(!path.exists());
+    drop(store);
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn expired_session_cancels_upload_even_if_connection_recovers_before_it_finishes() {
+    use line_wasm_poc::{
+        attachments::Attachment,
+        backend::{Error, FakeRpc},
+    };
+    let root = std::env::temp_dir().join(format!("line-upload-session-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("blocked.txt");
+    std::fs::write(&path, b"attachment").unwrap();
+    let fake = FakeBackend::canned();
+    let (entered, release) = fake.block_upload();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.send(Intent::SendAttachments {
+        chat: ChatId("alice".into()),
+        items: vec![Attachment::prepare(&path).unwrap()],
+    });
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.until(|s| s.messages.values().any(|m| m.outgoing));
+    let key = app
+        .state
+        .messages
+        .values()
+        .find(|m| m.outgoing)
+        .unwrap()
+        .key;
+    fake.fail_rpc(FakeRpc::StickerPackages, Error::Auth);
+    app.send(Intent::StickerPackages);
+    app.until(|s| s.connection == Connection::AuthExpired);
+    // Upload attempts while authorization is unusable are ignored.
+    app.send(Intent::SendAttachments {
+        chat: ChatId("alice".into()),
+        items: vec![Attachment::prepare(&path).unwrap()],
+    });
+    app.send(Intent::Prefs(Prefs {
+        text_size: 29,
+        ..Default::default()
+    }));
+    app.until(|s| s.prefs.text_size == 29);
+    fake.offline(false);
+    app.until(|s| s.connection == Connection::Online);
+    release.send(()).unwrap();
+    app.until(|s| s.messages[&key].delivery.is_failed());
+    assert_eq!(
+        app.state.messages.values().filter(|m| m.outgoing).count(),
+        1
+    );
+    assert_eq!(fake.page(&ChatId("alice".into())).len(), 1);
+    assert!(!app.state.uploads.contains_key(&key));
+    // Recovery allows a new attempt, without reviving the cancelled attempt.
+    app.send(Intent::Retry(key));
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+    assert_eq!(fake.page(&ChatId("alice".into())).len(), 2);
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
 }

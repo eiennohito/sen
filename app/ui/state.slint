@@ -1,7 +1,25 @@
+import { AttachmentItem } from "types.slint";
 import { StickerTab, StickerItem, ComposeFriend } from "types.slint";
 import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
+    in-out property <string> attachment-injection-paths;
+    in-out property <bool> attachments-open;
+    in-out property <string> attachments-chat;
+    in-out property <string> attachments-error;
+    in-out property <int> attachments-count;
+    in-out property <[AttachmentItem]> attachment-items;
+    callback attachments-prepared(string);
+    callback attach();
+    callback paste-text();
+    in-out property <int> paste-text-serial;
+    callback paste-attachment() -> bool;
+    callback inject-attachments(string);
+    callback drop-attachment(string);
+    callback remove-attachment(int);
+    callback cancel-attachments();
+    callback send-attachments();
+
     in-out property <bool> history-virtual;
     in-out property <length> virtual-history-height;
     in-out property <length> plain-history-height;
@@ -218,7 +236,7 @@ export global State {
     in-out property <bool> viewer-saving;
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
-    out property <bool> window-modal-open: self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.demo-scenarios-open || self.recovery-kind != "" || self.detail-dialog != "";
+    out property <bool> window-modal-open: self.attachments-open || self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.demo-scenarios-open || self.recovery-kind != "" || self.detail-dialog != "";
     in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
     callback viewer-step(int);
     callback save-photo();

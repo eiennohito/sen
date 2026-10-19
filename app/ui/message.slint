@@ -215,7 +215,7 @@ export component Message inherits VerticalLayout {
                                             card-title := TextInput { read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else { State.focus-composer(); } return accept; } State.reading-key(event) } }
                                             card-meta := Text { text: root.message.detail; color: Tokens.secondary; font-size: Tokens.small; }
                                         }
-                                        if root.message.kind == MessageKind.file && (!root.message.file-failed || root.message.file-retryable): IconButton { label: root.message.file-failed ? "Retry file" : "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !State.file-saving; activated => { State.save-file(root.message.id); } }
+                                        if root.message.kind == MessageKind.file && (root.message.delivery == "Sent" || root.message.delivery == "Read") && (!root.message.file-failed || root.message.file-retryable): IconButton { label: root.message.file-failed ? "Retry file" : "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !State.file-saving && !root.message.local-media; activated => { State.save-file(root.message.id); } }
                                     }
                                     if !root.card && root.message.detail != "": Rectangle {
                                         height: detail.preferred-height;
@@ -223,6 +223,10 @@ export component Message inherits VerticalLayout {
                                         detail := Text { x: 0px; y: 0px; width: parent.width; text: root.message.detail; font-size: Tokens.small; color: Tokens.secondary; wrap: detail-measure.min-width > self.width ? char-wrap : word-wrap; }
                                     }
 
+                                    if root.message.uploading && root.card: Rectangle { height: 3px; background: Tokens.surface-2;
+                                        accessible-role: text; accessible-label: "Uploading " + round(root.message.upload-progress * 100) + "%";
+                                        Rectangle { x: 0px; y: 0px; height: 100%; width: parent.width * root.message.upload-progress; background: Tokens.accent; }
+                                    }
                                     if root.message.file-failed: Text { text: root.message.file-error; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
                                     if State.file-save-id == root.message.id && State.file-save-status != "": Rectangle {
                                         height: saved.preferred-height;
@@ -255,6 +259,14 @@ export component Message inherits VerticalLayout {
                                             property <int> return-serial: State.viewer-return-serial;
                                             changed return-serial => { if !State.viewer-open && State.viewer-return-key == root.message.image-key { self.focus(); } }
                                         }
+                                        if root.message.uploading: Rectangle {
+                                            width: root.message.has-picture ? min(parent.width, parent.height * root.message.picture.width / max(1, root.message.picture.height)) : parent.width;
+                                            x: (parent.width - self.width) / 2;
+                                            y: root.message.has-picture ? (parent.height + min(parent.height, parent.width * root.message.picture.height / max(1, root.message.picture.width))) / 2 - 3px : parent.height - 3px;
+                                            height: 3px; background: Tokens.surface-2;
+                                            accessible-role: text; accessible-label: "Uploading " + round(root.message.upload-progress * 100) + "%";
+                                            Rectangle { x: 0px; y: 0px; height: 100%; width: parent.width * root.message.upload-progress; background: Tokens.accent; }
+                                        }
                                         if !root.message.has-picture: VerticalLayout {
                                             padding: 8px; spacing: 8px; alignment: center;
                                             Text { text: root.message.image-failed ? root.message.image-error : root.message.sticker ? root.message.body : root.message.image-key == "" ? "Photo unavailable" : "Loading image…"; color: root.message.sticker && !root.message.image-failed ? Tokens.foreground : Tokens.secondary; horizontal-alignment: center; wrap: word-wrap; }
@@ -269,9 +281,9 @@ export component Message inherits VerticalLayout {
                                 spacing: 8px; alignment: start;
                                 Text { text: root.message.delivery == "Rejected" ? "Not sent" : "Maybe not sent"; color: Tokens.danger; font-size: Tokens.small; vertical-alignment: center; }
                                 TextAction {
-                                    text: root.message.delivery == "Rejected" ? "Retry" : "Resend";
+                                    text: root.message.file-missing ? "File missing" : root.message.delivery == "Rejected" ? "Retry" : "Resend";
                                     focus-on-click: false;
-                                    enabled: State.connected;
+                                    enabled: State.connected && !root.message.file-missing;
                                     clicked => { State.retry-message(root.message.id); }
                                     property <bool> restore-action: State.recovery-focus-id == root.message.id && State.recovery-focus-action == "resend";
                                     changed restore-action => { if self.restore-action { self.focus-action(); State.recovery-focus-id = ""; } }

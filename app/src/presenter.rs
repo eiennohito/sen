@@ -161,6 +161,8 @@ impl Presenter {
         if let Some((stored, identity, row)) = self.rendered.get(&m.key)
             && stored == m
             && identity == &sender
+            && (m.delivery != Delivery::Pending
+                || row.upload_progress == state.uploads.get(&m.key).copied().unwrap_or(0.))
         {
             return row.clone();
         }
@@ -211,6 +213,22 @@ impl Presenter {
             Delivery::Uncertain => "Unconfirmed",
         }
         .into();
+        if let Some(_item) = m
+            .body
+            .image()
+            .or_else(|| m.body.attachment())
+            .and_then(|asset| asset.local_attachment())
+        {
+            row.local_media = true;
+            row.upload_progress = state.uploads.get(&m.key).copied().unwrap_or(0.);
+            row.uploading = m.delivery == Delivery::Pending && row.upload_progress < 1.;
+            row.file_missing = matches!(
+                m.delivery,
+                Delivery::Rejected {
+                    reason: line_wasm_poc::backend::RejectReason::FileMissing
+                }
+            );
+        }
         row.can_react = m.server_id.is_some() && !m.body.is_withdrawn();
         row.reaction_count = m.reactions.len() as i32;
         row.own_reaction = m

@@ -19,6 +19,10 @@ pub(crate) fn image_text(failure: Failure) -> &'static str {
 
 pub(crate) fn rejection(reason: &RejectReason) -> &'static str {
     match reason {
+        RejectReason::UploadStalled => "Upload stalled",
+        RejectReason::UploadRefused => "Server refused the file",
+        RejectReason::UploadFailed => "Upload failed",
+        RejectReason::FileMissing => "File missing",
         RejectReason::SyntheticSend => "Synthetic send failure",
         RejectReason::SyntheticFriends => "Synthetic friends failure",
         RejectReason::SyntheticSignIn => "Synthetic sign-in is unavailable",
