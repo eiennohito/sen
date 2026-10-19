@@ -386,7 +386,6 @@ pub enum PageKind {
     Around { id: ServerId },
     Recent,
     Older { before: Cursor },
-    Newer { after: Cursor },
 }
 /// Window selection; Key anchors must belong to the requested chat.
 #[derive(Clone, Copy, Debug)]

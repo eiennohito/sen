@@ -160,7 +160,7 @@ body-field updates separately, so reaction-only operations cannot suppress a
 later content update. Incoming rows enter as Sent; persisted receipt markers
 upgrade outgoing rows to Read, including rows loaded after the receipt.
 
-Page `Older.before`/`Newer.after` cursors certify adjacency to the fetched range.
+Page `Older.before` cursors certify adjacency to the fetched range.
 Segments merge at shared endpoints or overlapping ranges; consecutive numeric
 server ids alone do not certify continuity. Empty pages with `reaches_start`
 mark the anchored segment (or the newest segment for Recent). An entirely empty
@@ -248,8 +248,8 @@ straight from fetchers to the UI delta channel; authorization remains a net job.
 
 Older-history window shifts read stored rows first. A page request becomes a
 background refresh and is skipped when a stored segment covers the cursor.
-MoreChats raises the local limit and publishes immediately; search queries the
-whole store by title or preview using LIKE. Mutations publish only changed chat
+MoreChats raises the local limit and publishes immediately; desktop search
+filters the published chat list. Mutations publish only changed chat
 rows (`Changes.chats_changed`), and a draft never republishes a message window.
 
 A live operation applies its delta directly (move the chat up, write the row,
@@ -309,7 +309,7 @@ refusals, including HTTP 5xx, clear it. Cached asset hits and local-only jobs do
 not affect health. SignedOut cancels queued work, preserves in-flight completions
 for their account, and requires explicit sign-in. Store errors remain separate transaction
 errors. Every Bug is logged at the engine error boundary with the operation,
-programmer-owned Bug text and context strings. Account-scoped dispatch requires
+programmer-owned Bug labels; untrusted context strings are redacted. Account-scoped dispatch requires
 both a ready session and a known account MID; pending local sends wait for profile validation.
 Authenticated API calls without an access token return SignedOut(NoSession).
 
@@ -349,14 +349,18 @@ the event loop. They never exit on a slow turn.
 ### Backend seam
 
 The engine talks to a `Backend` trait at the RPC level: `profile`, `chats`,
-`messages page`, `send`, `ops stream`, `media`. It has two implementations:
+`messages page`, `send`, `ops stream`, and asset request handles. It has two implementations:
 
 - `LineBackend`: the existing transport, WASM and crypto.
 - `FakeBackend`: in-process, scripted. It serves canned chats and messages and
-  can inject operations, delays and failures.
+  can inject operations, delays and failures. It is compiled only for unit tests or
+  with the `line/demo` feature; integration tests enable that feature via a self dev-dependency.
+  Fixture data and upload pacing use `configure`; RPC failures and observations use
+  `fail_rpc` and `calls()`.
 
 The demo (`--demo`), `--snapshot` scenes and integration tests run the same
-engine, store and controller on `FakeBackend`.
+engine, store and controller on `FakeBackend`. The desktop `demo` feature enables
+these modules and CLI flags; `ui-debug` implies `demo`.
 
 ## Projection and deltas
 

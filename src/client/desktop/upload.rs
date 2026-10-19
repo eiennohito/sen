@@ -1,5 +1,5 @@
 use super::*;
-use crate::attachments::{Attachment, FILE_LIMIT};
+use crate::attachments::Attachment;
 
 impl Client {
     pub fn prepare_attachment(
@@ -31,10 +31,9 @@ impl Client {
         );
         let http = self.api.http.assets();
         Ok(move |progress: &mut dyn FnMut(f32)| {
-            let original = item.read(FILE_LIMIT)?;
+            let original = item.read()?;
             let mut material = [0_u8; 32];
-            use std::io::Read;
-            fs::File::open("/dev/urandom")?.read_exact(&mut material)?;
+            crate::fill_random(&mut material)?;
             let encrypted = assets::encrypt_media(original, &material)?;
             let preview = if item.photo.is_some() {
                 assets::encrypt_media(std::mem::take(&mut item.preview), &material)?
@@ -43,7 +42,7 @@ impl Client {
             };
             let sid = if content_type == 1 { "emi" } else { "emf" };
             let mut uuid = [0u8; 16];
-            fs::File::open("/dev/urandom")?.read_exact(&mut uuid)?;
+            crate::fill_random(&mut uuid)?;
             uuid[6] = (uuid[6] & 15) | 0x40;
             uuid[8] = (uuid[8] & 63) | 0x80;
             let hex: String = uuid.iter().map(|b| format!("{b:02x}")).collect();

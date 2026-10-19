@@ -1,6 +1,21 @@
 use std::{path::PathBuf, process::Command};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let status = Command::new("cargo")
+        .args([
+            "build",
+            "--offline",
+            "--release",
+            "-p",
+            "line-desktop",
+            "--features",
+            "demo",
+        ])
+        .status()?;
+    if !status.success() {
+        return Err("demo build failed".into());
+    }
+
     let target = std::env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target"));

@@ -87,7 +87,7 @@ live results below do not prove current authorization.
 Safe build and verification commands (synthetic data only):
 
 ```sh
-cargo build --release --offline -p line-desktop
+cargo build --release --offline -p line-desktop --features demo
 cargo fmt --all --check
 cargo test --release --offline --workspace
 cargo clippy --release --offline --workspace --all-targets -- -D warnings

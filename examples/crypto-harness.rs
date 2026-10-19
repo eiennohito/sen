@@ -5,8 +5,8 @@ use base64::{
 };
 use line::test_support;
 use line::{
+    client::{sign, signing_key},
     runtime::{Call, Runtime},
-    sign, signing_key,
 };
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::Path};

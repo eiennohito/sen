@@ -1,10 +1,7 @@
 //! Shared client protocol against the same endpoints as LINE Chrome.
 //! Rust owns protocol/state/WASM, all HTTPS (RPC, SSE, media) and QR encoding.
 pub mod error;
-use crate::{
-    runtime::{Call, Runtime},
-    sign,
-};
+use crate::runtime::{Call, Runtime};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{
     Engine,
@@ -94,7 +91,7 @@ pub(crate) struct Api {
     state: Value,
     session_path: Option<PathBuf>,
     stream_access: std::sync::Arc<std::sync::RwLock<String>>,
-    signing_key: Option<(String, crate::SigningKey)>,
+    signing_key: Option<(String, SigningKey)>,
     own_keys: std::collections::HashMap<u64, u32>,
 }
 impl Api {
@@ -105,7 +102,7 @@ impl Api {
             .as_ref()
             .is_none_or(|(token, _)| token != access)
         {
-            let key = crate::signing_key(&mut self.rt, access, &self.http.client_version)?;
+            let key = signing_key(&mut self.rt, access, &self.http.client_version)?;
             if let Some((_, old)) = self.signing_key.replace((access.into(), key)) {
                 old.destroy(&mut self.rt)?;
             }
@@ -380,4 +377,37 @@ pub(crate) fn network_touched() {
 }
 pub(crate) fn take_network_touched() -> bool {
     NETWORK_TOUCHED.replace(false)
+}
+
+pub const TOKEN: &str = "wODdrvWqmdP4Zliay-iF3cz3KZcK0ekrial868apg06TXeCo7A1hIQO0ESElHg6D";
+
+/// Derive and retain the HMAC object for one version/access-token pair.
+pub struct SigningKey {
+    hmac: u32,
+    derived: u32,
+}
+impl SigningKey {
+    pub fn destroy(self, rt: &mut Runtime) -> Result<()> {
+        rt.destroy("Hmac", self.hmac)?;
+        rt.destroy("SecureKey", self.derived)
+    }
+}
+pub fn signing_key(rt: &mut Runtime, access: &str, client_version: &str) -> Result<SigningKey> {
+    let token = rt.string(TOKEN)?;
+    let sk = rt.static_call(Call::SecureKeyLoadToken, &[token])?;
+    rt.free_string(token)?;
+    let cv = rt.bytes(&Sha256::digest(client_version.as_bytes()));
+    let at = rt.bytes(&Sha256::digest(access.as_bytes()));
+    let dk = rt.method(Call::SecureKeyDeriveKey, sk, &[cv, at])?;
+    rt.release(cv)?;
+    rt.release(at)?;
+    let hmac = rt.construct(Call::HmacNew, &[dk as u64])?;
+    rt.destroy("SecureKey", sk)?;
+    Ok(SigningKey { hmac, derived: dk })
+}
+pub fn sign(rt: &mut Runtime, key: &SigningKey, path: &str, body: &str) -> Result<String> {
+    let msg = rt.bytes(format!("{path}{body}").as_bytes());
+    let out = rt.method(Call::HmacDigest, key.hmac, &[msg])?;
+    rt.release(msg)?;
+    Ok(STANDARD.encode(rt.output(out)?))
 }

@@ -210,7 +210,7 @@ fn ensure_chat(tx: &Connection, chat: &ChatId) -> Result<()> {
     tx.execute("INSERT OR IGNORE INTO chat(chat_id) VALUES(?)", [&chat.0])?;
     Ok(())
 }
-fn server_sort(id: &ServerId) -> String {
+pub(crate) fn server_sort(id: &ServerId) -> String {
     format!("{:0>20}", id.as_str())
 }
 fn numeric_max(a: Option<ServerId>, b: Option<ServerId>) -> Option<ServerId> {

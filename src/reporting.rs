@@ -1,4 +1,4 @@
-//! Single privacy-preserving error sink. Untrusted diagnostic text is never printed.
+//! Privacy-preserving error sink. Only typed codes and programmer-owned Bug labels are printed.
 use std::{
     error::Error,
     time::{SystemTime, UNIX_EPOCH},
@@ -27,29 +27,35 @@ fn chain(error: &(dyn Error + 'static)) -> String {
         chain.push(if let Some(e) = e.downcast_ref::<std::io::Error>() {
             format!("io:{:?}:os={:?}", e.kind(), e.raw_os_error())
         } else if let Some(e) = e.downcast_ref::<rusqlite::Error>() {
-            format!("sqlite:{:?}", e.sqlite_error_code())
+            match e {
+                rusqlite::Error::SqliteFailure(code, _) => {
+                    format!("sqlite:{:?}:extended={}", code.code, code.extended_code)
+                }
+                _ => "sqlite:operation".into(),
+            }
         } else if let Some(e) = e.downcast_ref::<crate::client::RpcError>() {
             format!("rpc:http={}:code={}", e.http, e.code)
         } else if let Some(e) = e.downcast_ref::<crate::client::error::Failure>() {
             match e {
-                crate::client::error::Failure::Bug(message) => format!("bug:{message}"),
+                crate::client::error::Failure::Bug(label) => format!("client-bug:{label}"),
                 _ => e.to_string(),
             }
-        } else if let Some(e) = e.downcast_ref::<crate::client::error::Error>() {
-            match e {
-                crate::client::error::Error::SignIn(
-                    reason @ crate::client::error::SignInFailure::CryptoChanged { .. },
-                ) => format!("{reason:?}"),
-                crate::client::error::Error::SignIn(reason) => format!("sign-in:{}", reason.kind()),
-            }
+        } else if let Some(crate::client::error::Error::SignIn(reason)) =
+            e.downcast_ref::<crate::client::error::Error>()
+        {
+            format!("sign-in:{}", reason.kind())
         } else if let Some(e) = e.downcast_ref::<crate::store::StoreError>() {
             match e {
-                crate::store::StoreError::Invalid(message) => safe_invariant(message).into(),
-                crate::store::StoreError::Json(_) => "stored-json-decode".into(),
-                crate::store::StoreError::Sql(e) => format!("sqlite:{:?}", e.sqlite_error_code()),
-                crate::store::StoreError::Io(e) => {
-                    format!("io:{:?}:os={:?}", e.kind(), e.raw_os_error())
+                crate::store::StoreError::Sql(cause) => {
+                    current = Some(cause);
+                    continue;
                 }
+                crate::store::StoreError::Io(cause) => {
+                    current = Some(cause);
+                    continue;
+                }
+                crate::store::StoreError::Json(_) => "store:json".into(),
+                crate::store::StoreError::Invalid(_) => "store-invariant".into(),
             }
         } else {
             "context(redacted)".into()
@@ -59,33 +65,36 @@ fn chain(error: &(dyn Error + 'static)) -> String {
     chain.join(" -> ")
 }
 
-// Only programmer-owned literals are safe. A future diagnostic that embeds a
-// request, token, or message body must not accidentally bypass redaction.
-fn safe_invariant(message: &str) -> &str {
-    match message {
-        "window anchor not in chat"
-        | "sync worker could not start"
-        | "request sequence exhausted"
-        | "send sequence missing"
-        | "read marker missing"
-        | "row already confirmed with another id"
-        | "server id belongs to another chat"
-        | "message chat mismatch"
-        | "request sequence belongs to another chat"
-        | "unknown send request"
-        | "send request mismatch"
-        | "expected failure delivery"
-        | "confirmed row cannot fail or retry"
-        | "only failed rows can retry"
-        | "only failed rows can be discarded"
-        | "noncanonical server id" => message,
-        _ => "invalid-store-operation(details redacted)",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn transparent_store_errors_and_sign_in_keep_typed_causes() {
+        let io = crate::store::StoreError::Io(std::io::Error::from_raw_os_error(libc::ENOSPC));
+        let output = chain(&io);
+        assert!(output.contains("StorageFull"));
+        assert!(output.contains(&format!("os=Some({})", libc::ENOSPC)));
+        assert!(!output.contains("invariant"));
+        let sql = crate::store::StoreError::Sql(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE),
+            Some("private-message".into()),
+        ));
+        let output = chain(&sql);
+        assert!(output.contains(&format!(
+            "extended={}",
+            rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+        )));
+        assert!(!output.contains("invariant"));
+        assert!(!output.contains("private-message"));
+        let sign_in = crate::client::error::Error::SignIn(
+            crate::client::error::SignInFailure::CryptoModule("private-path".into()),
+        );
+        assert_eq!(chain(&sign_in), "sign-in:crypto-module");
+        assert_eq!(
+            chain(&crate::client::error::Failure::Bug("decode".into())),
+            "client-bug:decode"
+        );
+    }
     #[test]
     fn diagnostic_chains_keep_categories_without_private_payloads() {
         let error = anyhow::Error::new(std::io::Error::from_raw_os_error(libc::ENOSPC))
@@ -96,7 +105,7 @@ mod tests {
             assert!(!output.contains(secret));
         }
         let invalid = crate::store::StoreError::Invalid("window anchor not in chat".into());
-        assert!(chain(&invalid).contains("window anchor not in chat"));
+        assert!(chain(&invalid).contains("store-invariant"));
         let untrusted = crate::store::StoreError::Invalid("private-message".into());
         assert!(!chain(&untrusted).contains("private-message"));
     }

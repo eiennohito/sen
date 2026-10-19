@@ -74,6 +74,7 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         });
     ui.global::<State>()
         .on_has_text(|text| !text.trim().is_empty());
+    #[cfg(feature = "demo")]
     {
         use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
         let saved = Rc::new(RefCell::new(Vec::new()));
@@ -116,6 +117,7 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
             }
         });
     }
+    #[cfg(feature = "demo")]
     {
         use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
         let saved = Rc::new(RefCell::new(None));
@@ -201,6 +203,7 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     bridge!(on_reset_viewer, invoke_reset_viewer);
     bridge!(on_history_scroll, invoke_history_scroll, delta);
     bridge!(on_history_jump, invoke_history_jump, y);
+    #[cfg(feature = "demo")]
     bridge!(on_demo_event, invoke_demo_event, arg0);
     bridge!(on_recover_message, invoke_recover_message, arg0);
     bridge!(on_settings_changed, invoke_settings_changed);

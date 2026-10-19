@@ -18,8 +18,9 @@ args = parser.parse_args()
 binary = ROOT / "target/release/line-desktop"
 if not binary.is_file():
     parser.error("build first: cargo build --release -p line-desktop")
-if json.loads(subprocess.check_output([str(binary), "--build-info"]))["mcp_debug"]:
-    parser.error("refusing to install a UI-debug build; rebuild without --features ui-debug")
+build_info = json.loads(subprocess.check_output([str(binary), "--build-info"]))
+if build_info["demo"] or build_info["mcp_debug"]:
+    parser.error("refusing to install a demo or UI-debug build; rebuild without features")
 if args.destdir:
     bin_dir = args.destdir.resolve() / "bin"
     data_dir = args.destdir.resolve() / "share"

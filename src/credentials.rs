@@ -16,7 +16,7 @@ use aes_gcm::{
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
 use serde_json::{Value, json};
-use std::{fs, io::Read, path::Path};
+use std::{fs, path::Path};
 
 const FORMAT: &str = "line-desktop-sealed-session";
 const ENVIRONMENT: &str = "LINE_DESKTOP_CREDENTIALS";
@@ -139,7 +139,7 @@ fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Resu
 
 fn new_key(keys: &impl Keys) -> Result<(String, [u8; 32])> {
     let mut random = [0u8; 48];
-    fs::File::open("/dev/urandom")?.read_exact(&mut random)?;
+    crate::fill_random(&mut random)?;
     let id = random[..16]
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -153,7 +153,7 @@ fn aad(id: &str) -> Vec<u8> {
 }
 fn seal(id: &str, key: &[u8; 32], plain: &[u8]) -> Result<Vec<u8>> {
     let mut nonce = [0u8; 12];
-    fs::File::open("/dev/urandom")?.read_exact(&mut nonce)?;
+    crate::fill_random(&mut nonce)?;
     let ciphertext = Aes256Gcm::new(key.into())
         .encrypt(
             (&nonce).into(),

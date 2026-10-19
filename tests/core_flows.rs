@@ -1,6 +1,6 @@
 use line::client::error::{Refusal, SignOutReason};
 use line::{
-    backend::{FakeBackend, LiveOp, Op},
+    backend::{Failure, FakeBackend, FakeRpc, LiveOp, Op},
     controller::AppState,
     engine::{Connection, Delta, Intent, StoreLocation, Timing, Worker},
     store::{ChatId, Delivery, Key, Prefs, Reaction, ReactionKind},
@@ -54,6 +54,21 @@ impl App {
                 panic!("engine: {e:?}");
             }
             self.state.apply(d);
+        }
+    }
+    fn until_delta(&mut self, condition: impl Fn(&Delta) -> bool) -> Delta {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let delta = self
+                .worker
+                .deltas
+                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                .expect("engine progress");
+            let done = condition(&delta);
+            self.state.apply(delta.clone());
+            if done {
+                return delta;
+            }
         }
     }
     fn online(&mut self) {
@@ -124,10 +139,20 @@ fn m14_closed_chat_incoming_then_open_stale_history() {
             .as_ref()
             .is_some_and(|m| message_text(m) == "closed arrival")
     });
-    let pages = fake.page_requests("alice");
+    let pages = fake
+        .calls()
+        .iter()
+        .filter(|c| **c == FakeRpc::Messages(ChatId("alice".into())))
+        .count();
     app.select("alice");
     app.body_key("closed arrival");
-    app.until(|_| fake.page_requests("alice") > pages);
+    app.until(|_| {
+        fake.calls()
+            .iter()
+            .filter(|c| **c == FakeRpc::Messages(ChatId("alice".into())))
+            .count()
+            > pages
+    });
     assert!(
         app.state
             .messages
@@ -205,7 +230,7 @@ fn offline_start_shows_cached_chats_and_window() {
     assert!(app.state.chats.values().all(|chat| chat.chat.unread_stale));
     fake.offline(false);
     app.until(|s| s.connection == Connection::Online); // Stream reconnect also resumes persisted revision.
-    app.until(|_| fake.resumed_revisions().contains(&75));
+    app.until(|_| fake.calls().contains(&FakeRpc::Stream(75)));
     drop(app);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -216,7 +241,10 @@ fn failed_send_retry_discard_and_copy() {
     app.online();
     app.select("alice");
     app.body_key("Hello! 日本語も使えます。");
-    fake.fail_send(ChatId("alice".into()));
+    fake.fail_rpc(
+        FakeRpc::Send(ChatId("alice".into())),
+        Failure::Refused(Refusal::Gateway(13)),
+    );
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "retry text".into(),
@@ -228,7 +256,10 @@ fn failed_send_retry_discard_and_copy() {
     app.until(|s| s.composer == "retry text");
     app.send(Intent::Retry(key));
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
-    fake.fail_send(ChatId("alice".into()));
+    fake.fail_rpc(
+        FakeRpc::Send(ChatId("alice".into())),
+        Failure::Refused(Refusal::Gateway(13)),
+    );
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "discard text".into(),
@@ -247,25 +278,35 @@ fn unrelated_fetch_failure_does_not_block_send() {
     app.online();
     app.select("alice");
     app.body_key("Hello! 日本語も使えます。");
-    assert!(!app.state.can_send());
-    fake.fail_friends();
+    assert!(app.state.submit().is_none());
+    fake.fail_rpc(FakeRpc::Friends, Failure::Refused(Refusal::Gateway(13)));
     app.send(Intent::Friends);
     app.until(|s| {
         s.refresh_failures
             .contains_key(&line::engine::Refresh::Friends)
     });
-    assert_eq!(fake.friends_calls(), 1);
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, FakeRpc::Friends))
+            .count(),
+        1
+    );
     assert!(app.state.error.is_none());
+    assert_eq!(app.state.connection, Connection::Online);
     app.state.composer = "after unrelated failure".into();
-    assert!(app.state.can_send());
+    assert!(app.state.submit().is_some());
+    app.state.submitting = None;
     app.select("alice"); // Reselecting the open chat preserves its composer snapshot.
     assert_eq!(app.state.composer, "after unrelated failure");
-    assert!(app.state.can_send());
+    assert!(app.state.submit().is_some());
+    app.state.submitting = None;
     // Even a storage banner does not disable an unrelated operation. A committed
     // write clears it; no controller reset or manual retry is needed.
     app.state
         .apply(Delta::StorageFailed(line::engine::StorageFailure::Full));
-    assert!(app.state.can_send());
+    assert!(app.state.submit().is_some());
+    app.state.submitting = None;
     app.send(Intent::Prefs(Prefs {
         text_size: 37,
         ..Prefs::default()
@@ -276,7 +317,7 @@ fn unrelated_fetch_failure_does_not_block_send() {
     let key = app.body_key("after unrelated failure");
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
     assert!(app.state.composer.is_empty());
-    assert!(!app.state.can_send());
+    assert!(app.state.submit().is_none());
 }
 #[test]
 fn opening_unread_chat_centers_the_window_on_the_divider() {
@@ -312,24 +353,6 @@ fn opening_unread_chat_centers_the_window_on_the_divider() {
             .iter()
             .any(|m| m.sort < app.state.messages[&divider].sort)
     );
-}
-
-#[test]
-fn reentrant_panel_requests_are_queued_without_borrowing_the_controller() {
-    use line::controller::{ActionQueue, Panel};
-    let fake = FakeBackend::canned();
-    let mut app = App::new(fake, StoreLocation::Memory);
-    app.online();
-    let actions = ActionQueue::<AppState>::default();
-    let callbacks = actions.clone();
-    actions.push(move |state| {
-        state.panel = Panel::Settings;
-        // A presenter-triggered callback only records another action.
-        callbacks.push(|state| state.panel = Panel::Detail);
-        assert_eq!(state.panel, Panel::Settings);
-    });
-    actions.drain(&mut app.state);
-    assert_eq!(app.state.panel, Panel::Detail);
 }
 
 #[test]
@@ -385,7 +408,13 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
             .count(),
         1
     );
-    assert_eq!(fake.resumed_revisions().len(), 1);
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, FakeRpc::Stream(_)))
+            .count(),
+        1
+    );
 }
 
 #[test]
@@ -530,23 +559,28 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
     let anchor = format!("{:?}", app.state.window_anchor);
     let unread = app.state.chats[&ChatId("alice".into())].chat.unread_count;
     for curr in [
-        json!({"predefinedReactionType":2}),
-        json!({"predefinedReactionType":4}),
-        json!({}),
-        serde_json::Value::Null,
+        Some(json!({"predefinedReactionType":2})),
+        Some(json!({"predefinedReactionType":4})),
+        Some(json!({})),
+        Some(serde_json::Value::Null),
+        None,
     ] {
         let mut payload = json!({"chatMid":"alice"});
-        if !curr.is_null() {
+        if let Some(curr) = &curr {
             payload["curr"] = curr.clone();
         }
         fake.inject_raw(json!({"type":139,"param1":"10","param2":payload.to_string()}));
-        let revision = fake.revision() - 1;
+        let revision = fake.configure(|s| s.revision);
         app.until(|s| s.messages[&key].reactions_rev >= revision);
         let entries = app.state.messages[&key].reactions.as_slice();
         assert_eq!(entries.iter().filter(|e| e.actor == "other").count(), 1);
         assert_eq!(
             entries.iter().filter(|e| e.actor == "self").count(),
-            usize::from(curr.as_object().is_some_and(|c| !c.is_empty()))
+            usize::from(
+                curr.as_ref()
+                    .and_then(|v| v.as_object())
+                    .is_some_and(|c| !c.is_empty())
+            )
         );
         assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
         assert_eq!(
@@ -554,25 +588,24 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
             unread
         );
     }
-    fake.inject_raw(json!({"type":140,"param1":"10","param2":json!({"chatMid":"alice","fromUserMid":"other","curr":{"predefinedReactionType":7}}).to_string()}));
+    fake.inject_raw(json!({"type":140,"param1":"10","param3":"other","param2":json!({"chatMid":"alice","curr":{"predefinedReactionType":7}}).to_string()}));
     app.until(|s| s.messages[&key].reactions[0].kind == ReactionKind::Predefined(7));
-    let calls = fake.page_requests("alice");
-    let mut refreshed = fake.page(&ChatId("alice".into()));
-    refreshed[0].reactions = vec![Reaction {
-        actor: "unknown-before-refresh".into(),
-        kind: ReactionKind::Predefined(3),
+    let mut refreshed = FakeBackend::message("alice", 10, "react here", false);
+    refreshed.rev = fake.revision();
+    refreshed.reactions = vec![Reaction {
+        actor: "other".into(),
+        kind: ReactionKind::Predefined(5),
     }];
-    fake.set_page(ChatId("alice".into()), refreshed);
+    fake.set_page(ChatId("alice".into()), vec![refreshed]);
     fake.inject_raw(json!({"type":140,"param1":"10","param2":json!({"chatMid":"alice","curr":{"predefinedReactionType":3}}).to_string()}));
-    app.until(|_| fake.page_requests("alice") > calls);
-    app.until(|s| s.messages[&key].reactions[0].actor == "unknown-before-refresh");
-    assert_eq!(app.notifications, 0);
-    // A FIFO user intent fences the refresh publication and checks for alerts.
+    app.until(|s| s.messages[&key].reactions[0].kind == ReactionKind::Predefined(5));
+    // Fence the FIFO before checking that the refresh emitted no notification.
     app.send(Intent::Prefs(Prefs {
-        text_size: 35,
+        text_size: 31,
         ..Prefs::default()
     }));
-    app.until(|s| s.prefs.text_size == 35);
+    app.until(|s| s.prefs.text_size == 31);
+    assert_eq!(app.notifications, 0);
     assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
     assert_eq!(
         app.state.chats[&ChatId("alice".into())].chat.unread_count,
@@ -661,6 +694,14 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         }
     }
     impl Backend for Blocked {
+        fn finish_attachment(
+            &mut self,
+            chat: &ChatId,
+            uploaded: serde_json::Value,
+            seq: u32,
+        ) -> Result<MessageInput> {
+            self.0.finish_attachment(chat, uploaded, seq)
+        }
         fn contact(&mut self, mid: &str) -> Result<Option<line::store::Friend>> {
             self.0.contact(mid)
         }
@@ -699,15 +740,24 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         ) -> Result<Option<String>> {
             self.0.authorize(a)
         }
-        fn retry_asset(&mut self, k: &str) {
-            self.0.retry_asset(k)
+        fn session(&self) -> Result<bool> {
+            self.0.session()
         }
-        fn media(
+        fn cached_media(
             &mut self,
-            a: &line::client::desktop::assets::Asset,
-            p: line::client::desktop::assets::Purpose,
+            mid: &str,
+            asset: &line::client::desktop::assets::Asset,
+            purpose: line::client::desktop::assets::Purpose,
         ) -> Result<Option<line::client::desktop::assets::Payload>> {
-            self.0.media(a, p)
+            self.0.cached_media(mid, asset, purpose)
+        }
+        fn prepare_attachment(
+            &mut self,
+            chat: ChatId,
+            item: line::attachments::Attachment,
+            seq: u32,
+        ) -> Result<line::backend::UploadJob> {
+            self.0.prepare_attachment(chat, item, seq)
         }
         fn profile(&mut self) -> Result<Profile> {
             self.wait();
@@ -821,7 +871,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     let release = Release(released.clone());
     let (entered, rpc) = std::sync::mpsc::channel();
     let fake = FakeBackend::default();
-    fake.set_chats(chats.clone());
+    fake.configure(|s| s.chats = chats.clone());
     let (initialize, initialized) = std::sync::mpsc::channel();
     let worker = Worker::start_with(
         StoreLocation::Account {
@@ -917,13 +967,6 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     assert!(
         matches!(receive(&|d| matches!(d, Delta::Chats { .. })), Delta::Chats { order, .. } if order.len() == 150)
     );
-    worker.sender.send(Intent::SearchChats {
-        sub: 9,
-        query: "Stored chat 149".into(),
-    });
-    assert!(
-        matches!(receive(&|d| matches!(d, Delta::Chats { sub:9, .. })), Delta::Chats { upsert, .. } if upsert.len() == 1 && upsert[0].chat.id == chats[149].id)
-    );
     worker.sender.send(Intent::ChatList { sub: 10, limit: 10 });
     receive(&|d| matches!(d, Delta::Chats { sub: 10, .. }));
     worker.sender.send(Intent::Draft {
@@ -986,6 +1029,14 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         calls: Arc<AtomicUsize>,
     }
     impl Backend for BlockedSend {
+        fn finish_attachment(
+            &mut self,
+            chat: &ChatId,
+            uploaded: serde_json::Value,
+            seq: u32,
+        ) -> Result<MessageInput> {
+            self.fake.finish_attachment(chat, uploaded, seq)
+        }
         fn contact(&mut self, mid: &str) -> Result<Option<line::store::Friend>> {
             self.fake.contact(mid)
         }
@@ -1022,15 +1073,24 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         ) -> Result<Option<String>> {
             self.fake.authorize(a)
         }
-        fn retry_asset(&mut self, k: &str) {
-            self.fake.retry_asset(k)
+        fn session(&self) -> Result<bool> {
+            self.fake.session()
         }
-        fn media(
+        fn cached_media(
             &mut self,
-            a: &line::client::desktop::assets::Asset,
-            p: line::client::desktop::assets::Purpose,
+            mid: &str,
+            asset: &line::client::desktop::assets::Asset,
+            purpose: line::client::desktop::assets::Purpose,
         ) -> Result<Option<line::client::desktop::assets::Payload>> {
-            self.fake.media(a, p)
+            self.fake.cached_media(mid, asset, purpose)
+        }
+        fn prepare_attachment(
+            &mut self,
+            chat: ChatId,
+            item: line::attachments::Attachment,
+            seq: u32,
+        ) -> Result<line::backend::UploadJob> {
+            self.fake.prepare_attachment(chat, item, seq)
         }
         fn profile(&mut self) -> Result<Profile> {
             self.fake.profile()
@@ -1102,7 +1162,10 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         }
     }
     let fake = FakeBackend::canned();
-    fake.fail_send(ChatId("alice".into()));
+    fake.fail_rpc(
+        FakeRpc::Send(ChatId("alice".into())),
+        Failure::Refused(Refusal::Gateway(13)),
+    );
     let (entered_tx, entered) = mpsc::channel();
     let (release, release_rx) = mpsc::channel();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1143,9 +1206,19 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
     assert_eq!(app.state.messages[&key].request_seq, seq);
     release.send(()).unwrap();
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
-    let friends_calls = fake.friends_calls();
+    let friends_calls = fake
+        .calls()
+        .iter()
+        .filter(|c| matches!(c, FakeRpc::Friends))
+        .count();
     app.send(Intent::Friends);
-    app.until(|_| fake.friends_calls() > friends_calls);
+    app.until(|_| {
+        fake.calls()
+            .iter()
+            .filter(|c| matches!(c, FakeRpc::Friends))
+            .count()
+            > friends_calls
+    });
     assert_eq!(calls.load(Ordering::Relaxed), 2);
     assert_eq!(
         app.state
@@ -1206,7 +1279,7 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
         ..Default::default()
     };
     let mid = rows[0].contact.id.clone();
-    fake.set_members(rows);
+    fake.configure(|s| s.members = Some(rows));
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
     app.send(Intent::Contact(mid.clone()));
@@ -1295,7 +1368,7 @@ fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
     assert!(app.state.chats[&chat].chat.left);
     assert!(app.state.chat_order.contains(&chat));
     app.state.composer = "still here".into();
-    assert!(!app.state.can_send());
+    assert!(app.state.submit().is_none());
     assert!(app.state.action_error.is_none());
 }
 #[test]
@@ -1306,9 +1379,9 @@ fn detail_stack_pop_and_close_use_the_recorded_opener() {
     state.push_detail(DetailPage::GroupInfo(chat.clone()), "header".into());
     state.push_detail(DetailPage::Members(chat), "members row".into());
     state.push_detail(DetailPage::Profile("alice".into()), "alice row".into());
-    assert_eq!(state.pop_detail(false).as_deref(), Some("alice row"));
+    assert_eq!(state.pop_detail().as_deref(), Some("alice row"));
     assert!(matches!(state.detail_page(), Some(DetailPage::Members(_))));
-    assert_eq!(state.pop_detail(true).as_deref(), Some("header"));
+    assert_eq!(state.close_detail().as_deref(), Some("header"));
     assert!(state.detail.is_empty());
 }
 
@@ -1374,7 +1447,7 @@ fn compose_reaction_set_cancel_and_failure_revert() {
         Failure::Refused(Refusal::NotAccepted),
     );
     app.send(Intent::React { key, kind: 2 });
-    app.until(|s| s.reaction_failure == Some(key));
+    app.until_delta(|d| matches!(d, Delta::ReactionFailed(k) if *k == key));
     assert!(app.state.messages[&key].reactions.is_empty());
 }
 
@@ -1408,7 +1481,10 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
             .count(),
         1
     );
-    fake.fail_send(ChatId("alice".into()));
+    fake.fail_rpc(
+        FakeRpc::Send(ChatId("alice".into())),
+        Failure::Refused(Refusal::Gateway(13)),
+    );
     let other = app.state.sticker_packages[1].stickers[0].clone();
     app.send(Intent::SendSticker {
         chat: ChatId("alice".into()),
@@ -1484,8 +1560,10 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
         name: "  Picnic  ".into(),
         targets: vec!["alice".into(), "new-friend".into(), "self".into()],
     });
-    app.until(|s| matches!(s.created_chat, Some(Ok(_))));
-    let id = app.state.created_chat.take().unwrap().unwrap();
+    let Delta::CreatedChat(Ok(id)) = app.until_delta(|d| matches!(d, Delta::CreatedChat(Ok(_))))
+    else {
+        unreachable!()
+    };
     assert_eq!(app.state.chats[&id].chat.title, "Picnic");
     assert_eq!(app.state.chats[&id].chat.member_count, Some(3));
     app.select(&id.0);
@@ -1494,7 +1572,7 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
         name: "Failure".into(),
         targets: vec!["alice".into(), "new-friend".into()],
     });
-    app.until(|s| matches!(s.created_chat, Some(Err(_))));
+    app.until_delta(|d| matches!(d, Delta::CreatedChat(Err(_))));
     assert!(!app.state.chats.values().any(|c| c.chat.title == "Failure"));
 }
 
@@ -1570,7 +1648,7 @@ fn pairing_reasons_survive_the_engine() {
         Phone,
         Cancelled,
     ] {
-        fake.fail_sign_in(reason.clone());
+        fake.fail_sign_in(Some(reason.clone()));
         app.send(Intent::SignIn);
         loop {
             let delta = app
@@ -1589,7 +1667,7 @@ fn pairing_reasons_survive_the_engine() {
             app.state.apply(delta);
         }
     }
-    assert!(fake.calls().is_empty());
+    assert_eq!(fake.calls(), vec![FakeRpc::SignIn; 9]);
 }
 
 #[test]
@@ -1831,7 +1909,7 @@ fn unusable_saved_session_allows_start_to_pair() {
             _ => {}
         }
     }
-    assert!(fake.calls().is_empty());
+    assert_eq!(fake.calls(), vec![FakeRpc::SignIn; 1]);
     worker.sender.cancel_sign_in();
 }
 
@@ -1885,8 +1963,11 @@ fn attachments_preserve_order_progress_and_retry_identity() {
         Attachment::prepare(&file).unwrap(),
     ];
     let fake = FakeBackend::canned();
-    fake.upload_delay(Duration::from_millis(80));
-    fake.fail_upload("Second.txt");
+    fake.configure(|s| s.upload_delay = Duration::from_millis(80));
+    fake.fail_rpc(
+        FakeRpc::Upload("Second.txt".into()),
+        Failure::Refused(Refusal::Gateway(13)),
+    );
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
     app.select("alice");
@@ -2156,13 +2237,12 @@ fn not_written_send_retries_in_session_and_is_delivered_once() {
 
 #[test]
 fn written_unanswered_send_never_resends_and_a_late_echo_confirms_it() {
-    use line::backend::FakeRpc;
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
     app.select("alice");
     app.body_key("Hello! 日本語も使えます。");
-    fake.unanswered_send();
+    fake.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::Unanswered);
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "unanswered".into(),

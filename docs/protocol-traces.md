@@ -227,8 +227,8 @@ these are extension call shapes, not a live capture.
   mutations for types 2–7; it consumes no success payload.
 - Our RPC decoder parses JSON, then accepts HTTP 200 with `message: "OK"`.
   Absent data becomes Null. Every other envelope returns an RPC error with
-  its code (or zero when absent). Decode diagnostics contain method,
-  HTTP status, content type and byte length; never response content or ids.
+  its code (or zero when absent). Decode diagnostics contain
+  HTTP status and byte length; never response content or ids.
 - Composer text and sticker enqueue calls pass a `relation` with
   `relatedMessageId: replyTargetMessageId`, `messageRelationType: 3`
   (`wU.REPLY`), `relatedMessageServiceCode: 1` (`yU.TALK`). The send queue

@@ -13,6 +13,7 @@ use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
 #[derive(Clone)]
 pub(crate) enum Destination {
     Dialog,
+    #[cfg(feature = "demo")]
     Directory(PathBuf),
 }
 pub(crate) fn save_photo(ui: &AppWindow, destination: Destination) {
@@ -95,6 +96,7 @@ pub(crate) fn save_bytes(
     }
     let directory = match destination {
         Destination::Dialog => downloads_directory()?,
+        #[cfg(feature = "demo")]
         Destination::Directory(path) => path,
     };
     write_unique(&directory, name, bytes).map(Some)
@@ -211,6 +213,7 @@ fn portal_destination(name: &str) -> Result<Option<PathBuf>, Box<dyn std::error:
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "demo")]
     #[test]
     fn preview_cannot_be_exported_as_an_original() {
         std::thread::spawn(|| {

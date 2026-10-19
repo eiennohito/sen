@@ -99,10 +99,6 @@ pub struct WindowSub {
 }
 #[derive(Clone)]
 pub enum Intent {
-    SearchChats {
-        sub: u64,
-        query: String,
-    },
     ChatList {
         sub: u64,
         limit: usize,
@@ -171,7 +167,6 @@ fn short_id(id: &str) -> String {
 impl Intent {
     fn diagnostic(&self) -> String {
         let name = match self {
-            Self::SearchChats { .. } => "search-chats",
             Self::ChatList { .. } => "chat-list",
             Self::Window(_) => "window",
             Self::MoreChats => "more-chats",
@@ -387,7 +382,6 @@ pub enum Refresh {
     Receipts(ChatId),
     Around(ChatId, ServerId),
     Older(ChatId, Cursor),
-    Newer(ChatId, Cursor),
     Details(ChatId),
     Recent(ChatId),
     Read(ChatId),
@@ -408,7 +402,6 @@ impl Refresh {
             Self::Receipts(id) => ("receipts", Some(id.0.as_str())),
             Self::Around(id, _) => ("around", Some(id.0.as_str())),
             Self::Older(id, _) => ("older", Some(id.0.as_str())),
-            Self::Newer(id, _) => ("newer", Some(id.0.as_str())),
             Self::Details(id) => ("details", Some(id.0.as_str())),
             Self::Recent(id) => ("recent", Some(id.0.as_str())),
             Self::Read(id) => ("read", Some(id.0.as_str())),
@@ -683,7 +676,6 @@ impl Worker {
                                 operation: "startup".into(),
                                 force_list: true,
                                 force_window: false,
-                                search: String::new(),
                                 store,
                                 account_root,
                                 store_mid,
@@ -768,7 +760,6 @@ struct Engine {
     operation: String,
     force_list: bool,
     force_window: bool,
-    search: String,
     store: Store,
     account_root: Option<PathBuf>,
     store_mid: Option<String>,
@@ -1004,11 +995,7 @@ impl Engine {
             Refresh::Read(chat) if Some(chat) == opened => 1,
             Refresh::Recent(chat) if Some(chat) == opened => 2,
             Refresh::ChatList | Refresh::MoreChats => 3,
-            Refresh::Read(_)
-            | Refresh::Around(..)
-            | Refresh::Older(..)
-            | Refresh::Newer(..)
-            | Refresh::Receipts(_) => 4,
+            Refresh::Read(_) | Refresh::Around(..) | Refresh::Older(..) | Refresh::Receipts(_) => 4,
             Refresh::Stream
             | Refresh::Profile
             | Refresh::Friends
@@ -1451,7 +1438,6 @@ impl Engine {
                 Intent::SignIn
                     | Intent::CancelSignIn
                     | Intent::Prefs(_)
-                    | Intent::SearchChats { .. }
                     | Intent::ChatList { .. }
                     | Intent::Friends
                     | Intent::Contact(_)
@@ -1720,15 +1706,8 @@ impl Engine {
                     self.waiting_retries.push(key);
                 }
             }
-            Intent::SearchChats { sub, query } => {
-                self.list = Some((sub, 100));
-                self.search = query;
-                self.force_list = true;
-                self.publish()?;
-            }
             Intent::ChatList { sub, limit } => {
                 self.list = Some((sub, limit));
-                self.search.clear();
                 self.force_list = true;
                 self.publish()?;
             }
@@ -1877,10 +1856,7 @@ impl Engine {
                 if self.store.chat(&chat)?.is_some_and(|c| c.left) {
                     return Ok(());
                 }
-                for item in items
-                    .into_iter()
-                    .filter(|item| !item.too_large(crate::attachments::FILE_LIMIT))
-                {
+                for item in items.into_iter().filter(|item| !item.too_large()) {
                     if let Ok(Some(pixels)) =
                         crate::client::desktop::assets::Asset::local(item.clone()).local_pixels()
                     {
@@ -2368,7 +2344,6 @@ impl Engine {
         for row in rows {
             if let Some(event) = crate::system_events::parse(&row.body) {
                 for mid in event.mids() {
-                    let mid = mid.as_str();
                     if !known.contains(mid) {
                         self.inbox.refresh(Refresh::Contact(mid.into()));
                     }
@@ -2435,7 +2410,6 @@ impl Engine {
             PageKind::Around { id } => Refresh::Around(chat, id),
             PageKind::Recent => Refresh::Recent(chat),
             PageKind::Older { before } => Refresh::Older(chat, before),
-            PageKind::Newer { after } => Refresh::Newer(chat, after),
         }
     }
     fn retry_later(&mut self, r: Refresh) {
@@ -2603,7 +2577,6 @@ impl Engine {
             Refresh::MoreChats => self.load_chats(true)?,
             Refresh::Around(chat, id) => self.page(chat, PageKind::Around { id })?,
             Refresh::Older(chat, before) => self.page(chat, PageKind::Older { before })?,
-            Refresh::Newer(chat, after) => self.page(chat, PageKind::Newer { after })?,
             Refresh::Receipts(chat) => {
                 let net_chat = chat.clone();
                 self.refresh_rpc(
@@ -3007,11 +2980,7 @@ impl Engine {
                 || !changes.chats_changed.is_empty()
                 || !changes.chats_removed.is_empty())
         {
-            let all = if self.search.is_empty() {
-                self.store.chat_list(limit, 0)?
-            } else {
-                self.store.search_chats(&self.search)?
-            };
+            let all = self.store.chat_list(limit, 0)?;
             let mut rows = all
                 .iter()
                 .filter(|row| {
@@ -3135,8 +3104,7 @@ impl Drop for Engine {
 mod tests;
 
 fn initial_request_seq() -> std::io::Result<u32> {
-    use std::io::Read;
     let mut bytes = [0; 4];
-    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    crate::fill_random(&mut bytes)?;
     Ok(u32::from_ne_bytes(bytes) & 0x7fff_ffff)
 }

@@ -3,21 +3,24 @@ use crate::*;
 pub(crate) struct Options {
     pub client_version: Option<String>,
     pub wasm_override: Option<std::path::PathBuf>,
-    pub demo: bool,
-    pub snapshot_path: Option<String>,
-    pub size: (u32, u32),
-    pub text_size: i32,
-    pub scene: String,
-    pub case: Option<String>,
-    pub dark: bool,
-    pub snapshot_profile: bool,
+    #[cfg(feature = "demo")]
+    pub demo_args: demo::Args,
     pub background: bool,
     pub locations: line::locations::Locations,
 }
 
 pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> {
     let Options {
-        demo,
+        #[cfg(feature = "demo")]
+        demo_args,
+        background,
+        locations,
+        client_version,
+        wasm_override,
+    } = options;
+    #[cfg(feature = "demo")]
+    let demo::Args {
+        enabled: demo,
         snapshot_path,
         size,
         text_size,
@@ -25,11 +28,18 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         case,
         dark,
         snapshot_profile,
-        background,
-        locations,
-        client_version,
-        wasm_override,
-    } = options;
+    } = demo_args;
+    #[cfg(not(feature = "demo"))]
+    let (demo, size, text_size) = (false, (980, 720), 15);
+    #[cfg(feature = "demo")]
+    let snapshot = snapshot_path
+        .as_ref()
+        .map(|_| snapshot::install())
+        .transpose()?;
+    #[cfg(feature = "demo")]
+    let headless = snapshot.is_some();
+    #[cfg(not(feature = "demo"))]
+    let headless = false;
     let automation = debug_launch::intent(
         background,
         cfg!(feature = "ui-debug"),
@@ -38,9 +48,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
             .ok()
             .as_deref(),
     )? == debug_launch::Intent::VirtualAutomation;
-    let snapshot = if snapshot_path.is_some() {
-        Some(snapshot::install()?)
-    } else {
+    if !headless {
         if automation {
             // Slint 1.18.1 supports headless in create_backend(), but not BackendSelector.
             // The owned launcher selects it before any platform initialization.
@@ -58,13 +66,13 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                 .renderer_name("software".into())
                 .select()?;
         }
-        None
-    };
+    }
     slint::set_xdg_app_id("org.lineclient.Desktop")?;
-    if snapshot.is_some() {
+    #[cfg(feature = "demo")]
+    if headless {
         fix_snapshot_clock();
     }
-    let instance = if snapshot.is_none() {
+    let instance = if !headless {
         match desktop_integration::Instance::acquire_with_activation(!automation)? {
             desktop_integration::Launch::Forwarded => return Ok(()),
             desktop_integration::Launch::Primary(instance) => Some(instance),
@@ -73,6 +81,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         None
     };
     let activations = instance.as_ref().map(|i| i.take_events());
+    #[cfg(feature = "demo")]
     let fake = demo.then(|| {
         if scene == "signed-out" {
             FakeBackend::signed_out()
@@ -80,13 +89,12 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
             FakeBackend::canned()
         }
     });
+    #[cfg(feature = "demo")]
     if let Some(fake) = &fake {
         demo::configure(fake, &scene, case.as_deref());
     }
     let assets = assets::Assets::default();
-    let worker = if let Some(fake) = &fake {
-        demo::worker(fake.clone(), text_size)
-    } else {
+    let real_worker = || {
         let root = locations.session.parent().unwrap().join("accounts");
         Worker::start_with(StoreLocation::Account { root, mid: None }, move || {
             LineBackend::open_local(
@@ -97,7 +105,16 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
             )
         })
     };
+    #[cfg(feature = "demo")]
+    let worker = if let Some(fake) = &fake {
+        demo::worker(fake.clone(), text_size)
+    } else {
+        real_worker()
+    };
+    #[cfg(not(feature = "demo"))]
+    let worker = real_worker();
     let ui = window::create_app_window()?;
+    #[cfg(feature = "demo")]
     if fake.is_some() {
         demo::prepare(&ui, &scene, dark);
     }
@@ -106,7 +123,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     }
     ui.set_text_size(text_size);
     ui.global::<State>().set_automation_background(automation);
-    if snapshot.is_none() && !automation {
+    if !headless && !automation {
         use slint::winit_030::{
             EventResult, WinitWindowAccessor,
             winit::event::{Ime, WindowEvent},
@@ -153,6 +170,13 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
             EventResult::Propagate
         });
     }
+    let destination = viewer::Destination::Dialog;
+    #[cfg(feature = "demo")]
+    let destination = if demo {
+        demo::destination()
+    } else {
+        destination
+    };
     let desktop = Desktop {
         history: reading::Reading {
             opening_history: true,
@@ -162,12 +186,8 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         shown_composer: String::new(),
         reveal: None,
         viewer_asset: None,
-        destination: if demo {
-            demo::destination()
-        } else {
-            viewer::Destination::Dialog
-        },
-        notifications: if snapshot.is_none() {
+        destination,
+        notifications: if !headless {
             Some(notifications::Notifications::start())
         } else {
             None
@@ -198,9 +218,14 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         actions: ActionQueue::default(),
         draining: Default::default(),
     };
-    callbacks::install(&ui, desktop.clone(), fake.clone());
+    callbacks::install(&ui, desktop.clone());
+    #[cfg(feature = "demo")]
+    if let Some(fake) = &fake {
+        demo::install(&ui, desktop.clone(), fake.clone());
+    }
     // Initial synthetic rendering uses the same FIFO as interactive rendering.
-    if snapshot.is_some() {
+    #[cfg(feature = "demo")]
+    if headless {
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         while desktop.update(|d| {
             if scene == "signed-out" {
@@ -247,7 +272,9 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     });
     ui.window()
         .set_size(slint::LogicalSize::new(size.0 as f32, size.1 as f32));
+    #[cfg(feature = "demo")]
     demo::stage(&ui, &desktop, fake.as_ref(), &scene, snapshot_profile);
+    #[cfg(feature = "demo")]
     if snapshot_path.is_some() {
         demo::settle(&ui, &desktop, &worker);
     }
@@ -259,12 +286,15 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         desktop.update(|d| latency::run(d, &ui, window));
         return Ok(());
     }
+    #[cfg(feature = "demo")]
     demo::profile(&ui, &scene, snapshot_profile);
+    #[cfg(feature = "demo")]
     if let (Some(window), Some(path)) = (snapshot, snapshot_path) {
         ui.show()?;
         snapshot::save(&window, &path, size)?;
         ui.hide()?;
-    } else {
+    }
+    if !headless {
         ui.show()?;
         slint::run_event_loop_until_quit()?;
         ui.hide()?;

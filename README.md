@@ -92,7 +92,9 @@ Session credentials use `$XDG_DATA_HOME/line-desktop/` (default `~/.local/share/
 
 Private desktop state uses `$XDG_STATE_HOME/line-desktop` (normally under
 `~/.local/state`). Empty or relative XDG directories fall back to `$HOME`.
-Use `--demo` for an offline synthetic preview. Press **F12** in the shell to open
+Build with `--features demo` to enable `--demo` and snapshot flags for an offline
+synthetic preview. Featureless product builds exclude the fake backend and demo
+Rust modules; `ui-debug` includes `demo`. Press **F12** in the shell to open
 **Demo scenarios**, as indicated in the preview window title. The dialog keeps
 scenario controls out of the conversation list and reading surface. Escape or
 Close restores the previous focus; selecting a scenario closes the dialog before
@@ -131,7 +133,7 @@ compositor may use a GPU; the application renders its own pixels on the CPU.
 For a headless rendering of the same window:
 
 ```sh
-cargo run --release -p line-desktop -- --snapshot /tmp/line-preview.ppm
+cargo run --release -p line-desktop --features demo -- --snapshot /tmp/line-preview.ppm
 # Minimum-size conversation at the largest supported text size:
 target/release/line-desktop --snapshot /tmp/line-small.ppm --snapshot-size 360x520 --snapshot-text-size 24
 ```

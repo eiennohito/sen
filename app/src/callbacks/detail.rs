@@ -32,7 +32,11 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     global_callback!(ui, actions, on_pop_detail, |ui, d, all| {
-        d.state.pop_detail(all);
+        if all {
+            d.state.close_detail();
+        } else {
+            d.state.pop_detail();
+        }
         d.render(&ui);
         ui.global::<State>().invoke_finish_detail_restore(all);
     });

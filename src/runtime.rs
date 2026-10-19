@@ -1,7 +1,7 @@
 //! Rust host for the installed LINE Chrome extension's Emscripten/embind WASM.
 //! Binding registration and emval conventions informed by beeper/line (MIT).
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use std::{collections::BTreeMap, fs::File, io::Read};
+use std::collections::BTreeMap;
 use wasmi::{Caller, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store, Val};
 
 // Public callback source embedded in the extension, matched as interface data.
@@ -185,17 +185,17 @@ fn free(c: &mut Caller<'_, Host>, p: u32) -> Result<()> {
     call_export(c, "R", &[Val::I32(p as i32)])?;
     Ok(())
 }
-fn std_string(c: &mut Caller<'_, Host>, bytes: &[u8]) -> Result<u32> {
-    let p = malloc(c, bytes.len() + 5)?;
-    write(c, p, &(bytes.len() as u32).to_le_bytes())?;
-    write(c, p + 4, bytes)?;
-    write(c, p + 4 + bytes.len() as u32, &[0])?;
-    Ok(p)
+fn encoded_string(bytes: &[u8]) -> Vec<u8> {
+    let mut out = (bytes.len() as u32).to_le_bytes().to_vec();
+    out.extend_from_slice(bytes);
+    out.push(0);
+    out
 }
-fn random_bytes(n: usize) -> Result<Vec<u8>> {
-    let mut out = vec![0; n];
-    File::open("/dev/urandom")?.read_exact(&mut out)?;
-    Ok(out)
+fn std_string(c: &mut Caller<'_, Host>, bytes: &[u8]) -> Result<u32> {
+    let data = encoded_string(bytes);
+    let p = malloc(c, data.len())?;
+    write(c, p, &data)?;
+    Ok(p)
 }
 fn take_value(c: &Caller<'_, Host>, t: u32, p: u32) -> Result<Value> {
     let ty = c.data().types.get(&t).context("unregistered emval type")?;
@@ -502,7 +502,9 @@ fn embedded_callback(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val])
         CALLBACK_RANDOM_FILL => {
             let ptr = u32_at(&c, p(2))?;
             let n = u32_at(&c, p(2) + 4)?;
-            write(&mut c, ptr, &random_bytes(n as usize)?)?;
+            let mut bytes = vec![0; n as usize];
+            crate::fill_random(&mut bytes)?;
+            write(&mut c, ptr, &bytes)?;
         }
         _ => return Err(crypto_changed(&c.data().version, "EM_JS callback")),
     }
@@ -561,7 +563,9 @@ fn fd_read(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result
     for i in 0..p(2) {
         let ptr = u32_at(&c, p(1) + i * 8)?;
         let n = u32_at(&c, p(1) + i * 8 + 4)?;
-        write(&mut c, ptr, &random_bytes(n as usize)?)?;
+        let mut bytes = vec![0; n as usize];
+        crate::fill_random(&mut bytes)?;
+        write(&mut c, ptr, &bytes)?;
         total += n;
     }
     write(&mut c, p(3), &total.to_le_bytes())?;
@@ -1165,9 +1169,7 @@ impl Runtime {
             .instance
             .get_memory(&self.store, "O")
             .context("memory")?;
-        let mut b = (s.len() as u32).to_le_bytes().to_vec();
-        b.extend_from_slice(s.as_bytes());
-        b.push(0);
+        let b = encoded_string(s.as_bytes());
         m.write(&mut self.store, p as usize, &b)
             .map_err(|e| anyhow!("string write {e}"))?;
         Ok(p as u64)
@@ -1259,34 +1261,6 @@ mod contract_tests {
         wasm.extend(types);
         wasm.extend([2, 7, 1, 1, b'a', 1, name, 0, 0]);
         wasm
-    }
-    #[test]
-    fn changed_registered_invoker_and_destructor_types_are_rejected() -> Result<()> {
-        let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
-        let mut rt = Runtime::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
-        let id = rt.class_ids["SecureKey"];
-        let class = &mut rt.store.data_mut().classes.get_mut(&id).unwrap();
-        let binding = class.statics.get_mut("loadToken").unwrap();
-        let invoker = binding.invoker;
-        binding.invoker = class.destructor;
-        let error = rt.validate_interface().unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<crate::client::Error>(),
-            Some(crate::client::Error::SignIn(
-                crate::client::error::SignInFailure::CryptoChanged { .. }
-            ))
-        ));
-        let class = rt.store.data_mut().classes.get_mut(&id).unwrap();
-        class.statics.get_mut("loadToken").unwrap().invoker = invoker;
-        class.destructor = invoker;
-        let error = rt.validate_interface().unwrap_err();
-        assert!(matches!(
-            error.downcast_ref::<crate::client::Error>(),
-            Some(crate::client::Error::SignIn(
-                crate::client::error::SignInFailure::CryptoChanged { .. }
-            ))
-        ));
-        Ok(())
     }
     #[test]
     fn wrong_export_signature_is_a_crypto_change() {

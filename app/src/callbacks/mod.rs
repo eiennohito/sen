@@ -24,7 +24,7 @@ mod settings;
 mod viewer;
 
 use crate::*;
-pub(crate) fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend>) {
+pub(crate) fn install(ui: &AppWindow, actions: Runtime) {
     attachments::install(ui, &actions);
     composer::install(ui, &actions);
     history::install(ui, &actions);
@@ -37,8 +37,5 @@ pub(crate) fn install(ui: &AppWindow, actions: Runtime, fake: Option<FakeBackend
     ui.global::<State>().on_open_link(move |url| {
         link_actions.push(move |_| links::open(url.to_string()));
     });
-    if let Some(fake) = fake {
-        demo::install(ui, actions, fake);
-    }
     rich_content::install(ui);
 }

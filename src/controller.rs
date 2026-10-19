@@ -25,8 +25,6 @@ pub struct DetailEntry {
 pub struct AppState {
     pub uploads: BTreeMap<Key, f32>,
     pub sticker_packages: Vec<StickerPackage>,
-    pub reaction_failure: Option<Key>,
-    pub created_chat: Option<std::result::Result<ChatId, crate::engine::CreateFailure>>,
     pub detail: Vec<DetailEntry>,
     pub contacts: BTreeMap<String, crate::store::Friend>,
     pub group_info: BTreeMap<ChatId, serde_json::Value>,
@@ -51,7 +49,6 @@ pub struct AppState {
     pub reply_targets: BTreeMap<ServerId, StoredMessage>,
     pub gaps: Vec<Gap>,
     pub unread_divider: Option<Key>,
-    pub unread_boundary_unknown: bool,
     pub reaches_start: bool,
     pub reaches_end: bool,
     pub composer: String,
@@ -65,8 +62,6 @@ impl Default for AppState {
         Self {
             uploads: BTreeMap::new(),
             sticker_packages: vec![],
-            reaction_failure: None,
-            created_chat: None,
             detail: vec![],
             contacts: BTreeMap::new(),
             group_info: BTreeMap::new(),
@@ -90,7 +85,6 @@ impl Default for AppState {
             reply_targets: BTreeMap::new(),
             gaps: vec![],
             unread_divider: None,
-            unread_boundary_unknown: false,
             reaches_start: false,
             reaches_end: false,
             composer: String::new(),
@@ -107,33 +101,27 @@ impl AppState {
         self.panel = Panel::Detail;
         self.action_error = None;
     }
-    pub fn pop_detail(&mut self, all: bool) -> Option<String> {
-        let entry = if all {
-            let first = self.detail.first().cloned();
-            self.detail.clear();
-            first
-        } else {
-            self.detail.pop()
-        };
-        if self.detail.is_empty() {
-            self.panel = Panel::Chats;
-        } else {
-            self.panel = Panel::Detail;
-        }
-        self.action_error = None;
+    pub fn pop_detail(&mut self) -> Option<String> {
+        let entry = self.detail.pop();
+        self.finish_detail_navigation();
         entry.map(|e| e.opener)
+    }
+    pub fn close_detail(&mut self) -> Option<String> {
+        let first = self.detail.first().map(|e| e.opener.clone());
+        self.detail.clear();
+        self.finish_detail_navigation();
+        first
+    }
+    fn finish_detail_navigation(&mut self) {
+        self.panel = if self.detail.is_empty() {
+            Panel::Chats
+        } else {
+            Panel::Detail
+        };
+        self.action_error = None;
     }
     pub fn detail_page(&self) -> Option<&DetailPage> {
         self.detail.last().map(|e| &e.page)
-    }
-    pub fn can_send(&self) -> bool {
-        self.connection == Connection::Online
-            && self
-                .selected
-                .as_ref()
-                .is_some_and(|id| self.chats.get(id).is_none_or(|c| !c.chat.left))
-            && self.submitting.is_none()
-            && !self.composer.trim().is_empty()
     }
     pub fn submit(&mut self) -> Option<Intent> {
         if self.composer.trim().is_empty()
@@ -173,7 +161,6 @@ impl AppState {
         self.reply_targets.clear();
         self.gaps.clear();
         self.unread_divider = None;
-        self.unread_boundary_unknown = false;
         self.reaches_start = false;
         self.reaches_end = false;
         Intent::Window(WindowSub {
@@ -183,13 +170,6 @@ impl AppState {
             before: 80,
             after: 80,
         })
-    }
-    pub fn search_chats(&mut self, query: String) -> Intent {
-        self.chat_sub += 1;
-        Intent::SearchChats {
-            sub: self.chat_sub,
-            query,
-        }
     }
     pub fn subscribe_window(&mut self, anchor: Anchor, before: usize, after: usize) -> Intent {
         self.window_sub += 1;
@@ -224,9 +204,7 @@ impl AppState {
             Delta::RefreshFailed { request, error } => {
                 if matches!(
                     request,
-                    crate::engine::Refresh::Recent(_)
-                        | crate::engine::Refresh::Older(..)
-                        | crate::engine::Refresh::Newer(..)
+                    crate::engine::Refresh::Recent(_) | crate::engine::Refresh::Older(..)
                 ) {
                     self.window_loading = false;
                 }
@@ -236,8 +214,6 @@ impl AppState {
                 self.refresh_failures.remove(&request);
             }
             Delta::StickerPackages(rows) => self.sticker_packages = rows,
-            Delta::ReactionFailed(key) => self.reaction_failure = Some(key),
-            Delta::CreatedChat(result) => self.created_chat = Some(result),
             Delta::Fatal => {
                 self.connection = Connection::Fatal;
                 self.submitting = None;
@@ -371,43 +347,31 @@ impl AppState {
                 self.submitting = None;
             }
             Delta::StoreSaved => self.error = None,
-            _ => {}
+            Delta::ReactionFailed(_)
+            | Delta::CreatedChat(_)
+            | Delta::Notify(_)
+            | Delta::Asset { .. }
+            | Delta::File { .. }
+            | Delta::Pair(_)
+            | Delta::PairFailed { .. }
+            | Delta::MoreChats(_)
+            | Delta::MediaFailed { .. }
+            | Delta::UnsendFailed(_)
+            | Delta::InternalError(_)
+            | Delta::ProfileAction { .. }
+            | Delta::Members { .. }
+            | Delta::Chats { .. }
+            | Delta::Window { .. }
+            | Delta::Draft { .. }
+            | Delta::Copy { .. } => {}
         }
-
-        self.unread_boundary_unknown = self.unread_divider.is_none()
+    }
+    pub fn unread_boundary_unknown(&self) -> bool {
+        self.unread_divider.is_none()
             && self
                 .selected
                 .as_ref()
                 .and_then(|id| self.chats.get(id))
-                .is_some_and(|c| c.chat.unread_count > 0);
-    }
-}
-
-/// UI callbacks record actions, including callbacks invoked while an action is
-/// being presented. The sole drain releases the queue borrow before dispatch.
-pub struct ActionQueue<T>(std::rc::Rc<std::cell::RefCell<std::collections::VecDeque<Action<T>>>>);
-type Action<T> = Box<dyn FnOnce(&mut T)>;
-impl<T> Default for ActionQueue<T> {
-    fn default() -> Self {
-        Self(Default::default())
-    }
-}
-impl<T> Clone for ActionQueue<T> {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-impl<T> ActionQueue<T> {
-    pub fn push(&self, action: impl FnOnce(&mut T) + 'static) {
-        self.0.borrow_mut().push_back(Box::new(action));
-    }
-    pub fn drain(&self, target: &mut T) {
-        loop {
-            let action = self.0.borrow_mut().pop_front();
-            match action {
-                Some(action) => action(target),
-                None => break,
-            }
-        }
+                .is_some_and(|c| c.chat.unread_count > 0)
     }
 }

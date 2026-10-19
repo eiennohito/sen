@@ -9,6 +9,7 @@ pub enum Failure {
     SignedOut(SignOutReason),
     #[error("request refused: {0}")]
     Refused(Refusal),
+    /// Programmer-owned diagnostics only; never interpolate identifiers or untrusted text.
     #[error("internal failure: {0}")]
     Bug(String),
 }
@@ -44,17 +45,6 @@ pub(crate) struct TransportFailure {
 }
 
 pub fn classify(error: &anyhow::Error) -> Failure {
-    let mut failure = classification(error);
-    if let Failure::Bug(message) = &mut failure {
-        for context in error.chain().take_while(|cause| cause.source().is_some()) {
-            message.push_str(": ");
-            message.push_str(&context.to_string());
-        }
-    }
-    failure
-}
-
-fn classification(error: &anyhow::Error) -> Failure {
     if let Some(Error::SignIn(reason)) = error.downcast_ref::<Error>() {
         return Failure::SignedOut(SignOutReason::Unavailable(reason.clone()));
     }
@@ -288,7 +278,7 @@ pub(super) fn needs_refresh<T>(result: &anyhow::Result<T>) -> bool {
 pub(crate) fn decode_response(
     path: &str,
     http: u16,
-    content_type: &str,
+    _content_type: &str,
     bytes: &[u8],
 ) -> anyhow::Result<serde_json::Value> {
     let response: serde_json::Value = match serde_json::from_slice(bytes) {
@@ -303,10 +293,13 @@ pub(crate) fn decode_response(
             }
             .into());
         }
-        Err(_) => return Err(Failure::Bug(format!(
-            "response decode failed: method={} status={http} content-type={content_type} body-length={}",
-            path.rsplit('/').next().unwrap_or("RPC"), bytes.len()
-        )).into()),
+        Err(_) => {
+            return Err(Failure::Bug(format!(
+                "response decode failed: status={http} body-length={}",
+                bytes.len()
+            ))
+            .into());
+        }
     };
     if http == 200 && response["message"] == "OK" {
         return Ok(response
@@ -412,7 +405,7 @@ mod tests {
         }
         assert_eq!(
             classify(&decode_response("/api/test", 200, "text/html", b"private body").unwrap_err()),
-            Failure::Bug("response decode failed: method=test status=200 content-type=text/html body-length=12".into())
+            Failure::Bug("response decode failed: status=200 body-length=12".into())
         );
     }
 
@@ -568,7 +561,7 @@ pub(crate) fn media_failure(error: &anyhow::Error) -> super::desktop::assets::Fa
     {
         return Media::Http(404);
     }
-    match classification(error) {
+    match classify(error) {
         Failure::NotDelivered | Failure::Unanswered => {
             if error
                 .downcast_ref::<TransportFailure>()
@@ -594,8 +587,5 @@ pub fn media_retry(failure: super::desktop::assets::Failure, automatic: bool) ->
 }
 
 pub(crate) fn transport_loss(error: &anyhow::Error) -> bool {
-    matches!(
-        classification(error),
-        Failure::NotDelivered | Failure::Unanswered
-    )
+    matches!(classify(error), Failure::NotDelivered | Failure::Unanswered)
 }

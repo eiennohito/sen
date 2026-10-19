@@ -1,7 +1,8 @@
-use line::{controller::AppState, store::Content};
+use line::{controller::AppState, store::Content, system_events::Event};
 
 pub(crate) fn text(content: &Content, state: &AppState, sender: &str) -> Option<String> {
-    line::system_events::parse(content).map(|event| event.text(sender, |mid| name(state, mid)))
+    line::system_events::parse(content)
+        .map(|event| event_text(&event, sender, |mid| name(state, mid)))
 }
 
 pub(crate) fn name(state: &AppState, mid: &str) -> String {
@@ -21,6 +22,49 @@ pub(crate) fn name(state: &AppState, mid: &str) -> String {
         })
         .map(|f| crate::present::single_line(&f.name))
         .unwrap_or_else(|| "Unknown member".into())
+}
+
+fn event_text(event: &Event<'_>, sender: &str, name: impl Fn(&str) -> String) -> String {
+    match event {
+        Event::Rename(a, title) => format!("{} renamed the group to “{title}”", name(a)),
+        Event::Photo(a) => format!("{} changed the group photo", name(a)),
+        Event::Join(a) => format!("{} joined the group", name(a)),
+        Event::Leave(a) => format!("{} left the group", name(a)),
+        Event::Invite(a, others) => format!(
+            "{} invited {}",
+            name(a),
+            others
+                .iter()
+                .map(|m| name(m))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Event::Remove(a, b) => format!("{} removed {} from the group", name(a), name(b)),
+        Event::Cancel(a, b) => {
+            format!("{} canceled the invitation for {}", name(a), name(b))
+        }
+        Event::Link(a, enabled) => format!(
+            "{} {} joining via link or QR code",
+            name(a),
+            if *enabled { "allowed" } else { "disabled" }
+        ),
+        Event::AlbumRename(a, b) => format!("{} renamed album “{a}” to “{b}”", name(sender)),
+        Event::AlbumDelete(a) => format!("{} deleted album “{a}”", name(sender)),
+        Event::AlbumPhotos(a) => format!("{} removed photos from “{a}”", name(sender)),
+        Event::Limit(others) => format!(
+            "{} cannot join any more chats",
+            others
+                .iter()
+                .map(|m| name(m))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        Event::Upgrade => "This chat was upgraded to a group".into(),
+        Event::LeaveChat(a) => format!("{a} left the chat"),
+    }
+    .split_whitespace()
+    .collect::<Vec<_>>()
+    .join(" ")
 }
 
 #[cfg(test)]

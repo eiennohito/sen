@@ -280,20 +280,16 @@ impl Store {
             .any(|s| (s.lo < *before || s.start) && *before <= s.hi))
     }
     pub fn chat_list(&self, limit: usize, offset: usize) -> Result<Vec<ChatListItem>> {
-        self.chat_rows(limit, offset, None, "")
-    }
-    pub fn search_chats(&self, query: &str) -> Result<Vec<ChatListItem>> {
-        self.chat_rows(usize::MAX, 0, None, query)
+        self.chat_rows(limit, offset, None)
     }
     pub fn chat_item(&self, id: &ChatId) -> Result<Option<ChatListItem>> {
-        Ok(self.chat_rows(1, 0, Some(id), "")?.pop())
+        Ok(self.chat_rows(1, 0, Some(id))?.pop())
     }
     fn chat_rows(
         &self,
         limit: usize,
         offset: usize,
         id: Option<&ChatId>,
-        query: &str,
     ) -> Result<Vec<ChatListItem>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,c.muted,c.left,c.last_message_id,
@@ -310,18 +306,11 @@ impl Store {
                  ORDER BY sort_ts DESC,sort_id DESC LIMIT 1)
              LEFT JOIN draft d ON d.chat_id=c.chat_id
              WHERE c.removed=0 AND (?3 IS NULL OR c.chat_id=?3)
-             AND (?4='' OR c.title LIKE ?5 OR json_extract(m.body_json,'$.Text.text') LIKE ?5)
              ORDER BY activity DESC,c.list_rank,c.chat_id LIMIT ?1 OFFSET ?2",
         ))?;
         let rows = stmt
             .query_map(
-                params![
-                    sql_limit(limit),
-                    sql_limit(offset),
-                    id.map(|i| &i.0),
-                    query,
-                    format!("%{query}%")
-                ],
+                params![sql_limit(limit), sql_limit(offset), id.map(|i| &i.0)],
                 |r| {
                     let mut chat = decode_chat(r)?;
                     chat.unread_count = unread(&decode_unread(r, &chat, 38)?);

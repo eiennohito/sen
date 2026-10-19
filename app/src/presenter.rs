@@ -558,7 +558,6 @@ impl Presenter {
                 }
                 Refresh::Recent(chat)
                 | Refresh::Older(chat, _)
-                | Refresh::Newer(chat, _)
                 | Refresh::Receipts(chat)
                 | Refresh::Details(chat)
                     if state.selected.as_ref() == Some(chat) =>
@@ -999,7 +998,7 @@ impl Presenter {
                 .into(),
         );
         ui.global::<State>()
-            .set_unread_boundary_unknown(state.unread_boundary_unknown);
+            .set_unread_boundary_unknown(state.unread_boundary_unknown());
         ui.global::<State>()
             .set_older_start_known(state.reaches_start);
         ui.global::<State>().set_older_status(

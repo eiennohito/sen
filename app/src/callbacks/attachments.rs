@@ -1,6 +1,6 @@
 //! Selection and local preparation. Only the dialog's Send callback enqueues uploads.
 use crate::*;
-use line::attachments::{Attachment, FILE_LIMIT};
+use line::attachments::Attachment;
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -34,13 +34,7 @@ fn picture(bytes: &[u8]) -> slint::Image {
 }
 fn present(ui: &AppWindow, selection: &Selection) {
     let global = ui.global::<State>();
-    global.set_attachments_count(
-        selection
-            .items
-            .iter()
-            .filter(|i| !i.too_large(FILE_LIMIT))
-            .count() as i32,
-    );
+    global.set_attachments_count(selection.items.iter().filter(|i| !i.too_large()).count() as i32);
     global.set_attachment_items(ModelRc::new(VecModel::from(
         selection
             .items
@@ -50,12 +44,7 @@ fn present(ui: &AppWindow, selection: &Selection) {
                 size: rich_content::file_size(i.size).into(),
                 photo: i.photo.is_some(),
                 picture: picture(&i.preview),
-                error: if i.too_large(FILE_LIMIT) {
-                    "Too large"
-                } else {
-                    ""
-                }
-                .into(),
+                error: if i.too_large() { "Too large" } else { "" }.into(),
             })
             .collect::<Vec<_>>(),
     )));
@@ -265,7 +254,7 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
             let items = std::mem::take(&mut selection.items)
                 .into_iter()
                 .filter(|item| {
-                    if item.too_large(FILE_LIMIT) {
+                    if item.too_large() {
                         item.delete_clipboard();
                         false
                     } else {

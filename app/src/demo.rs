@@ -1,12 +1,75 @@
 //! Synthetic data enters through the backend and follows the normal commit path.
 use crate::*;
-use line::backend::{LiveOp, Op};
+use line::backend::{Failure, FakeRpc, LiveOp, Op, Refusal};
+
+pub(crate) struct Args {
+    pub enabled: bool,
+    pub snapshot_path: Option<String>,
+    pub size: (u32, u32),
+    pub text_size: i32,
+    pub scene: String,
+    pub case: Option<String>,
+    pub dark: bool,
+    pub snapshot_profile: bool,
+}
+impl Default for Args {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            snapshot_path: None,
+            size: (980, 720),
+            text_size: 15,
+            scene: String::new(),
+            case: None,
+            dark: false,
+            snapshot_profile: false,
+        }
+    }
+}
+impl Args {
+    pub fn parse(
+        &mut self,
+        arg: &str,
+        args: &mut impl Iterator<Item = String>,
+    ) -> Result<bool, Box<dyn std::error::Error>> {
+        match arg {
+            "--demo" | "--demo-light" => self.enabled = true,
+            "--demo-dark" => {
+                self.enabled = true;
+                self.dark = true;
+            }
+            "--demo-paging" | "--demo-previews" | "--demo-signed-out" | "--demo-rich"
+            | "--demo-photos" | "--demo-groups" | "--demo-friends" => {
+                self.enabled = true;
+                self.scene = arg.trim_start_matches("--demo-").into();
+            }
+            "--snapshot-profile" => self.snapshot_profile = true,
+            "--snapshot-case" => self.case = Some(args.next().ok_or("missing snapshot case")?),
+            "--snapshot" => {
+                self.snapshot_path = Some(args.next().ok_or("missing snapshot path")?);
+                self.enabled = true;
+            }
+            "--snapshot-size" | "--demo-size" => {
+                let size = args.next().ok_or("missing size")?;
+                let (w, h) = size.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
+                self.size = (w.parse()?, h.parse()?);
+            }
+            "--snapshot-text-size" => {
+                self.text_size = args.next().ok_or("missing text size")?.parse()?
+            }
+            "--snapshot-scene" => self.scene = args.next().ok_or("missing scene")?,
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+}
+
 pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: i32) {
     let chat = d.state.selected.clone().unwrap_or(ChatId("alice".into()));
     match kind {
         40..=46 => {
             use line::client::error::SignInFailure::*;
-            fake.fail_sign_in(match kind {
+            fake.fail_sign_in(Some(match kind {
                 40 => CryptoModule("/demo/crypto.wasm".into()),
                 41 => StateDirectory("/demo/state".into()),
                 42 => Keyring,
@@ -14,7 +77,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 44 => Server,
                 45 => Phone,
                 _ => Cancelled,
-            });
+            }));
         }
         34 => {
             let directory =
@@ -45,8 +108,8 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 FakeBackend::official_image("protocol", 6302),
             ];
             fake.fail_rpc(
-                line::backend::FakeRpc::Unsend(ServerId::new("6301").unwrap()),
-                line::backend::Failure::Refused(line::client::error::Refusal::Gateway(13)),
+                FakeRpc::Unsend(ServerId::new("6301").unwrap()),
+                Failure::Refused(line::client::error::Refusal::Gateway(13)),
             );
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
         }
@@ -192,7 +255,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
         }
         19 => fake.auth_expired(),
         3 => {
-            fake.unanswered_send();
+            fake.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::Unanswered);
             d.sender.send(Intent::Send {
                 chat: chat.clone(),
                 text: "駅に着いたら連絡してね。See you soon! 🐈".into(),
@@ -210,7 +273,10 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             });
         }
         10 | 31 => {
-            fake.fail_send(chat.clone());
+            fake.fail_rpc(
+                FakeRpc::Send(chat.clone()),
+                Failure::Refused(Refusal::Gateway(13)),
+            );
             if kind == 10 {
                 d.sender.send(Intent::Send {
                     chat,
@@ -219,7 +285,10 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 });
             }
         }
-        30 => fake.fail_send(chat.clone()),
+        30 => fake.fail_rpc(
+            FakeRpc::Send(chat.clone()),
+            Failure::Refused(Refusal::Gateway(13)),
+        ),
         17 => fake.offline(true),
         16 => fake.offline(false),
         _ => {}
@@ -236,7 +305,7 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
         return;
     }
     demo_data::seed(fake);
-    fake.upload_delay(std::time::Duration::from_millis(1800));
+    fake.configure(|s| s.upload_delay = std::time::Duration::from_millis(1800));
     if scene == "previews" {
         demo_data::previews(fake);
     }
@@ -490,7 +559,7 @@ pub(crate) fn stage(
     {
         desktop.update(|d| {
             if let Some(chat) = d.state.selected.clone() {
-                fake.fail_send(chat);
+                fake.fail_rpc(FakeRpc::Send(chat), Failure::Refused(Refusal::Gateway(13)));
             }
         });
         ui.set_draft("See you soon! 🐈".into());

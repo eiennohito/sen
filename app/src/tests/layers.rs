@@ -47,6 +47,7 @@ fn resizing_layers_keeps_focus_on_visible_content() {
     .unwrap();
 }
 
+#[cfg(feature = "demo")]
 #[test]
 fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
     std::thread::spawn(|| {

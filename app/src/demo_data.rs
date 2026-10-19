@@ -437,39 +437,38 @@ pub fn seed(fake: &FakeBackend) {
         member_count: None,
     });
     fake.set_friends(friends);
-    fake.set_members(
-        (0..26)
-            .map(|i| line::store::Member {
-                resolved: true,
-                is_self: i == 0,
-                contact: line::store::Friend {
-                    profile: ContactProfile {
-                        relation: Some(if i == 1 { 0 } else { 2 }),
-                        invited: i == 25,
-                        ..Default::default()
-                    },
-                    id: match i {
-                        0 => "self".into(),
-                        1 => "alice".into(),
-                        _ => format!("member-{i}"),
-                    },
-                    name: match i {
-                        0 => "Offline preview".into(),
-                        1 => "葵".into(),
-                        2 => "蓮".into(),
-                        24 => "Unknown member".into(),
-                        _ => format!("Weekend walker {i:02}"),
-                    },
-                    status: String::new(),
-                    group: false,
-                    avatar: (i != 24)
-                        .then(|| image_asset(fake, &format!("member-avatar-{i}"), avatar(i % 3))),
-                    member_count: None,
+    let members = (0..26)
+        .map(|i| line::store::Member {
+            resolved: true,
+            is_self: i == 0,
+            contact: line::store::Friend {
+                profile: ContactProfile {
+                    relation: Some(if i == 1 { 0 } else { 2 }),
+                    invited: i == 25,
+                    ..Default::default()
                 },
-            })
-            .collect(),
-    );
-    fake.set_chats(chats);
+                id: match i {
+                    0 => "self".into(),
+                    1 => "alice".into(),
+                    _ => format!("member-{i}"),
+                },
+                name: match i {
+                    0 => "Offline preview".into(),
+                    1 => "葵".into(),
+                    2 => "蓮".into(),
+                    24 => "Unknown member".into(),
+                    _ => format!("Weekend walker {i:02}"),
+                },
+                status: String::new(),
+                group: false,
+                avatar: (i != 24)
+                    .then(|| image_asset(fake, &format!("member-avatar-{i}"), avatar(i % 3))),
+                member_count: None,
+            },
+        })
+        .collect();
+    fake.configure(|s| s.members = Some(members));
+    fake.configure(|s| s.chats = chats);
     for (chat, _, rows) in pages {
         fake.set_page(ChatId(chat.into()), rows);
     }
@@ -704,7 +703,7 @@ pub fn previews(fake: &FakeBackend) {
         });
         pages.push((ChatId(chat), vec![row]));
     }
-    fake.set_chats(chats);
+    fake.configure(|s| s.chats = chats);
     for (chat, rows) in pages {
         fake.set_page(chat, rows);
     }

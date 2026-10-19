@@ -1,6 +1,10 @@
+#[cfg(feature = "demo")]
+use line::backend::FakeBackend;
+mod action_queue;
+use action_queue::ActionQueue;
 use line::{
-    backend::{FakeBackend, LineBackend, ProfileAction},
-    controller::{ActionQueue, AppState, DetailPage, Panel},
+    backend::{LineBackend, ProfileAction},
+    controller::{AppState, DetailPage, Panel},
     engine::{Connection, Delta, Intent, Sender, StoreLocation, Worker},
     store::*,
 };
@@ -23,7 +27,9 @@ mod attention_policy;
 mod autostart;
 mod background;
 mod debug_launch;
+#[cfg(feature = "demo")]
 mod demo;
+#[cfg(feature = "demo")]
 mod demo_data;
 mod desktop_integration;
 mod event_loop;
@@ -35,6 +41,7 @@ mod present;
 mod presenter;
 mod preview;
 mod rich_content;
+#[cfg(any(test, feature = "demo"))]
 mod snapshot;
 mod system_events;
 mod text;
@@ -44,14 +51,8 @@ pub use line_desktop_ui::*;
 use present::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut demo = false;
-    let mut snapshot_path = None;
-    let mut size = (980, 720);
-    let mut text_size = 15;
-    let mut scene = String::new();
-    let mut case = None;
-    let mut dark = false;
-    let mut snapshot_profile = false;
+    #[cfg(feature = "demo")]
+    let mut demo_args = demo::Args::default();
     let mut background = false;
     let mut client_version = None;
     let mut wasm_override = None;
@@ -61,41 +62,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         match arg.as_str() {
             "--build-info" => {
                 println!(
-                    "{{\"mcp_debug\":{},\"renderer\":\"software\"}}",
-                    cfg!(feature = "ui-debug")
+                    "{{\"mcp_debug\":{},\"demo\":{},\"renderer\":\"software\"}}",
+                    cfg!(feature = "ui-debug"),
+                    cfg!(feature = "demo")
                 );
                 return Ok(());
             }
-            "--demo" => demo = true,
-            "--demo-paging" => {
-                demo = true;
-                scene = "paging".into();
-            }
-            "--demo-previews" => {
-                demo = true;
-                scene = "previews".into();
-            }
-            "--demo-dark" => {
-                demo = true;
-                dark = true;
-            }
-            "--demo-light" => demo = true,
-            "--snapshot-profile" => snapshot_profile = true,
-            "--snapshot-case" => case = Some(args.next().ok_or("missing snapshot case")?),
             "--debug-background" => background = true,
-            "--snapshot" => {
-                snapshot_path = Some(args.next().ok_or("missing snapshot path")?);
-                demo = true;
-            }
-            "--snapshot-size" | "--demo-size" => {
-                let v = args.next().ok_or("missing size")?;
-                let (w, h) = v.split_once('x').ok_or("expected WIDTHxHEIGHT")?;
-                size = (w.parse()?, h.parse()?);
-            }
-            "--snapshot-text-size" => {
-                text_size = args.next().ok_or("missing text size")?.parse()?
-            }
-            "--snapshot-scene" => scene = args.next().ok_or("missing scene")?,
             "--state" => {
                 locations.session = args.next().ok_or("missing state")?.into();
             }
@@ -106,23 +79,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 wasm_override = Some(args.next().ok_or("missing wasm")?.into());
             }
             "--cache-dir" => locations.cache = args.next().ok_or("missing cache directory")?.into(),
-            "--demo-signed-out" | "--demo-rich" | "--demo-photos" | "--demo-groups"
-            | "--demo-friends" => {
-                demo = true;
-                scene = arg.trim_start_matches("--demo-").into();
-            }
+            #[cfg(feature = "demo")]
+            _ if demo_args.parse(&arg, &mut args)? => {}
             _ => return Err(format!("unknown option {arg}").into()),
         }
     }
     startup::start(startup::Options {
-        demo,
-        snapshot_path,
-        size,
-        text_size,
-        scene,
-        case,
-        dark,
-        snapshot_profile,
+        #[cfg(feature = "demo")]
+        demo_args,
         background,
         locations,
         client_version,

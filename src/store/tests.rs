@@ -293,7 +293,7 @@ fn segments_gaps_overlap_and_cursor_adjacency() {
     assert!(w.gaps.is_empty());
 }
 #[test]
-fn empty_start_and_newer_page_segments() {
+fn empty_start_page_segments() {
     let mut s = store();
     page(&mut s, &[5, 10], false);
     let before = all(&s)[0].sort.clone();
@@ -303,15 +303,6 @@ fn empty_start_and_newer_page_segments() {
         s.window(&chat(), Anchor::Latest, 10, 0)
             .unwrap()
             .reaches_start
-    );
-    let after = all(&s).last().unwrap().sort.clone();
-    s.apply_page(&chat(), PageKind::Newer { after }, &[input(20)], false)
-        .unwrap();
-    assert!(
-        s.window(&chat(), Anchor::Latest, 10, 0)
-            .unwrap()
-            .gaps
-            .is_empty()
     );
     let mut empty = store();
     ensure_chat(&empty.conn, &chat()).unwrap();

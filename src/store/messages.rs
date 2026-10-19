@@ -368,9 +368,7 @@ impl Store {
                 cursors.push(merge_server_row(tx, c, input, None)?.sort);
             }
             match &kind {
-                PageKind::Older { before } | PageKind::Newer { after: before } => {
-                    cursors.push(before.clone())
-                }
+                PageKind::Older { before } => cursors.push(before.clone()),
                 PageKind::Recent | PageKind::Around { .. } => {}
             }
             if cursors.is_empty() && reaches_start {

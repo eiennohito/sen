@@ -25,7 +25,6 @@ pub struct Attachment {
     pub size: u64,
     pub photo: Option<Photo>,
     pub preview: Vec<u8>,
-    #[serde(default)]
     pub clipboard: bool,
 }
 impl Attachment {
@@ -61,7 +60,6 @@ impl Attachment {
             .to_string();
             let (width, height) = reader.into_dimensions()?;
             if u64::from(width) * u64::from(height) <= 100_000_000 {
-                // Excluded photos still retain dimensions; don't decode oversized selections.
                 let mut photo = Photo {
                     width,
                     height,
@@ -70,36 +68,33 @@ impl Attachment {
                     preview_width: 0,
                     preview_height: 0,
                 };
-                if item.size <= PHOTO_LIMIT {
-                    let bytes = item.read(PHOTO_LIMIT)?;
-                    photo.animated = match format {
-                        image::ImageFormat::Gif => {
-                            image::codecs::gif::GifDecoder::new(Cursor::new(&bytes))?
-                                .into_frames()
-                                .take(2)
-                                .count()
-                                > 1
-                        }
-                        image::ImageFormat::Png => {
-                            image::codecs::png::PngDecoder::new(Cursor::new(&bytes))?.is_apng()?
-                        }
-                        image::ImageFormat::WebP => {
-                            image::codecs::webp::WebPDecoder::new(Cursor::new(&bytes))?
-                                .has_animation()
-                        }
-                        _ => false,
-                    };
-                    let mut reader = ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
-                    let mut limits = image::Limits::default();
-                    limits.max_alloc = Some(500_000_000);
-                    reader.limits(limits);
-                    let preview = reader.decode()?.thumbnail(384, 384);
-                    photo.preview_width = preview.width();
-                    photo.preview_height = preview.height();
-                    let mut png = Cursor::new(Vec::new());
-                    preview.write_to(&mut png, image::ImageFormat::Png)?;
-                    item.preview = png.into_inner();
-                }
+                let bytes = item.read()?;
+                photo.animated = match format {
+                    image::ImageFormat::Gif => {
+                        image::codecs::gif::GifDecoder::new(Cursor::new(&bytes))?
+                            .into_frames()
+                            .take(2)
+                            .count()
+                            > 1
+                    }
+                    image::ImageFormat::Png => {
+                        image::codecs::png::PngDecoder::new(Cursor::new(&bytes))?.is_apng()?
+                    }
+                    image::ImageFormat::WebP => {
+                        image::codecs::webp::WebPDecoder::new(Cursor::new(&bytes))?.has_animation()
+                    }
+                    _ => false,
+                };
+                let mut reader = ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
+                let mut limits = image::Limits::default();
+                limits.max_alloc = Some(500_000_000);
+                reader.limits(limits);
+                let preview = reader.decode()?.thumbnail(384, 384);
+                photo.preview_width = preview.width();
+                photo.preview_height = preview.height();
+                let mut png = Cursor::new(Vec::new());
+                preview.write_to(&mut png, image::ImageFormat::Png)?;
+                item.preview = png.into_inner();
                 item.photo = Some(photo);
             }
         }
@@ -110,17 +105,17 @@ impl Attachment {
             let _ = std::fs::remove_file(&self.path);
         }
     }
-    pub fn too_large(&self, file_limit: u64) -> bool {
+    pub fn too_large(&self) -> bool {
         self.size
             > if self.photo.is_some() {
                 PHOTO_LIMIT
             } else {
-                file_limit
+                FILE_LIMIT
             }
     }
-    pub fn read(&self, file_limit: u64) -> Result<Vec<u8>> {
+    pub fn read(&self) -> Result<Vec<u8>> {
         let file = std::fs::File::open(&self.path).context("File missing")?;
-        ensure!(!self.too_large(file_limit), "Too large");
+        ensure!(!self.too_large(), "Too large");
         ensure!(
             file.metadata()?.len() == self.size,
             "File changed; select it again"
@@ -128,7 +123,7 @@ impl Attachment {
         let limit = if self.photo.is_some() {
             PHOTO_LIMIT
         } else {
-            file_limit
+            FILE_LIMIT
         };
         let mut bytes = Vec::new();
         file.take(limit + 1).read_to_end(&mut bytes)?;

@@ -1,16 +1,19 @@
 use crate::*;
 
+#[cfg(feature = "demo")]
 thread_local! {
     static FIXED_NOW: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
 }
 
 pub(crate) fn now_millis() -> i64 {
-    FIXED_NOW.with(|now| {
-        now.get()
-            .unwrap_or_else(|| chrono::Local::now().timestamp_millis())
-    })
+    #[cfg(feature = "demo")]
+    if let Some(now) = FIXED_NOW.with(|now| now.get()) {
+        return now;
+    }
+    chrono::Local::now().timestamp_millis()
 }
 
+#[cfg(feature = "demo")]
 pub(crate) fn fix_snapshot_clock() {
     use chrono::TimeZone;
     FIXED_NOW.with(|now| {

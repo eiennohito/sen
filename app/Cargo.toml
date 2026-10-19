@@ -6,7 +6,11 @@ publish = false
 description = "Software-rendered Slint LINE client using the original crypto WASM"
 
 [features]
-ui-debug = ["line-desktop-ui/ui-debug", "dep:i-slint-backend-selector"]
+demo = ["line/demo"]
+ui-debug = ["demo", "line-desktop-ui/ui-debug", "dep:i-slint-backend-selector"]
+
+[dev-dependencies]
+line = { path = "..", features = ["demo"] }
 
 [dependencies]
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "unstable-winit-030", "renderer-software", "accessibility"] }

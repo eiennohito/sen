@@ -6,7 +6,7 @@ use slint::{
         software_renderer::{MinimalSoftwareWindow, RepaintBufferType},
     },
 };
-use std::{fs::File, io::Write, rc::Rc};
+use std::rc::Rc;
 
 struct SnapshotPlatform(Rc<MinimalSoftwareWindow>);
 impl Platform for SnapshotPlatform {
@@ -43,11 +43,13 @@ pub fn render(
     Ok(pixels)
 }
 
+#[cfg(feature = "demo")]
 pub fn save(
     window: &MinimalSoftwareWindow,
     path: &str,
     (width, height): (u32, u32),
 ) -> Result<(), Box<dyn std::error::Error>> {
+    use std::{fs::File, io::Write};
     let pixels = render(window, (width, height))?;
     let mut file = File::create(path)?;
     write!(file, "P6\n{width} {height}\n255\n")?;
