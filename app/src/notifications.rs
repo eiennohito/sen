@@ -241,6 +241,16 @@ mod tests {
                 "unsent draft in A",
                 "the composer did not follow the second selection"
             );
+            // Consume the queued selection acknowledgements through A's draft.
+            // Otherwise B's earlier acknowledgement can hide a later overwrite.
+            loop {
+                let delta = receive("waiting for A's queued selection draft");
+                let arrived = matches!(&delta, Delta::Draft { chat, .. } if chat == &chat_a);
+                desktop.apply_batch(&ui, [delta]);
+                if arrived {
+                    break;
+                }
+            }
             // Window requests are ordered behind both notification draft saves.
             // Read each draft back from the engine, without another UI capture.
             for (chat, text, cursor, anchor) in [

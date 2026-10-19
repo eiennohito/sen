@@ -70,8 +70,8 @@ impl Desktop {
         );
     }
     pub(crate) fn render(&mut self, ui: &AppWindow) {
-        let scale = ui.window().scale_factor();
-        ui.global::<State>().set_device_scale(scale);
+        ui.global::<State>()
+            .set_device_scale(ui.window().scale_factor());
         #[cfg(feature = "ui-debug")]
         latency::RENDERS.set(latency::RENDERS.get() + 1);
         // Text typed or set without an edit event stays; only engine changes replace it.
@@ -173,19 +173,8 @@ impl Desktop {
     }
     pub(crate) fn open_chat(&mut self, ui: &AppWindow, chat: ChatId) {
         self.capture_draft(ui);
-        let changed = self.state.selected.as_ref() != Some(&chat);
-        let draft = self.state.chats.get(&chat).and_then(|c| c.draft.clone());
+        self.shown_composer = self.state.composer.clone();
         self.sender.send(self.state.select(chat));
-        if changed {
-            self.state.composer = draft.as_ref().map(|d| d.text.clone()).unwrap_or_default();
-            self.state.composer_reply = draft.as_ref().and_then(|d| d.reply.clone());
-            ui.set_draft(self.state.composer.clone().into());
-            ui.invoke_restore_editor(
-                draft.as_ref().map_or(0, |d| d.anchor as i32),
-                draft.as_ref().map_or(0, |d| d.cursor as i32),
-            );
-        }
-        self.render(ui);
     }
     pub(crate) fn photos(&self) -> Vec<String> {
         self.state
@@ -227,6 +216,12 @@ impl Desktop {
         }
     }
     pub(crate) fn capture_draft(&mut self, ui: &AppWindow) {
+        // A selection can change before the next render updates the editor.
+        if self.state.composer != self.shown_composer
+            && ui.get_draft().as_str() == self.shown_composer
+        {
+            return;
+        }
         self.state.composer = ui.get_draft().to_string();
         if let Some(chat) = &self.state.selected {
             let draft = Draft {
@@ -236,9 +231,6 @@ impl Desktop {
                 anchor: ui.get_editor_anchor() as usize,
                 updated: line::engine::now_ms(),
             };
-            if let Some(item) = self.state.chats.get_mut(chat) {
-                item.draft = Some(draft.clone());
-            }
             self.sender.send(Intent::Draft {
                 chat: chat.clone(),
                 draft,
@@ -336,7 +328,10 @@ impl Desktop {
         }
         let dirty = !matches!(
             &d,
-            Delta::Asset { .. } | Delta::MediaFailed { .. } | Delta::Draft { .. }
+            Delta::Asset { .. }
+                | Delta::AssetEvicted { .. }
+                | Delta::MediaFailed { .. }
+                | Delta::Draft { .. }
         );
         match &d {
             Delta::CreatedChat(result) => {
@@ -550,5 +545,52 @@ impl Desktop {
         }
         self.state.apply(d);
         (dirty, window, editor)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn asset_eviction_does_not_mark_desktop_dirty() {
+        std::thread::spawn(|| {
+            let worker = Worker::start(
+                StoreLocation::Memory,
+                || Ok(line::backend::FakeBackend::canned()),
+                Default::default(),
+            );
+            let _window = crate::snapshot::install().unwrap();
+            let ui = crate::window::create_app_window().unwrap();
+            let mut desktop = Desktop {
+                clipboard_root: std::env::temp_dir(),
+                history: Default::default(),
+                shown_composer: String::new(),
+                reveal: None,
+                viewer_asset: None,
+                destination: viewer::Destination::Dialog,
+                notifications: None,
+                background: Default::default(),
+                assets: Default::default(),
+                state: AppState::default(),
+                presenter: Default::default(),
+                sender: worker.sender.clone(),
+                query: String::new(),
+                category: 0,
+            };
+            let avatar = line::client::desktop::assets::Asset::avatar("/visible-avatar").unwrap();
+            assert!(desktop.assets.request(&avatar));
+            let (dirty, window, editor) =
+                desktop.apply(&ui, Delta::AssetEvicted { key: avatar.key() });
+            assert!(!dirty, "asset eviction must wait for a natural render");
+            assert!(!window);
+            assert!(editor.is_none());
+            assert!(
+                desktop.assets.request(&avatar),
+                "evicted asset must be requestable again"
+            );
+        })
+        .join()
+        .unwrap();
     }
 }

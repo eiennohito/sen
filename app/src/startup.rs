@@ -162,8 +162,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                         }
                     }
                     WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                        let scale = *scale_factor as f32;
-                        ui.global::<State>().set_device_scale(scale);
+                        ui.global::<State>().set_device_scale(*scale_factor as f32);
                     }
                     WindowEvent::Focused(active) => ui.global::<State>().set_window_active(*active),
                     WindowEvent::Ime(Ime::Preedit(text, _)) => ui.set_ime_active(!text.is_empty()),

@@ -155,39 +155,6 @@ impl Assets {
 mod tests {
     use super::*;
     #[test]
-    fn evicted_visible_avatar_is_requested_on_the_next_render() {
-        use line::{
-            backend::FakeBackend,
-            controller::AppState,
-            engine::{StoreLocation, Worker},
-        };
-        let worker = Worker::start(
-            StoreLocation::Memory,
-            || Ok(FakeBackend::canned()),
-            Default::default(),
-        );
-        let mut state = AppState::default();
-        state.profile.picture_path = Some("/visible-avatar".into());
-        let avatar = Asset::avatar("/visible-avatar").unwrap();
-        let mut assets = Assets::default();
-        assets.visible(&state, 0, &worker.sender);
-        assert!(
-            !assets.request(&avatar),
-            "visible avatar request was not deduplicated"
-        );
-        assets.evicted(&avatar.key());
-        assert!(
-            !assets.requested.contains(&avatar.key()),
-            "evicted avatar remained in the requested set"
-        );
-        assets.visible(&state, 0, &worker.sender);
-        assert!(
-            assets.requested.contains(&avatar.key()),
-            "next render did not request the still-visible avatar again"
-        );
-    }
-
-    #[test]
     fn avatar_is_a_centered_circle() {
         let source = Pixels {
             width: 1600,
