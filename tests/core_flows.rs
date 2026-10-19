@@ -54,7 +54,6 @@ impl App {
                     timing: Timing {
                         retry_initial: Duration::from_millis(5),
                         retry_max: Duration::from_millis(50),
-                        poll: Duration::from_millis(1),
                         offline_after: Duration::from_millis(100),
                         health_now: Instant::now,
                     },
@@ -1989,4 +1988,42 @@ fn chat_preview_resolves_system_actor_before_opening_conversation() {
         app.state.contact("preview-actor").unwrap().name.as_deref(),
         Some("葵")
     );
+}
+
+#[test]
+fn shutdown_saves_the_final_queued_draft() {
+    use line::store::{Draft, Store};
+    use std::{sync::mpsc, thread};
+    let temp = TempDir::new("line-stop-draft");
+    let mut app = App::new(
+        FakeBackend::canned(),
+        StoreLocation::Directory(temp.0.clone()),
+    );
+    app.online();
+    let draft = Draft {
+        text: "final draft".into(),
+        cursor: 11,
+        anchor: 11,
+        updated: 123,
+        reply: None,
+    };
+    app.send(Intent::Draft {
+        chat: ChatId("alice".into()),
+        draft: draft.clone(),
+    });
+    let (finished, done) = mpsc::channel();
+    let worker = thread::spawn(move || {
+        drop(app);
+        finished.send(()).unwrap();
+    });
+    done.recv_timeout(Duration::from_secs(3))
+        .expect("engine shutdown stayed blocked");
+    worker.join().unwrap();
+    let saved = Store::open(&temp.0)
+        .unwrap()
+        .load_draft(&ChatId("alice".into()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(saved.text, draft.text);
+    assert_eq!((saved.cursor, saved.anchor), (draft.cursor, draft.anchor));
 }

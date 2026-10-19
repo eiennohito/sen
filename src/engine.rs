@@ -63,12 +63,11 @@ impl AccountSession {
         matches!(self, Self::SigningIn { .. })
     }
 }
-/// Retry policy and scheduler resolution, injectable for offline tests.
+/// Retry policy and health clock, injectable for offline tests.
 #[derive(Clone, Copy, Debug)]
 pub struct Timing {
     pub retry_initial: Duration,
     pub retry_max: Duration,
-    pub poll: Duration,
     pub offline_after: Duration,
     pub health_now: fn() -> Instant,
 }
@@ -77,7 +76,6 @@ impl Default for Timing {
         Self {
             retry_initial: Duration::from_secs(2),
             retry_max: Duration::from_secs(60),
-            poll: Duration::from_millis(100),
             offline_after: Duration::from_secs(15),
             health_now: Instant::now,
         }
@@ -423,7 +421,6 @@ struct Lanes {
     refresh: BTreeSet<Refresh>,
     stopped: bool,
 }
-#[derive(Default)]
 struct Inbox {
     pair_cancel: Mutex<Arc<CancelToken>>,
     lanes: Mutex<Lanes>,
@@ -439,10 +436,13 @@ impl Sender {
     pub fn send(&self, intent: Intent) {
         let mut q = self.0.lanes.lock().unwrap();
         q.users.push_back(intent);
-        self.0.wake.notify_all();
+        self.0.notify();
     }
 }
 impl Inbox {
+    fn notify(&self) {
+        self.wake.notify_all();
+    }
     fn live(&self, event: StreamEvent) -> bool {
         self.live_with_cancel(event, None)
     }
@@ -455,12 +455,12 @@ impl Inbox {
             return false;
         }
         q.live.push_back(event);
-        self.wake.notify_all();
+        self.notify();
         true
     }
     fn refresh(&self, r: Refresh) {
         self.lanes.lock().unwrap().refresh.insert(r);
-        self.wake.notify_all();
+        self.notify();
     }
 }
 type Completion = Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>;
@@ -491,7 +491,7 @@ fn upload_completed(inbox: &Inbox, completed: Completion) {
     let mut lanes = inbox.lanes.lock().unwrap();
     if !lanes.stopped {
         lanes.completed.push_back(completed);
-        inbox.wake.notify_all();
+        inbox.notify();
     }
 }
 
@@ -559,7 +559,11 @@ impl Worker {
         let project = options.project;
         #[cfg(not(feature = "demo"))]
         let project = Arc::new(|delta| delta);
-        let inbox = Arc::new(Inbox::default());
+        let inbox = Arc::new(Inbox {
+            pair_cancel: Mutex::default(),
+            lanes: Mutex::default(),
+            wake: Condvar::new(),
+        });
         let sender = Sender(inbox.clone());
         let (tx, deltas) = mpsc::channel();
         let wake = DeltaWake::default();
@@ -635,7 +639,7 @@ impl Worker {
                                                     break;
                                                 }
                                                 q.completed.push_back(completed);
-                                                inbox.wake.notify_all();
+                                                inbox.notify();
                                             }
                                         },
                                     )?;
@@ -686,7 +690,7 @@ impl Worker {
                     Ok(())
                 }));
             worker_inbox.lanes.lock().unwrap().stopped = true;
-            worker_inbox.wake.notify_all();
+            worker_inbox.notify();
             if let Ok(Err(error)) = &outcome {
                 crate::reporting::log("engine-start", "fatal", error.as_ref());
             }
@@ -830,7 +834,7 @@ impl Engine {
         if let Err(error) = self.net.send(job) {
             let done = (error.0)(Err(Failure::Bug("network worker stopped".into())));
             self.inbox.lanes.lock().unwrap().completed.push_back(done);
-            self.inbox.wake.notify_all();
+            self.inbox.notify();
         }
     }
     fn refresh_rpc<T: Send + 'static>(
@@ -1014,6 +1018,10 @@ impl Engine {
             Refresh::Details(_) => 7,
         }
     }
+    fn can_refresh(&self, r: &Refresh) -> bool {
+        self.known()
+            || matches!(r, Refresh::Profile) && matches!(self.account, AccountSession::Ready)
+    }
     fn run(&mut self) -> Result<()> {
         if let Some(accounts) = &self.account_root
             && let Some(data) = accounts.parent()
@@ -1100,9 +1108,7 @@ impl Engine {
                             .refresh
                             .iter()
                             .filter(|r| {
-                                (self.known()
-                                    || matches!(r, Refresh::Profile)
-                                        && matches!(self.account, AccountSession::Ready))
+                                self.can_refresh(r)
                                     && self.retry_after.get(r).is_none_or(|t| *t <= Instant::now())
                             })
                             .min_by_key(|r| self.priority(r))
@@ -1112,7 +1118,35 @@ impl Engine {
                         self.retry_after.remove(&r);
                         break Work::Refresh(r);
                     }
-                    q = self.inbox.wake.wait_timeout(q, self.timing.poll).unwrap().0;
+                    let now = Instant::now();
+                    let health = self
+                        .health
+                        .failed_since
+                        .filter(|_| self.known() && self.connection != Connection::Offline)
+                        .map(|since| {
+                            now + (since + self.timing.offline_after)
+                                .saturating_duration_since((self.timing.health_now)())
+                        });
+                    let retry = (self.net_pending == 0)
+                        .then(|| {
+                            q.refresh
+                                .iter()
+                                .filter(|r| self.can_refresh(r))
+                                .filter_map(|r| self.retry_after.get(r))
+                                .min()
+                                .copied()
+                        })
+                        .flatten();
+                    q = match health.into_iter().chain(retry).min() {
+                        Some(deadline) => {
+                            self.inbox
+                                .wake
+                                .wait_timeout(q, deadline.saturating_duration_since(now))
+                                .unwrap()
+                                .0
+                        }
+                        None => self.inbox.wake.wait(q).unwrap(),
+                    };
                 }
             };
             let writes = self.store.writes();
@@ -1149,7 +1183,7 @@ impl Engine {
             lanes.stopped = true;
             lanes.completed.clear();
         }
-        self.inbox.wake.notify_all();
+        self.inbox.notify();
         self.assets_stop.cancel();
         self.stop_stream();
         Ok(())
@@ -1159,9 +1193,8 @@ impl Engine {
             {
                 let _q = self.inbox.lanes.lock().unwrap();
                 stop.cancel();
-                self.inbox.wake.notify_all();
+                self.inbox.notify();
             }
-            j.thread().unpark();
             drop(j);
         }
     }
@@ -1488,7 +1521,7 @@ impl Engine {
                                     }
                                     Ok(())
                                 }));
-                                inbox.wake.notify_all();
+                                inbox.notify();
                             }),
                         ).map(|()| true)
                     },
@@ -1511,7 +1544,7 @@ impl Engine {
                                     lanes.live.clear();
                                     lanes.refresh.clear();
                                 }
-                                engine.inbox.wake.notify_all();
+                                engine.inbox.notify();
                                 engine.list_sweep.clear();
                                 engine.list_cursor = None;
                                 engine.list_more = false;
@@ -2588,16 +2621,16 @@ impl Engine {
                 | StreamEvent::Exited
                 | StreamEvent::Raw(_) => return Ok(()),
                 StreamEvent::RefreshToken { reply } => {
-                    let _ =
-                        reply.send(Err(Failure::SignedOut(SignOutReason::AuthenticationFailed)));
+                    let _ = reply
+                        .try_send(Err(Failure::SignedOut(SignOutReason::AuthenticationFailed)));
                     return Ok(());
                 }
                 StreamEvent::Authorize { reply, .. } => {
-                    let _ = reply.send(Err(crate::client::desktop::assets::Failure::Network));
+                    let _ = reply.try_send(Err(crate::client::desktop::assets::Failure::Network));
                     return Ok(());
                 }
                 StreamEvent::Resync { complete, .. } => {
-                    let _ = complete.send(Err(Failure::SignedOut(SignOutReason::NoSession)));
+                    let _ = complete.try_send(Err(Failure::SignedOut(SignOutReason::NoSession)));
                     return Ok(());
                 }
                 StreamEvent::Asset(_) | StreamEvent::Operation(_) => return Ok(()),
@@ -2633,7 +2666,7 @@ impl Engine {
                 self.rpc(
                     move |backend| backend.authorize(&asset),
                     move |_, result, _| {
-                        let _ = reply.send(
+                        let _ = reply.try_send(
                             result.map_err(|_| crate::client::desktop::assets::Failure::Network),
                         );
                         Ok(())
@@ -2754,7 +2787,7 @@ impl Engine {
                 self.rpc(
                     move |backend| backend.refresh_token(),
                     move |_, result, _| {
-                        let _ = reply.send(result);
+                        let _ = reply.try_send(result);
                         Ok(())
                     },
                 );
@@ -2792,7 +2825,7 @@ impl Engine {
     fn resync(
         &mut self,
         revision: Option<i64>,
-        complete: mpsc::SyncSender<std::result::Result<(), Failure>>,
+        complete: async_channel::Sender<std::result::Result<(), Failure>>,
     ) -> Result<()> {
         // Suppression applies only to Recent refreshes initiated by this resync.
         let chats: Vec<_> = self
@@ -2841,7 +2874,7 @@ impl Engine {
                             }
                             engine.rpc_failed(Refresh::Recent(chat), error.clone());
                         }
-                        let _ = complete.send(Err(error));
+                        let _ = complete.try_send(Err(error));
                         return Ok(());
                     }
                 }
@@ -2856,7 +2889,7 @@ impl Engine {
                 }
                 engine.continuous = true;
                 engine.publish()?;
-                let _ = complete.send(Ok(()));
+                let _ = complete.try_send(Ok(()));
                 Ok(())
             },
         );
@@ -2989,7 +3022,7 @@ impl Drop for Engine {
             lanes.stopped = true;
             lanes.completed.clear();
         }
-        self.inbox.wake.notify_all();
+        self.inbox.notify();
         self.assets_stop.cancel();
         self.stop_stream();
     }

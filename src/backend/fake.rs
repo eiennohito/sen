@@ -509,9 +509,7 @@ impl Backend for FakeBackend {
                 rgba,
             })));
             deliver(PairEvent::Stage(Stage::AwaitScan));
-            while !cancel.is_cancelled() {
-                std::thread::sleep(Duration::from_millis(10));
-            }
+            async_io::block_on(cancel.cancelled());
             return Err(Failure::SignedOut(SignOutReason::Unavailable(
                 crate::client::error::SignInFailure::Cancelled,
             )));
@@ -1011,9 +1009,7 @@ impl Backend for FakeBackend {
             if !deliver(StreamEvent::Connection(Ok(()))) {
                 return;
             }
-            while !stop.is_cancelled() {
-                std::thread::park_timeout(Duration::from_millis(20));
-            }
+            async_io::block_on(stop.cancelled());
         }))
     }
     fn decode(&mut self, raw: Value) -> Result<LiveOp> {

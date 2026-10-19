@@ -2,7 +2,7 @@ use super::*;
 use crate::client::error::media_failure;
 use crate::client::http::CancelToken;
 use std::{
-    sync::{Condvar, Mutex},
+    sync::Mutex,
     thread::{self, JoinHandle},
     time::Instant,
 };
@@ -127,7 +127,8 @@ enum Work {
 
 struct Shared {
     queue: Mutex<Queue>,
-    ready: Condvar,
+    ready: async_channel::Sender<()>,
+    wait: async_channel::Receiver<()>,
     stop: Arc<CancelToken>,
     global_stop: Arc<CancelToken>,
     failures: Failures,
@@ -156,9 +157,11 @@ impl Fetchers {
         + 'static,
         publish: impl Fn(Completion, &CancelToken) + Send + Sync + 'static,
     ) -> Self {
+        let (ready, wait) = async_channel::bounded(THREADS);
         let shared = Arc::new(Shared {
             queue: Mutex::new(Queue::default()),
-            ready: Condvar::new(),
+            ready,
+            wait,
             stop: Arc::new(CancelToken::new()),
             global_stop,
             failures,
@@ -205,11 +208,17 @@ impl Fetchers {
                                             .unwrap();
                                         break Work::Fetch(key, job, blacklisted);
                                     }
-                                    queue = shared
-                                        .ready
-                                        .wait_timeout(queue, Duration::from_millis(50))
-                                        .unwrap()
-                                        .0;
+                                    drop(queue);
+                                    futures_lite::future::block_on(futures_lite::future::or(
+                                        async {
+                                            let _ = shared.wait.recv().await;
+                                        },
+                                        futures_lite::future::or(
+                                            shared.stop.cancelled(),
+                                            shared.global_stop.cancelled(),
+                                        ),
+                                    ));
+                                    queue = shared.queue.lock().unwrap();
                                 }
                             };
                             let (key, job, blacklisted) = match work {
@@ -377,7 +386,7 @@ impl Fetchers {
                 order,
             },
         );
-        self.shared.ready.notify_one();
+        let _ = self.shared.ready.try_send(());
         true
     }
 }
@@ -385,7 +394,6 @@ impl Fetchers {
 impl Drop for Fetchers {
     fn drop(&mut self) {
         self.shared.stop.cancel();
-        self.shared.ready.notify_all();
         for thread in self.threads.drain(..) {
             let _ = thread.join();
         }
