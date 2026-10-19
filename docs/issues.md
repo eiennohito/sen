@@ -14,7 +14,6 @@ merge. "Branch" means the work exists but is not merged yet.
 | 17 | Global deslop pass, including a whole-suite test audit | user | next |
 | 19 | History decrypt: newest first, show messages as they decrypt; measure a compiling WASM engine | user | after the deslop pass |
 | 20 | Corrupt message whose auth tag fails poisons the WASM runtime (~150 ms per channel to rebuild) | found | accepted for now; revisit with #19 |
-| 21 | HANDOFF.md describes the old architecture | found | after #15–#17 |
 | 22 | Untraced actions: block, report, invite, accept/reject invitations, remove member | found | not started |
 | 23 | Live account verification | constraint | needs the device slot (user's call) |
 | 26 | Deslop batches from the audit: store schema/unread model, transport rewrite, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1 merged (crypto/CLI, store, transport); wave 2 merged (backend/demo, client core, content model); wave 3: engine 7a dedup merged (behaviour-changing items moved to #32), check-ui restructure, desktop glue and integration tests and desktop services merged; next: tools/docs, presenter and rich_content split, engine file split, then R4; reconnect-retry and the asset priority mailbox are deleted, not wired (desktop glue batch) |
@@ -52,4 +51,5 @@ merge. "Branch" means the work exists but is not merged yet.
 - UI checks: `check-ui-mcp.py --all` runs one instance per size, a seeded random group order and no sleeps (~53 s, was ~90 s); #30 the launch race is gone (waits for MCP initialize, verifies the instance). A focused IconButton that became disabled no longer keeps its focus ring.
 - #25 every open-chat path goes through one `Desktop::open_chat` that saves the current draft (queued opens can't overwrite another chat's draft). Prefs read from state; typed attachment hand-back; asset queue is explicit-first then newest, dead priority mailbox and reconnect retry removed; evicted thumbnails are re-requested.
 - Desktop services: notification worker split (D-Bus in attention/dbus.rs), plain autostart without fsync, notification bodies bounded at 1000 chars, sign-in statuses Preparing sign-in / Waiting for your phone / Signing in / Signed in from one source, no Debug text shown to users, D-Bus contract tests only on a private bus.
+- #21 HANDOFF.md describes the current architecture; docs and tools reference only what exists (installer --dev-paths, fetch-extension.sh and the snapshot example removed).
 - #18 UI check `focus` 46 s → 11 s (95 → 14 s wide); all 16 groups ~80 s.
