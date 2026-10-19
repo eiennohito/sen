@@ -85,8 +85,7 @@ fn stores_refuse_downgrades_and_require_keys() {
     let dev = root.join("dev.json");
     save_with(&dev, &synthetic(), Store::PlaintextFile, &Unreachable).unwrap();
     assert_eq!(parse(&fs::read(&dev).unwrap()).unwrap(), synthetic());
-    let bytes = serde_json::to_vec_pretty(&synthetic()).unwrap();
-    private_write(&dev, &bytes).unwrap();
+    let bytes = fs::read(&dev).unwrap();
     let result = load_with(&dev, Store::Keyring, &Unreachable);
     assert!(matches!(
         result
@@ -104,6 +103,22 @@ fn stores_refuse_downgrades_and_require_keys() {
         load_with(&dev, Store::PlaintextFile, &Unreachable).unwrap(),
         synthetic()
     );
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn missing_key_refuses_save_and_load_without_creating_a_key() {
+    let root = root("missing-key");
+    let path = root.join("session.json");
+    let keys = MapKeys::default();
+    save_with(&path, &synthetic(), Store::Keyring, &keys).unwrap();
+    let sealed_bytes = fs::read(&path).unwrap();
+    keys.0.lock().unwrap().clear();
+
+    assert!(save_with(&path, &json!({}), Store::Keyring, &keys).is_err());
+    assert!(load_with(&path, Store::Keyring, &keys).is_err());
+    assert_eq!(fs::read(&path).unwrap(), sealed_bytes);
+    assert!(keys.0.lock().unwrap().is_empty());
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -122,10 +122,9 @@ flowchart LR
 See [core-model.md](core-model.md) for the store, engine, controller and
 presenter. The UI drains deltas on a 16 ms event-loop timer.
 
-The desktop and CLI now share `src/client.rs` and `src/client/chat.rs`.
+The desktop uses `src/client.rs` and `src/client/chat.rs`.
 `src/client/desktop.rs` owns the account operations, and its `assets` module
-owns authenticated media retrieval and private thumbnail caching. The CLI is
-a thin frontend over the same transport, session, and WASM implementation.
+owns authenticated media retrieval and private thumbnail caching.
 
 The crypto module source is the installed LINE Chrome extension, ID
 `ophjlpahpchlmihnnnihgmmeilfjmjjc`. Startup searches

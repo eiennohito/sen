@@ -19,15 +19,15 @@ use serde_json::{Value, json};
 use std::{fs, io::Read, path::Path};
 
 const FORMAT: &str = "line-desktop-sealed-session";
-pub const ENVIRONMENT: &str = "LINE_DESKTOP_CREDENTIALS";
+const ENVIRONMENT: &str = "LINE_DESKTOP_CREDENTIALS";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Store {
+enum Store {
     Keyring,
     PlaintextFile,
 }
 impl Store {
-    pub fn from_environment() -> Result<Self> {
+    fn from_environment() -> Result<Self> {
         Self::parse(std::env::var(ENVIRONMENT).ok().as_deref())
     }
     fn parse(value: Option<&str>) -> Result<Self> {
@@ -49,22 +49,17 @@ pub fn load(path: &Path) -> Result<Value> {
     load_with(
         path,
         Store::from_environment().context(SavedSessionFailure::CredentialsStore.error())?,
-        &secret_service::Keyring,
+        &Keyring,
     )
 }
 pub fn save(path: &Path, state: &Value) -> Result<()> {
-    save_with(
-        path,
-        state,
-        Store::from_environment()?,
-        &secret_service::Keyring,
-    )
+    save_with(path, state, Store::from_environment()?, &Keyring)
 }
 /// Fails early, before a phone approval, when new credentials could not be sealed.
 pub fn check_writable() -> Result<()> {
     match Store::from_environment()? {
         Store::PlaintextFile => Ok(()),
-        Store::Keyring => secret_service::Keyring
+        Store::Keyring => Keyring
             .reachable()
             .context("the desktop keyring (Secret Service) is unavailable"),
     }
@@ -210,7 +205,7 @@ fn open(envelope: &Value, keys: &impl Keys) -> Result<Value> {
 }
 
 mod secret_service;
-pub use secret_service::Keyring;
+use secret_service::Keyring;
 
 #[cfg(test)]
 mod tests;

@@ -2,8 +2,6 @@
 
 Updated 2026-10-18. Workspace: `/home/eien/work/misc/line-app`.
 
-The historical `line-auth` CLI described below has been removed; use the desktop app for sign-in.
-
 ## Decisions taken 2026-10-18
 
 1. **T11 is implemented with the desktop Secret Service** (see the T11 row in
@@ -203,11 +201,6 @@ agent configs are ignored. Preserve the official blob and state on disk.
 
 ## Historical authentication checks — native auth currently invalid
 
-The removed CLI reimported saved wrapped keys into WASM, signed and sent
-`getProfile`, and performed a bounded read-only decryption probe of recent
-chat previews. The historical results above do not establish current account
-authorization or validate token refresh.
-
 The desktop now provides message retrieval, text display, and media decryption.
 Successful samples do not cover every direction, chat type, historical key, or
 content type. Current token refresh and live receive remain unverified against
@@ -304,7 +297,6 @@ Gateway: `https://line-chrome-gw.line-apps.com`. QR RPCs use JSON array bodies
 `SecondaryQrCodeLoginPermitNoticeService/`. QR HMACs use an empty token argument.
 Authenticated profile uses `/api/talk/thrift/Talk/TalkService/getProfile` with
 body `[0]`, access-token HMAC input, `x-line-access`, and cookie `lct`.
-The CLI contains the exact flow and headers.
 
 Installed Chrome reference scripts, if needed:
 `/home/eien/.config/google-chrome/Default/Extensions/ophjlpahpchlmihnnnihgmmeilfjmjjc/3.7.2_0/static/js/`.

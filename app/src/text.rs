@@ -62,7 +62,6 @@ pub(crate) fn pairing_stage(stage: line::client::pairing::Stage) -> String {
     use line::client::pairing::Stage;
     match stage {
         Stage::WaitingKeyring => "Waiting for the keyring to unlock…".into(),
-        Stage::RecoveringKeys => "Recovering E2EE keys from saved pairing metadata".into(),
         Stage::Authenticated => {
             "SUCCESS: saved session authenticated and E2EE keys restored".into()
         }
@@ -77,9 +76,6 @@ pub(crate) fn pairing_stage(stage: line::client::pairing::Stage) -> String {
         Stage::KeysVerified => "Letter Sealing keys unwrapped and export/import verified".into(),
         Stage::CheckingKeys => "Authenticated getProfile succeeded; validating saved keys".into(),
         Stage::Synthetic => "Synthetic sign-in".into(),
-        Stage::RestoredKeys(count) => {
-            format!("Restored {count} Letter Sealing key(s) in a fresh WASM instance")
-        }
     }
 }
 

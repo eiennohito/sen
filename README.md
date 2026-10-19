@@ -151,10 +151,9 @@ login. RPC HTTPS uses a persistent blocking `ureq` agent with rustls and WebPKI
 roots, without an async runtime. SSE uses a separate agent with the same
 transport and media uses the same pooled transport; `curl` is not required.
 QR encoding runs in Rust, with 10-pixel modules,
-a four-module quiet zone and Low error correction. The CLI supports
-`--qr-file FILE` for PNG output and `--display ascii|none` (default `ascii` on a
-TTY, `none` otherwise). Cancel clears the QR/PIN immediately; the current
-phone-verification request may need to finish before cancellation completes.
+a four-module quiet zone and Low error correction. Cancel clears the QR/PIN
+immediately; the current phone-verification request may need to finish before
+cancellation completes.
 Keep the app open to see success or a retriable error.
 
 A successful sign-in keeps the old session as
