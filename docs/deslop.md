@@ -63,6 +63,12 @@ Delete, don't fix:
   user can see and do;
 - fake backends growing knobs only one test uses.
 
+Before deleting a test, check it isn't the only coverage of something a
+user would notice: audit lists get this wrong too (a cleanup removed the
+only tests of contact/group live operations and of pairing after a broken
+saved session). A replaced or new test must fail when the behaviour is
+broken; break it once and see.
+
 A whole-suite audit runs with the next deslop pass. Suite runtime is part
 of the budget: slow tests cost development speed.
 
