@@ -31,7 +31,7 @@ export component Chats inherits Rectangle {
     property <length> reveal-y;
     // Slint's virtual list estimates a distant seek at a row boundary first.
     // Apply the requested pixel offset again after that layout has settled.
-    reveal-settle := Timer { interval: 0ms; triggered => { chat-list.jump(root.reveal-y); } }
+    reveal-settle := Timer { interval: 0ms; running: false; triggered => { self.running = false; chat-list.jump(root.reveal-y); } }
     public function reveal(index: int) {
         chat-list.jump(State.list-y);
         let top = index * State.chat-row-height;
@@ -40,6 +40,7 @@ export component Chats inherits Rectangle {
         let y = top + State.list-y < 0px ? -top : bottom + State.list-y > chat-list.visible-height ? chat-list.visible-height - bottom : State.list-y;
         root.reveal-y = max(-extent, min(0px, y));
         chat-list.jump(root.reveal-y);
+        reveal-settle.running = true;
         reveal-settle.restart();
     }
     public function focus-search-last() { chips-focus.focus(); }
