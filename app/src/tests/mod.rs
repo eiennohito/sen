@@ -62,3 +62,5 @@ fn test_window() -> AppWindow {
 mod grouping;
 mod layers;
 pub(crate) mod previews;
+
+mod rich_flow;
