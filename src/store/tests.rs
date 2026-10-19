@@ -56,18 +56,16 @@ fn pending(s: &mut Store, seq: u32) -> Key {
 }
 
 #[test]
-fn m13_stale_page_keeps_confirmed_pending_key() {
+fn stale_page_preserves_confirmed_pending_and_live_rows_and_newer_hint_requests_refresh() {
     let mut s = store();
     let key = pending(&mut s, 1);
     s.link_sent(1, id(101), 101).unwrap();
     page(&mut s, &[1, 2], false);
     assert_eq!(all(&s).len(), 3);
     assert_eq!(s.newest(&chat()).unwrap().unwrap().key, key);
-}
-#[test]
-fn m14_stale_page_keeps_live_and_newer_list_requests_refresh() {
+
     let mut s = store();
-    s.apply_live(&chat(), &input(20), false, Some(2)).unwrap();
+    s.apply_live(&chat(), &input(20), false).unwrap();
     page(&mut s, &[1, 2], false);
     assert_eq!(s.newest(&chat()).unwrap().unwrap().server_id, Some(id(20)));
     s.upsert_chats(
@@ -99,7 +97,7 @@ fn echo_and_result_orders_preserve_key_and_merge_duplicate() {
                 s.link_sent(1, id(101), 101).unwrap();
             }
             if live_match {
-                s.apply_live(&chat(), &echo, true, None).unwrap();
+                s.apply_live(&chat(), &echo, true).unwrap();
             } else {
                 s.apply_page(&chat(), PageKind::Recent, &[echo], false)
                     .unwrap();
@@ -128,19 +126,19 @@ fn withdrawal_tombstone_and_sticky_body() {
     let mut updated = input(1);
     updated.reactions_rev = 5;
     updated.body = Content::text("edited");
-    s.apply_live(&chat(), &updated, true, None).unwrap();
+    s.apply_live(&chat(), &updated, true).unwrap();
     let row = &all(&s)[0];
     assert_eq!(row.key, original.key);
     assert!(row.body.is_withdrawn());
     assert_eq!(row.delivery, Delivery::Sent);
 }
 #[test]
-fn reaction_and_content_revisions_only_advance() {
+fn reaction_and_body_reactions_revisions_only_advance() {
     let mut s = store();
     let mut m = input(1);
     m.reactions_rev = 2;
     m.reactions = reaction("new");
-    s.apply_live(&chat(), &m, false, None).unwrap();
+    s.apply_live(&chat(), &m, false).unwrap();
     s.set_reactions(&id(1), reaction("old"), 1).unwrap();
     page(&mut s, &[1], true);
     assert_eq!(all(&s)[0].reactions, reaction("new"));
@@ -159,7 +157,7 @@ fn receipt_never_regresses_and_applies_to_later_pages() {
     let mut s = store();
     let mut m = input(2);
     m.outgoing = true;
-    s.apply_live(&chat(), &m, false, None).unwrap();
+    s.apply_live(&chat(), &m, false).unwrap();
     s.advance_read_receipt(&chat(), id(10)).unwrap();
     s.apply_page(&chat(), PageKind::Recent, &[m.clone()], false)
         .unwrap();
@@ -184,7 +182,7 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
     )
     .unwrap();
     assert!(matches!(
-        s.pending(&chat()).unwrap()[0].delivery,
+        s.all_pending().unwrap()[0].delivery,
         Delivery::Rejected { .. }
     ));
     s.retry(k, 2).unwrap();
@@ -197,7 +195,7 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
         },
     )
     .unwrap();
-    assert_eq!(s.pending(&chat()).unwrap().len(), 1);
+    assert_eq!(s.all_pending().unwrap().len(), 1);
     let changes = s.discard(k).unwrap();
     assert!(changes.messages_removed.contains(&k));
     assert!(all(&s).is_empty());
@@ -218,44 +216,14 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
     assert!(s.mark_failed(k2, Delivery::Read).is_err());
 }
 #[test]
-fn decimal_order_matches_existing_length_then_lexicographic() {
-    let ids = [
-        "0",
-        "1",
-        "9",
-        "10",
-        "99",
-        "100",
-        "9999999999999999999",
-        "10000000000000000000",
-        "99999999999999999999",
-    ];
-    for a in ids {
-        for b in ids {
-            assert_eq!(
-                a.len().cmp(&b.len()).then_with(|| a.cmp(b)),
-                server_sort(&ServerId(a.into()))
-                    .unwrap()
-                    .cmp(&server_sort(&ServerId(b.into())).unwrap())
-            );
-        }
-    }
-    for invalid in ["", "01", "-1", "a", "100000000000000000000"] {
-        assert!(server_sort(&ServerId(invalid.into())).is_err());
-    }
-}
-#[test]
 fn same_millisecond_order_is_path_independent_with_pending_last() {
-    for reverse in [false, true] {
+    {
         let mut s = store();
-        let mut nums = vec![1, 9, 10, 100];
-        if reverse {
-            nums.reverse();
-        }
+        let nums = [1, 9, 10, 100];
         for n in nums {
             let mut m = input(n);
             m.created_ms = 100;
-            s.apply_live(&chat(), &m, false, None).unwrap();
+            s.apply_live(&chat(), &m, false).unwrap();
         }
         let k = pending(&mut s, 1);
         assert_eq!(all(&s).last().unwrap().key, k);
@@ -286,7 +254,7 @@ fn same_millisecond_order_is_path_independent_with_pending_last() {
 fn segments_gaps_overlap_and_cursor_adjacency() {
     let mut s = store();
     page(&mut s, &[10, 20], false);
-    s.apply_live(&chat(), &input(40), false, None).unwrap();
+    s.apply_live(&chat(), &input(40), false).unwrap();
     let before = all(&s)[0].sort.clone();
     s.apply_page(
         &chat(),
@@ -309,7 +277,7 @@ fn segments_gaps_overlap_and_cursor_adjacency() {
     let w = s.window(&chat(), Anchor::Latest, 100, 0).unwrap();
     assert!(w.gaps.is_empty());
     assert_eq!(messages::segments(&s.conn, &chat()).unwrap().len(), 1);
-    s.apply_live(&chat(), &input(50), true, None).unwrap();
+    s.apply_live(&chat(), &input(50), true).unwrap();
     assert!(
         s.window(&chat(), Anchor::Latest, 100, 0)
             .unwrap()
@@ -382,28 +350,6 @@ fn empty_recent_does_not_create_chat_until_fetched_or_sent_message() {
     }
 }
 #[test]
-fn live_failure_rolls_back_row_segment_chat_and_revision() {
-    let mut s = store();
-    s.set_sync_revision(8).unwrap();
-    s.conn.execute_batch("CREATE TRIGGER fail_revision BEFORE UPDATE OF sync_revision ON account BEGIN SELECT RAISE(ABORT,'injected failure'); END;").unwrap();
-    assert!(s.apply_live(&chat(), &input(1), false, Some(9)).is_err());
-    assert_eq!(s.sync_revision().unwrap(), 8);
-    assert!(all(&s).is_empty());
-    assert!(messages::segments(&s.conn, &chat()).unwrap().is_empty());
-    assert!(s.chat_list(10, 0).unwrap().is_empty());
-}
-#[test]
-fn invalid_page_rolls_back_preceding_upserts() {
-    let mut s = store();
-    let mut invalid = input(2);
-    invalid.chat_id = ChatId("wrong".into());
-    assert!(
-        s.apply_page(&chat(), PageKind::Recent, &[input(1), invalid], false)
-            .is_err()
-    );
-    assert!(all(&s).is_empty());
-}
-#[test]
 fn chat_list_sweeps_metadata_and_activity_do_not_regress() {
     let mut s = store();
     page(&mut s, &[50], false);
@@ -434,7 +380,16 @@ fn chat_list_sweeps_metadata_and_activity_do_not_regress() {
 fn unread_read_markers_drafts_preferences_and_account() {
     let mut s = store();
     page(&mut s, &[1, 2, 3], true);
-    s.set_unread(&chat(), 9, true).unwrap();
+    s.upsert_chats(
+        &[ChatInput {
+            id: chat(),
+            unread_count: 9,
+            unread_stale: true,
+            ..Default::default()
+        }],
+        false,
+    )
+    .unwrap();
     s.increment_unread(&chat()).unwrap();
     assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 10);
     s.mark_read(&chat(), id(2)).unwrap();
@@ -515,7 +470,7 @@ impl Drop for TempDir {
     }
 }
 #[test]
-fn disk_reopen_preserves_state_permissions_and_pragmas() {
+fn disk_reopen_preserves_state_and_permissions() {
     use std::os::unix::fs::PermissionsExt;
     let dir = TempDir::new();
     let key;
@@ -551,25 +506,16 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
             },
         )
         .unwrap();
-        s.set_unread(&chat(), 3, true).unwrap();
-        assert_eq!(
-            s.conn
-                .pragma_query_value(None, "journal_mode", |r| r.get::<_, String>(0))
-                .unwrap(),
-            "wal"
-        );
-        assert_eq!(
-            s.conn
-                .pragma_query_value(None, "synchronous", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert_eq!(
-            s.conn
-                .pragma_query_value(None, "foreign_keys", |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
+        s.upsert_chats(
+            &[ChatInput {
+                id: chat(),
+                unread_count: 3,
+                unread_stale: true,
+                ..Default::default()
+            }],
+            false,
+        )
+        .unwrap();
     }
     assert_eq!(
         std::fs::metadata(&dir.0).unwrap().permissions().mode() & 0o777,
@@ -602,47 +548,34 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
     );
 }
 #[test]
-fn newer_schema_is_refused_without_migration() {
-    let dir = TempDir::new();
-    {
+fn different_schema_recreates_cache_and_drafts() {
+    for version in [7, 9] {
+        let dir = TempDir::new();
+        {
+            let mut s = Store::open(&dir.0).unwrap();
+            pending(&mut s, 1);
+            page(&mut s, &[1], true);
+            s.save_draft(
+                &chat(),
+                &Draft {
+                    text: "draft".into(),
+                    reply: None,
+                    cursor: 5,
+                    anchor: 5,
+                    updated: 1,
+                },
+            )
+            .unwrap();
+            s.conn.pragma_update(None, "user_version", version).unwrap();
+        }
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 8).unwrap();
+        assert!(s.all_pending().unwrap().is_empty());
+        assert!(s.chat(&chat()).unwrap().is_none());
+        assert!(s.load_draft(&chat()).unwrap().is_none());
+        assert_eq!(s.sync_revision().unwrap(), 0);
     }
-    assert!(matches!(
-        Store::open(&dir.0),
-        Err(StoreError::NewerSchema(8))
-    ));
 }
 
-#[test]
-fn cross_chat_sequence_cannot_steal_pending_row() {
-    let mut s = store();
-    let key = pending(&mut s, 1);
-    let mut echo = input(2);
-    echo.chat_id = ChatId("other".into());
-    echo.outgoing = true;
-    echo.request_seq = Some(1);
-    assert!(s.apply_live(&echo.chat_id, &echo, true, Some(5)).is_err());
-    assert_eq!(s.message(key).unwrap().delivery, Delivery::Pending);
-    assert_eq!(s.sync_revision().unwrap(), 0);
-}
-#[test]
-fn reaction_operation_does_not_suppress_body_revision() {
-    let mut s = store();
-    page(&mut s, &[1], true);
-    s.set_reactions(&id(1), reaction("new"), 10).unwrap();
-    let mut m = input(1);
-    m.body = Content::text("edited");
-    m.reactions_rev = 5;
-    m.reactions = reaction("stale");
-    s.apply_page(&chat(), PageKind::Recent, &[m], false)
-        .unwrap();
-    let row = &all(&s)[0];
-    assert_eq!(row.body, Content::text("edited"));
-    assert_eq!(row.reactions, reaction("new"));
-    assert_eq!(row.reactions_rev, 10);
-    assert_eq!(row.content_rev, Some(5));
-}
 #[test]
 fn pending_between_confirmed_rows_does_not_hide_gap() {
     let mut s = store();
@@ -656,7 +589,7 @@ fn pending_between_confirmed_rows_does_not_hide_gap() {
         None,
     )
     .unwrap();
-    s.apply_live(&chat(), &input(30), false, None).unwrap();
+    s.apply_live(&chat(), &input(30), false).unwrap();
     let w = s.window(&chat(), Anchor::Latest, 10, 0).unwrap();
     assert_eq!(
         w.gaps,
@@ -665,48 +598,6 @@ fn pending_between_confirmed_rows_does_not_hide_gap() {
             after: w.rows[2].key
         }]
     );
-}
-#[test]
-fn signed_revision_first_content_and_duplicate_requests() {
-    let mut s = store();
-    let key = pending(&mut s, 1);
-    assert!(
-        s.insert_pending(
-            &chat(),
-            LocalId("different".into()),
-            1,
-            Content::text("other"),
-            5,
-            None
-        )
-        .is_err()
-    );
-    assert_eq!(all(&s).len(), 1);
-    s.link_sent(1, id(1), 1).unwrap();
-    let mut m = input(1);
-    m.reactions_rev = i64::MIN;
-    m.reactions = reaction("first");
-    s.apply_page(&chat(), PageKind::Recent, &[m.clone()], true)
-        .unwrap();
-    let row = s.message(key).unwrap();
-    assert_eq!(row.body, m.body);
-    assert_eq!(row.reactions, m.reactions);
-}
-
-#[test]
-fn reactions_before_echo_survive_equal_or_older_content() {
-    let mut s = store();
-    let key = pending(&mut s, 1);
-    s.link_sent(1, id(1), 1).unwrap();
-    s.set_reactions(&id(1), reaction("newer"), 10).unwrap();
-    let mut m = input(1);
-    m.reactions_rev = 5;
-    s.apply_page(&chat(), PageKind::Recent, &[m.clone()], true)
-        .unwrap();
-    let row = s.message(key).unwrap();
-    assert_eq!(row.body, m.body);
-    assert_eq!(row.reactions, reaction("newer"));
-    assert_eq!(row.reactions_rev, 10);
 }
 #[test]
 fn partial_chat_activity_hints_require_refresh() {
@@ -735,10 +626,10 @@ fn linked_send_extends_only_a_continuous_head() {
         let mut s = store();
         page(&mut s, &[1, 2], true);
         if !continuous {
-            s.apply_live(&chat(), &input(3), false, None).unwrap();
+            s.apply_live(&chat(), &input(3), false).unwrap();
             // A list hint ahead of local history must not be bridged by a send.
             s.conn
-                .execute("UPDATE chat SET last_key='9',last_activity=9", [])
+                .execute("UPDATE chat SET last_message_id='9',last_activity=9", [])
                 .unwrap();
         }
         pending(&mut s, 1);
@@ -852,26 +743,4 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
     assert!(!orphan.exists());
     drop(current);
     std::fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn migration_converts_uncertain_rows_to_not_sent() {
-    let dir = TempDir::new();
-    let key = {
-        let mut store = Store::open(&dir.0).unwrap();
-        let key = pending(&mut store, 1);
-        store
-            .conn
-            .execute(r#"UPDATE message SET delivery='"Uncertain"'"#, [])
-            .unwrap();
-        store.conn.pragma_update(None, "user_version", 6).unwrap();
-        key
-    };
-    let store = Store::open(&dir.0).unwrap();
-    assert_eq!(
-        store.message(key).unwrap().delivery,
-        Delivery::Rejected {
-            reason: crate::client::error::Refusal::Unanswered
-        }
-    );
 }

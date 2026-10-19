@@ -10,6 +10,8 @@ use std::path::Path;
 use types::Result;
 pub use types::*;
 
+const SCHEMA_VERSION: i64 = 8;
+
 /// Sole-writer account store. Every mutation commits atomically before returning deltas.
 pub struct Store {
     conn: Connection,
@@ -23,7 +25,29 @@ impl Store {
             .recursive(true)
             .mode(0o700)
             .create(dir)?;
-        Self::initialize(Connection::open(dir.join("store.sqlite3"))?)
+        let path = dir.join("store.sqlite3");
+        let conn = Connection::open(&path)?;
+        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let conn = if version != SCHEMA_VERSION {
+            drop(conn);
+            for path in [
+                path.clone(),
+                dir.join("store.sqlite3-wal"),
+                dir.join("store.sqlite3-shm"),
+            ] {
+                match std::fs::remove_file(path) {
+                    Ok(()) => {}
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+                    Err(e) => return Err(e.into()),
+                }
+            }
+            let mut conn = Connection::open(path)?;
+            Self::create_schema(&mut conn)?;
+            conn
+        } else {
+            conn
+        };
+        Self::initialize(conn)
     }
     /// Persist work composed before the first account identity was available.
     pub(crate) fn persist_to(&self, dir: &Path) -> Result<Self> {
@@ -41,19 +65,23 @@ impl Store {
     /// Remove clipboard files only after collecting unsent references from all accounts.
     pub(crate) fn prune_clipboard(&self, root: &Path, accounts: &Path) -> Result<()> {
         let mut referenced = std::collections::BTreeSet::new();
-        let mut collect = |rows: Vec<StoredMessage>| {
-            for row in rows {
-                if let Some(item) = row
-                    .body
+        let mut collect = |bodies: Vec<Content>| {
+            for body in bodies {
+                if let Some(item) = body
                     .image()
-                    .or_else(|| row.body.attachment())
+                    .or_else(|| body.attachment())
                     .and_then(|asset| asset.local_attachment())
                 {
                     referenced.insert(item.path.clone());
                 }
             }
         };
-        collect(self.all_pending()?);
+        collect(
+            self.all_pending()?
+                .into_iter()
+                .map(|row| row.body)
+                .collect(),
+        );
         if accounts.exists() {
             for entry in std::fs::read_dir(accounts)? {
                 let database = entry?.path().join("store.sqlite3");
@@ -62,7 +90,12 @@ impl Store {
                         database,
                         rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
                     )?;
-                    collect(messages::select_rows(&conn, "WHERE server_id IS NULL", [])?);
+                    let mut stmt =
+                        conn.prepare("SELECT body_json FROM message WHERE server_id IS NULL")?;
+                    collect(
+                        stmt.query_map([], |r| messages::parse(r, 0))?
+                            .collect::<std::result::Result<Vec<_>, _>>()?,
+                    );
                 }
             }
         }
@@ -79,58 +112,21 @@ impl Store {
         Ok(())
     }
     pub fn open_in_memory() -> Result<Self> {
-        Self::initialize(Connection::open_in_memory()?)
+        let mut conn = Connection::open_in_memory()?;
+        Self::create_schema(&mut conn)?;
+        Self::initialize(conn)
     }
-    fn initialize(mut conn: Connection) -> Result<Self> {
-        let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 7 {
-            return Err(StoreError::NewerSchema(version));
-        }
+    fn create_schema(conn: &mut Connection) -> Result<()> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(include_str!("store/schema.sql"))?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
+        Ok(())
+    }
+    fn initialize(conn: Connection) -> Result<Self> {
         conn.execute_batch(
             "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
         )?;
-        if version == 0 {
-            let tx = conn.transaction()?;
-            tx.execute_batch(include_str!("store/001.sql"))?;
-            tx.pragma_update(None, "user_version", 1)?;
-            tx.commit()?;
-        }
-        if version < 2 {
-            let tx = conn.transaction()?;
-            tx.execute_batch("ALTER TABLE draft ADD COLUMN anchor INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=2;")?;
-            tx.commit()?;
-        }
-        if version < 3 {
-            let tx = conn.transaction()?;
-            tx.execute_batch(include_str!("store/002.sql"))?;
-            tx.pragma_update(None, "user_version", 3)?;
-            tx.commit()?;
-        }
-        if version < 4 {
-            let tx = conn.transaction()?;
-            tx.execute_batch(include_str!("store/003.sql"))?;
-            tx.pragma_update(None, "user_version", 4)?;
-            tx.commit()?;
-        }
-        if version < 5 {
-            let tx = conn.transaction()?;
-            tx.execute_batch(include_str!("store/004.sql"))?;
-            tx.pragma_update(None, "user_version", 5)?;
-            tx.commit()?;
-        }
-        if version < 6 {
-            conn.execute_batch("BEGIN; ALTER TABLE draft ADD COLUMN reply_json TEXT NOT NULL DEFAULT 'null'; ALTER TABLE contact ADD COLUMN status_metadata TEXT NOT NULL DEFAULT '{}'; PRAGMA user_version=6; COMMIT;")?;
-        }
-        conn.execute_batch("CREATE TABLE IF NOT EXISTS sticker_packages (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);")?;
-        conn.execute_batch("CREATE INDEX IF NOT EXISTS message_pending_chat ON message(chat_id,delivery) WHERE server_id IS NULL;
-            CREATE INDEX IF NOT EXISTS message_server_order ON message(chat_id,sort_id) WHERE server_id IS NOT NULL;
-            CREATE INDEX IF NOT EXISTS message_incoming_order ON message(chat_id,sort_id) WHERE outgoing=0 AND server_id IS NOT NULL;")?;
-        if version < 7 {
-            let tx = conn.transaction()?;
-            tx.execute(r#"UPDATE message SET delivery='{"Rejected":{"reason":"Unanswered"}}' WHERE delivery='"Uncertain"'"#, [])?;
-            tx.pragma_update(None, "user_version", 7)?;
-            tx.commit()?;
-        }
         Ok(Self {
             conn,
             writes: 0,
@@ -214,31 +210,17 @@ fn ensure_chat(tx: &Connection, chat: &ChatId) -> Result<()> {
     tx.execute("INSERT OR IGNORE INTO chat(chat_id) VALUES(?)", [&chat.0])?;
     Ok(())
 }
-fn server_sort(id: &ServerId) -> Result<String> {
-    let s = &id.0;
-    if s.is_empty()
-        || s.len() > 20
-        || !s.bytes().all(|b| b.is_ascii_digit())
-        || (s.len() > 1 && s.starts_with('0'))
-    {
-        return Err(StoreError::Invalid("noncanonical server id".into()));
-    }
-    Ok(format!("{:0>20}", s))
+fn server_sort(id: &ServerId) -> String {
+    format!("{:0>20}", id.0)
 }
-fn numeric_max(a: Option<ServerId>, b: Option<ServerId>) -> Result<Option<ServerId>> {
+fn numeric_max(a: Option<ServerId>, b: Option<ServerId>) -> Option<ServerId> {
     match (a, b) {
-        (Some(a), Some(b)) => Ok(Some(if server_sort(&a)? >= server_sort(&b)? {
+        (Some(a), Some(b)) => Some(if server_sort(&a) >= server_sort(&b) {
             a
         } else {
             b
-        })),
-        (a, b) => {
-            let v = a.or(b);
-            if let Some(id) = &v {
-                server_sort(id)?;
-            }
-            Ok(v)
-        }
+        }),
+        (a, b) => a.or(b),
     }
 }
 
@@ -266,7 +248,7 @@ impl Store {
                 _ => false,
             };
             let mut changes = match &live.op {
-                Op::Message(m) => self.apply_live(&m.chat_id, m, continuous, None)?,
+                Op::Message(m) => self.apply_live(&m.chat_id, m, continuous)?,
                 Op::Receipt { chat, up_to } => self.advance_read_receipt(chat, up_to.clone())?,
                 Op::Read { chat, up_to } => {
                     let changes = self.mark_read(chat, up_to.clone())?;
@@ -302,8 +284,8 @@ impl Store {
                     [&m.chat_id.0],
                     |r| r.get(0),
                 )?;
-                let marker = marker.map(|id| server_sort(&ServerId(id))).transpose()?;
-                let incoming = server_sort(&m.server_id)?;
+                let marker = marker.map(|id| server_sort(&ServerId(id)));
+                let incoming = server_sort(&m.server_id);
                 if marker.is_none_or(|id| incoming > id) {
                     let c = self.increment_unread(&m.chat_id)?;
                     changes.chats_changed.extend(c.chats_changed);

@@ -41,23 +41,21 @@ SQLite through `rusqlite` with the `bundled` feature (no system library, one C
 compile). One database per account at
 `$XDG_DATA_HOME/line-desktop/accounts/<own-mid-hash>/store.sqlite3`, in a
 directory with mode 0700, WAL mode, `synchronous=NORMAL`. It is not encrypted
-(user decision 2026-10-18). Migrations are numbered SQL scripts recorded in
-`PRAGMA user_version`.
+(user decision 2026-10-18). The database is a cache of server data plus drafts; a different `user_version` deletes and recreates it from `schema.sql`.
 
 The UI never queries the database or waits on it. Drawing depends only on
 `AppState`.
 
 Tables (columns abbreviated):
 
-- `account(own_mid, profile_json, sync_revision, global_revision,
-  individual_revision, opened_at)`. One row.
+- `account(own_mid, profile_json, sync_revision)`. One row.
 - `chat(chat_id PK, is_group, title, avatar, member_count, muted, left,
-  last_key, last_activity, server_unread, last_read_server_id,
-  unread_stale, details_at, list_rank)`.
+  last_message_id, last_activity, server_unread, last_read_server_id,
+  unread_stale, read_acked_server_id, receipt_server_id, removed, list_rank)`.
 - `message(key INTEGER PK, chat_id, server_id UNIQUE NULL, local_id UNIQUE
   NULL, request_seq NULL, sort_ts, sort_id, sender_id, outgoing,
-  body_json, reactions_json, reactions_rev, delivery, delivery_detail,
-  created_at_local, content_rev, mentioned, skip_badge)`, with an index
+  body_json, reactions_json, reactions_rev, delivery,
+  created_at_local, body_reactions_rev, mentioned, skip_badge)`, with an index
   `(chat_id, sort_ts, sort_id)`.
 - `segment(chat_id, lo_ts, lo_id, hi_ts, hi_id, reaches_start)`. These are the
   contiguous ranges known to have no gaps (see "Gaps").
@@ -68,7 +66,7 @@ Tables (columns abbreviated):
   member reads use the current contact, so renames also change member names.
 - `draft(chat_id, text, cursor, updated, anchor)`,
   `preferences(singleton, value)` (one serialized `Prefs`),
-  `read_marker(chat_id, server_id, state)`, `chat_detail(chat_id, wire_json)`.
+  `sticker_packages(id, value)`, `chat_detail(chat_id, wire_json)`.
 
 `ChatInput.is_group` is a boolean and `avatar` is an optional `Asset`, decoded
 when reading SQLite. `Profile` is a typed account identity (MID, display name,
@@ -77,6 +75,9 @@ returns these types and retains no contact or member cache. `Prefs` contains
 text size (15 by default), enter-sends (false), typed desktop notification and
 background settings, last chat and the persisted request sequence. Preferences
 cross the engine/controller boundary as a whole struct, never string-keyed values.
+
+`left` disables sending after leaving a group; `removed` hides chats missing from a complete list sweep.
+Unread uses the server count and monotonic local/acknowledged read IDs through one `unread` function; `unread_stale` independently records metadata freshness.
 
 ### Content
 
@@ -114,7 +115,7 @@ caches are discarded and fetched again. Local rows without a server ID retain
 their key, delivery state, request sequence and text, converted into `Text`.
 Drafts and preferences survive; the old pref rows become one typed preferences
 record. The account profile is retained as typed fields. There is no legacy
-content reader or compatibility representation after migration.
+content reader or compatibility representation in the schema.
 
 `key` is the row identity for the life of the row. It does not change when a
 pending send gets its server id. The UI keys every row by `key` and never by
@@ -143,18 +144,18 @@ There is one total order everywhere: `(sort_ts, sort_id)`.
 | Reaction op 139/140 | Replace `reactions_json` if the op's revision is newer. |
 | Receipt op 55 / read ranges | Advance `delivery` to Read for outgoing rows up to the marker. |
 | Read elsewhere op 40 | Advance `chat.last_read_server_id`; recompute unread. |
-| Chat list page | Upsert `chat` rows. Preview and activity come from the chat's newest message row, never from the list payload, unless the list's last message is newer than anything stored. The list input carries only the last server id/time, so persist that hint and report `needs_refresh` until a page/live row catches up (M14); do not fabricate a message body. Chats absent from a *complete* list sweep are marked `left`. |
+| Chat list page | Upsert `chat` rows. Preview and activity come from the chat's newest message row, never from the list payload, unless the list's last message is newer than anything stored. The list input carries only the last server id/time, so persist that hint and report `needs_refresh` until a page/live row catches up (M14); do not fabricate a message body. Chats absent from a *complete* list sweep are marked `removed`. |
 
 Preview, activity, unread and history are all read from the same rows, so
 they cannot disagree.
 
 The store API accepts canonical decimal server ids (up to 20 digits, no
 leading zeros except `0`). Zero padding then exactly preserves the existing
-`(length, lexicographic)` comparison. Invalid ids fail the entire transaction.
+`(length, lexicographic)` comparison. `ServerId::new` validates IDs once at construction.
 `MessageInput.created_ms <= 0` falls back to a positive `delivered_ms`, then zero.
 
 `reactions_rev` versions page/live content as well as reactions until a distinct
-edit revision exists in the transport. A nullable `message.content_rev` tracks
+edit revision exists in the transport. A nullable `message.body_reactions_rev` records the reaction revision accompanying body data and tracks
 body-field updates separately, so reaction-only operations cannot suppress a
 later content update. Incoming rows enter as Sent; persisted receipt markers
 upgrade outgoing rows to Read, including rows loaded after the receipt.
@@ -175,7 +176,7 @@ A chat's stored rows are a union of contiguous segments. On open:
 
 1. The engine sends the window around the anchor from the store at once,
    offline or not.
-2. If the newest stored row is older than `chat.last_key`, or the newest
+2. If the newest stored row is older than `chat.last_message_id`, or the newest
    segment is not continuous with live sync, the engine fetches recent
    messages. It merges them, and joins segments when the page overlaps one.
    If the page does not overlap, a gap remains: the window contains a "gap"
@@ -202,7 +203,7 @@ count cap; a chat's failed rows are listed in its row badge until resolved.
 
 ### Existing files
 
-The store starts empty; there is no legacy file reader, migration or deletion.
+There is no legacy file reader or import; schema version mismatches recreate the store.
 The session file remains sealed; LINE media decryption remains part of the
 protocol. Media is a 128 MiB / 4096-file LRU ordered by mtime, refreshed on disk
 hits, without age expiry; decoded images have a 24 MiB budget.

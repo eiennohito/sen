@@ -326,7 +326,7 @@ mod tests {
         state.chats.insert(
             chat.clone(),
             ChatListItem {
-                chat: ChatRecord {
+                chat: ChatInput {
                     id: chat.clone(),
                     unread_count: 2,
                     ..Default::default()
@@ -355,7 +355,7 @@ mod tests {
                     body: Content::default(),
                     reactions: vec![],
                     reactions_rev: 0,
-                    content_rev: None,
+                    body_reactions_rev: None,
                     delivery: Delivery::Sent,
                     created_at_local: 0,
                     mentioned: false,

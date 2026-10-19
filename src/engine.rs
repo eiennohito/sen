@@ -878,7 +878,6 @@ impl Engine {
                 StoreError::Invalid(_) => "invalid store operation",
                 StoreError::Sql(rusqlite::Error::QueryReturnedNoRows) => "unknown key",
                 StoreError::Json(_) => "stored data decode",
-                StoreError::NewerSchema(_) => "unsupported schema",
                 _ => "store invariant",
             }
         };
@@ -2339,7 +2338,7 @@ impl Engine {
                         engine.list_sweep.extend(page.chats.clone());
                         engine.store.upsert_chats(&engine.list_sweep, !page.more)?;
                         for m in page.previews {
-                            engine.store.apply_live(&m.chat_id, &m, false, None)?;
+                            engine.store.apply_live(&m.chat_id, &m, false)?;
                         }
                         for c in &page.chats {
                             if c.title.trim().is_empty() || (c.is_group && c.member_count.is_none())

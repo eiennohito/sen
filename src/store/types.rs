@@ -251,6 +251,19 @@ pub struct Key(pub i64);
 /// Canonical decimal server identity: 1–20 digits, no leading zeros except zero.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ServerId(pub String);
+impl ServerId {
+    pub fn new(value: impl Into<String>) -> Result<Self> {
+        let value = value.into();
+        if value.is_empty()
+            || value.len() > 20
+            || !value.bytes().all(|b| b.is_ascii_digit())
+            || (value.len() > 1 && value.starts_with('0'))
+        {
+            return Err(StoreError::Invalid("noncanonical server id".into()));
+        }
+        Ok(Self(value))
+    }
+}
 /// Caller-generated, globally unique local send identity.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LocalId(pub String);
@@ -306,8 +319,8 @@ pub struct StoredMessage {
     pub body: Content,
     pub reactions: Vec<Reaction>,
     pub reactions_rev: i64,
-    /// Last page/live revision used for body fields; reaction-only ops do not advance it.
-    pub content_rev: Option<i64>,
+    /// Reaction revision accompanying the last body update; reaction-only ops do not advance it.
+    pub body_reactions_rev: Option<i64>,
     pub delivery: Delivery,
     pub created_at_local: i64,
     pub mentioned: bool,
@@ -331,8 +344,6 @@ pub struct ChatInput {
     pub last_read_server_id: Option<ServerId>,
     pub list_rank: i64,
 }
-/// Persisted metadata with monotonic read marker and server activity hints.
-pub type ChatRecord = ChatInput;
 /// Committed delta identities; removed duplicate rows are never also upserted.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
@@ -373,7 +384,7 @@ pub struct Window {
 /// Visible chat with preview taken exclusively from its newest stored row.
 #[derive(Clone, Debug)]
 pub struct ChatListItem {
-    pub chat: ChatRecord,
+    pub chat: ChatInput,
     pub preview: Option<StoredMessage>,
     pub activity_ms: i64,
     pub failed_count: u32,
@@ -385,9 +396,6 @@ pub struct Account {
     pub own_mid: String,
     pub profile: Profile,
     pub sync_revision: i64,
-    pub global_revision: i64,
-    pub individual_revision: i64,
-    pub opened_at: i64,
 }
 /// Durable composer content and selection position.
 #[derive(Clone, Debug, PartialEq)]
@@ -407,8 +415,6 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("database schema {0} is newer than supported version 6")]
-    NewerSchema(i64),
     #[error("invalid store operation: {0}")]
     Invalid(String),
 }

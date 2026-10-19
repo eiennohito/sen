@@ -46,9 +46,6 @@ fn chain(error: &(dyn Error + 'static)) -> String {
             match e {
                 crate::store::StoreError::Invalid(message) => safe_invariant(message).into(),
                 crate::store::StoreError::Json(_) => "stored-json-decode".into(),
-                crate::store::StoreError::NewerSchema(version) => {
-                    format!("unsupported-schema:{version}")
-                }
                 crate::store::StoreError::Sql(e) => format!("sqlite:{:?}", e.sqlite_error_code()),
                 crate::store::StoreError::Io(e) => {
                     format!("io:{:?}:os={:?}", e.kind(), e.raw_os_error())
