@@ -43,20 +43,15 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             d.render(&ui);
         }
     });
-    callback!(ui, actions, on_retry_message, |ui, d, id| {
+    callback!(ui, actions, on_retry_message, |_ui, d, id| {
         let key = Key(id.parse().unwrap());
-        if d.state.messages[&key].delivery == Delivery::Uncertain {
-            ui.set_recovery_id(id);
-            ui.set_recovery_kind("resend".into());
-        } else {
-            d.sender.send(Intent::Retry(key));
-        }
+        d.sender.send(Intent::Retry(key));
     });
     callback!(ui, actions, on_resolve_recovery, |ui, d, action| {
         let id = ui.get_recovery_id();
         let kind = ui.get_recovery_kind();
         ui.set_recovery_kind("".into());
-        if action == "cancel" || kind == "resend" || kind == "unsend" {
+        if action == "cancel" || kind == "unsend" {
             ui.invoke_focus_history();
             ui.set_recovery_focus_id(id.clone());
             ui.set_recovery_focus_action(kind);
@@ -64,9 +59,6 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         if action == "unsend" {
             ui.set_unsend_feedback_id("".into());
             d.sender.send(Intent::Unsend(Key(id.parse().unwrap())));
-        }
-        if action == "resend" {
-            d.sender.send(Intent::Resend(Key(id.parse().unwrap())));
         }
         if action == "replace" {
             d.sender.send(Intent::Copy(Key(id.parse().unwrap())));

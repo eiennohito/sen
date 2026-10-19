@@ -41,7 +41,7 @@ export component ConnectionNotice inherits Rectangle {
     width: 100%; height: State.connection-notice-height;
     visible: State.connection-feedback-visible;
     background: Tokens.warning-surface;
-    property <string> status: !State.connection-failed ? "Reconnected" : State.session-cause != "" ? State.session-cause : State.session-unavailable ? "Saved sign-in unavailable" : State.auth-expired ? "Sign-in expired" : State.retrying-connection ? "Connecting…" : "Offline. Reconnecting…";
+    property <string> status: State.signed-out ? State.session-cause : State.fatal ? "Something went wrong — restart" : "Offline. Reconnecting…";
     property <length> status-width: max(0px, root.width - 64px - (sign-in.visible ? sign-in.preferred-width + 8px : 0px));
     out property <string> compact-status: root.status;
     full-status := Text { visible: false; text: root.status; font-size: Tokens.base; }
@@ -61,7 +61,7 @@ export component ConnectionNotice inherits Rectangle {
             Text { width: root.status-width; text: root.compact-status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
             sign-in := Action {
                 visible: State.connection-failed && State.sign-in-available; width: self.visible ? self.preferred-width : 0px;
-                label: "Sign in again"; description: "Sign in again";
+                label: "Sign in"; description: "Sign in again";
                 enabled: State.sign-in-available && !State.retrying-connection && !State.auth-busy;
                 activated => { State.open-sign-in(); }
                 tab(back) => { root.leave(back); }

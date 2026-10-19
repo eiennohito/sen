@@ -290,11 +290,11 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
         },
     );
     fetchers.enqueue(photo.clone(), None, Purpose::Thumbnail);
+    let cached = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    assert!(cached.result.is_ok());
     assert!(
-        rx.recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .result
-            .is_ok()
+        !cached.network,
+        "cached pixels must not count as a network response"
     );
     for _ in 0..3 {
         fetchers.enqueue(avatar(1), None, Purpose::Thumbnail);
@@ -603,7 +603,7 @@ fn local_timeout_network_and_route_failures_are_typed() {
         }
         .unwrap();
         assert_eq!(
-            Failure::from_error(&asset.fetch(&http, None).unwrap_err()),
+            media_failure(&asset.fetch(&http, None).unwrap_err()),
             expected
         );
     }
@@ -648,7 +648,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
     for asset in &assets {
         fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
         assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retriable())
+            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !media_retry(class, false))
         );
         fetchers
             .shared
@@ -661,7 +661,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
             .at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
         fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
         assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retriable())
+            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !media_retry(class, false))
         );
         assert!(!fetchers.retry(&asset.key()));
     }
@@ -684,6 +684,8 @@ fn retained_failures_never_follow_credentials_to_another_account() {
         "image".into(),
         Failed {
             class: Failure::Network,
+            retry: media_retry(Failure::Network, false),
+            automatic_retry: media_retry(Failure::Network, true),
             at: Instant::now(),
             retried: false,
             job: Job {
@@ -852,6 +854,8 @@ fn reconnect_backlog_keeps_normal_rank_and_visible_requests_can_evict_it() {
             asset.key(),
             Failed {
                 class: Failure::Network,
+                retry: media_retry(Failure::Network, false),
+                automatic_retry: media_retry(Failure::Network, true),
                 at: Instant::now(),
                 retried: false,
                 job: Job {
@@ -928,7 +932,7 @@ fn photo_download_metadata_still_uses_obs_but_file_download_urls_are_refused() {
         let file = Asset::attachment(&json!({"id":"42", "contentType":14, "contentMetadata":meta}))
             .unwrap();
         assert_eq!(
-            Failure::from_error(&file.fetch(&http, Some("synthetic")).unwrap_err()),
+            media_failure(&file.fetch(&http, Some("synthetic")).unwrap_err()),
             Failure::UnsupportedHost
         );
         requests.recv_timeout(Duration::from_secs(10)).unwrap();

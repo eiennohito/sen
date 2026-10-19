@@ -257,15 +257,14 @@ pub struct LocalId(pub String);
 pub enum Delivery {
     Pending,
     Rejected {
-        reason: crate::client::error::RejectReason,
+        reason: crate::client::error::Refusal,
     },
-    Uncertain,
     Sent,
     Read,
 }
 impl Delivery {
     pub fn is_failed(&self) -> bool {
-        matches!(self, Self::Rejected { .. } | Self::Uncertain)
+        matches!(self, Self::Rejected { .. })
     }
 }
 /// Typed decoded server content. Nonpositive created_ms falls back to delivered_ms.
@@ -404,7 +403,7 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("database schema {0} is newer than supported version 5")]
+    #[error("database schema {0} is newer than supported version 6")]
     NewerSchema(i64),
     #[error("invalid store operation: {0}")]
     Invalid(String),

@@ -206,10 +206,7 @@ Window deltas are fenced by subscription ID.
 Submission saves a durable pending item before queueing a network command,
 then clears the submitted editor. Confirmation links the server ID to the same
 stable store key; it never clears newer text or changes focus. Known server IDs reconcile to
-that same row identity on refresh. Ambiguous sends remain unresolved across
-restart and are never retried automatically. Definite rejection and uncertain
-results have separate states. Recovery requires a deliberate Replace/Append
-choice when newer text exists; Resend warns about duplicate risk.
+that same row identity on refresh. Failed sends show “Not sent: <reason>” with Retry/Delete, including unanswered or mid-send rows after restart; they are never automatically resent, and our echo (op 25/43 with our reqSeq) confirms a row in any state as Sent.
 
 Each `Api` owns one persistent `ureq::Agent` with rustls and WebPKI roots for
 HTTP/1.1 RPCs (no ALPN h2); the agent pool reuses connections. Requests use the
@@ -243,14 +240,12 @@ separate pairing flag and can wait for the current RPC to finish.
 The pool expires idle connections after 15 seconds: a conservative margin below
 an assumed gateway keep-alive window of at least 30 seconds, not a live gateway
 measurement. A non-blocking socket peek discards EOF or unexpected readable data
-before reuse. A connection I/O failure on a reused socket may retry once on a
-fresh socket only while the POST is known incomplete. Socket write failures are
-recorded below rustls and checked above it after header transmission and before
-body transmission, even when rustls accepts plaintext and suppresses the flush
-error. A header flush failure therefore returns before body plaintext is offered
-and can trigger the one fresh retry. No retry is allowed once the final body
-write starts, including an ambiguous TLS flush failure, or after a complete
-send. Fresh-connection failures, timeouts and cancellations are not retried. Pooled connections consult the current request's token and deadline.
+before reuse. POSTs never retry inside the transport. Socket writes after the
+origin TLS handshake record whether any request byte was written; failures before
+that point are NotDelivered and failures after it are Unanswered. The engine
+reschedules NotDelivered sends only within their current session, using the same
+persisted request sequence. Pooled connections consult the current request's
+token and deadline.
 Transport errors never include tokens, proxy credentials, URLs, or bodies. No
 dependency is forked and HTTPS uses no async runtime. Assets use the same
 transport with GET, a 5-second connect budget, a 15-second total deadline, no
@@ -303,7 +298,7 @@ place of the thing that failed (ux-model §9.1). There is no catch-all banner.
     names the cause and the consequence, for example "Can't save messages:
     disk is full. New messages are shown but won't be kept." It goes in the
     strip and clears on the next successful write.
-  - **Background refreshes** retry quietly and show nothing.
+  - **Background refreshes** reschedule network failures quietly; Refused and Bug stop the item.
 - **Bugs are not user errors.** Invariant violations (`StoreError::Invalid`,
   unknown keys, impossible states) are logged with the intent and its ids,
   and are never shown as a storage problem. In ui-debug builds they appear
@@ -424,8 +419,8 @@ focused browser/composer scripts test their keyboard and draft invariants.
 Demo and snapshot scenes use FakeBackend through the same engine, SQLite
 store, controller and presenter. Demo stores use in-memory SQLite; account
 stores live on disk. Demo sends receive scripted Sent/Incoming or failure
-results. F12 **Fail next send** arms one uncertain result;
-Rejected and Uncertain send scenarios submit a prepared message through that same
+results. F12 **Fail next send** arms one unanswered result;
+Rejected and Unanswered send scenarios submit a prepared message through that same
 path while preserving the existing draft. First-open fixtures follow latest;
 reading, rich-content and photo-inspection scenarios deliberately start at the top.
 Today’s fixture clock slots span the last 2h54m before now, preserving minute
@@ -459,7 +454,7 @@ at both the default `--demo` size (conversation sheet) and
 profile in offline headless snapshots. `--snapshot-scene` selects `chats`,
 `chats-query`, `friends`, `friends-query`, `friends-empty-group`, `settings`,
 `composer`, `composer-reason`, `latest`, or `return` for shell layout captures.
-`conversation` starts at the first date divider; `failed-send` shows an uncertain
+`conversation` starts at the first date divider; `failed-send` shows an unanswered
 outgoing item at latest.
 `chats-hover` points at an unselected row; `chats-unread` keeps the selected
 row's unread badge visible. `message-selected-incoming` and
@@ -506,3 +501,4 @@ Connection is a transport/presentation projection, never evidence of a session.
 Probe facts apply only to their opening epoch (including a pending attempt's prior state).
 Cancel restores that prior state; staged credentials are opened and validated before install,
 which commits sign-in even if Cancel races. Local cached work remains available in every state.
+

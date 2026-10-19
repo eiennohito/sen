@@ -107,6 +107,7 @@ export component Chats inherits Rectangle {
                     }
                 }
                 }
+                if State.chat-list-error != "": Text { text: State.chat-list-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
                 list-focus := FocusScope {
                     accessible-role: list; accessible-label: "Conversations";
                     accessible-description: self.has-focus ? "Focused conversations" : "";

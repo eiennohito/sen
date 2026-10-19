@@ -481,8 +481,19 @@ impl Store {
             Ok(())
         })
     }
+    pub fn recover_sends(&mut self) -> Result<()> {
+        for row in self.all_pending()? {
+            if row.delivery == Delivery::Pending {
+                let delivery = Delivery::Rejected {
+                    reason: crate::client::error::Refusal::AppClosed,
+                };
+                self.mark_failed(row.key, delivery)?;
+            }
+        }
+        Ok(())
+    }
     pub fn mark_failed(&mut self, key: Key, delivery: Delivery) -> Result<Changes> {
-        if !matches!(delivery, Delivery::Rejected { .. } | Delivery::Uncertain) {
+        if !matches!(delivery, Delivery::Rejected { .. }) {
             return Err(StoreError::Invalid("expected failure delivery".into()));
         }
         self.local_delivery(key, delivery, None)
@@ -490,6 +501,7 @@ impl Store {
     pub fn retry(&mut self, key: Key, new_request_seq: u32) -> Result<Changes> {
         self.local_delivery(key, Delivery::Pending, Some(new_request_seq))
     }
+
     fn local_delivery(
         &mut self,
         key: Key,
@@ -503,12 +515,7 @@ impl Store {
                     "confirmed row cannot fail or retry".into(),
                 ));
             }
-            if seq.is_some()
-                && !matches!(
-                    row.delivery,
-                    Delivery::Rejected { .. } | Delivery::Uncertain
-                )
-            {
+            if seq.is_some() && !matches!(row.delivery, Delivery::Rejected { .. }) {
                 return Err(StoreError::Invalid("only failed rows can retry".into()));
             }
             row.delivery = delivery;
@@ -524,12 +531,7 @@ impl Store {
     pub fn discard(&mut self, key: Key) -> Result<Changes> {
         self.mutate(|tx, c| {
             let row = by_key(tx, key)?;
-            if row.server_id.is_some()
-                || !matches!(
-                    row.delivery,
-                    Delivery::Rejected { .. } | Delivery::Uncertain
-                )
-            {
+            if row.server_id.is_some() || !matches!(row.delivery, Delivery::Rejected { .. }) {
                 return Err(StoreError::Invalid(
                     "only failed rows can be discarded".into(),
                 ));

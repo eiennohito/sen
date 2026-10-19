@@ -48,8 +48,7 @@ fn batches_members_at_100() {
         contacts(100, ""),
         contacts(2, ""),
     ]);
-    let (members, failed) = load_members("group", "uself", &mut rpc).unwrap();
-    assert!(!failed);
+    let members = load_members("group", "uself", &mut rpc).unwrap();
     assert_eq!(members.len(), 202);
     assert_eq!(members.iter().filter(|m| m.is_self).count(), 1);
     assert!(
@@ -61,7 +60,7 @@ fn batches_members_at_100() {
 }
 
 #[test]
-fn failed_member_lookup_can_be_retried_without_hiding_members() {
+fn failed_member_lookup_reports_network_failure_and_can_be_retried() {
     let ids = vec!["uknown".into(), "uabsent".into(), "ufailed".into()];
     let mut rpc = rpc(vec![
         chats(ids.clone()),
@@ -72,20 +71,12 @@ fn failed_member_lookup_can_be_retried_without_hiding_members() {
         chats(ids),
         contacts(4, "uabsent"),
     ]);
-    let (members, failed) = load_members("group", "uself", &mut rpc).unwrap();
-    assert!(failed);
-    assert_eq!(members.len(), 4);
-    let (members, failed) = load_members("group", "uself", &mut rpc).unwrap();
-    assert!(!failed);
+    let error = load_members("group", "uself", &mut rpc).unwrap_err();
     assert_eq!(
-        members
-            .iter()
-            .find(|m| m.contact.id == "ufailed")
-            .unwrap()
-            .contact
-            .name,
-        "ufailed"
+        crate::client::error::classify(&error),
+        crate::client::error::Failure::Unanswered
     );
+    let members = load_members("group", "uself", &mut rpc).unwrap();
     assert_eq!(
         members
             .iter()
@@ -104,7 +95,7 @@ fn rpc(steps: Vec<(&'static str, Reply)>) -> impl FnMut(&str, Value) -> Result<V
         if status == 200 {
             Ok(data)
         } else {
-            Err(Error::Server(status.into()).into())
+            Err(crate::client::error::Failure::Unanswered.into())
         }
     }
 }

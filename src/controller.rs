@@ -43,6 +43,8 @@ pub struct AppState {
     pub chat_sub: u64,
     pub window_sub: u64,
     pub window_loading: bool,
+    pub refresh_failures:
+        std::collections::BTreeMap<crate::engine::Refresh, crate::client::error::Failure>,
     pub window_anchor: Anchor,
     pub selected: Option<ChatId>,
     pub messages: BTreeMap<Key, StoredMessage>,
@@ -80,6 +82,7 @@ impl Default for AppState {
             chat_sub: 1,
             window_sub: 0,
             window_loading: false,
+            refresh_failures: Default::default(),
             window_anchor: Anchor::Latest,
             selected: None,
             messages: BTreeMap::new(),
@@ -210,6 +213,20 @@ impl AppState {
                 {
                     self.uploads.insert(key, fraction);
                 }
+            }
+            Delta::RefreshFailed { request, error } => {
+                if matches!(
+                    request,
+                    crate::engine::Refresh::Recent(_)
+                        | crate::engine::Refresh::Older(..)
+                        | crate::engine::Refresh::Newer(..)
+                ) {
+                    self.window_loading = false;
+                }
+                self.refresh_failures.insert(request, error);
+            }
+            Delta::RefreshRecovered(request) => {
+                self.refresh_failures.remove(&request);
             }
             Delta::StickerPackages(rows) => self.sticker_packages = rows,
             Delta::ReactionFailed(key) => self.reaction_failure = Some(key),

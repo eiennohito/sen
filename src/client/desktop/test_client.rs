@@ -36,24 +36,24 @@ pub(super) fn server_responses(
     })
 }
 
-pub(super) fn client(api: Api) -> (Client, PathBuf) {
+pub(super) fn client(mut api: Api) -> (Client, PathBuf) {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
         "target/crypto-send-tests/{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    api.state = json!({"token_v3_issue_result":{"accessToken":"synthetic"}});
+    api.stream_access = Arc::new(std::sync::RwLock::new("synthetic".into()));
+    api.session_path = Some(root.join("session.json"));
     let client = Client {
         api,
-        stream_access: Arc::new(std::sync::RwLock::new("synthetic".into())),
-        state: json!({"token_v3_issue_result":{"accessToken":"synthetic"}}),
         my_mid: "uself".into(),
         obs_access: None,
         sequence: 0,
         cache: Arc::new(std::sync::Mutex::new(
             ImageCache::new(&root, "uself").unwrap(),
         )),
-        session_path: root.join("session.json"),
         cache_root: root.clone(),
     };
     (client, root)

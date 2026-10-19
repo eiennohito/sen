@@ -145,10 +145,11 @@ impl Progress {
 }
 #[derive(Debug)]
 pub(crate) struct RpcError {
-    method: String,
+    pub(crate) gateway: i64,
+    pub(crate) method: String,
     pub(crate) http: u16,
     pub(crate) code: i64,
-    status: i64,
+    pub(crate) status: i64,
 }
 impl fmt::Display for RpcError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -172,6 +173,9 @@ pub(crate) struct Api {
     key_cache: std::collections::HashMap<String, Value>,
     channels: std::collections::HashMap<chat::Channel, (u32, u64)>,
     channel_tick: u64,
+    state: Value,
+    session_path: Option<PathBuf>,
+    stream_access: std::sync::Arc<std::sync::RwLock<String>>,
     signing_key: Option<(String, crate::SigningKey)>,
     own_keys: std::collections::HashMap<u64, u32>,
 }
@@ -220,6 +224,9 @@ impl Api {
             key_cache: Default::default(),
             channels: Default::default(),
             channel_tick: 0,
+            state: Value::Null,
+            session_path: None,
+            stream_access: Default::default(),
         })
     }
     fn cached_channel(&mut self, key: &chat::Channel) -> Option<u32> {
@@ -244,7 +251,7 @@ impl Api {
         self.channels.insert(key, (channel, self.channel_tick));
         Ok(())
     }
-    fn call(
+    fn call_once(
         &mut self,
         path: &str,
         args: &Value,
@@ -282,33 +289,7 @@ impl Api {
                 30
             }),
         )?;
-        if (500..600).contains(&http) {
-            return Err(Error::Server(i64::from(http)).into());
-        }
-        if (400..500).contains(&http) {
-            return Err(RpcError {
-                method: path.rsplit('/').next().unwrap_or("RPC").into(),
-                http,
-                code: 0,
-                status: 0,
-            }
-            .into());
-        }
-        let response: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Decode)?;
-        let code = response["code"].as_i64().ok_or(Error::Decode)?;
-        if http != 200 || code != 0 {
-            return Err(RpcError {
-                method: path.rsplit('/').next().unwrap_or("RPC").into(),
-                http,
-                code,
-                status: response["data"]["statusCode"].as_i64().unwrap_or(0),
-            }
-            .into());
-        }
-        response
-            .get("data")
-            .cloned()
-            .ok_or_else(|| Error::Decode.into())
+        error::decode_response(path, http, &bytes)
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {
         let service = if poll_seconds > 0 {
@@ -316,7 +297,7 @@ impl Api {
         } else {
             "SecondaryQrCodeLoginService"
         };
-        self.call(
+        self.call_once(
             &format!("/api/talk/thrift/LoginQrCode/{service}/{method}"),
             &json!([args]),
             "",
@@ -324,11 +305,10 @@ impl Api {
             poll_seconds,
         )
     }
-    fn profile(&mut self, access: &str) -> Result<Value> {
+    fn profile(&mut self) -> Result<Value> {
         self.call(
             "/api/talk/thrift/Talk/TalkService/getProfile",
             &json!([0]),
-            access,
             "",
             0,
         )
@@ -346,13 +326,14 @@ fn decode(value: &str) -> Result<Vec<u8>> {
             return Ok(b);
         }
     }
-    Err(anyhow::Error::new(Error::Decode).context("invalid base64 key material"))
+    Err(anyhow::Error::new(error::Failure::Bug("decode".into()))
+        .context("invalid base64 key material"))
 }
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
         .as_str()
         .filter(|s| !s.is_empty())
-        .ok_or(Error::Decode)
+        .ok_or(error::Failure::Bug("decode".into()))
         .with_context(|| format!("missing {field}"))
 }
 fn percent_encode(value: &str) -> String {
@@ -494,7 +475,8 @@ fn status(
     let count =
         validate_keys(&mut api, &state).context(error::SavedSessionFailure::Keys.error())?;
     progress.set(pairing::Stage::RestoredKeys(count))?;
-    let profile = api.profile(access(&state)?)?;
+    api.state = state.clone();
+    let profile = api.profile()?;
     ensure!(
         profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
         "profile did not contain a user ID"
@@ -627,7 +609,7 @@ fn login_with(state_path: &Path, api: &mut Api, progress: &impl LoginUi) -> Resu
             Err(error) => {
                 let expired = error
                     .downcast_ref::<RpcError>()
-                    .is_some_and(|e| e.code == 10052 && e.status == 410);
+                    .is_some_and(|e| e.gateway == 10052 && e.status == 410);
                 if !expired || started.elapsed() > Duration::from_secs(300) {
                     return Err(pairing::phone_error(error));
                 }
@@ -686,7 +668,8 @@ fn login_with(state_path: &Path, api: &mut Api, progress: &impl LoginUi) -> Resu
     save_state(state_path, &state)?;
     progress.set(pairing::Stage::KeysVerified)?;
     api.rt.destroy("Curve25519Key", key)?;
-    let profile = api.profile(access(&state)?)?;
+    api.state = state.clone();
+    let profile = api.profile()?;
     ensure!(
         profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
         "authenticated profile missing"
@@ -863,4 +846,14 @@ mod tests {
         assert!(url.ends_with("&e2eeVersion=1"));
         assert!(callback("file:///tmp/test", &[0; 32]).is_err());
     }
+}
+
+thread_local! {
+    static NETWORK_TOUCHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+pub(crate) fn network_touched() {
+    NETWORK_TOUCHED.set(true);
+}
+pub(crate) fn take_network_touched() -> bool {
+    NETWORK_TOUCHED.replace(false)
 }

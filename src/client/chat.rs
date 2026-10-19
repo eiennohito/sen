@@ -1,7 +1,7 @@
 //! Read-only, bounded real-message decryption probe. Never persists chat data.
 use super::*;
 
-pub(super) fn talk(api: &mut Api, token: &str, method: &str, args: Value) -> Result<Value> {
+pub(super) fn talk(api: &mut Api, method: &str, args: Value) -> Result<Value> {
     let cache_key = format!("{method}:{args}");
     let cacheable = matches!(method, "getE2EEPublicKey" | "getE2EEGroupSharedKey");
     if cacheable && let Some(value) = api.key_cache.get(&cache_key) {
@@ -10,7 +10,6 @@ pub(super) fn talk(api: &mut Api, token: &str, method: &str, args: Value) -> Res
     let value = api.call(
         &format!("/api/talk/thrift/Talk/TalkService/{method}"),
         &args,
-        token,
         "",
         0,
     )?;
@@ -78,8 +77,8 @@ pub(super) fn own_key(api: &mut Api, state: &Value, id: u64) -> Result<u32> {
     Ok(ptr)
 }
 
-pub(super) fn public_key(api: &mut Api, token: &str, mid: &str, id: u64) -> Result<Vec<u8>> {
-    let key = talk(api, token, "getE2EEPublicKey", json!([mid, 1, id]))?;
+pub(super) fn public_key(api: &mut Api, mid: &str, id: u64) -> Result<Vec<u8>> {
+    let key = talk(api, "getE2EEPublicKey", json!([mid, 1, id]))?;
     ensure!(key["keyId"].as_u64() == Some(id), "public key ID mismatch");
     let bytes = decode(required(&key, "keyData")?)?;
     ensure!(bytes.len() == 32, "invalid public key size");
@@ -114,7 +113,6 @@ pub(super) fn message_channel(
     my_mid: &str,
     id: &Channel,
 ) -> Result<u32> {
-    let token = access(state)?;
     if let Some(channel) = api.cached_channel(id) {
         return Ok(channel);
     }
@@ -125,7 +123,7 @@ pub(super) fn message_channel(
             sender,
             sender_key_id,
         } => {
-            let shared = talk(api, token, "getE2EEGroupSharedKey", json!([1, mid, group]))?;
+            let shared = talk(api, "getE2EEGroupSharedKey", json!([1, mid, group]))?;
             ensure!(
                 shared["groupKeyId"].as_u64() == Some(*group),
                 "group key ID mismatch"
@@ -140,7 +138,7 @@ pub(super) fn message_channel(
             let creator_id = shared["creatorKeyId"]
                 .as_u64()
                 .context("missing creator key ID")?;
-            let public = public_key(api, token, required(&shared, "creator")?, creator_id)?;
+            let public = public_key(api, required(&shared, "creator")?, creator_id)?;
             let key = own_key(api, state, private_id)?;
             let transfer = channel(&mut api.rt, key, &public)?;
             let h = api
@@ -154,7 +152,7 @@ pub(super) fn message_channel(
                 let own = own_key(api, state, *sender_key_id)?;
                 bytes_method(&mut api.rt, Call::E2EEKeyGetPublicKey, own, &[])?
             } else {
-                public_key(api, token, sender, *sender_key_id)?
+                public_key(api, sender, *sender_key_id)?
             };
             let ch = channel(&mut api.rt, group_key, &public)?;
             api.rt.destroy("E2EEKey", group_key)?;
@@ -167,7 +165,7 @@ pub(super) fn message_channel(
             peer_key_id,
         } => {
             let key = own_key(api, state, *own_key_id)?;
-            let public = public_key(api, token, mid, *peer_key_id)?;
+            let public = public_key(api, mid, *peer_key_id)?;
             channel(&mut api.rt, key, &public)?
         }
     };
@@ -312,12 +310,12 @@ pub(super) fn run(
     let state = crate::credentials::load(&opts.state)?;
     let mut api = Api::with_runtime(module.runtime(wasm)?, wasm, &module.version)?;
     validate_keys(&mut api, &state).context(error::SavedSessionFailure::Keys.error())?;
-    let profile = api.profile(access(&state)?)?;
+    api.state = state.clone();
+    let profile = api.profile()?;
     let my_mid = required(&profile, "mid")?;
     progress.set("Fetching bounded recent chat previews for decryption check")?;
     let response = talk(
         &mut api,
-        access(&state)?,
         "getMessageBoxes",
         json!([{"activeOnly":true,"unreadOnly":false,"messageBoxCountLimit":10,
             "withUnreadCount":false,"lastMessagesPerMessageBoxCount":5},0]),

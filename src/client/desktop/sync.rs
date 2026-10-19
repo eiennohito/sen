@@ -14,19 +14,18 @@ use std::{
 pub enum SyncState {
     Connected,
     Reconnecting { attempt: u32 },
-    AuthExpired,
 }
 #[derive(Debug)]
 pub enum Event {
     State(SyncState),
     Failure {
         attempt: u32,
-        error: crate::client::Error,
+        error: crate::client::error::Failure,
     },
     Operation(Value),
     Resync {
         next_revision: Option<String>,
-        complete: mpsc::SyncSender<bool>,
+        complete: mpsc::SyncSender<std::result::Result<(), crate::client::error::Failure>>,
     },
 }
 #[derive(Default)]
@@ -105,49 +104,73 @@ pub fn receive_with_auth(
     client_version: &str,
     revision: u64,
     stop: &Arc<AtomicBool>,
+    authorize: impl FnMut(bool) -> Result<String>,
+    deliver: impl FnMut(Event) -> bool,
+) -> Result<()> {
+    let transport = http::Transport::new(client_version)?;
+    receive_on(
+        &transport,
+        client_version,
+        revision,
+        stop,
+        authorize,
+        deliver,
+        pause,
+    )
+}
+
+fn receive_on(
+    transport: &http::Transport,
+    client_version: &str,
+    revision: u64,
+    stop: &Arc<AtomicBool>,
     mut authorize: impl FnMut(bool) -> Result<String>,
     mut deliver: impl FnMut(Event) -> bool,
+    mut wait: impl FnMut(&AtomicBool, Duration),
 ) -> Result<()> {
     set_request_cancel(stop.clone());
-    let transport = http::Transport::new(client_version)?;
     let mut revisions = Revisions { local: revision };
     let mut refreshed_once = false;
     let mut attempt = 0;
     while !stop.load(Ordering::Relaxed) {
-        let result = stream(
-            &transport,
+        let mut delivered = false;
+        let mut result = stream(
+            transport,
             client_version,
             &authorize(false)?,
             revisions.local,
             stop,
             PING_TIMEOUT,
             |name, data| {
-                if name == "open" {
+                if matches!(name, "message" | "ping") {
                     refreshed_once = false;
                 }
-                dispatch(name, data, &mut revisions, &mut attempt, stop, &mut deliver)
+                dispatch(
+                    name,
+                    data,
+                    &mut revisions,
+                    &mut attempt,
+                    stop,
+                    &mut |event| {
+                        let message = matches!(event, Event::Operation(_));
+                        let accepted = deliver(event);
+                        delivered |= message && accepted;
+                        accepted
+                    },
+                )
             },
         );
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        if result
-            .as_ref()
-            .err()
-            .is_some_and(|error| error.downcast_ref::<ExpiredSession>().is_some())
-        {
-            deliver(Event::State(SyncState::AuthExpired));
-            return Ok(());
-        }
-        if matches!(result, Ok(401 | 403))
-            || result.as_ref().err().is_some_and(|error| {
-                error
-                    .downcast_ref::<RpcError>()
-                    .is_some_and(|e| e.code == 119)
-            })
-        {
+        if crate::client::error::needs_refresh(&result) {
             if refreshed_once {
-                deliver(Event::State(SyncState::AuthExpired));
+                deliver(Event::Failure {
+                    attempt,
+                    error: crate::client::error::Failure::SignedOut(
+                        crate::client::error::SignOutReason::TokenRefresh,
+                    ),
+                });
                 return Ok(());
             }
             match authorize(true) {
@@ -155,83 +178,26 @@ pub fn receive_with_auth(
                     refreshed_once = true;
                     continue;
                 }
-                Err(error)
-                    if expired_refresh(&error)
-                        || matches!(
-                            error.downcast_ref::<crate::client::Error>(),
-                            Some(crate::client::Error::Auth)
-                        ) =>
-                {
-                    deliver(Event::State(SyncState::AuthExpired));
-                    return Ok(());
-                }
-                Err(_) => {}
+                Err(error) => result = Err(error),
             }
         }
-        attempt = attempt.saturating_add(1);
-        let error = match result {
-            Err(error) => crate::client::error::classify(&error),
-            Ok(status) if (500..600).contains(&status) => {
-                crate::client::Error::Server(i64::from(status))
+        if let Err(error) = result {
+            attempt = attempt.saturating_add(1);
+            let error = crate::client::error::classify(&error);
+            let terminal = matches!(error, crate::client::error::Failure::SignedOut(_));
+            if !deliver(Event::Failure { attempt, error }) || terminal {
+                break;
             }
-            Ok(_) => crate::client::Error::Protocol,
-        };
-        if !deliver(Event::Failure { attempt, error }) {
-            break;
+            wait(stop, backoff(attempt));
+        } else if !delivered {
+            wait(stop, backoff(1));
         }
-        pause(stop, backoff(attempt));
         if !stop.load(Ordering::Relaxed)
             && !deliver(Event::State(SyncState::Reconnecting { attempt }))
         {
             break;
         }
     }
-    Ok(())
-}
-#[derive(Debug)]
-struct ExpiredSession;
-impl std::fmt::Display for ExpiredSession {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("Session authorization expired")
-    }
-}
-impl std::error::Error for ExpiredSession {}
-pub(super) fn expired_refresh(error: &anyhow::Error) -> bool {
-    error.downcast_ref::<ExpiredSession>().is_some()
-        || error.downcast_ref::<RpcError>().is_some_and(|e| {
-            ((400..500).contains(&e.http) && !matches!(e.http, 408 | 429)) || e.code == 10201
-        })
-}
-
-pub(super) fn refresh(
-    api: &mut Api,
-    state: &mut Value,
-    state_path: &Path,
-    stop: &AtomicBool,
-) -> Result<()> {
-    let token = state["token_v3_issue_result"]["refreshToken"]
-        .as_str()
-        .filter(|token| !token.is_empty())
-        .ok_or(ExpiredSession)?;
-    let value = api.call(
-        "/api/auth/tokenRefresh",
-        &json!({"refreshToken":token}),
-        access(state)?,
-        "",
-        0,
-    )?;
-    ensure!(
-        value["accessToken"].as_str().is_some_and(|s| !s.is_empty()),
-        "refresh missing access token"
-    );
-    state["token_v3_issue_result"]
-        .as_object_mut()
-        .context("saved token")?
-        .extend(value.as_object().context("refresh token response")?.clone());
-    if stop.load(Ordering::Relaxed) {
-        return Ok(());
-    }
-    save_state(state_path, state)?;
     Ok(())
 }
 
@@ -243,6 +209,12 @@ fn dispatch(
     stop: &AtomicBool,
     deliver: &mut impl FnMut(Event) -> bool,
 ) -> Result<bool> {
+    if name == "message"
+        && number(&data["revision"]).is_some()
+        && !deliver(Event::State(SyncState::Connected))
+    {
+        return Ok(false);
+    }
     match name {
         "message" if revisions.accepts(&data) => {
             if !deliver(Event::Operation(data.clone())) {
@@ -268,9 +240,13 @@ fn dispatch(
                     return Ok(false);
                 }
                 match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(true) => break,
-                    Ok(false) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        return Err(anyhow::anyhow!("resync failed"));
+                    Ok(Ok(())) => break,
+                    Ok(Err(error)) => return Err(error.into()),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(crate::client::error::Failure::Bug(
+                            "resync worker disconnected".into(),
+                        )
+                        .into());
                     }
                     Err(_) => {}
                 }
@@ -289,21 +265,23 @@ fn dispatch(
                 return Ok(false);
             }
         }
-        "ping" => *attempt = 0,
-        "reconnect" => return Ok(false),
-        "talkException" => match data["code"].as_u64() {
-            Some(1 | 7 | 8) => return Err(ExpiredSession.into()),
-            Some(119) => {
-                return Err(RpcError {
-                    method: "SSE".into(),
-                    http: 401,
-                    code: 119,
-                    status: 0,
-                }
-                .into());
+        "ping" => {
+            *attempt = 0;
+            if !deliver(Event::State(SyncState::Connected)) {
+                return Ok(false);
             }
-            _ => return Err(anyhow::anyhow!("sync talk exception")),
-        },
+        }
+        "reconnect" => return Ok(false),
+        "talkException" => {
+            return Err(RpcError {
+                gateway: 0,
+                method: "SSE".into(),
+                http: 200,
+                code: data["code"].as_i64().context("talk exception code")?,
+                status: 0,
+            }
+            .into());
+        }
         "open" => {
             let (tx, rx) = mpsc::sync_channel(1);
             if !deliver(Event::Resync {
@@ -317,9 +295,13 @@ fn dispatch(
                     return Ok(false);
                 }
                 match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(true) => break,
-                    Ok(false) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        return Err(anyhow::anyhow!("catch-up failed"));
+                    Ok(Ok(())) => break,
+                    Ok(Err(error)) => return Err(error.into()),
+                    Err(mpsc::RecvTimeoutError::Disconnected) => {
+                        return Err(crate::client::error::Failure::Bug(
+                            "resync worker disconnected".into(),
+                        )
+                        .into());
                     }
                     Err(_) => {}
                 }
@@ -359,7 +341,14 @@ fn stream(
         ping_timeout,
         |status, _headers, body| {
             if status != 200 {
-                return Ok(status);
+                return Err(RpcError {
+                    gateway: 0,
+                    method: "SSE".into(),
+                    http: status,
+                    code: 0,
+                    status: 0,
+                }
+                .into());
             }
             if stop.load(Ordering::Relaxed) || !event("open", Value::Null)? {
                 return Ok(status);
@@ -367,23 +356,45 @@ fn stream(
             let mut reader = BufReader::new(body);
             let mut decoder = Decoder::default();
             let mut line = Vec::new();
+            let mut discarding = false;
             while !stop.load(Ordering::Relaxed) {
                 line.clear();
                 let count = reader
                     .by_ref()
                     .take(MAX_LINE + 1)
                     .read_until(b'\n', &mut line)?;
-                ensure!(line.len() as u64 <= MAX_LINE, "SSE line too large");
+                if line.len() as u64 > MAX_LINE {
+                    decoder = Decoder::default();
+                    discarding = true;
+                    continue;
+                }
                 if count == 0 || stop.load(Ordering::Relaxed) {
                     break;
                 }
                 let line = String::from_utf8_lossy(&line);
-                if let Some((name, data)) = decoder.line(line.trim_end_matches(['\r', '\n']))? {
+                if discarding {
+                    if line.trim_end_matches(['\r', '\n']).is_empty() {
+                        discarding = false;
+                    }
+                    continue;
+                }
+                let frame = match decoder.line(line.trim_end_matches(['\r', '\n'])) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        crate::reporting::log("stream-frame", "decode", error.as_ref());
+                        decoder = Decoder::default();
+                        discarding = !line.trim_end_matches(['\r', '\n']).is_empty();
+                        continue;
+                    }
+                };
+                if let Some((name, data)) = frame {
                     if name == "ping" {
                         reader.get_mut().ping();
                     }
-                    if !event(&name, data)? {
-                        break;
+                    match event(&name, data) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        Err(error) => return Err(error),
                     }
                 }
             }
@@ -423,7 +434,7 @@ mod transport_tests {
             match event {
                 Event::Operation(v) => seen.push(number(&v["revision"]).unwrap()),
                 Event::Resync { complete, .. } => {
-                    complete.send(true).unwrap();
+                    complete.send(Ok(())).unwrap();
                 }
                 Event::State(s) => assert_eq!(s, SyncState::Connected),
                 _ => {}
@@ -451,7 +462,7 @@ mod transport_tests {
                 &stop,
                 &mut |e| {
                     if let Event::Resync { complete, .. } = e {
-                        complete.send(true).unwrap();
+                        complete.send(Ok(())).unwrap();
                     }
                     true
                 }
@@ -474,7 +485,9 @@ mod transport_tests {
                 &stop,
                 &mut |e| {
                     if let Event::Resync { complete, .. } = e {
-                        complete.send(false).unwrap();
+                        complete
+                            .send(Err(crate::client::error::Failure::Unanswered))
+                            .unwrap();
                     }
                     true
                 }
@@ -496,48 +509,6 @@ mod transport_tests {
             .unwrap()
         );
         assert!(started.elapsed() < Duration::from_millis(100));
-    }
-}
-
-#[cfg(test)]
-mod auth_tests {
-    use super::*;
-    #[test]
-    fn refresh_transport_outage_is_not_expired_authorization() {
-        for http in [408, 429, 500, 503] {
-            assert!(!expired_refresh(
-                &RpcError {
-                    method: "refresh".into(),
-                    http,
-                    code: 0,
-                    status: 0
-                }
-                .into()
-            ));
-        }
-        for http in [400, 401, 403] {
-            assert!(expired_refresh(
-                &RpcError {
-                    method: "refresh".into(),
-                    http,
-                    code: 0,
-                    status: 0
-                }
-                .into()
-            ));
-        }
-        assert!(!expired_refresh(&anyhow::anyhow!("timeout")));
-        assert!(expired_refresh(&ExpiredSession.into()));
-        let error = dispatch(
-            "talkException",
-            json!({"code":8}),
-            &mut Revisions::default(),
-            &mut 0,
-            &AtomicBool::new(false),
-            &mut |_| true,
-        )
-        .unwrap_err();
-        assert!(error.downcast_ref::<ExpiredSession>().is_some());
     }
 }
 
