@@ -283,7 +283,7 @@ fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
     let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
     done.send(()).unwrap();
     assert_eq!(server.join().unwrap(), (2, 1));
-    assert_eq!(result.unwrap(), (200, b"{}".to_vec()));
+    assert_eq!(result.unwrap(), (200, String::new(), b"{}".to_vec()));
     assert_eq!(control.connections.load(Ordering::Relaxed), 2);
     assert_eq!(
         control.swallowed.load(Ordering::Relaxed),

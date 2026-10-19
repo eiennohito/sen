@@ -210,3 +210,36 @@ At the loaded history bottom the app now covers that hint; unknown event
 rows remain stored and unsupported content gets an explicit bubble.
 The offline “Official hidden events” chat reproduces two unread events
 with no visible message rows.
+
+## Replies, checked markers, reactions, and profile status (2026-10-19)
+
+Source inspection: installed LINE Chrome 3.7.2 `static/js/main.js`, offline;
+these are extension call shapes, not a live capture.
+
+- `SD` posts positional arguments to `/api/talk/thrift/Talk/TalkService/<method>`.
+  The shared Axios success interceptor tests `response.data.message === "OK"`
+  and returns `response.data.data`. It does **not** require `code` or `data`.
+  A successful void result may therefore omit `data` entirely.
+- `sendChatChecked`: `[reqSeq, chatMid, messageId, 0]`. The read observer calls
+  `ne.mutate([HO(), e, r.id, 0])`; no result payload is consumed.
+- `react`: `[{reqSeq, messageId, reactionType: {predefinedReactionType}}]`;
+  `cancelReaction`: `[{reqSeq, messageId}]`. The reaction menu uses these
+  mutations for types 2–7; it consumes no success payload.
+- Our RPC decoder accepts the gateway's `message: "OK"` envelope, including
+  absent data for void methods, and empty HTTP 2xx success for those methods.
+  Empty/204 responses are supported defensively, **not observed in the source**.
+  Explicit LINE errors remain failures. Decode diagnostics contain method,
+  HTTP status, content type and byte length; never response content or ids.
+- Composer text and sticker enqueue calls pass a `relation` with
+  `relatedMessageId: replyTargetMessageId`, `messageRelationType: 3`
+  (`wU.REPLY`), `relatedMessageServiceCode: 1` (`yU.TALK`). The send queue
+  merges these fields onto the `sendMessage` message object, outside
+  `contentMetadata` and outside the encrypted text payload. They survive retries.
+  The attachment enqueue callback receives only the files and no relation;
+  attachments therefore follow the extension's behavior without a reply.
+- Contacts/profile status use `statusMessage` with
+  `statusMessageContentMetadata`. The extension passes both to `s1`, the same
+  rich text renderer used for messages. `REPLACE.sticon.resources` has the same
+  UTF-16 ranges and emoji resource fields as message content metadata. Without
+  this metadata, parenthesized codes remain literal text. Status metadata is
+  persisted with contacts and rendered through the existing emoji preview path.

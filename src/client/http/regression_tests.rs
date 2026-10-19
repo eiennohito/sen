@@ -264,7 +264,7 @@ fn replaces_idle_connection_closed_by_server() {
         transport
             .request("/api/test", "{}", &[], Duration::from_millis(400))
             .unwrap(),
-        (200, b"{}".to_vec())
+        (200, String::new(), b"{}".to_vec())
     );
     server.join().unwrap();
     assert_eq!(sockets.lock().unwrap().len(), 2);
@@ -384,7 +384,7 @@ fn retries_reused_write_failure_once_on_fresh_connection() {
         done.send(()).unwrap();
         server.join().unwrap();
         if failure_count == 1 {
-            assert_eq!(result.unwrap(), (200, b"{}".to_vec()));
+            assert_eq!(result.unwrap(), (200, String::new(), b"{}".to_vec()));
         } else {
             assert_eq!(
                 result.unwrap_err().to_string(),

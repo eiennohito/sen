@@ -272,7 +272,7 @@ impl Api {
         if poll_seconds > 0 {
             headers.push(("X-LST", millis.as_str()));
         }
-        let (http, bytes) = self.http.request(
+        let (http, content_type, bytes) = self.http.request(
             path,
             &body,
             &headers,
@@ -294,8 +294,25 @@ impl Api {
             }
             .into());
         }
-        let response: Value = serde_json::from_slice(&bytes).map_err(|_| Error::Decode)?;
-        let code = response["code"].as_i64().ok_or(Error::Decode)?;
+        let method = path.rsplit('/').next().unwrap_or("RPC");
+        let decode = || Error::ResponseDecode {
+            method: method.into(),
+            status: http,
+            content_type: content_type.clone(),
+            body_len: bytes.len(),
+        };
+        let void = matches!(
+            method,
+            "sendChatChecked" | "react" | "cancelReaction" | "unsendMessage"
+        );
+        if void && (200..300).contains(&http) && bytes.is_empty() {
+            return Ok(Value::Null);
+        }
+        let response: Value = serde_json::from_slice(&bytes).map_err(|_| decode())?;
+        let code = response["code"]
+            .as_i64()
+            .or_else(|| (response["message"] == "OK").then_some(0))
+            .ok_or_else(decode)?;
         if http != 200 || code != 0 {
             return Err(RpcError {
                 method: path.rsplit('/').next().unwrap_or("RPC").into(),
@@ -308,7 +325,8 @@ impl Api {
         response
             .get("data")
             .cloned()
-            .ok_or_else(|| Error::Decode.into())
+            .or_else(|| void.then_some(Value::Null))
+            .ok_or_else(|| decode().into())
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {
         let service = if poll_seconds > 0 {

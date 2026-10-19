@@ -181,6 +181,7 @@ impl Desktop {
             self.sender.send(Intent::Draft {
                 chat: chat.clone(),
                 draft: Draft {
+                    reply: self.state.composer_reply.clone(),
                     text: self.state.composer.clone(),
                     cursor: ui.get_editor_caret() as usize,
                     anchor: ui.get_editor_anchor() as usize,

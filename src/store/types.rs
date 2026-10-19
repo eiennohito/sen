@@ -155,6 +155,8 @@ pub struct Profile {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContactProfile {
+    #[serde(rename = "statusMessageContentMetadata")]
+    pub status_metadata: serde_json::Value,
     #[serde(rename = "displayName")]
     pub original_name: Option<String>,
     #[serde(rename = "displayNameOverridden")]
@@ -390,6 +392,7 @@ pub struct Account {
 /// Durable composer content and selection position.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draft {
+    pub reply: Option<ReplyReference>,
     pub text: String,
     pub cursor: usize,
     pub anchor: usize,
@@ -404,7 +407,7 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("database schema {0} is newer than supported version 5")]
+    #[error("database schema {0} is newer than supported version 6")]
     NewerSchema(i64),
     #[error("invalid store operation: {0}")]
     Invalid(String),

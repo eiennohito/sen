@@ -744,7 +744,7 @@ impl Transport {
         body: &str,
         headers: &[(&str, &str)],
         timeout: Duration,
-    ) -> Result<(u16, Vec<u8>)> {
+    ) -> Result<(u16, String, Vec<u8>)> {
         let validated = validate(path, headers)?;
         #[cfg(not(test))]
         let base = BASE;
@@ -808,6 +808,12 @@ impl Transport {
             }
         };
         let status = response.status().as_u16();
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_owned();
         if (500..600).contains(&status) {
             return Err(super::Error::Server(i64::from(status)).into());
         }
@@ -830,7 +836,7 @@ impl Transport {
             check_request().map_err(transport_error)?;
             let n = n.map_err(|_| super::Error::Offline(super::error::NetCause::Unreachable))?;
             if n == 0 {
-                return Ok((status, bytes));
+                return Ok((status, content_type, bytes));
             }
             ensure!(
                 bytes.len() + n <= MAX_BODY,
@@ -1193,7 +1199,7 @@ pub(in crate::client) mod tests {
                 transport
                     .request("/api/test", "{}", &[], Duration::from_millis(400))
                     .unwrap(),
-                (200, b"{}".to_vec())
+                (200, String::new(), b"{}".to_vec())
             );
         }
         assert_eq!(server.join().unwrap(), 1);
@@ -1222,7 +1228,7 @@ pub(in crate::client) mod tests {
                     Duration::from_millis(400)
                 )
                 .unwrap(),
-            (302, vec![])
+            (302, String::new(), vec![])
         );
         server.join().unwrap();
         assert_eq!(
@@ -1271,7 +1277,7 @@ pub(in crate::client) mod tests {
             .unwrap();
             stream.get_mut().write_all(&vec![b'x'; MAX_BODY]).unwrap();
         });
-        let (status, bytes) = transport
+        let (status, _, bytes) = transport
             .request("/api/test", "{}", &[], Duration::from_millis(400))
             .unwrap();
         assert_eq!(status, 200);
@@ -1446,7 +1452,7 @@ pub(in crate::client) mod tests {
                 transport
                     .request("/api/test", "{}", &[], Duration::from_millis(400))
                     .unwrap(),
-                (200, b"{}".to_vec())
+                (200, String::new(), b"{}".to_vec())
             );
             server.join().unwrap();
         }

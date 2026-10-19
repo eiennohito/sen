@@ -488,7 +488,7 @@ fn each_stream_attempt_uses_a_fresh_connection_and_closes_it_on_return() {
         transport
             .request("/api/test", "{}", &[], Duration::from_millis(400))
             .unwrap(),
-        (200, b"{}".to_vec())
+        (200, String::new(), b"{}".to_vec())
     );
     for _ in 0..2 {
         assert_eq!(

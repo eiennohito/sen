@@ -1,0 +1,11 @@
+import { State } from "state.slint";
+export component ListRow inherits Rectangle {
+    clip: true;
+}
+export component RowText inherits Text {
+    in property <string> value;
+    text: State.single-line(root.value);
+    wrap: no-wrap;
+    overflow: elide;
+    min-width: 0px;
+}

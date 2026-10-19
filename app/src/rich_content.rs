@@ -1243,6 +1243,7 @@ mod tests {
                     for delivery in ["Rejected", "Unconfirmed"] {
                         ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                             id: "failed".into(),
+                            run_position: "single".into(),
                             body: "Meet at eleven.".into(),
                             outgoing: true,
                             recoverable: true,

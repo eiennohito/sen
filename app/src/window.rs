@@ -2,6 +2,8 @@ use crate::*;
 
 pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
+    ui.global::<State>()
+        .on_single_line(|value| crate::present::single_line(&value).into());
     ui.global::<State>().on_avatar_tint(|id| {
         let hash = id.bytes().fold(0u32, |hash, byte| {
             hash.wrapping_mul(31).wrapping_add(byte as u32)

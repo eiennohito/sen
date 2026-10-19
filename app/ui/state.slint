@@ -3,6 +3,10 @@ import { StickerTab, StickerItem, ComposeFriend } from "types.slint";
 import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
+    pure callback single-line(string) -> string;
+    in-out property <MessageRow> composer-reply;
+    callback reply(string);
+    callback cancel-reply();
     in-out property <string> attachment-injection-paths;
     in-out property <bool> attachments-open;
     in-out property <string> attachments-chat;
@@ -56,6 +60,7 @@ export global State {
     callback focus-friend-list();
     public function browser-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
+        if event.text == Key.Escape && self.composer-reply.reply-id != "" && !self.window-modal-open && !self.detail-open { self.cancel-reply(); return accept; }
         if event.text == Key.Escape && self.detail-open && !self.window-modal-open { self.pop-detail(false); return accept; }
         if !self.window-modal-open && !(self.detail-open && self.profile-sheet ) && self.connection-actions-enabled && event.text == Key.F6 { self.focus-sign-in-opener(); return accept; }
         if self.window-modal-open || (self.narrow && self.detail-open) { return reject; }

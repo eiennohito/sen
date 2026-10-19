@@ -136,10 +136,22 @@ pub trait Backend: Send {
     ) -> Result<MessageInput> {
         Err(Error::Protocol)
     }
-    fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput>;
+    fn send(
+        &mut self,
+        chat: &ChatId,
+        text: &str,
+        seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
+    ) -> Result<MessageInput>;
     fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()>;
     fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>>;
-    fn send_sticker(&mut self, chat: &ChatId, sticker: &Content, seq: u32) -> Result<MessageInput>;
+    fn send_sticker(
+        &mut self,
+        chat: &ChatId,
+        sticker: &Content,
+        seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
+    ) -> Result<MessageInput>;
     fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput>;
     fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()>;
     fn receipts(&mut self, chat: &ChatId) -> Result<Vec<Option<ServerId>>>;
@@ -249,7 +261,13 @@ impl FakeBackend {
         self.0.lock().unwrap().upload_failures.insert(name.into());
     }
 
-    fn fake_send(&mut self, chat: &ChatId, body: Content, seq: u32) -> Result<MessageInput> {
+    fn fake_send(
+        &mut self,
+        chat: &ChatId,
+        body: Content,
+        seq: u32,
+        reply: Option<&ReplyReference>,
+    ) -> Result<MessageInput> {
         let gate = self.0.lock().unwrap().send_gate.take();
         if let Some((entered, blocked)) = gate {
             let _ = entered.send(());
@@ -267,6 +285,7 @@ impl FakeBackend {
             s.next_id += 1;
             let mut row = Self::message(&chat.0, s.next_id, "", true);
             row.body = body;
+            row.reply = reply.cloned().map(Box::new);
             row.request_seq = Some(seq);
             s.pages.entry(chat.clone()).or_default().push(row.clone());
             s.next_revision += 1;
@@ -989,7 +1008,7 @@ impl Backend for FakeBackend {
                 return Err(Error::Rejected(RejectReason::SyntheticSend));
             }
             Ok(Box::new(move |_backend: &mut dyn Backend| {
-                let row = fake.fake_send(&chat, item.content(), seq)?;
+                let row = fake.fake_send(&chat, item.content(), seq, None)?;
                 // SEND_MESSAGE carries the persisted request identity; SEND_CONTENT repeats
                 // the same server identity after storage, without a matching request seq.
                 let (deliver, revision) = {
@@ -1015,11 +1034,23 @@ impl Backend for FakeBackend {
             }) as FinishUpload)
         }))
     }
-    fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput> {
-        self.fake_send(chat, Content::text(text), seq)
+    fn send(
+        &mut self,
+        chat: &ChatId,
+        text: &str,
+        seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
+    ) -> Result<MessageInput> {
+        self.fake_send(chat, Content::text(text), seq, reply)
     }
-    fn send_sticker(&mut self, chat: &ChatId, sticker: &Content, seq: u32) -> Result<MessageInput> {
-        self.fake_send(chat, sticker.clone(), seq)
+    fn send_sticker(
+        &mut self,
+        chat: &ChatId,
+        sticker: &Content,
+        seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
+    ) -> Result<MessageInput> {
+        self.fake_send(chat, sticker.clone(), seq, reply)
     }
     fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>> {
         self.rpc(FakeRpc::StickerPackages)?;
@@ -1624,11 +1655,17 @@ impl Backend for LineBackend {
             .map_err(send_rpc)
             .map(|m| message_input(chat, m, 0))
     }
-    fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput> {
+    fn send(
+        &mut self,
+        chat: &ChatId,
+        text: &str,
+        seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
+    ) -> Result<MessageInput> {
         self.client
             .as_mut()
             .ok_or(Error::Auth)?
-            .send_text_with_request(&chat.0, text, seq)
+            .send_text_with_request(&chat.0, text, seq, reply)
             .map_err(send_rpc)
             .map(|m| message_input(chat, m, 0))
     }
@@ -1646,11 +1683,17 @@ impl Backend for LineBackend {
             .sticker_packages()
             .map_err(rpc)
     }
-    fn send_sticker(&mut self, chat: &ChatId, sticker: &Content, seq: u32) -> Result<MessageInput> {
+    fn send_sticker(
+        &mut self,
+        chat: &ChatId,
+        sticker: &Content,
+        seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
+    ) -> Result<MessageInput> {
         self.client
             .as_mut()
             .ok_or(Error::Auth)?
-            .send_sticker(&chat.0, sticker, seq)
+            .send_sticker(&chat.0, sticker, seq, reply)
             .map(|m| message_input(chat, m, 0))
             .map_err(send_rpc)
     }

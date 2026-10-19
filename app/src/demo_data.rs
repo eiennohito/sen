@@ -782,3 +782,83 @@ pub fn sticker(fake: &FakeBackend, chat: &str) -> MessageInput {
     *row.body.image_mut() = Some(asset);
     row
 }
+
+/// Review fixtures exercise independent shapes and quotes using the normal store.
+pub fn run_review(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
+    fake.set_contact(Friend {
+        id: "aoi".into(),
+        name: "葵".into(),
+        avatar: Some(image_asset(fake, "run-avatar", avatar(0))),
+        ..Default::default()
+    });
+    [
+        "Hi",
+        "A much wider message about the riverside walk",
+        "OK",
+        "Bring a jacket and meet us by the station",
+    ]
+    .into_iter()
+    .cycle()
+    .take(8)
+    .enumerate()
+    .map(|(i, text)| {
+        let mut row = message(fake, chat, 8000 + i as i64, text, "12:00", i >= 4);
+        row.sender_id = if i >= 4 { "self" } else { "aoi" }.into();
+        row.created_ms += i as i64 * 1000;
+        row
+    })
+    .collect()
+}
+pub fn quote_review(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
+    let mut originals = vec![
+        message(
+            fake,
+            chat,
+            8100,
+            "A very long original text with Japanese 日本語 and enough words to elide the quote without widening the reply",
+            "11:00",
+            true,
+        ),
+        message(fake, chat, 8101, "", "11:01", false),
+        message(fake, chat, 8102, "", "11:02", false),
+        message(fake, chat, 8103, "", "11:03", false),
+    ];
+    originals[1].body = Content::Photo {
+        size: None,
+        asset: Some(image_asset(fake, "quote-photo", photo(false))),
+        album_count: None,
+        caption: None,
+    };
+    originals[2].body = Content::Sticker {
+        pkg: "demo".into(),
+        id: "1".into(),
+        ver: Some("1".into()),
+        asset: Some(image_asset(fake, "quote-sticker", avatar(1))),
+        text: Some("A sticker".into()),
+    };
+    originals[3].body = Content::Withdrawn;
+    let mut rows = originals;
+    for (i, target) in [8100, 8101, 8102, 9999, 8103].into_iter().enumerate() {
+        let mut row = message(
+            fake,
+            chat,
+            8110 + i as i64,
+            [
+                "Reply to a long text",
+                "Reply to a photo",
+                "Reply to a sticker",
+                "Reply to missing original",
+                "Reply to unsent message",
+            ][i],
+            "12:00",
+            i % 2 == 0,
+        );
+        row.created_ms += i as i64 * 1000;
+        row.reply = Some(Box::new(ReplyReference {
+            message_id: target.to_string(),
+            service_code: Some(1),
+        }));
+        rows.push(row);
+    }
+    rows
+}

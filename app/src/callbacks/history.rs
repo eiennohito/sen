@@ -37,6 +37,14 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             ui.global::<State>().set_return_visible(origin.is_some());
             ui.global::<State>()
                 .set_highlight_message(key.0.to_string().into());
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
+                if let Some(ui) = weak.upgrade()
+                    && ui.global::<State>().get_highlight_message() == key.0.to_string()
+                {
+                    ui.global::<State>().set_highlight_message("".into());
+                }
+            });
             let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
             d.sender.send(intent);
         }
@@ -54,6 +62,14 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             ui.set_following(false);
             ui.global::<State>().set_return_visible(false);
             ui.global::<State>().set_highlight_message("".into());
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_secs(2), move || {
+                if let Some(ui) = weak.upgrade()
+                    && ui.global::<State>().get_highlight_message() == key.0.to_string()
+                {
+                    ui.global::<State>().set_highlight_message("".into());
+                }
+            });
             let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
             d.sender.send(intent);
         }

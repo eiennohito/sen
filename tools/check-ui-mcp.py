@@ -502,6 +502,28 @@ if args.compose:
     open_reactions()
     wait_for(lambda: not element("LOVE", "Button").get("accessibleItemSelected"), "repeat pick did not cancel")
     compose_key("\x1b")
+    def reply_via_menu():
+        body = next(item for item in reversed(tree()) if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut and item.get("accessibleLabel", "").startswith("Outgoing,"))
+        call("click_element", elementHandle=body["handle"], button="Right")
+        compose_click("Reply", "Text")
+        element("Replying to You", "Text")
+        element("Cancel reply", "Button")
+    reply_via_menu()
+    surface_shot("composer-reply")
+    compose_click("Cancel reply")
+    wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "close did not cancel reply")
+    assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft"
+    reply_via_menu()
+    compose_key("\x1b")
+    wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "Escape did not cancel reply")
+    reply_via_menu()
+    call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value="Reply sent with original attached")
+    compose_click("Send")
+    wait_for(lambda: any(item.get("accessibleValue") == "Reply sent with original attached" for item in tree()), "reply send missing")
+    wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "reply bar remained after send")
+    element("Jump to replied message", "Button")
+    call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value=before_shortcut)
+    print("PASS: context-menu Reply, composer bar, Escape cancellation and sent quote")
     compose_click("Stickers")
     element("Send sticker 1", "Button")
     wait_for(lambda: len([item for item in tree() if item.get("accessibleRole") == "Tab"]) >= 2, "owned packages missing")
@@ -700,8 +722,8 @@ if args.layout_photos:
                 continue
             times.add(label)
             assert any(meta["absolutePosition"]["x"] >= body["absolutePosition"]["x"] + body["size"]["width"] and abs(meta["absolutePosition"]["y"] - body["absolutePosition"]["y"]) <= body["size"]["height"] + 12 for body in message_bodies), "group time added a footer row"
-    yesterday_times = {(datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y/%m/%d") + " " + clock for clock in ("09:18", "09:20", "09:21", "09:27")}
-    assert len(times) == 5 and yesterday_times <= times and times - yesterday_times <= fixture_times("09:18"), "five-minute/sender/day grouping showed the wrong timestamps"
+    yesterday_times = {(datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y/%m/%d") + " " + clock for clock in ("09:19", "09:20", "09:27")}
+    assert len(times) == 4 and yesterday_times <= times and times - yesterday_times <= fixture_times("09:18"), "five-minute/sender/day grouping showed the wrong timestamps"
     print("PASS: sender avatars/names, five-minute grouping, day boundaries, and compact time/status beside bubbles")
 
 def check_detail_stack():

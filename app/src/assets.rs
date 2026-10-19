@@ -140,12 +140,27 @@ impl Assets {
             }
         }
 
+        for friend in state.friends.iter().chain(state.contacts.values()) {
+            let rich = line::client::desktop::rich::parse(
+                &serde_json::json!({"text": friend.status, "contentMetadata": friend.profile.status_metadata}),
+            );
+            for asset in rich
+                .emoji
+                .iter()
+                .filter_map(line::client::desktop::assets::Asset::inline_emoji)
+            {
+                if self.request(&asset) {
+                    sender.send(Intent::Asset(asset));
+                }
+            }
+        }
         self.stickers(state, selected, sender);
 
         for m in state
             .messages
             .values()
             .chain(state.chats.values().filter_map(|c| c.preview.as_ref()))
+            .chain(state.reply_targets.values())
         {
             use line::client::desktop::assets::Asset;
             let media = m.body.image().cloned();

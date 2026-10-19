@@ -472,6 +472,7 @@ fn first_identity_keeps_local_work_and_sends_pending() {
     app.send(Intent::Draft {
         chat: ChatId("alice".into()),
         draft: Draft {
+            reply: None,
             text: "keep draft".into(),
             cursor: 4,
             anchor: 2,
@@ -715,9 +716,15 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             self.wait();
             self.0.messages(c, k)
         }
-        fn send(&mut self, c: &ChatId, t: &str, s: u32) -> Result<MessageInput> {
+        fn send(
+            &mut self,
+            c: &ChatId,
+            t: &str,
+            s: u32,
+            reply: Option<&line::store::ReplyReference>,
+        ) -> Result<MessageInput> {
             self.wait();
-            self.0.send(c, t, s)
+            self.0.send(c, t, s, reply)
         }
         fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
             self.0.react(id, kind, seq)
@@ -730,8 +737,9 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             chat: &ChatId,
             sticker: &line::store::Content,
             seq: u32,
+            reply: Option<&line::store::ReplyReference>,
         ) -> Result<MessageInput> {
-            self.0.send_sticker(chat, sticker, seq)
+            self.0.send_sticker(chat, sticker, seq, reply)
         }
         fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
             self.0.create_chat(name, targets, seq)
@@ -912,6 +920,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     worker.sender.send(Intent::Draft {
         chat: chats[149].id.clone(),
         draft: Draft {
+            reply: None,
             text: "local draft".into(),
             cursor: 11,
             anchor: 11,
@@ -954,6 +963,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
             1,
             Content::text("guard"),
             1,
+            None,
         )
         .unwrap();
     assert!(store.retry(key, 2).is_err());
@@ -1025,14 +1035,20 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn messages(&mut self, c: &ChatId, k: &PageKind) -> Result<Page> {
             self.fake.messages(c, k)
         }
-        fn send(&mut self, c: &ChatId, t: &str, s: u32) -> Result<MessageInput> {
+        fn send(
+            &mut self,
+            c: &ChatId,
+            t: &str,
+            s: u32,
+            reply: Option<&line::store::ReplyReference>,
+        ) -> Result<MessageInput> {
             self.calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if self.calls.load(std::sync::atomic::Ordering::Relaxed) > 1 {
                 self.entered.send(()).unwrap();
                 self.release.recv_timeout(Duration::from_secs(5)).unwrap();
             }
-            self.fake.send(c, t, s)
+            self.fake.send(c, t, s, reply)
         }
         fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
             self.fake.react(id, kind, seq)
@@ -1045,8 +1061,9 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
             chat: &ChatId,
             sticker: &line::store::Content,
             seq: u32,
+            reply: Option<&line::store::ReplyReference>,
         ) -> Result<MessageInput> {
-            self.fake.send_sticker(chat, sticker, seq)
+            self.fake.send_sticker(chat, sticker, seq, reply)
         }
         fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
             self.fake.create_chat(name, targets, seq)
@@ -2040,4 +2057,79 @@ fn expired_session_cancels_upload_even_if_connection_recovers_before_it_finishes
     assert_eq!(fake.page(&ChatId("alice".into())).len(), 2);
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
+    use line::store::{Draft, ReplyReference};
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    let key = app.body_key("Hello! 日本語も使えます。");
+    let target = ReplyReference {
+        message_id: app.state.messages[&key]
+            .server_id
+            .as_ref()
+            .unwrap()
+            .0
+            .clone(),
+        service_code: Some(1),
+    };
+    app.send(Intent::Draft {
+        chat: ChatId("alice".into()),
+        draft: Draft {
+            reply: Some(target.clone()),
+            text: "reply text".into(),
+            cursor: 10,
+            anchor: 10,
+            updated: 99,
+        },
+    });
+    app.select("weekend");
+    app.body_key("Shall we meet at the station?");
+    app.select("alice");
+    app.until(|s| s.composer_reply.is_some());
+    assert_eq!(app.state.composer_reply.as_ref(), Some(&target));
+    let intent = app.state.submit().unwrap();
+    app.send(intent);
+    let sent = app.body_key("reply text");
+    app.until(|s| s.messages[&sent].delivery == Delivery::Sent);
+    assert_eq!(app.state.messages[&sent].reply.as_deref(), Some(&target));
+    app.send(Intent::Draft {
+        chat: ChatId("alice".into()),
+        draft: Draft {
+            reply: Some(target.clone()),
+            text: String::new(),
+            cursor: 0,
+            anchor: 0,
+            updated: 100,
+        },
+    });
+    let sticker = FakeBackend::demo_sticker_packages()[0].stickers[0].clone();
+    app.send(Intent::SendSticker {
+        chat: ChatId("alice".into()),
+        sticker: Box::new(sticker),
+    });
+    app.until(|s| {
+        s.messages.values().any(|m| {
+            matches!(m.body, line::store::Content::Sticker { .. }) && m.delivery == Delivery::Sent
+        })
+    });
+    let sent = app
+        .state
+        .messages
+        .values()
+        .find(|m| matches!(m.body, line::store::Content::Sticker { .. }))
+        .unwrap();
+    assert_eq!(sent.reply.as_deref(), Some(&target));
+    app.until(|s| s.composer_reply.is_none());
+    assert_eq!(
+        fake.page(&ChatId("alice".into()))
+            .last()
+            .unwrap()
+            .reply
+            .as_deref(),
+        Some(&target)
+    );
 }

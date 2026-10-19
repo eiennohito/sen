@@ -930,7 +930,9 @@ impl Engine {
         self.connection(connection);
     }
     fn rpc_failed(&mut self, r: Refresh, e: Error) {
-        self.retry_later(r);
+        if !matches!(e, Error::ResponseDecode { .. } | Error::Internal) {
+            self.retry_later(r);
+        }
         self.error(e);
     }
     fn priority(&self, r: &Refresh) -> u8 {
@@ -1808,6 +1810,7 @@ impl Engine {
                         seq,
                         item.content(),
                         now_ms(),
+                        None,
                     )?;
                     self.inbox.refresh(Refresh::Send(key));
                 }
@@ -1826,7 +1829,16 @@ impl Engine {
                     seq,
                     *sticker,
                     now_ms(),
+                    self.store.load_draft(&chat)?.and_then(|d| d.reply),
                 )?;
+                if let Some(mut draft) = self.store.load_draft(&chat)? {
+                    draft.reply = None;
+                    self.store.save_draft(&chat, &draft)?;
+                    self.emit(Delta::Draft {
+                        chat: chat.clone(),
+                        draft: Some(draft),
+                    });
+                }
                 self.publish()?;
                 self.inbox.refresh(Refresh::Send(key));
             }
@@ -1841,6 +1853,7 @@ impl Engine {
                     seq,
                     Content::text(&text),
                     now_ms(),
+                    self.store.load_draft(&chat)?.and_then(|d| d.reply),
                 )?;
                 self.store.clear_draft(&chat)?;
                 self.publish()?;
@@ -1867,6 +1880,7 @@ impl Engine {
                     seq,
                     old.body,
                     now_ms(),
+                    old.reply.map(|r| *r),
                 )?;
                 self.emit(Delta::UploadFinished(key));
                 self.store.discard(key)?;
@@ -1958,6 +1972,7 @@ impl Engine {
     fn send(&mut self, key: Key) -> Result<()> {
         let m = self.store.message(key)?;
         let body = m.body.clone();
+        let reply = m.reply.clone();
         let seq = m
             .request_seq
             .ok_or_else(|| StoreError::Invalid("send sequence missing".into()))?;
@@ -2070,9 +2085,9 @@ impl Engine {
             self.rpc_completion(
                 move |backend| {
                     if matches!(body, Content::Sticker { .. }) {
-                        backend.send_sticker(&chat, &body, seq)
+                        backend.send_sticker(&chat, &body, seq, reply.as_deref())
                     } else {
-                        backend.send(&chat, body.as_text(), seq)
+                        backend.send(&chat, body.as_text(), seq, reply.as_deref())
                     }
                 },
                 move |engine, result, current| engine.sent(key, seq, result, current),
@@ -2867,6 +2882,18 @@ impl Engine {
                 {
                     replies.push(target);
                 }
+            }
+            if let Some(reference) = self.store.load_draft(&w.chat)?.and_then(|d| d.reply)
+                && !replies.iter().any(|m| {
+                    m.server_id
+                        .as_ref()
+                        .is_some_and(|id| id.0 == reference.message_id)
+                })
+                && let Some(target) = self
+                    .store
+                    .message_by_server(&ServerId(reference.message_id))?
+            {
+                replies.push(target);
             }
             self.emit(Delta::Window {
                 unread_anchor: self.store.unread_anchor(&w.chat)?.map(|m| m.key),

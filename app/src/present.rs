@@ -36,39 +36,43 @@ pub(crate) fn single_line(text: &str) -> String {
 /// Group only adjacent messages with known time and identity. Presentation is
 /// derived after sorting/reconciliation, so refreshes and local sends agree.
 pub(crate) fn group_messages(messages: &mut [MessageRow]) {
-    let mut previous: Option<(String, bool, i64, String)> = None;
-    for row in messages {
+    let mut previous_date = String::new();
+    for row in messages.iter_mut() {
         row.sender_initial = name_initial(&row.sender_name);
         let (date, clock) = row.time.rsplit_once(' ').unwrap_or(("", row.time.as_str()));
-        let date = date.to_owned();
         row.clock = clock.into();
-        let timestamp = row.sort_key.parse::<i64>().unwrap_or(0);
-        let sender = if row.outgoing {
-            "self".to_owned()
-        } else if !row.sender_id.is_empty() {
-            row.sender_id.to_string()
-        } else if row.sender_name.is_empty() {
-            "direct-contact".to_owned()
-        } else {
-            row.id.to_string()
-        };
-        row.day_label = if previous.as_ref().is_none_or(|p| p.3 != date) {
-            day_label(timestamp, now_millis()).into()
+        row.day_label = if date != previous_date {
+            day_label(row.sort_key.parse().unwrap_or(0), now_millis()).into()
         } else {
             "".into()
         };
-        row.group_start = previous.as_ref().is_none_or(|p| {
-            p.0 != sender
-                || p.1 != row.outgoing
-                || p.3 != date
-                || p.2 <= 0
-                || timestamp <= 0
-                || timestamp == i64::MAX
-                || timestamp.saturating_sub(p.2) >= 5 * 60 * 1000
-        });
-        previous = Some((sender, row.outgoing, timestamp, date));
+        previous_date = date.to_owned();
+    }
+    let joins = |left: &MessageRow, right: &MessageRow| {
+        let a = left.sort_key.parse::<i64>().unwrap_or(0);
+        let b = right.sort_key.parse::<i64>().unwrap_or(0);
+        !matches!(left.kind, MessageKind::System | MessageKind::Withdrawn)
+            && !matches!(right.kind, MessageKind::System | MessageKind::Withdrawn)
+            && right.day_label.is_empty()
+            && left.outgoing == right.outgoing
+            && (left.outgoing || (!left.sender_id.is_empty() && left.sender_id == right.sender_id))
+            && a > 0
+            && b >= a
+            && b - a <= 300_000
+    };
+    for i in 0..messages.len() {
+        let before = i > 0 && joins(&messages[i - 1], &messages[i]);
+        let after = i + 1 < messages.len() && joins(&messages[i], &messages[i + 1]);
+        messages[i].run_position = match (before, after) {
+            (false, false) => "single",
+            (false, true) => "first",
+            (true, true) => "middle",
+            (true, false) => "last",
+        }
+        .into();
     }
 }
+
 pub(crate) fn order_key(timestamp: i64) -> String {
     format!("{:020}", timestamp.max(0))
 }
@@ -214,7 +218,7 @@ pub(crate) fn message_row(m: account::MessageView) -> MessageRow {
             && rich_runs.row_count() == 0,
         rich_runs,
         reply_id: reply_id.into(),
-        reply_preview: "Message unavailable".into(),
+        reply_preview: "Original message".into(),
         detail: detail.into(),
         kind,
         delivered_time: order_key(m.delivered_time).into(),

@@ -193,6 +193,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             d.sender.send(Intent::Draft {
                 chat,
                 draft: Draft {
+                    reply: None,
                     text: d.state.composer.clone(),
                     cursor: 0,
                     anchor: 0,
@@ -293,6 +294,18 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
             demo_data::rich_fixture(fake, "alice", 900),
         );
     }
+    if scene == "run-review" {
+        fake.set_page(
+            ChatId("weekend".into()),
+            demo_data::run_review(fake, "weekend"),
+        );
+    }
+    if scene == "quote-review" || scene == "reply-review" {
+        fake.set_page(
+            ChatId("alice".into()),
+            demo_data::quote_review(fake, "alice"),
+        );
+    }
     if scene == "groups" {
         fake.set_page(ChatId("alice".into()), demo_data::group(fake, "alice", 900));
     }
@@ -383,6 +396,7 @@ fn fixture(
     d.sender.send(Intent::Draft {
         chat: chat.clone(),
         draft: Draft {
+            reply: None,
             text: d.state.composer.clone(),
             cursor: ui.get_editor_caret() as usize,
             anchor: ui.get_editor_anchor() as usize,
@@ -419,6 +433,11 @@ pub(crate) fn stage(
             d.render(ui);
         });
     }
+    if scene == "reply-review"
+        && let Some(id) = desktop.update(|d| d.state.rows().first().map(|m| m.key.0.to_string()))
+    {
+        ui.global::<State>().invoke_reply(id.into());
+    }
     if scene == "friends" {
         ui.invoke_browse(1);
     }
@@ -427,6 +446,13 @@ pub(crate) fn stage(
         "members" | "member-profile" | "group-header" | "room-header"
     ) {
         desktop.update(|d| d.select(ui, 1));
+    }
+    if scene == "run-review" {
+        desktop.update(|d| {
+            if let Some(index) = d.state.chat_order.iter().position(|id| id.0 == "weekend") {
+                d.select(ui, index);
+            }
+        });
     }
     if scene.starts_with("members") || scene.starts_with("member-profile") {
         ui.invoke_open_members();

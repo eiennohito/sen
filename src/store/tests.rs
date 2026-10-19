@@ -49,6 +49,7 @@ fn pending(s: &mut Store, seq: u32) -> Key {
         seq,
         Content::text("pending"),
         100,
+        None,
     )
     .unwrap()
     .0
@@ -446,13 +447,28 @@ fn unread_read_markers_drafts_preferences_and_account() {
     s.mark_read(&chat(), id(3)).unwrap();
     assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 7);
     let d = Draft {
+        reply: Some(ReplyReference {
+            message_id: "42".into(),
+            service_code: Some(1),
+        }),
         text: "hello".into(),
         cursor: 3,
         anchor: 0,
         updated: 99,
     };
     s.save_draft(&chat(), &d).unwrap();
-    assert_eq!(s.load_draft(&chat()).unwrap(), Some(d));
+    assert_eq!(s.load_draft(&chat()).unwrap(), Some(d.clone()));
+    let (key, _) = s
+        .insert_pending(
+            &chat(),
+            LocalId("reply-pending".into()),
+            1234,
+            Content::text("reply"),
+            100,
+            d.reply.clone(),
+        )
+        .unwrap();
+    assert_eq!(s.message(key).unwrap().reply.as_deref(), d.reply.as_ref());
     s.clear_draft(&chat()).unwrap();
     assert!(s.load_draft(&chat()).unwrap().is_none());
     s.set_account(
@@ -507,6 +523,7 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
         s.save_draft(
             &chat(),
             &Draft {
+                reply: None,
                 text: "draft".into(),
                 cursor: 2,
                 anchor: 0,
@@ -564,11 +581,11 @@ fn newer_schema_is_refused_without_migration() {
     let dir = TempDir::new();
     {
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 6).unwrap();
+        s.conn.pragma_update(None, "user_version", 7).unwrap();
     }
     assert!(matches!(
         Store::open(&dir.0),
-        Err(StoreError::NewerSchema(6))
+        Err(StoreError::NewerSchema(7))
     ));
 }
 
@@ -611,6 +628,7 @@ fn pending_between_confirmed_rows_does_not_hide_gap() {
         1,
         Content::text("pending"),
         20,
+        None,
     )
     .unwrap();
     s.apply_live(&chat(), &input(30), false, None).unwrap();
@@ -633,7 +651,8 @@ fn signed_revision_first_content_and_duplicate_requests() {
             LocalId("different".into()),
             1,
             Content::text("other"),
-            5
+            5,
+            None
         )
         .is_err()
     );
@@ -785,6 +804,7 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
                 seq,
                 item.content(),
                 100,
+                None,
             )
             .unwrap();
         match delivery {

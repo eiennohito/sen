@@ -4,7 +4,7 @@ export struct RichRun { text: string, break-before: bool, url: string, link-star
 export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
 export struct LinkRow { label: string, url: string }
 export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, draft: bool, draft-preview: string, failed: bool, muted: bool, outgoing-preview: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, activity: string, time: string, avatar: image, avatar-key: string }
-export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, group: bool, avatar: image, avatar-key: string }
+export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, status-runs: [RichRun], group: bool, avatar: image, avatar-key: string }
 export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
     uploading: bool, upload-progress: float, file-missing: bool, local-media: bool,
@@ -12,11 +12,11 @@ export struct MessageRow {
     can-unsend: bool,
     file-failed: bool, file-failure: string, file-error: string, file-retryable: bool,
     skip-badge: bool, has-inline-emoji: bool, rich-fallback: bool,
-    rich-runs: [RichRun], reply-id: string, reply-sender: string, reply-preview: string, detail: string,
+    rich-runs: [RichRun], reply-id: string, reply-sender: string, reply-preview: string, reply-sender-id: string, reply-image-key: string, reply-picture: image, reply-has-picture: bool, detail: string,
     kind: MessageKind, links: [LinkRow], accessible-label: string,
     id: string, delivered-time: string, sticker: bool, photo: bool, sort-key: string, body: string, time: string, outgoing: bool,
     sender-id: string, sender-name: string, sender-initial: string, sender-key: string, sender-avatar: image, has-sender-avatar: bool,
-    group-start: bool, day-label: string, clock: string,
+    run-position: string, day-label: string, clock: string,
     image-key: string, picture: image, has-picture: bool, image-failed: bool, image-failure: string, image-error: string, image-retryable: bool,
     delivery: string, delivery-detail: string, recoverable: bool, reactions: [ReactionRow],
 }

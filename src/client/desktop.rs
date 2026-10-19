@@ -333,7 +333,9 @@ impl Client {
         let response = self.talk("getContactsV2", json!([{"targetUserMids":[mid]}, 2]))?;
         let contact = &response["contacts"][mid]["contact"];
         let member = member_identity(mid, contact, &self.my_mid);
-        ensure!(member.resolved, "unresolved contact");
+        if !member.resolved {
+            return Err(Error::Decode.into());
+        }
         Ok(member.contact)
     }
     pub fn profile_notice(&mut self, mid: &str) -> Result<Value> {
@@ -692,14 +694,22 @@ impl Client {
         }
         Ok(())
     }
-    pub fn send_sticker(&mut self, to: &str, sticker: &Content, seq: u32) -> Result<Message> {
+    pub fn send_sticker(
+        &mut self,
+        to: &str,
+        sticker: &Content,
+        seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
+    ) -> Result<Message> {
         let Content::Sticker { pkg, id, ver, .. } = sticker else {
             return Err(SendFailure::Refused.into());
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as i64;
-        let result = self.talk("sendMessage", json!([seq, {"from":self.my_mid,"to":to,"toType":if is_user(to){0}else if to.starts_with(['C','c']){2}else{1},"id":format!("{now:015}"),"createdTime":now,"sessionId":0,"contentType":7,"contentMetadata":{"STKPKGID":pkg,"STKID":id,"STKVER":ver.as_deref().unwrap_or("1")},"hasContent":true}]))?;
+        let mut args = json!([seq, {"from":self.my_mid,"to":to,"toType":if is_user(to){0}else if to.starts_with(['C','c']){2}else{1},"id":format!("{now:015}"),"createdTime":now,"sessionId":0,"contentType":7,"contentMetadata":{"STKPKGID":pkg,"STKID":id,"STKVER":ver.as_deref().unwrap_or("1")},"hasContent":true}]);
+        attach_reply(&mut args[1], reply);
+        let result = self.talk("sendMessage", args)?;
         self.message(&result)
     }
     pub fn create_chat(
@@ -786,6 +796,7 @@ impl Client {
         to: &str,
         text: &str,
         request_seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
     ) -> Result<Message> {
         ensure!(
             request_seq > 0 && request_seq <= 0x7fff_ffff,
@@ -794,7 +805,7 @@ impl Client {
         if text.trim().is_empty() || text.len() > 10_000 {
             return Err(SendFailure::Refused.into());
         }
-        self.send_encrypted(to, 0, &json!({"text":text}), &json!({}), request_seq)
+        self.send_encrypted(to, 0, &json!({"text":text}), &json!({}), request_seq, reply)
     }
     fn send_encrypted(
         &mut self,
@@ -803,6 +814,7 @@ impl Client {
         payload: &Value,
         metadata: &Value,
         seq: u32,
+        reply: Option<&crate::store::ReplyReference>,
     ) -> Result<Message> {
         let send = |client: &mut Self| -> Result<Value> {
             let mut message = client.encrypted_payload(to, content_type, payload)?;
@@ -815,6 +827,7 @@ impl Client {
             for (key, value) in metadata.as_object().context("message metadata")? {
                 message["contentMetadata"][key] = value.clone();
             }
+            attach_reply(&mut message, reply);
             client.talk("sendMessage", json!([seq, message]))
         };
         let result = match send(self) {
@@ -1221,4 +1234,12 @@ fn load_members(
             .collect(),
         failed,
     ))
+}
+
+fn attach_reply(message: &mut Value, reply: Option<&crate::store::ReplyReference>) {
+    if let Some(reply) = reply {
+        message["relatedMessageId"] = json!(reply.message_id);
+        message["messageRelationType"] = json!(3);
+        message["relatedMessageServiceCode"] = json!(1);
+    }
 }

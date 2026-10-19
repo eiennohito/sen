@@ -71,7 +71,7 @@ impl Store {
     }
     fn initialize(mut conn: Connection) -> Result<Self> {
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 5 {
+        if version > 6 {
             return Err(StoreError::NewerSchema(version));
         }
         conn.execute_batch(
@@ -105,6 +105,9 @@ impl Store {
             tx.execute_batch(include_str!("store/004.sql"))?;
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
+        }
+        if version < 6 {
+            conn.execute_batch("BEGIN; ALTER TABLE draft ADD COLUMN reply_json TEXT NOT NULL DEFAULT 'null'; ALTER TABLE contact ADD COLUMN status_metadata TEXT NOT NULL DEFAULT '{}'; PRAGMA user_version=6; COMMIT;")?;
         }
         conn.execute_batch("CREATE TABLE IF NOT EXISTS sticker_packages (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);")?;
         conn.execute_batch("CREATE INDEX IF NOT EXISTS message_pending_chat ON message(chat_id,delivery) WHERE server_id IS NULL;
@@ -184,8 +187,8 @@ impl Store {
             let chat = ChatId(chat?);
             let draft = self.load_draft(&chat)?.unwrap();
             ensure_chat(&tx, &chat)?;
-            tx.execute("INSERT OR REPLACE INTO draft(chat_id,text,cursor,updated,anchor) VALUES(?,?,?,?,?)",
-                params![chat.0,draft.text,draft.cursor as i64,draft.updated,draft.anchor as i64])?;
+            tx.execute("INSERT OR REPLACE INTO draft(chat_id,text,cursor,updated,anchor,reply_json) VALUES(?,?,?,?,?,?)",
+                params![chat.0,draft.text,draft.cursor as i64,draft.updated,draft.anchor as i64,serde_json::to_string(&draft.reply)?])?;
         }
         let mut keys = Vec::new();
         for mut row in self.all_pending()? {

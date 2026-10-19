@@ -54,6 +54,9 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
             let sent = sent.clone();
             steps.push(("sendMessage", Box::new(move |args| {
                 assert_eq!(args[0], 7);
+                assert_eq!(args[1]["relatedMessageId"], "original");
+                assert_eq!(args[1]["messageRelationType"], 3);
+                assert_eq!(args[1]["relatedMessageServiceCode"], 1);
                 assert_eq!(decode(args[1]["chunks"][4].as_str().unwrap()).unwrap(), (id as u32).to_be_bytes());
                 sent.lock().unwrap().push(args[1].clone());
                 if id == 42 {
@@ -66,7 +69,15 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
         let (mut transport, worker) = server_responses(steps);
         transport.client_version = crate::test_support::FIXTURE_VERSION.into();
         client.api.http = transport;
-        let result = client.send_text_with_request("upeer", "hello", 7);
+        let result = client.send_text_with_request(
+            "upeer",
+            "hello",
+            7,
+            Some(&crate::store::ReplyReference {
+                message_id: "original".into(),
+                service_code: Some(1),
+            }),
+        );
         if code == 83 {
             let error = result.err().expect("stale sender key accepted");
             assert!(matches!(
@@ -100,6 +111,59 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
             );
         }
     }
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn void_calls_accept_gateway_ok_without_data_and_empty_success() -> Result<()> {
+    let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
+    let api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
+    let (mut client, root) = client(api);
+    let (transport, server) = server_responses(vec![
+        (
+            "sendChatChecked",
+            Box::new(|args| {
+                assert_eq!(args, json!([7, "chat", "123", 0]));
+                (200, json!({"message":"OK"}))
+            }),
+        ),
+        (
+            "react",
+            Box::new(|args| {
+                assert_eq!(
+                    args,
+                    json!([{"reqSeq":8,"messageId":"123","reactionType":{"predefinedReactionType":3}}])
+                );
+                (204, Value::Null)
+            }),
+        ),
+        (
+            "cancelReaction",
+            Box::new(|args| {
+                assert_eq!(args, json!([{"reqSeq":9,"messageId":"123"}]));
+                (200, json!({"message":"OK"}))
+            }),
+        ),
+        (
+            "react",
+            Box::new(|_| (200, json!({"message":"ERROR","code":5}))),
+        ),
+        ("getProfile", Box::new(|_| (200, Value::Null))),
+    ]);
+    client.api.http = transport;
+    client.mark_read("chat", "123", 7)?;
+    client.react("123", Some(3), 8)?;
+    client.react("123", None, 9)?;
+    assert!(matches!(
+        error::classify(&client.react("123", Some(3), 10).unwrap_err()),
+        Error::Server(5)
+    ));
+    let error = client.api.profile("synthetic").unwrap_err();
+    assert!(
+        matches!(error.downcast_ref::<Error>(), Some(Error::ResponseDecode { method, status: 200, content_type, body_len: 0 }) if method == "getProfile" && content_type.is_empty())
+    );
+    server.join().unwrap();
     fs::remove_dir_all(root)?;
     Ok(())
 }

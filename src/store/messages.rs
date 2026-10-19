@@ -41,7 +41,7 @@ pub(super) fn select_rows(
         .query_map(args, decode)?
         .collect::<std::result::Result<Vec<_>, _>>()?)
 }
-fn parse<T: serde::de::DeserializeOwned>(
+pub(super) fn parse<T: serde::de::DeserializeOwned>(
     r: &rusqlite::Row<'_>,
     index: usize,
 ) -> rusqlite::Result<T> {
@@ -430,11 +430,13 @@ impl Store {
         request_seq: u32,
         body: Content,
         now_ms: i64,
+        reply: Option<ReplyReference>,
     ) -> Result<(Key, Changes)> {
         let mut key = Key(0);
         let c = self.mutate(|tx, c| {
             let mut row = insert(tx, chat, Some(&local_id), Some(request_seq), now_ms)?;
             row.body = body;
+            row.reply = reply.map(Box::new);
             save(tx, &row)?;
             key = row.key;
             c.messages_upserted.insert(key);

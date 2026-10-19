@@ -123,6 +123,7 @@ impl Client {
             &json!({"keyMaterial":uploaded["keyMaterial"], "fileName":uploaded["fileName"]}),
             &uploaded["contentMetadata"],
             seq,
+            None,
         )
     }
 }

@@ -1,6 +1,31 @@
 use crate::*;
 
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
+    global_callback!(ui, actions, on_reply, |ui, d, id| {
+        if let Ok(key) = id.parse::<i64>()
+            && let Some(message) = d.state.messages.get(&Key(key))
+            && let Some(server) = &message.server_id
+        {
+            d.state.composer_reply = Some(line::store::ReplyReference {
+                message_id: server.0.clone(),
+                service_code: Some(1),
+            });
+            d.capture_draft(&ui);
+            d.render(&ui);
+            let weak = ui.as_weak();
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.invoke_focus_composer();
+                }
+            });
+        }
+    });
+    global_callback!(ui, actions, on_cancel_reply, |ui, d| {
+        d.state.composer_reply = None;
+        d.capture_draft(&ui);
+        d.render(&ui);
+        ui.invoke_focus_composer();
+    });
     global_callback!(ui, actions, on_react, |ui, d, id, kind| {
         if let Ok(key) = id.parse() {
             ui.global::<State>().set_reaction_error_id("".into());
