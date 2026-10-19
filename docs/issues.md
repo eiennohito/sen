@@ -16,6 +16,7 @@ merge. "Branch" means the work exists but is not merged yet.
 | 38 | Clicking a profile picture opens the viewer with the small avatar instead of the original full-resolution image (circled avatars themselves are fine) | user | investigating |
 | 39 | React/reply button positioning on messages looks wrong | user | investigating |
 | 41 | Unicode emoji broken in the current build (chat names and messages); before that they drew as black outline glyphs, never in colour; LINE emoji images work | user | investigating: bisect the regression; find why the colour emoji font isn't used by the software renderer |
+| 42 | Chat list: the date ("Yesterday" etc.) takes too much width from the chat name | user | next UI batch: name has priority and elides; date sized to its text, compact form on narrow rows |
 | 40 | Photos ignore EXIF orientation: a preview and its original can show different orientations (the EXIF one is correct) | user | fix: apply the decoder's EXIF orientation when decoding every photo (thumbnail, preview, original, viewer, export unchanged bytes) |
 | 15 | God objects: `State` (213 properties), `AppWindow` with 85 forwarding aliases | user | R4, not started. The demo reset copies ~180 State properties by hand; R4 replaces it with a per-feature-global reset |
 | 16 | Generated Slint Rust is 10 MB | user | R4: interpreter in dev builds, compiled releases cut by source rules |
