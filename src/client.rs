@@ -7,14 +7,13 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
 };
-pub use error::Error;
+
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    fmt,
     fs::{self, OpenOptions},
     io::Write,
-    os::unix::fs::{OpenOptionsExt, PermissionsExt},
+    os::unix::fs::OpenOptionsExt,
     path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -22,21 +21,20 @@ use std::{
 const BASE: &str = "https://line-chrome-gw.line-apps.com";
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 
-#[cfg(feature = "harness")]
-pub use chat::benchmark_history;
-mod chat;
 pub mod desktop;
+mod e2ee;
 pub mod http;
 pub mod pairing;
 mod qr;
-use qr::png as qr_png;
+#[cfg(feature = "harness")]
+pub use e2ee::benchmark_history;
 
 pub(crate) fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
-    fs::create_dir_all(parent)?;
+    private_directory(parent)?;
     let name = path
         .file_name()
         .context("output filename")?
@@ -58,27 +56,68 @@ pub(crate) fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     }
     result
 }
-#[derive(Debug)]
-pub(crate) struct RpcError {
-    pub(crate) gateway: i64,
-    pub(crate) method: String,
-    pub(crate) http: u16,
-    pub(crate) code: i64,
-    pub(crate) status: i64,
-}
-impl fmt::Display for RpcError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}: HTTP {}, LINE code {}, status {}",
-            self.method, self.http, self.code, self.status
-        )
-    }
-}
-impl std::error::Error for RpcError {}
+use error::RpcError;
 thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<crate::client::http::CancelToken>>> = const { std::cell::RefCell::new(None) }; }
 fn set_request_cancel(cancel: std::sync::Arc<crate::client::http::CancelToken>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
+}
+
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct Session {
+    #[serde(default)]
+    format: u32,
+    token_v3_issue_result: Tokens,
+    #[serde(default)]
+    certificate: Value,
+    #[serde(default)]
+    login_metadata: Value,
+    e2ee_keys: Vec<SessionKey>,
+    profile: Profile,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Profile {
+    mid: String,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct Tokens {
+    #[serde(rename = "accessToken")]
+    access_token: String,
+    #[serde(
+        rename = "refreshToken",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    refresh_token: Option<String>,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct SessionKey {
+    id: u64,
+    #[serde(default)]
+    version: u32,
+    public_key: String,
+    exported_key: String,
+    #[serde(flatten)]
+    rest: serde_json::Map<String, Value>,
+}
+
+pub(crate) fn private_directory(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, PermissionsExt};
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::DirBuilder::new().mode(0o700).create(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && path.is_dir() => {}
+        Err(error) => return Err(error.into()),
+    }
+    fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
+    Ok(())
 }
 
 pub(crate) struct Api {
@@ -86,9 +125,9 @@ pub(crate) struct Api {
     wasm: Vec<u8>,
     http: http::Transport,
     key_cache: std::collections::HashMap<String, Value>,
-    channels: std::collections::HashMap<chat::Channel, (u32, u64)>,
+    channels: std::collections::HashMap<e2ee::Channel, (u32, u64)>,
     channel_tick: u64,
-    state: Value,
+    state: Session,
     session_path: Option<PathBuf>,
     stream_access: std::sync::Arc<std::sync::RwLock<String>>,
     signing_key: Option<(String, SigningKey)>,
@@ -125,7 +164,7 @@ impl Api {
         Ok(())
     }
 
-    #[cfg(any(test, feature = "harness"))]
+    #[cfg(test)]
     fn new(wasm: &[u8], client_version: &str) -> Result<Self> {
         Self::with_runtime(Runtime::new(wasm, client_version)?, wasm, client_version)
     }
@@ -139,18 +178,18 @@ impl Api {
             key_cache: Default::default(),
             channels: Default::default(),
             channel_tick: 0,
-            state: Value::Null,
+            state: Session::default(),
             session_path: None,
             stream_access: Default::default(),
         })
     }
-    fn cached_channel(&mut self, key: &chat::Channel) -> Option<u32> {
+    fn cached_channel(&mut self, key: &e2ee::Channel) -> Option<u32> {
         self.channel_tick += 1;
         let entry = self.channels.get_mut(key)?;
         entry.1 = self.channel_tick;
         Some(entry.0)
     }
-    fn cache_channel(&mut self, key: chat::Channel, channel: u32) -> Result<()> {
+    fn cache_channel(&mut self, key: e2ee::Channel, channel: u32) -> Result<()> {
         const MAX_CHANNELS: usize = 64;
         if self.channels.len() >= MAX_CHANNELS {
             let oldest = self
@@ -194,7 +233,7 @@ impl Api {
         if poll_seconds > 0 {
             headers.push(("X-LST", millis.as_str()));
         }
-        let (http, content_type, bytes) = self.http.request(
+        let (http, _, bytes) = self.http.request(
             path,
             &body,
             &headers,
@@ -204,7 +243,7 @@ impl Api {
                 30
             }),
         )?;
-        error::decode_response(path, http, &content_type, &bytes)
+        decode_response(path, http, &bytes)
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {
         let service = if poll_seconds > 0 {
@@ -227,6 +266,91 @@ impl Api {
             "",
             0,
         )
+    }
+    pub(super) fn call(
+        &mut self,
+        path: &str,
+        args: &serde_json::Value,
+        session: &str,
+        poll_seconds: u64,
+    ) -> anyhow::Result<serde_json::Value> {
+        let token = access(&self.state)
+            .map_err(|_| error::Failure::SignedOut(error::SignOutReason::NoSession))?
+            .to_owned();
+        let result = self.call_once(path, args, &token, session, poll_seconds);
+        if !error::needs_refresh(&result) {
+            return result;
+        }
+        self.refresh_session()?;
+        let token = access(&self.state)?.to_owned();
+        let result = self.call_once(path, args, &token, session, poll_seconds);
+        if error::needs_refresh(&result) {
+            Err(error::Failure::SignedOut(error::SignOutReason::TokenRefresh).into())
+        } else {
+            result
+        }
+    }
+    pub(super) fn refresh_session(&mut self) -> anyhow::Result<()> {
+        let token = self
+            .state
+            .token_v3_issue_result
+            .refresh_token
+            .as_deref()
+            .filter(|token| !token.is_empty())
+            .ok_or(error::Failure::SignedOut(
+                error::SignOutReason::TokenRefresh,
+            ))?
+            .to_owned();
+        let access = access(&self.state)?.to_owned();
+        let args = serde_json::json!({"refreshToken": token});
+        let result = self.call_once("/api/auth/tokenRefresh", &args, &access, "", 0);
+        let result = if result
+            .as_ref()
+            .err()
+            .and_then(|error| error.downcast_ref::<RpcError>())
+            .is_some_and(RpcError::retry_refresh)
+        {
+            self.call_once("/api/auth/tokenRefresh", &args, &access, "", 0)
+        } else {
+            result
+        };
+        let value = result.map_err(|error| {
+            if error
+                .downcast_ref::<RpcError>()
+                .is_some_and(RpcError::refresh_rejected)
+            {
+                anyhow::Error::new(error::Failure::SignedOut(
+                    error::SignOutReason::TokenRefresh,
+                ))
+            } else {
+                error
+            }
+        })?;
+        let access = value["accessToken"]
+            .as_str()
+            .filter(|token| !token.is_empty())
+            .ok_or(error::Failure::Bug("refresh missing access token".into()))?
+            .to_owned();
+        self.state.token_v3_issue_result.access_token = access.clone();
+        if let Some(refresh) = value["refreshToken"].as_str() {
+            self.state.token_v3_issue_result.refresh_token = Some(refresh.into());
+        }
+        for (name, value) in value
+            .as_object()
+            .ok_or(error::Failure::Bug("refresh token response".into()))?
+        {
+            if name != "accessToken" && name != "refreshToken" {
+                self.state
+                    .token_v3_issue_result
+                    .rest
+                    .insert(name.clone(), value.clone());
+            }
+        }
+        if let Some(path) = &self.session_path {
+            save_state(path, &self.state)?;
+        }
+        *self.stream_access.write().unwrap() = access;
+        Ok(())
     }
 }
 fn bytes_method(rt: &mut Runtime, call: Call, ptr: u32, args: &[u64]) -> Result<Vec<u8>> {
@@ -274,10 +398,10 @@ fn callback(base: &str, public: &[u8]) -> Result<String> {
         percent_encode(&STANDARD.encode(public))
     ))
 }
-fn save_state(path: &Path, state: &Value) -> Result<()> {
-    crate::credentials::save(path, state)
+fn save_state(path: &Path, state: &Session) -> Result<()> {
+    crate::credentials::save(path, &serde_json::to_value(state)?)
 }
-fn unwrap_keys(rt: &mut Runtime, key: u32, meta: &Value) -> Result<Vec<Value>> {
+fn unwrap_keys(rt: &mut Runtime, key: u32, meta: &Value) -> Result<Vec<SessionKey>> {
     ensure!(
         meta["errorCode"].is_null() || meta["errorCode"].as_str() == Some("SUCCESS"),
         "phone returned an E2EE key-transfer error"
@@ -307,58 +431,83 @@ fn unwrap_keys(rt: &mut Runtime, key: u32, meta: &Value) -> Result<Vec<Value>> {
         let id = rt
             .method(Call::E2EEKeyGetKeyId, ptr, &[])
             .context("key ID")?;
-        let version = rt
-            .method(Call::E2EEKeyGetVersion, ptr, &[])
-            .context("key version")?;
         let public = bytes_method(rt, Call::E2EEKeyGetPublicKey, ptr, &[])?;
         let exported = bytes_method(rt, Call::E2EEKeyExportKey, ptr, &[])?;
-        let h = rt.bytes(&exported);
-        let loaded = rt
-            .static_call(Call::E2EEKeyLoadKey, &[h])
-            .context("reload transferred key")?;
-        rt.release(h)?;
-        let reloaded = bytes_method(rt, Call::E2EEKeyGetPublicKey, loaded, &[])?;
-        ensure!(
-            public.len() == 32 && public == reloaded,
-            "E2EE export/import public-key mismatch"
-        );
-        rt.destroy("E2EEKey", loaded)?;
-        keys.push(json!({"id":id,"version":version,"public_key":STANDARD.encode(public),"exported_key":STANDARD.encode(exported)}));
+        keys.push(SessionKey {
+            id: id.into(),
+            version: rt.method(Call::E2EEKeyGetVersion, ptr, &[])?,
+            rest: Default::default(),
+            public_key: STANDARD.encode(public),
+            exported_key: STANDARD.encode(exported),
+        });
     }
     rt.destroy("E2EEKeychain", chain)?;
     rt.destroy("E2EEChannel", channel)?;
     Ok(keys)
 }
-fn access(state: &Value) -> Result<&str> {
-    let token = required(&state["token_v3_issue_result"], "accessToken")?;
+fn access(state: &Session) -> Result<&str> {
     ensure!(
-        !token.is_empty(),
-        error::SavedSessionFailure::Corrupt.error()
+        !state.token_v3_issue_result.access_token.is_empty(),
+        error::SignInFailure::SavedSession
     );
-    Ok(token)
+    Ok(&state.token_v3_issue_result.access_token)
 }
-fn validate_keys(api: &mut Api, state: &Value) -> Result<usize> {
-    let keys = state["e2ee_keys"]
-        .as_array()
-        .context("missing saved E2EE keys")?;
-    ensure!(!keys.is_empty(), "no saved E2EE keys");
-    for key in keys {
-        let ptr = chat::own_key(
-            api,
-            state,
-            key["id"].as_u64().context("missing own key ID")?,
-        )?;
+fn validate_keys(api: &mut Api, state: &Session) -> Result<()> {
+    ensure!(!state.e2ee_keys.is_empty(), "no saved E2EE keys");
+    for key in &state.e2ee_keys {
+        let ptr = e2ee::own_key(api, state, key.id)?;
         let public = bytes_method(&mut api.rt, Call::E2EEKeyGetPublicKey, ptr, &[])?;
         ensure!(
-            public == decode(required(key, "public_key")?)?,
+            public.len() == 32 && public == decode(&key.public_key)?,
             "restored key mismatch"
         );
     }
-    Ok(keys.len())
+    Ok(())
 }
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn saved_session_keeps_the_current_format_and_all_fields() -> Result<()> {
+        let original = json!({
+            "format":1,"token_v3_issue_result":{"accessToken":"fake-access","refreshToken":"fake-refresh","expiresIn":123,"extra":{"nested":[true,null]}},
+            "certificate":"fake-certificate","login_metadata":{"publicKey":"fake","other":[1,2]},
+            "e2ee_keys":[{"id":42,"version":1,"public_key":"fake-public","exported_key":"fake-export","extra":false}],
+            "profile":{"mid":"ufake","displayName":"Fake","nested":{"x":1}},"other":[null,"extra"]
+        });
+        let loaded: Session = serde_json::from_value(original.clone())?;
+        assert_eq!(loaded.profile.mid, "ufake");
+        let saved = serde_json::to_value(&loaded)?;
+        let reloaded: Session = serde_json::from_value(saved.clone())?;
+        assert_eq!(saved, original);
+        assert_eq!(serde_json::to_value(reloaded)?, original);
+        Ok(())
+    }
+    #[test]
+    fn private_directory_forces_only_the_final_directory() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("line-private-dir-{}", std::process::id()));
+        fs::create_dir_all(&root)?;
+        let parent = root.join("ancestor");
+        let final_dir = parent.join("private");
+        private_directory(&final_dir)?;
+        assert_eq!(
+            fs::metadata(&final_dir)?.permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&parent)?.permissions().mode() & 0o777,
+            fs::metadata(&root)?.permissions().mode() & 0o777
+        );
+        fs::set_permissions(&final_dir, fs::Permissions::from_mode(0o755))?;
+        private_directory(&final_dir)?;
+        assert_eq!(
+            fs::metadata(&final_dir)?.permissions().mode() & 0o777,
+            0o700
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
     #[test]
     fn qr_callback_encodes_public_key_as_query_parameter() {
         let url = callback("line://au/q/test?session=abc", &[0xfb; 32]).unwrap();
@@ -410,4 +559,57 @@ pub fn sign(rt: &mut Runtime, key: &SigningKey, path: &str, body: &str) -> Resul
     let out = rt.method(Call::HmacDigest, key.hmac, &[msg])?;
     rt.release(msg)?;
     Ok(STANDARD.encode(rt.output(out)?))
+}
+
+pub(crate) fn decode_response(
+    path: &str,
+    http: u16,
+    bytes: &[u8],
+) -> anyhow::Result<serde_json::Value> {
+    let response: serde_json::Value = match serde_json::from_slice(bytes) {
+        Ok(response) => response,
+        Err(_) if http != 200 => {
+            return Err(RpcError {
+                gateway: 0,
+                method: path.rsplit('/').next().unwrap_or("RPC").into(),
+                http,
+                code: 0,
+                status: 0,
+            }
+            .into());
+        }
+        Err(_) => {
+            return Err(error::Failure::Bug(format!(
+                "response decode failed: status={http} body-length={}",
+                bytes.len()
+            ))
+            .into());
+        }
+    };
+    if http == 200 && response["message"] == "OK" {
+        return Ok(response
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null));
+    }
+    let gateway = response["code"].as_i64().unwrap_or(if http == 200 {
+        error::UNKNOWN_GATEWAY
+    } else {
+        0
+    });
+    let code = if gateway == error::TALK_EXCEPTION {
+        response["data"]["code"]
+            .as_i64()
+            .ok_or(error::Failure::Bug("missing TalkException code".into()))?
+    } else {
+        0
+    };
+    Err(RpcError {
+        gateway,
+        method: path.rsplit('/').next().unwrap_or("RPC").into(),
+        http,
+        code,
+        status: response["data"]["statusCode"].as_i64().unwrap_or(0),
+    }
+    .into())
 }

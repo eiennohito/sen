@@ -244,7 +244,9 @@ fn failed_send_retry_discard_and_copy() {
     app.body_key("Hello! 日本語も使えます。");
     fake.fail_rpc(
         FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(Refusal::Gateway(13)),
+        Failure::Refused(line::client::error::Refusal::Server(
+            line::client::error::ServerRefusal::Gateway(13),
+        )),
     );
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
@@ -259,7 +261,9 @@ fn failed_send_retry_discard_and_copy() {
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
     fake.fail_rpc(
         FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(Refusal::Gateway(13)),
+        Failure::Refused(line::client::error::Refusal::Server(
+            line::client::error::ServerRefusal::Gateway(13),
+        )),
     );
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
@@ -280,7 +284,12 @@ fn unrelated_fetch_failure_does_not_block_send() {
     app.select("alice");
     app.body_key("Hello! 日本語も使えます。");
     assert!(app.state.submit().is_none());
-    fake.fail_rpc(FakeRpc::Friends, Failure::Refused(Refusal::Gateway(13)));
+    fake.fail_rpc(
+        FakeRpc::Friends,
+        Failure::Refused(line::client::error::Refusal::Server(
+            line::client::error::ServerRefusal::Gateway(13),
+        )),
+    );
     app.send(Intent::Friends);
     app.until(|s| {
         s.refresh_failures
@@ -372,7 +381,9 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
         (FakeRpc::Chats, Failure::Unanswered),
         (
             FakeRpc::Read(chat.clone()),
-            Failure::Refused(Refusal::Gateway(13)),
+            Failure::Refused(line::client::error::Refusal::Server(
+                line::client::error::ServerRefusal::Gateway(13),
+            )),
         ),
     ];
     for (rpc, error) in &failures {
@@ -629,7 +640,9 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
     let key = app.body_key("own confirmed");
     fake.fail_rpc(
         FakeRpc::Unsend(ServerId::new("11").unwrap()),
-        Failure::Refused(Refusal::Gateway(13)),
+        Failure::Refused(line::client::error::Refusal::Server(
+            line::client::error::ServerRefusal::Gateway(13),
+        )),
     );
     app.send(Intent::Unsend(key));
     let mut failures = 0;
@@ -1164,7 +1177,9 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
     let fake = FakeBackend::canned();
     fake.fail_rpc(
         FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(Refusal::Gateway(13)),
+        Failure::Refused(line::client::error::Refusal::Server(
+            line::client::error::ServerRefusal::Gateway(13),
+        )),
     );
     let (entered_tx, entered) = mpsc::channel();
     let (release, release_rx) = mpsc::channel();
@@ -1483,7 +1498,9 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
     );
     fake.fail_rpc(
         FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(Refusal::Gateway(13)),
+        Failure::Refused(line::client::error::Refusal::Server(
+            line::client::error::ServerRefusal::Gateway(13),
+        )),
     );
     let other = app.state.sticker_packages[1].stickers[0].clone();
     app.send(Intent::SendSticker {
@@ -1761,12 +1778,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
     let mut first = true;
     let worker = Worker::start_with(StoreLocation::Memory, move || {
         if std::mem::take(&mut first) {
-            return Err(
-                line::client::error::Error::SignIn(SignInFailure::CryptoModule(
-                    "/missing/crypto.wasm".into(),
-                ))
-                .into(),
-            );
+            return Err(SignInFailure::CryptoModule("/missing/crypto.wasm".into()).into());
         }
         started.send(()).unwrap();
         resume.recv().unwrap();
@@ -1885,9 +1897,9 @@ fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
 
 #[test]
 fn unusable_saved_session_allows_start_to_pair() {
-    use line::client::error::{SavedSessionFailure, SignInFailure};
+    use line::client::error::SignInFailure;
     let fake = FakeBackend::signed_out();
-    let reason = SignInFailure::SavedSession(SavedSessionFailure::Keys);
+    let reason = SignInFailure::SavedSession;
     fake.fail_open(Some(reason.clone()));
     let opener = fake.clone();
     let worker = Worker::start_with(StoreLocation::Memory, move || opener.open());
@@ -1966,7 +1978,9 @@ fn attachments_preserve_order_progress_and_retry_identity() {
     fake.configure(|s| s.upload_delay = Duration::from_millis(80));
     fake.fail_rpc(
         FakeRpc::Upload("Second.txt".into()),
-        Failure::Refused(Refusal::Gateway(13)),
+        Failure::Refused(line::client::error::Refusal::Server(
+            line::client::error::ServerRefusal::Gateway(13),
+        )),
     );
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();

@@ -269,7 +269,9 @@ fn statuses_keep_exact_classes_and_200_accepts_any_content_type() {
             let failure = crate::client::error::classify(&result.unwrap_err());
             assert_eq!(
                 failure,
-                crate::client::error::Failure::Refused(crate::client::error::Refusal::Http(status))
+                crate::client::error::Failure::Refused(crate::client::error::Refusal::Server(
+                    crate::client::error::ServerRefusal::Http(status)
+                ))
             );
         } else {
             assert_eq!(result.unwrap(), status);

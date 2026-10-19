@@ -1,6 +1,6 @@
 //! Synthetic data enters through the backend and follows the normal commit path.
 use crate::*;
-use line::backend::{Failure, FakeRpc, LiveOp, Op, Refusal};
+use line::backend::{Failure, FakeRpc, LiveOp, Op};
 
 pub(crate) struct Args {
     pub enabled: bool,
@@ -109,7 +109,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             ];
             fake.fail_rpc(
                 FakeRpc::Unsend(ServerId::new("6301").unwrap()),
-                Failure::Refused(line::client::error::Refusal::Gateway(13)),
+                Failure::Refused(line::client::error::Refusal::Server(
+                    line::client::error::ServerRefusal::Gateway(13),
+                )),
             );
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
         }
@@ -275,7 +277,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
         10 | 31 => {
             fake.fail_rpc(
                 FakeRpc::Send(chat.clone()),
-                Failure::Refused(Refusal::Gateway(13)),
+                Failure::Refused(line::client::error::Refusal::Server(
+                    line::client::error::ServerRefusal::Gateway(13),
+                )),
             );
             if kind == 10 {
                 d.sender.send(Intent::Send {
@@ -287,7 +291,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
         }
         30 => fake.fail_rpc(
             FakeRpc::Send(chat.clone()),
-            Failure::Refused(Refusal::Gateway(13)),
+            Failure::Refused(line::client::error::Refusal::Server(
+                line::client::error::ServerRefusal::Gateway(13),
+            )),
         ),
         17 => fake.offline(true),
         16 => fake.offline(false),
@@ -559,7 +565,12 @@ pub(crate) fn stage(
     {
         desktop.update(|d| {
             if let Some(chat) = d.state.selected.clone() {
-                fake.fail_rpc(FakeRpc::Send(chat), Failure::Refused(Refusal::Gateway(13)));
+                fake.fail_rpc(
+                    FakeRpc::Send(chat),
+                    Failure::Refused(line::client::error::Refusal::Server(
+                        line::client::error::ServerRefusal::Gateway(13),
+                    )),
+                );
             }
         });
         ui.set_draft("See you soon! 🐈".into());

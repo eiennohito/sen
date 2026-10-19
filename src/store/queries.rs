@@ -29,18 +29,10 @@ fn unread(row: &UnreadRow) -> u32 {
     let Some(local) = &row.local_read else {
         return row.server_unread;
     };
-    if row
-        .acknowledged
-        .as_ref()
-        .is_some_and(|ack| server_sort(local) <= server_sort(ack))
-    {
+    if row.acknowledged.as_ref().is_some_and(|ack| local <= ack) {
         return row.server_unread;
     }
-    if row
-        .newest
-        .as_ref()
-        .is_some_and(|newest| server_sort(local) >= server_sort(newest))
-    {
+    if row.newest.as_ref().is_some_and(|newest| local >= newest) {
         return 0;
     }
     row.server_unread.saturating_sub(row.covered)
@@ -54,7 +46,7 @@ fn decode_unread(
         server_unread: chat.server_unread,
         acknowledged: r.get(offset)?,
         local_read: chat.last_read_server_id.clone(),
-        newest: numeric_max(chat.last_message_id.clone(), r.get(offset + 1)?),
+        newest: max(chat.last_message_id.clone(), r.get(offset + 1)?),
         covered: r.get(offset + 2)?,
     })
 }
@@ -348,13 +340,13 @@ impl Store {
         self.mutate(|tx, c| {
             for input in list {
                 let old = chat_record(tx, &input.id)?;
-                let read = numeric_max(
+                let read = max(
                     old.as_ref().and_then(|r| r.last_read_server_id.clone()),
                     input.last_read_server_id.clone(),
                 );
 
-                let incoming_order = (input.last_message_ms, input.last_message_id.as_ref().map(server_sort));
-                let old_order = old.as_ref().map(|r| (r.last_message_ms, r.last_message_id.as_ref().map(server_sort)));
+                let incoming_order = (input.last_message_ms, input.last_message_id.as_ref());
+                let old_order = old.as_ref().map(|r| (r.last_message_ms, r.last_message_id.as_ref()));
                 let (last_id, last_time) = if old_order.is_some_and(|order| order > incoming_order)
                 {
                     let old = old.as_ref().expect("old metadata exists");
@@ -392,7 +384,7 @@ impl Store {
                         "SELECT read_acked_server_id FROM chat WHERE chat_id=?",
                         [&input.id.0], |r| r.get(0),
                     )?;
-                    let ack = numeric_max(old, Some(marker.clone())).unwrap();
+                    let ack = max(old, Some(marker.clone())).unwrap();
                     tx.execute(
                         "UPDATE chat SET read_acked_server_id=? WHERE chat_id=?",
                         params![ack, input.id.0],
@@ -435,7 +427,7 @@ impl Store {
                 )?
                 .map(ServerId::new)
                 .transpose()?;
-            let marker = numeric_max(old.clone(), Some(up_to)).expect("marker supplied");
+            let marker = max(old.clone(), Some(up_to)).expect("marker supplied");
             let record = chat_record(tx, chat)?.expect("chat exists");
             let newest: Option<ServerId> = tx
                 .query_row(
@@ -445,8 +437,8 @@ impl Store {
                     |r| r.get(0),
                 )
                 .optional()?;
-            let reached_newest = numeric_max(record.last_message_id, newest)
-                .is_some_and(|newest| server_sort(&marker) >= server_sort(&newest));
+            let reached_newest =
+                max(record.last_message_id, newest).is_some_and(|newest| marker >= newest);
             tx.execute(
                 "UPDATE chat SET last_read_server_id=?1,unread_stale=0,
                  server_unread=CASE WHEN ?2 THEN 0 ELSE server_unread END WHERE chat_id=?3",
@@ -730,7 +722,7 @@ impl Store {
                 [&chat.0],
                 |r| r.get(0),
             )?;
-            let marker = numeric_max(
+            let marker = max(
                 old.clone().map(ServerId::new).transpose()?,
                 Some(id.clone()),
             )
@@ -772,10 +764,7 @@ impl Store {
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows
             .into_iter()
-            .filter(|(_, local, ack)| {
-                ack.as_ref()
-                    .is_none_or(|ack| server_sort(local) > server_sort(ack))
-            })
+            .filter(|(_, local, ack)| ack.as_ref().is_none_or(|ack| local > ack))
             .map(|(chat, _, _)| ChatId(chat))
             .collect())
     }
@@ -793,12 +782,9 @@ pub(super) fn head_needs_refresh(conn: &Connection, chat: &ChatId) -> Result<boo
     .pop();
     let newer_hint = match (&record.last_message_id, record.last_message_ms, &confirmed) {
         (Some(id), Some(ts), Some(row)) => {
-            Cursor {
-                sort_ts: ts,
-                sort_id: server_sort(id),
-            } > row.sort
+            (ts, Some(id)) > (row.sort.sort_ts, row.server_id.as_ref())
         }
-        (Some(id), None, Some(row)) => server_sort(id) > row.sort.sort_id,
+        (Some(id), None, Some(row)) => Some(id) > row.server_id.as_ref(),
         (None, Some(ts), Some(row)) => ts > row.sort.sort_ts,
         (Some(_), _, None) | (_, Some(_), None) => true,
         _ => false,

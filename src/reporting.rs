@@ -33,17 +33,8 @@ fn chain(error: &(dyn Error + 'static)) -> String {
                 }
                 _ => "sqlite:operation".into(),
             }
-        } else if let Some(e) = e.downcast_ref::<crate::client::RpcError>() {
-            format!("rpc:http={}:code={}", e.http, e.code)
-        } else if let Some(e) = e.downcast_ref::<crate::client::error::Failure>() {
-            match e {
-                crate::client::error::Failure::Bug(label) => format!("client-bug:{label}"),
-                _ => e.to_string(),
-            }
-        } else if let Some(crate::client::error::Error::SignIn(reason)) =
-            e.downcast_ref::<crate::client::error::Error>()
-        {
-            format!("sign-in:{}", reason.kind())
+        } else if let Some(category) = crate::client::error::diagnostic(e) {
+            category
         } else if let Some(e) = e.downcast_ref::<crate::store::StoreError>() {
             match e {
                 crate::store::StoreError::Sql(cause) => {
@@ -86,9 +77,7 @@ mod tests {
         )));
         assert!(!output.contains("invariant"));
         assert!(!output.contains("private-message"));
-        let sign_in = crate::client::error::Error::SignIn(
-            crate::client::error::SignInFailure::CryptoModule("private-path".into()),
-        );
+        let sign_in = crate::client::error::SignInFailure::CryptoModule("private-path".into());
         assert_eq!(chain(&sign_in), "sign-in:crypto-module");
         assert_eq!(
             chain(&crate::client::error::Failure::Bug("decode".into())),

@@ -389,7 +389,7 @@ impl Desktop {
             }
             Delta::Connection(Connection::SignedOut { reason }) => {
                 ui.global::<State>()
-                    .set_session_cause(format!("Signed out: {reason}.").into());
+                    .set_session_cause(text::sign_out_reason(reason).into());
             }
             Delta::Pair(event) => {
                 use line::backend::PairEvent;

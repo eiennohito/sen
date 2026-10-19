@@ -1,5 +1,5 @@
 //! Locate the public crypto module of the newest installed LINE Chrome extension.
-use crate::client::error::{Error, SignInFailure};
+use crate::client::error::SignInFailure;
 use anyhow::{Context, Result};
 use std::{
     fs,
@@ -25,19 +25,22 @@ fn version(root: &Path) -> Result<(String, Vec<u32>)> {
             .collect::<std::result::Result<Vec<u32>, _>>()?;
         Ok((version.into(), numbers))
     };
-    load().context(Error::SignIn(SignInFailure::CryptoModule(path)))
+    load().context(SignInFailure::CryptoModule(path))
 }
 pub fn discover_in(config: &Path) -> Result<CryptoModule> {
     discover_candidates(config).map_err(|error| module_error(error, config))
 }
 fn module_error(error: anyhow::Error, path: &Path) -> anyhow::Error {
-    if error.downcast_ref::<Error>().is_some() {
+    if error.downcast_ref::<SignInFailure>().is_some() {
         error
     } else {
-        error.context(Error::SignIn(SignInFailure::CryptoModule(path.into())))
+        error.context(SignInFailure::CryptoModule(path.into()))
     }
 }
 fn discover_candidates(config: &Path) -> Result<CryptoModule> {
+    if !config.try_exists()? {
+        return Err(SignInFailure::ExtensionMissing.into());
+    }
     let mut candidates = Vec::new();
     let mut invalid = None;
     for browser in fs::read_dir(config)? {
@@ -75,15 +78,16 @@ fn discover_candidates(config: &Path) -> Result<CryptoModule> {
             }
         }
     }
-    let (_, root, version) = candidates.into_iter().max().ok_or_else(|| {
-        invalid.unwrap_or_else(|| Error::SignIn(SignInFailure::ExtensionMissing).into())
-    })?;
+    let (_, root, version) = candidates
+        .into_iter()
+        .max()
+        .ok_or_else(|| invalid.unwrap_or_else(|| SignInFailure::ExtensionMissing.into()))?;
     let wasm = root.join("static/js/ltsm.wasm");
     if !wasm.is_file() {
-        return Err(Error::SignIn(SignInFailure::CryptoChanged {
+        return Err(SignInFailure::CryptoChanged {
             version,
             missing: "static/js/ltsm.wasm".into(),
-        })
+        }
         .into());
     }
     Ok(CryptoModule { wasm, version })
@@ -118,9 +122,7 @@ impl CryptoModule {
             .map_err(|error| module_error(error, &self.wasm))
     }
     pub fn read(&self) -> Result<Vec<u8>> {
-        fs::read(&self.wasm).context(Error::SignIn(SignInFailure::CryptoModule(
-            self.wasm.clone(),
-        )))
+        fs::read(&self.wasm).context(SignInFailure::CryptoModule(self.wasm.clone()))
     }
 }
 #[cfg(test)]

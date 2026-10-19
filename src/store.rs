@@ -6,11 +6,12 @@ mod queries;
 mod tests;
 mod types;
 use rusqlite::{Connection, OptionalExtension, params};
+use std::cmp::max;
 use std::path::Path;
 use types::Result;
 pub use types::*;
 
-const SCHEMA_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 11;
 
 /// Sole-writer account store. Every mutation commits atomically before returning deltas.
 pub struct Store {
@@ -213,16 +214,6 @@ fn ensure_chat(tx: &Connection, chat: &ChatId) -> Result<()> {
 pub(crate) fn server_sort(id: &ServerId) -> String {
     format!("{:0>20}", id.as_str())
 }
-fn numeric_max(a: Option<ServerId>, b: Option<ServerId>) -> Option<ServerId> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(if server_sort(&a) >= server_sort(&b) {
-            a
-        } else {
-            b
-        }),
-        (a, b) => a.or(b),
-    }
-}
 
 impl Store {
     /// Operation and checkpoint form one durable commit, including non-message ops.
@@ -284,12 +275,8 @@ impl Store {
                     [&m.chat_id.0],
                     |r| r.get(0),
                 )?;
-                let marker = marker
-                    .map(ServerId::new)
-                    .transpose()?
-                    .map(|id| server_sort(&id));
-                let incoming = server_sort(&m.server_id);
-                if marker.is_none_or(|id| incoming > id) {
+                let marker = marker.map(ServerId::new).transpose()?;
+                if marker.is_none_or(|id| m.server_id > id) {
                     let c = self.increment_unread(&m.chat_id)?;
                     changes.chats_changed.extend(c.chats_changed);
                 }

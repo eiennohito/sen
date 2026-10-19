@@ -1,4 +1,5 @@
 use super::*;
+use std::os::unix::fs::PermissionsExt;
 use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
@@ -671,7 +672,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
     for asset in &assets {
         fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
         assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !media_retry(class, false))
+            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retry_read())
         );
         fetchers
             .shared
@@ -684,7 +685,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
             .at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
         fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
         assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !media_retry(class, false))
+            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retry_read())
         );
         assert!(!fetchers.retry(&asset.key()));
     }
@@ -708,8 +709,8 @@ fn retained_failures_never_follow_credentials_to_another_account() {
         "image".into(),
         Failed {
             class: Failure::Network,
-            retry: media_retry(Failure::Network, false),
-            automatic_retry: media_retry(Failure::Network, true),
+            retry: Failure::Network.retry_read(),
+            automatic_retry: Failure::Network.retry_automatically(),
             at: Instant::now(),
             retried: false,
             job: Job {
@@ -878,8 +879,8 @@ fn reconnect_backlog_keeps_normal_rank_and_visible_requests_can_evict_it() {
             asset.key(),
             Failed {
                 class: Failure::Network,
-                retry: media_retry(Failure::Network, false),
-                automatic_retry: media_retry(Failure::Network, true),
+                retry: Failure::Network.retry_read(),
+                automatic_retry: Failure::Network.retry_automatically(),
                 at: Instant::now(),
                 retried: false,
                 job: Job {

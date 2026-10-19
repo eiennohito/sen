@@ -1,5 +1,6 @@
 //! Account API shared by the desktop worker and read-only diagnostics.
-use super::{chat, *};
+use super::error::SignInFailure;
+use super::*;
 use std::{collections::HashMap, sync::Arc};
 
 pub mod assets;
@@ -81,24 +82,22 @@ impl Client {
     ) -> Result<Self> {
         let wasm = module.read()?;
         let mut api = Api::with_runtime(module.runtime(&wasm)?, &wasm, &module.version)?;
-        let state = crate::credentials::load(state_path)?;
-        validate_keys(&mut api, &state).context(super::error::SavedSessionFailure::Keys.error())?;
+        let state: Session = serde_json::from_value(crate::credentials::load(state_path)?)
+            .context(SignInFailure::SavedSession)?;
+        validate_keys(&mut api, &state).context(SignInFailure::SavedSession)?;
         Self::from_api(state_path, cache_root, state, api)
     }
     pub(crate) fn from_api(
         state_path: &Path,
         cache_root: &Path,
-        state: Value,
+        state: Session,
         mut api: Api,
     ) -> Result<Self> {
-        access(&state).context(super::error::SavedSessionFailure::Corrupt.error())?;
-        let my_mid = state["profile"]["mid"]
-            .as_str()
-            .filter(|mid| !mid.is_empty())
-            .context(super::error::SavedSessionFailure::Corrupt.error())?
-            .to_owned();
+        access(&state).context(SignInFailure::SavedSession)?;
+        ensure!(!state.profile.mid.is_empty(), SignInFailure::SavedSession);
+        let my_mid = state.profile.mid.clone();
         let cache = ImageCache::new(cache_root, &my_mid)
-            .context(super::error::SavedSessionFailure::ImageCache.error())?;
+            .context(SignInFailure::StateDirectory(cache_root.into()))?;
         api.stream_access = Arc::new(std::sync::RwLock::new(access(&state)?.into()));
         api.state = state;
         api.session_path = Some(state_path.into());
@@ -118,7 +117,7 @@ impl Client {
     }
 
     fn talk(&mut self, method: &str, args: Value) -> Result<Value> {
-        chat::talk(&mut self.api, method, args)
+        e2ee::talk(&mut self.api, method, args)
     }
 
     pub fn local_mid(&self) -> &str {
@@ -141,7 +140,7 @@ impl Client {
             )?));
         }
         *self.api.stream_access.write().unwrap() = access(&self.api.state)?.to_owned();
-        self.api.state["profile"] = profile.clone();
+        self.api.state.profile.mid = mid.into();
         save_state(
             self.api.session_path.as_ref().context("session path")?,
             &self.api.state,
@@ -470,7 +469,7 @@ impl Client {
         let mut undecryptable = false;
         if encrypted {
             let state = self.api.state.clone();
-            match chat::decrypt_body(&mut self.api, &state, &self.my_mid, raw) {
+            match e2ee::decrypt_body(&mut self.api, &state, &self.my_mid, raw) {
                 Ok(body) => merge_decrypted(&mut data, &body),
                 Err(error) if crate::client::error::transport_loss(&error) => {
                     return Err(error);
@@ -802,14 +801,7 @@ impl Client {
             client.talk("sendMessage", json!([seq, message]))
         };
         let result = match send(self) {
-            Err(error)
-                if matches!(
-                    super::error::classify(&error),
-                    super::error::Failure::Refused(super::error::Refusal::Talk(82 | 84))
-                ) =>
-            {
-                send(self)
-            }
+            Err(error) if super::error::classify(&error).key_rotated() => send(self),
             result => result,
         }?;
         self.confirmation(&result)
@@ -817,14 +809,14 @@ impl Client {
 
     fn encrypted_payload(&mut self, to: &str, content_type: u64, payload: &Value) -> Result<Value> {
         self.api.prepare_runtime()?;
-        let key = self.api.state["e2ee_keys"]
-            .as_array()
-            .context("missing own keys")?
+        let sender_id = self
+            .api
+            .state
+            .e2ee_keys
             .iter()
-            .max_by_key(|k| k["id"].as_u64().unwrap_or(0))
-            .context("missing own key")?
-            .clone();
-        let sender_id = key["id"].as_u64().context("missing own key ID")?;
+            .map(|key| key.id)
+            .max()
+            .context("missing own key")?;
         let (receiver_id, version) = if is_user(to) {
             let negotiation = self.talk("negotiateE2EEPublicKey", json!([to]))?;
             ensure!(
@@ -845,18 +837,18 @@ impl Client {
             (id, version)
         };
         let state = self.api.state.clone();
-        let ch = chat::message_channel(
+        let ch = e2ee::message_channel(
             &mut self.api,
             &state,
             &self.my_mid,
             &if is_user(to) {
-                chat::Channel::Direct {
+                e2ee::Channel::Direct {
                     mid: to.into(),
                     own_key_id: sender_id,
                     peer_key_id: receiver_id,
                 }
             } else {
-                chat::Channel::Group {
+                e2ee::Channel::Group {
                     mid: to.into(),
                     group_key_id: receiver_id,
                     sender: self.my_mid.clone(),
@@ -1176,5 +1168,34 @@ fn attach_reply(message: &mut Value, reply: Option<&crate::store::ReplyReference
         message["relatedMessageId"] = json!(reply.message_id);
         message["messageRelationType"] = json!(3);
         message["relatedMessageServiceCode"] = json!(reply.service_code.unwrap_or(1));
+    }
+}
+
+#[cfg(test)]
+mod ordering_tests {
+    use super::message_id_cmp;
+    #[test]
+    fn message_ids_have_a_total_order_even_for_invalid_ids() {
+        let ids = [
+            "",
+            "0",
+            "00",
+            "2",
+            "10",
+            "1a",
+            "abc",
+            "999999999999999999999999999",
+        ];
+        for a in ids {
+            for b in ids {
+                assert_eq!(message_id_cmp(a, b), message_id_cmp(b, a).reverse());
+                for c in ids {
+                    if message_id_cmp(a, b).is_le() && message_id_cmp(b, c).is_le() {
+                        assert!(message_id_cmp(a, c).is_le());
+                    }
+                }
+            }
+        }
+        assert!(message_id_cmp("2", "10").is_lt());
     }
 }

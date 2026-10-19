@@ -106,12 +106,7 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
             })
             .filter(|m| !m.outgoing && matches!(m.delivery, Delivery::Sent | Delivery::Read))
             .filter_map(|m| m.server_id.clone())
-            .max_by(|a, b| {
-                a.as_str()
-                    .len()
-                    .cmp(&b.as_str().len())
-                    .then(a.as_str().cmp(b.as_str()))
-            });
+            .max();
         let tail_visible = state
             .rows()
             .into_iter()
@@ -145,12 +140,7 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
                         })
                         .and_then(|m| m.server_id.clone()),
                 )
-                .max_by(|a, b| {
-                    a.as_str()
-                        .len()
-                        .cmp(&b.as_str().len())
-                        .then(a.as_str().cmp(b.as_str()))
-                })
+                .max()
         } else {
             exposed
         };

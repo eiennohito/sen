@@ -86,5 +86,13 @@ of the budget: slow tests cost development speed.
 | Over-validation and corner-case tests that slow development | poison recovery on 78 mutex unwraps |
 | Misleading names | `paths.json`, a "local data could not be saved" message for an auth failure |
 | Comments that narrate history instead of describing the code | "old square cache entries…", "legacy" wording |
+| Changing a persisted format without loading what the previous code wrote | typed `Session` renamed fields and would have signed the user out; a split error enum made stored failed sends unreadable |
+| "Consolidation" that moves code instead of removing it, and quietly changes wording | five label tables became one plus per-call-site variants; unnamed groups shown as "Unknown member" |
+
+Persisted data has two rules. The saved session survives every change:
+any change to its type comes with a test that loads JSON in the exact
+shape the previous code wrote and saves it back without losing a field.
+The local store may be discarded (bump the schema version), but never
+left half-readable.
 
 Add a row when a pass finds a new pattern.

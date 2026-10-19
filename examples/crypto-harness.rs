@@ -3,19 +3,16 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use line::test_support;
 use line::{
     client::{sign, signing_key},
     runtime::{Call, Runtime},
 };
-use sha2::{Digest, Sha256};
 use std::{env, fs, path::Path};
-use test_support::{FIXTURE_VERSION, fixture_path, read_fixture};
 
 const TO: &str = "u8ae764e8e69e6bd4ecdd9b6ea0c40fce";
 const FROM: &str = "uf1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6";
 
-fn replay_har(rt: &mut Runtime, path: &Path) -> Result<usize> {
+fn replay_har(rt: &mut Runtime, path: &Path, version: &str) -> Result<usize> {
     let har: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;
     let entries = har["log"]["entries"].as_array().context("HAR entries")?;
     let mut checked = 0;
@@ -41,13 +38,13 @@ fn replay_har(rt: &mut Runtime, path: &Path) -> Result<usize> {
             continue;
         };
         ensure!(
-            get("x-line-chrome-version").unwrap_or(FIXTURE_VERSION) == FIXTURE_VERSION,
+            get("x-line-chrome-version").unwrap_or(version) == version,
             "unsupported captured version"
         );
         let body = req["postData"]["text"].as_str().unwrap_or("");
         // At startup Chrome signs with an empty token argument even while the
         // browser sends a session cookie. Do not substitute the cookie here.
-        let key = signing_key(rt, get("x-line-access").unwrap_or(""), FIXTURE_VERSION)?;
+        let key = signing_key(rt, get("x-line-access").unwrap_or(""), version)?;
         let actual = sign(rt, &key, &path, body)?;
         key.destroy(rt)?;
         ensure!(actual == expected, "signature mismatch for {path}");
@@ -278,13 +275,13 @@ fn external_fixture(rt: &mut Runtime, mids: &Mids) -> Result<()> {
     rt.destroy("Curve25519Key", key)?;
     Ok(())
 }
-fn rejection_checks(wasm: &[u8]) -> Result<()> {
+fn rejection_checks(wasm: &[u8], version: &str) -> Result<()> {
     let f = fixture()?;
     for (label, mutate, sender_id) in [
         ("tampered authentication tag", true, 42),
         ("wrong sender key ID (AAD)", false, 43),
     ] {
-        let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
+        let mut rt = Runtime::new(wasm, version)?;
         let mids = Mids::synthetic(&mut rt)?;
         let (_, channel) = fixture_channel(&mut rt, &f)?;
         let mut ct = fixture_bytes(&f, "ciphertext")?;
@@ -313,8 +310,8 @@ fn rejection_checks(wasm: &[u8]) -> Result<()> {
     }
     Ok(())
 }
-fn export_test_key(wasm: &[u8], path: &str) -> Result<()> {
-    let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
+fn export_test_key(wasm: &[u8], path: &str, version: &str) -> Result<()> {
+    let mut rt = Runtime::new(wasm, version)?;
     let key = rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
     let public = method_bytes(&mut rt, Call::Curve25519KeyGetPublicKey, key, &[])?;
     let exported = method_bytes(&mut rt, Call::Curve25519KeyExportKey, key, &[])?;
@@ -327,10 +324,10 @@ fn export_test_key(wasm: &[u8], path: &str) -> Result<()> {
     println!("Wrote synthetic test key to {path}");
     Ok(())
 }
-fn benchmark(wasm: &[u8]) -> Result<()> {
+fn benchmark(wasm: &[u8], version: &str) -> Result<()> {
     use std::time::Instant;
     const COUNT: u32 = 20;
-    let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
+    let mut rt = Runtime::new(wasm, version)?;
     let mids = Mids::synthetic(&mut rt)?;
     let fixture = fixture()?;
     let plaintext = fixture["plaintext"]
@@ -378,14 +375,13 @@ fn benchmark(wasm: &[u8]) -> Result<()> {
         )?;
     }
     let send_after = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT);
-    let history =
-        line::client::benchmark_history(wasm, FIXTURE_VERSION, &fixture, &mids.to, &mids.from)?;
+    let history = line::client::benchmark_history(wasm, version, &fixture, &mids.to, &mids.from)?;
     let started = Instant::now();
-    let expected_key = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
+    let expected_key = signing_key(&mut rt, "synthetic-access", version)?;
     let expected = sign(&mut rt, &expected_key, "/synthetic", "{}")?;
     expected_key.destroy(&mut rt)?;
     for _ in 0..COUNT {
-        let hmac = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
+        let hmac = signing_key(&mut rt, "synthetic-access", version)?;
         ensure!(
             sign(&mut rt, &hmac, "/synthetic", "{}")? == expected,
             "signature mismatch"
@@ -393,7 +389,7 @@ fn benchmark(wasm: &[u8]) -> Result<()> {
         hmac.destroy(&mut rt)?;
     }
     let signing_before = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT + 1);
-    let hmac = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
+    let hmac = signing_key(&mut rt, "synthetic-access", version)?;
     let started = Instant::now();
     for _ in 0..COUNT {
         ensure!(
@@ -406,7 +402,7 @@ fn benchmark(wasm: &[u8]) -> Result<()> {
     rt.destroy("E2EEChannel", ch)?;
     rt.destroy("Curve25519Key", key)?;
     println!("send_encrypt_ms={send_before:.2} -> {send_after:.2}");
-    println!("history_50_decrypt_including_5_undecryptable_ms={history:.2}");
+    println!("history_45_decrypt_5_missing_keys_ms={history:.2}");
     println!("request_sign_ms={signing_before:.2} -> {signing_after:.2}");
     println!(
         "Offline fixture, release build; previous/current object lifetimes, no RPC time. History includes five missing device keys and retains its channel."
@@ -423,40 +419,41 @@ fn main() -> Result<()> {
     }
     let export = args.first().is_some_and(|s| s == "--export-test-key");
     let bench = args.first().is_some_and(|s| s == "--bench");
-    let default_wasm = fixture_path();
-    let wasm = if export {
+    let override_path = if export {
         args.get(2)
     } else if bench {
         args.get(1)
     } else {
         args.first()
-    }
-    .map(String::as_str)
-    .map(Path::new)
-    .unwrap_or(&default_wasm);
-    let bytes = read_fixture(wasm).with_context(|| format!("read fixture {}", wasm.display()))?;
-    let hash = format!("{:x}", Sha256::digest(&bytes));
+    };
+    let module = line::crypto_module::resolve(override_path.map(Into::into), None)?;
+    let version = module.version.as_str();
+    let bytes = module.read()?;
     if export {
-        return export_test_key(&bytes, args.get(1).context("missing output filename")?);
+        return export_test_key(
+            &bytes,
+            args.get(1).context("missing output filename")?,
+            version,
+        );
     }
     if bench {
         ensure!(args.len() <= 2, "usage: crypto-harness --bench [WASM]");
-        return benchmark(&bytes);
+        return benchmark(&bytes, version);
     }
     ensure!(args.len() <= 2, "usage: crypto-harness [WASM [HAR]]");
-    println!("LINE Chrome {FIXTURE_VERSION}, unmodified WASM SHA-256 {hash}");
-    let mut rt = Runtime::new(&bytes, FIXTURE_VERSION)?;
+    println!("LINE Chrome {version}, installed crypto module");
+    let mut rt = Runtime::new(&bytes, version)?;
     println!(
         "PASS: instantiated WASM and discovered {} embind classes",
         rt.bindings().len()
     );
     if let Some(har) = args.get(1) {
-        replay_har(&mut rt, Path::new(har))?;
+        replay_har(&mut rt, Path::new(har), version)?;
     }
     let mids = Mids::synthetic(&mut rt)?;
     external_fixture(&mut rt, &mids)?;
     roundtrips(&mut rt, &mids)?;
-    rejection_checks(&bytes)?;
+    rejection_checks(&bytes, version)?;
     println!(
         "All checks passed. Rust + Wasmi; no JavaScript engine, translated crypto, or LINE network calls."
     );

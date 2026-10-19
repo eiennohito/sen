@@ -642,7 +642,7 @@ impl Transport {
         )?;
         ensure!(
             reader.status == 201,
-            super::RpcError {
+            super::error::RpcError {
                 gateway: 0,
                 method: "upload".into(),
                 http: reader.status,
@@ -683,7 +683,7 @@ impl Transport {
         )?;
         ensure!(
             reader.status < 500,
-            super::RpcError {
+            super::error::RpcError {
                 gateway: 0,
                 method: "stream".into(),
                 http: reader.status,

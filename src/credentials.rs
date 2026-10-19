@@ -8,7 +8,7 @@
 //! agent and debug instances without a keyring (e.g. the private D-Bus session
 //! of `tools/run-ui-debug.py`): it keeps the mode-0600 plaintext file and
 //! refuses sealed files.
-use crate::client::{error::SavedSessionFailure, private_write};
+use crate::client::{error::SignInFailure, private_write};
 use aes_gcm::{
     Aes256Gcm, KeyInit,
     aead::{Aead, Payload},
@@ -48,7 +48,7 @@ trait Keys {
 pub fn load(path: &Path) -> Result<Value> {
     load_with(
         path,
-        Store::from_environment().context(SavedSessionFailure::CredentialsStore.error())?,
+        Store::from_environment().context(SignInFailure::SessionStoreMismatch)?,
         &Keyring,
     )
 }
@@ -73,27 +73,21 @@ fn sealed(value: &Value) -> bool {
 }
 
 fn load_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
-    let envelope = parse(&fs::read(path).context(SavedSessionFailure::Io.error())?)
-        .context(SavedSessionFailure::Corrupt.error())?;
+    let envelope = parse(&fs::read(path).context(SignInFailure::SessionIo)?)
+        .context(SignInFailure::SavedSession)?;
     if !sealed(&envelope) {
         ensure!(
             store == Store::PlaintextFile,
-            SavedSessionFailure::CredentialsStore.error()
+            SignInFailure::SessionStoreMismatch
         );
         return Ok(envelope);
     }
-    ensure!(
-        store == Store::Keyring,
-        SavedSessionFailure::CredentialsStore.error()
-    );
+    ensure!(store == Store::Keyring, SignInFailure::SessionStoreMismatch);
     open(&envelope, keys).map_err(|error| {
-        if error
-            .downcast_ref::<crate::client::error::Error>()
-            .is_some()
-        {
+        if error.downcast_ref::<SignInFailure>().is_some() {
             error
         } else {
-            error.context(SavedSessionFailure::Corrupt.error())
+            error.context(SignInFailure::SavedSession)
         }
     })
 }
@@ -101,9 +95,9 @@ fn load_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
 fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Result<()> {
     let plain = serde_json::to_vec_pretty(state)?;
     let existing = match fs::read(path) {
-        Ok(bytes) => Some(parse(&bytes).context(SavedSessionFailure::Corrupt.error())?),
+        Ok(bytes) => Some(parse(&bytes).context(SignInFailure::SavedSession)?),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
-        Err(error) => return Err(error).context(SavedSessionFailure::Io.error()),
+        Err(error) => return Err(error).context(SignInFailure::SessionIo),
     };
     let existing_id = existing
         .as_ref()
@@ -112,21 +106,19 @@ fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Resu
         .map(|id| id.context("sealed session has no key ID"))
         .transpose()?;
     if store == Store::PlaintextFile {
-        ensure!(
-            existing_id.is_none(),
-            "refusing to replace a keyring-sealed session with plaintext"
-        );
-        return private_write(path, &plain);
+        ensure!(existing_id.is_none(), SignInFailure::SessionStoreMismatch);
+        return private_write(path, &plain).context(SignInFailure::SessionIo);
     }
     ensure!(
         existing.as_ref().is_none_or(sealed),
-        SavedSessionFailure::CredentialsStore.error()
+        SignInFailure::SessionStoreMismatch
     );
     let sealed = match existing_id {
         Some(id) => {
             let key = keys
-                .get(&id)?
-                .context("the keyring no longer holds this session's key")?;
+                .get(&id)
+                .context(SignInFailure::Keyring)?
+                .context(SignInFailure::SessionKeyMissing)?;
             seal(&id, &key, &plain)?
         }
         None => {
@@ -134,7 +126,7 @@ fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Resu
             seal(&id, &key, &plain)?
         }
     };
-    private_write(path, &sealed)
+    private_write(path, &sealed).context(SignInFailure::SessionIo)
 }
 
 fn new_key(keys: &impl Keys) -> Result<(String, [u8; 32])> {
@@ -145,7 +137,7 @@ fn new_key(keys: &impl Keys) -> Result<(String, [u8; 32])> {
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let key: [u8; 32] = random[16..].try_into().unwrap();
-    keys.put(&id, &key)?;
+    keys.put(&id, &key).context(SignInFailure::Keyring)?;
     Ok((id, key))
 }
 fn aad(id: &str) -> Vec<u8> {
@@ -190,8 +182,8 @@ fn open(envelope: &Value, keys: &impl Keys) -> Result<Value> {
     )?;
     let key = keys
         .get(id)
-        .context(SavedSessionFailure::Keyring.error())?
-        .context(SavedSessionFailure::Keyring.error())?;
+        .context(SignInFailure::Keyring)?
+        .context(SignInFailure::SessionKeyMissing)?;
     let plain = Aes256Gcm::new((&key).into())
         .decrypt(
             (&nonce).into(),
