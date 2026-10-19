@@ -3,9 +3,9 @@ use crate::*;
 pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
     ui.global::<State>()
-        .on_avatar_tint(|id| present::avatar_tint(&id));
+        .on_avatar_tint(|id| presenter::format::avatar_tint(&id));
     ui.global::<State>()
-        .on_name_tint(|id, background, dark| present::name_tint(&id, background, dark));
+        .on_name_tint(|id, background, dark| presenter::format::name_tint(&id, background, dark));
     let mut avatars: std::collections::VecDeque<(slint::Image, u32, slint::Image)> =
         std::collections::VecDeque::new();
     ui.global::<State>()
@@ -44,81 +44,9 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         });
     ui.global::<State>()
         .on_has_text(|text| !text.trim().is_empty());
+    focus::install(&ui);
     #[cfg(feature = "demo")]
-    {
-        use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
-        let saved = Rc::new(RefCell::new(Vec::new()));
-        let reset = saved.clone();
-        ui.global::<State>()
-            .on_forget_detail_focus(move || reset.borrow_mut().clear());
-        let record = saved.clone();
-        let weak = ui.as_weak();
-        ui.global::<State>().on_remember_detail_focus(move |reset| {
-            if let Some(ui) = weak.upgrade() {
-                if reset {
-                    record.borrow_mut().clear();
-                }
-                record.borrow_mut().push(
-                    WindowInner::from_pub(ui.window())
-                        .focus_item
-                        .borrow()
-                        .clone(),
-                );
-            }
-        });
-        let weak = ui.as_weak();
-        ui.global::<State>().on_restore_detail_focus(move |all| {
-            if let Some(ui) = weak.upgrade() {
-                let item = if all {
-                    let first = saved.borrow().first().cloned();
-                    saved.borrow_mut().clear();
-                    first
-                } else {
-                    saved.borrow_mut().pop()
-                };
-                if let Some(item) = item.and_then(|i| i.upgrade()).filter(|i| i.is_visible()) {
-                    WindowInner::from_pub(ui.window()).set_focus_item(
-                        &item,
-                        true,
-                        FocusReason::PopupActivation,
-                    );
-                } else if ui.get_detail_open() {
-                    ui.invoke_focus_profile_close();
-                } else {
-                    ui.invoke_focus_composer();
-                }
-            }
-        });
-    }
-    #[cfg(feature = "demo")]
-    {
-        use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
-        let saved = Rc::new(RefCell::new(None));
-        let record = saved.clone();
-        let weak = ui.as_weak();
-        ui.global::<State>().on_remember_demo_focus(move || {
-            if let Some(ui) = weak.upgrade() {
-                *record.borrow_mut() = Some(
-                    WindowInner::from_pub(ui.window())
-                        .focus_item
-                        .borrow()
-                        .clone(),
-                );
-            }
-        });
-        let weak = ui.as_weak();
-        ui.global::<State>().on_restore_demo_focus(move || {
-            if let Some(ui) = weak.upgrade()
-                && let Some(item) = saved.borrow_mut().take().and_then(|weak| weak.upgrade())
-            {
-                WindowInner::from_pub(ui.window()).set_focus_item(
-                    &item,
-                    true,
-                    FocusReason::PopupActivation,
-                );
-            }
-        });
-    }
+    dev::install_window(&ui);
     macro_rules! bridge {
         ($on:ident, $invoke:ident $(, $arg:ident)*) => {{
             let weak = ui.as_weak();
@@ -142,7 +70,6 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
 
     bridge!(on_filter_category, invoke_filter_category);
     bridge!(on_switch_chat, invoke_switch_chat, delta);
-    bridge!(on_show_profile, invoke_focus_profile_close);
     bridge!(on_close_profile, invoke_close_profile);
     bridge!(on_show_viewer, invoke_show_viewer, key);
     bridge!(on_close_viewer, invoke_close_viewer);
@@ -154,8 +81,6 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     bridge!(on_reset_viewer, invoke_reset_viewer);
     bridge!(on_history_scroll, invoke_history_scroll, delta);
     bridge!(on_history_jump, invoke_history_jump, y);
-    #[cfg(feature = "demo")]
-    bridge!(on_demo_event, invoke_demo_event, arg0);
     bridge!(on_recover_message, invoke_recover_message, arg0);
     bridge!(on_settings_changed, invoke_settings_changed);
     bridge!(on_send, invoke_send);

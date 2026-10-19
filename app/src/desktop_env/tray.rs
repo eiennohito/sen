@@ -10,6 +10,10 @@ use std::{
     time::Duration,
 };
 use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str, Value};
+const OPEN: i32 = 1;
+const MUTE: i32 = 2;
+const QUIT: i32 = 3;
+const MENU_ITEMS: [i32; 3] = [OPEN, MUTE, QUIT];
 #[derive(Clone, Debug)]
 pub(crate) enum Event {
     Available(bool),
@@ -34,7 +38,7 @@ impl Item {
     }
     #[zbus(property)]
     fn id(&self) -> &str {
-        crate::desktop_integration::APP_ID
+        crate::desktop_env::desktop_integration::APP_ID
     }
     #[zbus(property)]
     fn title(&self) -> &str {
@@ -46,7 +50,7 @@ impl Item {
     }
     #[zbus(property)]
     fn icon_name(&self) -> &str {
-        crate::desktop_integration::APP_ID
+        crate::desktop_env::desktop_integration::APP_ID
     }
     #[zbus(property)]
     fn item_is_menu(&self) -> bool {
@@ -78,15 +82,15 @@ type Layout = (i32, Properties, Vec<OwnedValue>);
 impl Menu {
     fn properties(&self, id: i32) -> Properties {
         let label = match id {
-            1 => "Open",
-            2 => {
+            OPEN => "Open",
+            MUTE => {
                 if self.muted.load(Ordering::Relaxed) {
                     "Unmute"
                 } else {
                     "Mute"
                 }
             }
-            3 => "Quit",
+            QUIT => "Quit",
             _ => "",
         };
         let mut properties = HashMap::from([
@@ -97,7 +101,7 @@ impl Menu {
         if id == 0 {
             properties.insert("children-display".into(), Str::from("submenu").into());
         }
-        if id == 2 {
+        if id == MUTE {
             properties.insert("toggle-type".into(), Str::from("checkmark").into());
             properties.insert(
                 "toggle-state".into(),
@@ -111,9 +115,9 @@ impl Menu {
             return;
         }
         let action = match id {
-            1 => Event::Open,
-            2 => Event::Mute,
-            3 => Event::Quit,
+            OPEN => Event::Open,
+            MUTE => Event::Mute,
+            QUIT => Event::Quit,
             _ => return,
         };
         let _ = self.commands.try_send(Command::Event(action));
@@ -144,7 +148,8 @@ impl Menu {
         _property_names: Vec<String>,
     ) -> (u32, Layout) {
         let children = if parent_id == 0 && recursion_depth != 0 {
-            (1..=3)
+            MENU_ITEMS
+                .into_iter()
                 .filter_map(|id| {
                     Value::from((id, self.properties(id), Vec::<OwnedValue>::new()))
                         .try_to_owned()
@@ -448,7 +453,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             item.get_property::<String>("Id").unwrap(),
-            crate::desktop_integration::APP_ID
+            crate::desktop_env::desktop_integration::APP_ID
         );
         item.call::<_, _, ()>("Activate", &(0i32, 0i32)).unwrap();
         assert!(matches!(

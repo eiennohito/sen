@@ -26,7 +26,12 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     global_callback!(ui, actions, on_save_file, |ui, d, id| {
-        let m = &d.state.messages[&Key(id.parse().unwrap())];
+        let Some(key) = super::message_key(&id) else {
+            return;
+        };
+        let Some(m) = d.state.messages.get(&key) else {
+            return;
+        };
         if let Content::File {
             asset: Some(asset),
             name,
@@ -42,6 +47,6 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     global_callback!(ui, actions, on_save_photo, |ui, d| {
-        viewer::save_photo(&ui, d.destination.clone(), d.viewer_source.clone());
+        viewer::save_photo(&ui, d.destination, d.viewer_source.clone());
     });
 }

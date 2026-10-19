@@ -1,3 +1,4 @@
+import { DetailAction } from "types.slint";
 import { RowText } from "list-row.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -61,7 +62,6 @@ export component Detail inherits FocusScope {
     focus-on-tab-navigation: false;
     public function focus-first() { if State.detail-depth > 1 { back.focus-button(); } else { root.focus-open(); } }
     public function focus-open() { if State.detail-page == 0 { more.focus-button(); } else { close.focus-button(); } }
-    public function focus-member-list() { members.focus-list(); }
     public function focus-last() {
         if State.detail-page == 2 { members.focus-last(); }
         else if State.detail-page == 1 { if !State.group-room && !State.group-left { leave.focus-row(); } else { member-row.focus-row(); } }
@@ -70,7 +70,7 @@ export component Detail inherits FocusScope {
         else if State.profile-available { chat.focus-button(); }
         else { avatar-focus.focus(); }
     }
-    function open-dialog(kind: string) { State.detail-dialog = kind; rename-value.text = State.profile-name; if kind == "rename" { rename-value.focus-field(); } else { cancel.focus(); } }
+    function open-dialog(kind: DetailAction) { State.detail-dialog = kind; rename-value.text = State.profile-name; if kind == DetailAction.rename { rename-value.focus-field(); } else { cancel.focus(); } }
     capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
     key-pressed(event) => {
         if State.ime-active { return reject; }
@@ -114,13 +114,13 @@ export component Detail inherits FocusScope {
                 if State.detail-page == 0 && State.profile-notice != "": Text { text: State.profile-notice; color: Tokens.secondary; wrap: word-wrap; }
                 HorizontalLayout { visible: State.detail-page == 0; height: self.visible && (State.profile-available || State.profile-friend || State.profile-addable) ? 72px : 0px; alignment: center; spacing: 8px;
                     chat := ProfileActionButton { visible: State.profile-available; enabled: self.visible; width: self.visible ? 72px : 0px; label: "Chat"; icon: @image-url("../assets/icons/chats.svg"); activated => { State.start-friend-chat(); } }
-                    rename := ProfileActionButton { visible: State.profile-friend; enabled: self.visible && !State.detail-busy; width: self.visible ? 72px : 0px; label: State.detail-running == "rename" ? "Renaming…" : "Rename"; icon: @image-url("../assets/icons/rename.svg"); activated => { root.open-dialog("rename"); } }
-                    add := ProfileActionButton { visible: State.profile-addable; enabled: self.visible && !State.detail-busy; width: self.visible ? 72px : 0px; label: State.detail-running == "add" ? "Adding…" : "Add friend"; icon: @image-url("../assets/icons/add-friend.svg"); activated => { State.detail-action("add", ""); } }
+                    rename := ProfileActionButton { visible: State.profile-friend; enabled: self.visible && !State.detail-busy; width: self.visible ? 72px : 0px; label: State.detail-running == DetailAction.rename ? "Renaming…" : "Rename"; icon: @image-url("../assets/icons/rename.svg"); activated => { root.open-dialog(DetailAction.rename); } }
+                    add := ProfileActionButton { visible: State.profile-addable; enabled: self.visible && !State.detail-busy; width: self.visible ? 72px : 0px; label: State.detail-running == DetailAction.add ? "Adding…" : "Add friend"; icon: @image-url("../assets/icons/add-friend.svg"); activated => { State.detail-action(DetailAction.add, ""); } }
                 }
                 if State.detail-page == 1: Text { text: State.group-count >= 0 ? State.group-count + " members" : ""; color: Tokens.secondary; horizontal-alignment: center; }
                 member-row := DetailRow { visible: State.detail-page == 1; height: self.visible ? 52px : 0px; label: "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : ""); activated => { State.open-members(); } }
-                mute := DetailRow { accessible-role: checkbox; visible: State.detail-page == 1 && !State.group-room && !State.group-left; height: self.visible ? 52px : 0px; enabled: State.group-writable && !State.detail-busy; label: State.detail-running == "mute" ? "Updating…" : "Notifications"; toggle: true; checked: !State.group-muted; activated => { State.detail-action("mute", ""); } }
-                leave := DetailRow { visible: State.detail-page == 1 && !State.group-room && !State.group-left; height: self.visible ? 52px : 0px; enabled: !State.detail-busy; label: State.detail-running == "leave" ? "Leaving…" : "Leave group"; danger: true; activated => { root.open-dialog("leave"); } }
+                mute := DetailRow { accessible-role: checkbox; visible: State.detail-page == 1 && !State.group-room && !State.group-left; height: self.visible ? 52px : 0px; enabled: State.group-writable && !State.detail-busy; label: State.detail-running == DetailAction.mute ? "Updating…" : "Notifications"; toggle: true; checked: !State.group-muted; activated => { State.detail-action(DetailAction.mute, ""); } }
+                leave := DetailRow { visible: State.detail-page == 1 && !State.group-room && !State.group-left; height: self.visible ? 52px : 0px; enabled: !State.detail-busy; label: State.detail-running == DetailAction.leave ? "Leaving…" : "Leave group"; danger: true; activated => { root.open-dialog(DetailAction.leave); } }
                 if State.detail-error != "": Text { text: State.detail-error; color: Tokens.danger; wrap: word-wrap; }
             }
         }
@@ -132,31 +132,31 @@ export component Detail inherits FocusScope {
             copy := TextInput { visible: false; }
         }
     }
-    Rectangle { visible: State.detail-dialog != ""; x: -root.absolute-position.x; y: -root.absolute-position.y; width: State.window-width; height: State.window-height; background: Tokens.scrim; TouchArea {}
+    Rectangle { visible: State.detail-dialog != DetailAction.none; x: -root.absolute-position.x; y: -root.absolute-position.y; width: State.window-width; height: State.window-height; background: Tokens.scrim; TouchArea {}
         Rectangle { width: min(400px, parent.width - 32px); height: dialog-content.preferred-height; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: Tokens.divider;
             FocusScope {
-                key-pressed(event) => { if event.text == Key.Escape { State.detail-dialog = ""; root.focus-last(); return accept; } if event.text == Key.Tab {
+                key-pressed(event) => { if event.text == Key.Escape { State.detail-dialog = DetailAction.none; root.focus-last(); return accept; } if event.text == Key.Tab {
                     if event.modifiers.shift {
                         if dialog-close.has-focus { confirm.focus(); }
                         else if confirm.has-focus { cancel.focus(); }
-                        else if cancel.has-focus && State.detail-dialog == "rename" { rename-value.focus-field(); }
+                        else if cancel.has-focus && State.detail-dialog == DetailAction.rename { rename-value.focus-field(); }
                         else { dialog-close.focus-button(); }
                     } else {
                         if confirm.has-focus { dialog-close.focus-button(); }
-                        else if dialog-close.has-focus && State.detail-dialog == "rename" { rename-value.focus-field(); }
+                        else if dialog-close.has-focus && State.detail-dialog == DetailAction.rename { rename-value.focus-field(); }
                         else if cancel.has-focus { confirm.focus(); }
                         else { cancel.focus(); }
                     } return accept;
                 } reject }
                 dialog-content := VerticalLayout { padding: 24px; spacing: 16px;
-                    HorizontalLayout { Text { text: State.detail-dialog == "rename" ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
-                        dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.detail-dialog = ""; root.focus-last(); } }
+                    HorizontalLayout { Text { text: State.detail-dialog == DetailAction.rename ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
+                        dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.detail-dialog = DetailAction.none; root.focus-last(); } }
                     }
-                    rename-value := NameField { visible: State.detail-dialog == "rename"; height: self.visible ? 36px : 0px; }
-                    if State.detail-dialog == "leave": Text { text: "You will no longer receive messages in this group."; wrap: word-wrap; }
+                    rename-value := NameField { visible: State.detail-dialog == DetailAction.rename; height: self.visible ? 36px : 0px; }
+                    if State.detail-dialog == DetailAction.leave: Text { text: "You will no longer receive messages in this group."; wrap: word-wrap; }
                     HorizontalLayout { alignment: end; spacing: 8px;
-                        cancel := Button { text: "Cancel"; clicked => { State.detail-dialog = ""; root.focus-last(); } }
-                        confirm := Button { text: State.detail-dialog == "rename" ? "Save" : "Leave"; primary: true; danger: State.detail-dialog == "leave"; clicked => { let kind = State.detail-dialog; State.detail-dialog = ""; State.detail-action(kind, rename-value.text); root.focus-first(); } }
+                        cancel := Button { text: "Cancel"; clicked => { State.detail-dialog = DetailAction.none; root.focus-last(); } }
+                        confirm := Button { text: State.detail-dialog == DetailAction.rename ? "Save" : "Leave"; primary: true; danger: State.detail-dialog == DetailAction.leave; clicked => { let kind = State.detail-dialog; State.detail-dialog = DetailAction.none; State.detail-action(kind, rename-value.text); root.focus-first(); } }
                     }
                 }
             }

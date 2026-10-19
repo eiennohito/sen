@@ -1,11 +1,9 @@
 //! Reading decisions use logical content coordinates, independent of Slint.
-use crate::{AppWindow, State, reading};
 use line::{
     controller::AppState,
     engine::{Connection, Intent},
     store::*,
 };
-use slint::ComponentHandle;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
@@ -15,7 +13,7 @@ pub(crate) struct Reading {
     pub(crate) latest_requested: bool,
     pub(crate) opening_history: bool,
     pub(crate) divider_top: Option<f32>,
-    pub(crate) return_anchor: Option<(Key, f32, bool)>,
+    pub(crate) return_anchor: Option<(Key, f32)>,
     pub(crate) geometry: BTreeMap<Key, (f32, f32)>,
     pub(crate) gap_geometry: BTreeMap<Key, (f32, f32)>,
     pub(crate) requested_gaps: BTreeSet<(u64, Key)>,
@@ -69,7 +67,6 @@ pub(crate) struct Geometry {
 pub(crate) struct Effects {
     pub intents: Vec<Intent>,
     pub show: Option<(f32, bool)>,
-    pub jump: Option<f32>,
 }
 
 pub(crate) fn observe(reading: &mut Reading, state: &AppState, view: Geometry) -> Effects {
@@ -109,7 +106,7 @@ pub(crate) fn observe(reading: &mut Reading, state: &AppState, view: Geometry) -
 }
 
 pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) -> Vec<Intent> {
-    let mut effects = Effects::default();
+    let mut intents = Vec::new();
     if view.active
         && !view.modal
         && !view.dragging
@@ -174,23 +171,23 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
             && reading.exposed.get(&chat) != Some(&id)
         {
             reading.exposed.insert(chat.clone(), id.clone());
-            effects.intents.push(Intent::MarkRead { chat, id });
+            intents.push(Intent::MarkRead { chat, id });
         }
     }
-    effects.intents
+    intents
 }
 
 pub(crate) fn restore(reading: &mut Reading) -> Option<f32> {
-    let mut effects = Effects::default();
+    let mut jump = None;
     if reading.restore_ready
         && let Some((key, offset)) = reading.restore_anchor
         && let Some((top, _)) = reading.geometry.get(&key)
     {
-        effects.jump = Some(offset - top);
+        jump = Some(offset - top);
         reading.restore_anchor = None;
         reading.restore_ready = false;
     }
-    effects.jump
+    jump
 }
 
 pub(crate) fn page_older(
@@ -234,8 +231,7 @@ pub(crate) fn return_anchor(
     reading: &Reading,
     rows: Vec<&StoredMessage>,
     view: Geometry,
-    following: bool,
-) -> Option<(Key, f32, bool)> {
+) -> Option<(Key, f32)> {
     let top = -view.y + view.visible_top;
     rows.into_iter().find_map(|m| {
         reading
@@ -244,80 +240,15 @@ pub(crate) fn return_anchor(
             .filter(|(y, h)| y + h > top)
             .map(|(y, _)| {
                 let inset = view.visible_top;
-                (m.key, y + view.y + inset, following)
+                (m.key, y + view.y + inset)
             })
     })
-}
-
-impl crate::Desktop {
-    pub(crate) fn reading_geometry(ui: &AppWindow) -> reading::Geometry {
-        let global = ui.global::<State>();
-        reading::Geometry {
-            y: ui.get_history_y(),
-            at_bottom: global.get_following()
-                && global.get_history_extent() + ui.get_history_y()
-                    <= global.get_text_size() as f32,
-            visible_top: global.get_history_visible_top(),
-            height: global.get_history_viewport_height(),
-            pill_height: global.get_history_pill_height(),
-            active: global.get_window_active(),
-            modal: global.get_modal_open(),
-            dragging: ui.get_history_dragging(),
-            interacting: global.get_history_interacting(),
-            narrow: global.get_narrow(),
-            conversation: ui.get_show_conversation(),
-            older_start_known: global.get_older_start_known(),
-        }
-    }
-    pub(crate) fn observe_reading(&mut self, ui: &AppWindow) {
-        let effects = reading::observe(&mut self.history, &self.state, Self::reading_geometry(ui));
-        for intent in effects.intents {
-            self.sender.send(intent);
-        }
-        if let Some((y, latest)) = effects.show {
-            ui.invoke_show_history(y, latest);
-        }
-        for intent in reading::exposure(&mut self.history, &self.state, Self::reading_geometry(ui))
-        {
-            self.sender.send(intent);
-        }
-        if let Some(y) = reading::restore(&mut self.history) {
-            ui.invoke_history_jump(y);
-        }
-    }
-    pub(crate) fn jump_to_message(&mut self, ui: &AppWindow, key: Key) {
-        let origin = reading::return_anchor(
-            &self.history,
-            self.state.rows(),
-            Self::reading_geometry(ui),
-            ui.get_following(),
-        );
-        self.history.return_anchor = origin;
-        self.history.opening_history = false;
-        self.history
-            .jump_to(key, ui.global::<State>().get_history_visible_top());
-        ui.set_following(false);
-        ui.global::<State>().set_return_visible(origin.is_some());
-        ui.global::<State>()
-            .set_highlight_message(key.0.to_string().into());
-        let weak = ui.as_weak();
-        self.history.highlight_timer.start(
-            slint::TimerMode::SingleShot,
-            std::time::Duration::from_secs(2),
-            move || {
-                if let Some(ui) = weak.upgrade() {
-                    ui.global::<State>().set_highlight_message("".into());
-                }
-            },
-        );
-        let intent = self.state.subscribe_window(Anchor::Key(key), 80, 80);
-        self.sender.send(intent);
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ChatCategory;
 
     #[test]
     fn exposing_hidden_incoming_events_clears_the_chat_badge() {
@@ -370,7 +301,7 @@ mod tests {
             let ui = crate::window::create_app_window().unwrap();
             let mut presenter = crate::presenter::Presenter::default();
             presenter.install(&ui);
-            presenter.present(&ui, &state, "", 0);
+            presenter.present(&ui, &state, "", ChatCategory::All);
             assert!(
                 ui.get_chats()
                     .iter()
@@ -400,7 +331,7 @@ mod tests {
                         .unwrap(),
                 );
             }
-            presenter.present(&ui, &state, "", 0);
+            presenter.present(&ui, &state, "", ChatCategory::All);
             let row = ui.get_chats().iter().find(|row| row.id == "alice").unwrap();
             assert_eq!(row.unread, 0);
             assert!(!row.unread_unknown);

@@ -1,5 +1,5 @@
 //! Notification service calls and signal listener.
-use super::{Event, Notice, Shared};
+use super::worker::{Event, Notice, Shared};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use zbus::zvariant::{OwnedValue, Str};
 
@@ -45,7 +45,7 @@ pub(super) fn notify(
     let mut hints: HashMap<&str, OwnedValue> = HashMap::from([
         (
             "desktop-entry",
-            Str::from(crate::desktop_integration::APP_ID).into(),
+            Str::from(crate::desktop_env::desktop_integration::APP_ID).into(),
         ),
         ("category", Str::from("im.received").into()),
         ("urgency", 1u8.into()),
@@ -68,7 +68,7 @@ pub(super) fn notify(
             &(
                 "LINE",
                 previous,
-                crate::desktop_integration::APP_ID,
+                crate::desktop_env::desktop_integration::APP_ID,
                 &notice.summary,
                 &escape_markup(&notice.body),
                 actions,

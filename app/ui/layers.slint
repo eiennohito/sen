@@ -1,13 +1,9 @@
 import { RowText } from "list-row.slint";
 import { ComboBox, CheckBox } from "preferences.slint";
 import { Button } from "button.slint";
-import { PanelState } from "types.slint";
-import { LineEdit, TextEdit, ScrollView } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
-import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
-import { FeedbackRect } from "connection-notice.slint";
-import { Pane } from "scrollpane.slint";
 import { Detail } from "detail.slint";
 import { IconButton } from "icon-button.slint";
 
@@ -42,7 +38,6 @@ component SettingsSections inherits FocusScope {
 export component Layers inherits Rectangle {
     property <int> demo-reset: State.demo-reset-generation;
     changed demo-reset => { root.settings-section = 0; root.pan-x = 0px; root.pan-y = 0px; }
-    out property <FeedbackRect> profile-bounds: { x: profile.absolute-position.x, y: profile.absolute-position.y, width: profile.visible ? profile.width : 0px, height: profile.height };
     property <bool> cancel-confirm <=> State.auth-cancel-confirm;
     property <int> settings-section;
     property <int> message-text-size: State.text-size;
@@ -333,7 +328,6 @@ export component Layers inherits Rectangle {
     }
     public function fit-photo() { State.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
     public function original-photo() { State.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
-    public function focus-member-list() { detail.focus-member-list(); }
     public function back-to-members() { State.pop-detail(false); }
     public function focus-profile-close() { detail.focus-open(); }
     public function focus-profile-last() { detail.focus-last(); }

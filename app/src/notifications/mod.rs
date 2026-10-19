@@ -1,12 +1,15 @@
-use crate::attention_policy::{self as policy, Context, EventKind, Preferences, PreviewLevel};
+mod dbus;
+pub(crate) mod policy;
+pub(crate) mod worker;
+use crate::notifications::policy::{Context, EventKind, Preferences, PreviewLevel};
 use crate::*;
 pub(crate) struct Notifications {
-    pub service: attention::Attention,
-    events: std::sync::mpsc::Receiver<attention::Event>,
+    pub service: notifications::worker::Attention,
+    events: std::sync::mpsc::Receiver<notifications::worker::Event>,
 }
 impl Notifications {
     pub fn start() -> Self {
-        let service = attention::Attention::start();
+        let service = notifications::worker::Attention::start();
         service.probe();
         let (tx, events) = std::sync::mpsc::channel();
         service.on_event(move |event| {
@@ -25,7 +28,7 @@ impl Notifications {
         ui.global::<State>()
             .set_notification_status("Sending test notification…".into());
         self.service.probe();
-        self.service.notify(attention::Notice {
+        self.service.notify(notifications::worker::Notice {
             chat: "notification-test".into(),
             summary: text.summary,
             body: text.body,
@@ -41,10 +44,7 @@ impl Notifications {
             &prefs,
             Context {
                 active: global.get_window_active(),
-                current: state.selected.as_ref() == Some(&m.chat_id),
-                at_latest: ui.get_following(),
                 muted,
-                ..Default::default()
             },
             if m.mentioned {
                 EventKind::Mention
@@ -65,7 +65,7 @@ impl Notifications {
                 title,
                 &presenter::messages::compact_text(&m.body, state, &m.sender_id),
             );
-            self.service.notify(attention::Notice {
+            self.service.notify(notifications::worker::Notice {
                 chat: m.chat_id.0.clone(),
                 summary: text.summary,
                 body: text.body,
@@ -74,26 +74,26 @@ impl Notifications {
             });
         }
     }
-    pub(crate) fn events(&self) -> Vec<attention::Event> {
+    pub(crate) fn events(&self) -> Vec<notifications::worker::Event> {
         self.events.try_iter().collect()
     }
 }
 
-pub(crate) fn handle(event: attention::Event, ui: &AppWindow, desktop: &mut Desktop) {
+pub(crate) fn handle(event: notifications::worker::Event, ui: &AppWindow, desktop: &mut Desktop) {
     match event {
-        attention::Event::Availability(available) => {
+        notifications::worker::Event::Availability(available) => {
             ui.global::<State>().set_notification_available(available);
             if !available {
                 ui.global::<State>()
                     .set_notification_status("Notification service not available".into());
             }
         }
-        attention::Event::OpenChat { chat } => {
+        notifications::worker::Event::OpenChat { chat } => {
             desktop.open_chat(ui, ChatId(chat));
             let _ = ui.show();
             ui.set_show_conversation(true);
         }
-        attention::Event::MarkRead { chat, message } => {
+        notifications::worker::Event::MarkRead { chat, message } => {
             if let Ok(id) = ServerId::new(message) {
                 desktop.sender.send(Intent::MarkRead {
                     chat: ChatId(chat),
@@ -101,10 +101,11 @@ pub(crate) fn handle(event: attention::Event, ui: &AppWindow, desktop: &mut Desk
                 });
             }
         }
-        attention::Event::Delivered(chat) if chat == "notification-test" => ui
+        notifications::worker::Event::Delivered(chat) if chat == "notification-test" => ui
             .global::<State>()
             .set_notification_status("Test notification sent".into()),
-        attention::Event::Delivered(chat) | attention::Event::Closed(chat) => {
+        notifications::worker::Event::Delivered(chat)
+        | notifications::worker::Event::Closed(chat) => {
             let _ = chat;
         }
     }
@@ -160,7 +161,7 @@ mod tests {
                 reveal: None,
                 viewer_asset: None,
                 viewer_source: None,
-                destination: viewer::Destination::Dialog,
+                destination: viewer::save_dialog,
                 notifications: None,
                 background: Default::default(),
                 assets: Default::default(),
@@ -168,7 +169,7 @@ mod tests {
                 presenter: Default::default(),
                 sender: worker.sender.clone(),
                 query: String::new(),
-                category: 0,
+                category: ChatCategory::All,
             };
             let receive = |reason: &str| {
                 worker
@@ -212,17 +213,17 @@ mod tests {
             ui.set_editor_anchor(3);
             let (events, receiver) = std::sync::mpsc::channel();
             desktop.notifications = Some(Notifications {
-                service: attention::Attention::disconnected(),
+                service: notifications::worker::Attention::disconnected(),
                 events: receiver,
             });
             events
-                .send(attention::Event::OpenChat {
+                .send(notifications::worker::Event::OpenChat {
                     chat: chat_b.0.clone(),
                 })
                 .unwrap();
             // C is A again: both destinations exist in the fake's canned data.
             events
-                .send(attention::Event::OpenChat {
+                .send(notifications::worker::Event::OpenChat {
                     chat: chat_a.0.clone(),
                 })
                 .unwrap();

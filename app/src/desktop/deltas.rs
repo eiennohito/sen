@@ -218,9 +218,9 @@ impl Desktop {
                 let weak = ui.as_weak();
                 let name = name.clone();
                 let bytes = bytes.clone();
-                let destination = self.destination.clone();
+                let destination = self.destination;
                 std::thread::spawn(move || {
-                    let result = viewer::save_bytes(&bytes, &name, destination);
+                    let result = crate::viewer::save_bytes(&bytes, &name, destination);
                     let _ = weak.upgrade_in_event_loop(move |ui| {
                         ui.global::<State>().set_file_saving(false);
                         ui.global::<State>().set_file_save_status(
@@ -328,22 +328,8 @@ impl Desktop {
                     ui.set_unsend_feedback_id(key.0.to_string().into());
                 }
             }
-            Delta::InternalError(kind) => {
-                #[cfg(feature = "ui-debug")]
-                {
-                    let message = format!("Internal error: {kind} (see log)");
-                    ui.set_internal_error_seen(true);
-                    ui.set_internal_error(message.into());
-                    let weak = ui.as_weak();
-                    slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
-                        if let Some(ui) = weak.upgrade() {
-                            ui.set_internal_error("".into());
-                        }
-                    });
-                }
-                #[cfg(not(feature = "ui-debug"))]
-                let _ = kind;
-            }
+            #[cfg(feature = "ui-debug")]
+            Delta::InternalError(kind) => dev::automation::internal_error(ui, kind),
             Delta::Notify(m) => {
                 if self.state.selected.as_ref() == Some(&m.chat_id) && !ui.get_following() {
                     ui.set_new_count(ui.get_new_count() + 1);

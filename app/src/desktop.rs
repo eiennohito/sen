@@ -2,22 +2,24 @@ use crate::*;
 
 pub(crate) struct Desktop {
     pub(crate) clipboard_root: std::path::PathBuf,
-    pub(crate) history: reading::Reading,
+    pub(crate) history: crate::reading::Reading,
     pub(crate) shown_composer: String,
     pub(crate) reveal: Option<ChatId>,
     pub(crate) viewer_asset: Option<String>,
     pub(crate) viewer_source: Option<std::sync::Arc<Vec<u8>>>,
-    pub(crate) destination: viewer::Destination,
+    pub(crate) destination: crate::viewer::Destination,
     pub(crate) notifications: Option<notifications::Notifications>,
-    pub(crate) background: background::Background,
+    pub(crate) background: desktop_env::background::Background,
     pub(crate) assets: assets::Assets,
     pub(crate) state: AppState,
     pub(crate) presenter: presenter::Presenter,
     pub(crate) sender: Sender,
     pub(crate) query: String,
-    pub(crate) category: i32,
+    pub(crate) category: ChatCategory,
 }
 mod deltas;
+mod reading;
+mod viewer;
 
 impl Desktop {
     pub(crate) fn drain_notifications(&mut self, ui: &AppWindow) {
@@ -40,8 +42,8 @@ impl Desktop {
     pub(crate) fn render(&mut self, ui: &AppWindow) {
         ui.global::<State>()
             .set_device_scale(ui.window().scale_factor());
-        #[cfg(feature = "ui-debug")]
-        latency::RENDERS.set(latency::RENDERS.get() + 1);
+        #[cfg(feature = "demo")]
+        dev::rendered();
         // Text typed or set without an edit event stays; only engine changes replace it.
         if self.state.composer == self.shown_composer {
             self.state.composer = ui.get_draft().to_string();
@@ -152,7 +154,7 @@ mod tests {
             reveal: None,
             viewer_asset: None,
             viewer_source: None,
-            destination: viewer::Destination::Dialog,
+            destination: crate::viewer::save_dialog,
             notifications: None,
             background: Default::default(),
             assets: Default::default(),
@@ -160,7 +162,7 @@ mod tests {
             presenter: Default::default(),
             sender: worker.sender.clone(),
             query: String::new(),
-            category: 0,
+            category: ChatCategory::All,
         }
     }
 

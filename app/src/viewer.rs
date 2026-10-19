@@ -1,5 +1,5 @@
 //! Photo navigation and deliberate local exports. No network operations here.
-use crate::{AppWindow, Content, Intent, Panel, State};
+use crate::{AppWindow, State};
 use image::ImageEncoder;
 use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer};
 use std::{
@@ -8,14 +8,9 @@ use std::{
     io::Write,
     path::{Path, PathBuf},
 };
-use zbus::zvariant::{OwnedObjectPath, OwnedValue, Str};
+use zbus::zvariant::Str;
 
-#[derive(Clone)]
-pub(crate) enum Destination {
-    Dialog,
-    #[cfg(feature = "demo")]
-    Directory(PathBuf),
-}
+pub(crate) type Destination = fn(&[u8], &str) -> Result<Option<PathBuf>, String>;
 pub(crate) fn save_photo(
     ui: &AppWindow,
     destination: Destination,
@@ -96,34 +91,30 @@ pub(crate) fn save_bytes(
         .and_then(|v| v.to_str())
         .filter(|name| !name.is_empty() && !name.contains(['\r', '\n']))
         .unwrap_or("LINE attachment");
-    if matches!(destination, Destination::Dialog) {
-        match portal_destination(name) {
-            Ok(Some(path)) => {
-                use std::os::unix::fs::OpenOptionsExt;
-                let mut file = OpenOptions::new()
-                    .write(true)
-                    .create(true)
-                    .truncate(true)
-                    .mode(0o600)
-                    .open(&path)
-                    .map_err(|_| "Could not open the selected file.".to_string())?;
-                file.write_all(bytes)
-                    .and_then(|_| file.sync_all())
-                    .map_err(|_| "Could not save the selected file.".to_string())?;
-                return Ok(Some(path));
-            }
-            Ok(None) => return Ok(None),
-            Err(_) => {}
-        }
-    }
-    let directory = match destination {
-        Destination::Dialog => downloads_directory()?,
-        #[cfg(feature = "demo")]
-        Destination::Directory(path) => path,
-    };
-    write_unique(&directory, name, bytes).map(Some)
+    destination(bytes, name)
 }
-fn write_unique(directory: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
+pub(crate) fn save_dialog(bytes: &[u8], name: &str) -> Result<Option<PathBuf>, String> {
+    match portal_destination(name) {
+        Ok(Some(path)) => {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|_| "Could not open the selected file.".to_string())?;
+            file.write_all(bytes)
+                .and_then(|_| file.sync_all())
+                .map_err(|_| "Could not save the selected file.".to_string())?;
+            return Ok(Some(path));
+        }
+        Ok(None) => return Ok(None),
+        Err(_) => {}
+    }
+    write_unique(&downloads_directory()?, name, bytes).map(Some)
+}
+pub(crate) fn write_unique(directory: &Path, name: &str, bytes: &[u8]) -> Result<PathBuf, String> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
     fs::DirBuilder::new()
         .recursive(true)
@@ -185,128 +176,25 @@ fn downloads_directory() -> Result<PathBuf, String> {
     Ok(home.join("Downloads"))
 }
 fn portal_destination(name: &str) -> Result<Option<PathBuf>, Box<dyn std::error::Error>> {
-    let connection = zbus::blocking::Connection::session()?;
-    let unique = connection
-        .unique_name()
-        .ok_or("missing bus identity")?
-        .as_str()
-        .trim_start_matches(':')
-        .replace('.', "_");
-    let token = format!("line_save_{}", std::process::id());
-    let expected = format!("/org/freedesktop/portal/desktop/request/{unique}/{token}");
-    let request = zbus::blocking::Proxy::new(
-        &connection,
-        "org.freedesktop.portal.Desktop",
-        expected.as_str(),
-        "org.freedesktop.portal.Request",
-    )?;
-    let mut responses = request.receive_signal("Response")?;
-    let portal = zbus::blocking::Proxy::new(
-        &connection,
-        "org.freedesktop.portal.Desktop",
-        "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.FileChooser",
-    )?;
-    let mut options: HashMap<&str, OwnedValue> = HashMap::new();
-    options.insert("handle_token", Str::from(token).into());
-    options.insert("current_name", Str::from(name).into());
-    options.insert("modal", true.into());
-    let actual: OwnedObjectPath = portal.call("SaveFile", &("", "Save photo", options))?;
-    if actual.as_str() != expected {
-        return Err("unexpected portal request path".into());
-    }
-    let response = responses.next().ok_or("portal closed without response")?;
-    let (code, mut values): (u32, HashMap<String, OwnedValue>) = response.body().deserialize()?;
-    if code == 1 {
-        return Ok(None);
-    }
-    if code != 0 {
-        return Err("portal export failed".into());
-    }
-    let uris: Vec<String> = values
-        .remove("uris")
-        .ok_or("portal returned no destination")?
-        .try_into()?;
-    let path = url::Url::parse(uris.first().ok_or("empty destination")?)?
-        .to_file_path()
-        .map_err(|_| "destination is not a local file")?;
-    Ok(Some(path))
-}
-impl crate::Desktop {
-    pub(crate) fn open_profile_photo(&mut self, ui: &AppWindow) {
-        if ui.get_profile_avatar().size().width == 0 {
-            return;
+    crate::desktop_env::portal::choose(
+        "SaveFile",
+        "Save photo",
+        HashMap::from([("current_name", Str::from(name).into())]),
+    )?
+    .map(Some)
+    .or_else(|code| {
+        if code == 1 {
+            Ok(None)
+        } else {
+            Err("file chooser failed")
         }
-        ui.global::<State>().invoke_remember_detail_focus(false);
-        ui.global::<State>().set_viewer_from_detail(true);
-        ui.global::<State>().set_viewer_has_previous(false);
-        ui.global::<State>().set_viewer_has_next(false);
-        let id = ui.get_profile_id();
-        let asset = crate::presenter::detail::profile_avatar(&self.state, id.as_str())
-            .and_then(|a| a.original());
-        ui.set_viewer_key(format!("profile:{id}").into());
-        ui.invoke_reset_viewer();
-        ui.set_viewer_image(ui.get_profile_avatar());
-        ui.global::<State>().set_viewer_name(ui.get_profile_name());
-        ui.set_viewer_loading(asset.is_some());
-        ui.set_viewer_error("".into());
-        ui.set_viewer_status(
-            if asset.is_some() {
-                "Loading original…"
-            } else {
-                ""
-            }
-            .into(),
-        );
-        self.viewer_source = None;
-        self.viewer_asset = asset.as_ref().map(|a| a.key());
-        if let Some(asset) = asset {
-            self.sender.send(Intent::Original(asset));
-        }
-        self.state.panel = Panel::Viewer;
-        self.render(ui);
-        ui.invoke_focus_viewer_close();
-    }
-    pub(crate) fn photos(&self) -> Vec<String> {
-        self.state
-            .rows()
-            .iter()
-            .filter(|m| matches!(m.body, Content::Photo { .. }))
-            .filter_map(|m| m.body.image().cloned())
-            .map(|asset| asset.key())
-            .collect()
-    }
-    pub(crate) fn open_photo(&mut self, ui: &AppWindow, key: &str) {
-        let asset = self
-            .state
-            .rows()
-            .iter()
-            .filter_map(|m| m.body.image().cloned())
-            .find(|a| a.key() == key)
-            .and_then(|a| a.original());
-        if let Some(asset) = asset {
-            let photos = self.photos();
-            let index = photos.iter().position(|k| k == key);
-            ui.global::<State>()
-                .set_viewer_has_previous(index.is_some_and(|i| i > 0));
-            ui.global::<State>()
-                .set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
-            ui.global::<State>()
-                .set_viewer_name(asset.display_name().into());
-            self.viewer_source = None;
-            self.viewer_asset = Some(asset.key());
-            if let Some(preview) = self.presenter.images.get(key) {
-                ui.set_viewer_image(preview.clone());
-            }
-            ui.set_viewer_status("Preview · loading original…".into());
-            ui.set_viewer_loading(true);
-            ui.set_viewer_error("".into());
-            if !ui.get_viewer_open() {
-                ui.invoke_show_viewer(key.into());
-            }
-            self.sender.send(Intent::Original(asset));
-        }
-    }
+    })?
+    .map(|uris| {
+        url::Url::parse(uris.first().ok_or("empty destination")?)?
+            .to_file_path()
+            .map_err(|_| "destination is not a local file".into())
+    })
+    .transpose()
 }
 
 #[cfg(test)]
@@ -322,11 +210,11 @@ mod tests {
                 SharedPixelBuffer::<Rgba8Pixel>::new(1, 1),
             ));
             ui.set_viewer_loading(true);
-            save_photo(&ui, Destination::Directory(std::env::temp_dir()), None);
+            save_photo(&ui, crate::dev::demo::destination(), None);
             assert!(!ui.global::<State>().get_viewer_saving());
             ui.set_viewer_loading(false);
             ui.set_viewer_error("Original unavailable".into());
-            save_photo(&ui, Destination::Directory(std::env::temp_dir()), None);
+            save_photo(&ui, crate::dev::demo::destination(), None);
             assert!(!ui.global::<State>().get_viewer_saving());
         })
         .join()
@@ -341,7 +229,12 @@ mod tests {
         image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
             .encode_image(&image::RgbImage::new(3, 2))
             .unwrap();
-        let path = export_photo(&pixels, Some(&jpeg), Destination::Directory(root.clone()))
+        fn test_destination(bytes: &[u8], name: &str) -> Result<Option<PathBuf>, String> {
+            let root =
+                std::env::temp_dir().join(format!("line-source-export-{}", std::process::id()));
+            write_unique(&root, name, bytes).map(Some)
+        }
+        let path = export_photo(&pixels, Some(&jpeg), test_destination)
             .unwrap()
             .unwrap();
         assert_eq!(fs::read(path).unwrap(), jpeg);

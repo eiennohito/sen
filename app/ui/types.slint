@@ -1,3 +1,10 @@
+export struct FeedbackRect { x: length, y: length, width: length, height: length }
+export enum DeliveryState { sent, pending, read, rejected }
+export enum RecoveryKind { none, edit, unsend }
+export enum RecoveryAction { cancel, replace, append, unsend }
+export enum DetailAction { none, rename, add, mute, leave, member-chat }
+export enum ChatCategory { all, friends, groups }
+export enum HistoryRowKind { message, gap, unread }
 export enum DemoAutomation { reset }
 export enum PanelState { none, settings, detail, viewer, sign-in }
 export enum ConnectionState { local, connecting, online, offline, signed-out, fatal, signing-in }
@@ -10,6 +17,7 @@ export struct FriendRow { count: int, header: bool, id: string, name: string, in
 export struct ReactorRow { id: string, name: string, initial: string, avatar-key: string, avatar: image }
 export struct ReactionRow { id: int, label: string, glyph: string, count: int, own: bool, reactors: [ReactorRow], image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
+    row-kind: HistoryRowKind,
     uploading: bool, upload-progress: float, file-missing: bool, local-media: bool,
     own-reaction: int, can-react: bool, reaction-count: int,
     can-unsend: bool,
@@ -21,7 +29,7 @@ export struct MessageRow {
     sender-id: string, sender-name: string, sender-initial: string, sender-key: string, sender-avatar: image, has-sender-avatar: bool,
     run-position: RunPosition, day-label: string, clock: string,
     image-key: string, picture: image, has-picture: bool, image-failed: bool, image-error: string, image-retryable: bool,
-    delivery: string, delivery-detail: string, recoverable: bool, reactions: [ReactionRow],
+    delivery: DeliveryState, delivery-detail: string, recoverable: bool, reactions: [ReactionRow],
 }
 
 // Fixed gutter and a wide pointer target. Content changes during a thumb drag

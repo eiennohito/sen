@@ -27,7 +27,7 @@ impl Presenter {
         let mut friends_error = String::new();
         let mut chat_list_error = String::new();
         let mut detail_error = String::new();
-        let detail_id = state.detail.last().map(|entry| match &entry.page {
+        let detail_id = state.detail.last().map(|page| match page {
             line::controller::DetailPage::Profile(id) => id.as_str(),
             line::controller::DetailPage::GroupInfo(id)
             | line::controller::DetailPage::Members(id) => id.0.as_str(),

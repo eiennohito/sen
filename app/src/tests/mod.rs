@@ -25,38 +25,34 @@ pub(crate) fn message(text: &str) -> StoredMessage {
 }
 fn test_window() -> AppWindow {
     let ui = window::create_app_window().unwrap();
-    let weak = ui.as_weak();
-    ui.global::<State>().on_focus_settings_close(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_focus_settings_close();
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_focus_profile_close(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_focus_profile_close();
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_request_panel(move |panel| {
-        if let Some(ui) = weak.upgrade() {
-            ui.global::<State>().set_panel(panel);
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_pop_detail(move |all| {
-        if let Some(ui) = weak.upgrade() {
-            let g = ui.global::<State>();
-            g.set_detail_depth(if all {
-                0
-            } else {
-                (g.get_detail_depth() - 1).max(0)
-            });
-            if g.get_detail_depth() == 0 {
-                g.set_panel(PanelState::None);
-            }
-        }
-    });
+    let worker = Worker::start(
+        StoreLocation::Memory,
+        || Ok(line::backend::FakeBackend::canned()),
+        Default::default(),
+    );
+    let desktop = Desktop {
+        clipboard_root: std::env::temp_dir(),
+        history: Default::default(),
+        shown_composer: String::new(),
+        reveal: None,
+        viewer_asset: None,
+        viewer_source: None,
+        destination: viewer::save_dialog,
+        notifications: None,
+        background: Default::default(),
+        assets: Default::default(),
+        state: AppState::default(),
+        presenter: Default::default(),
+        sender: worker.sender.clone(),
+        query: String::new(),
+        category: ChatCategory::All,
+    };
+    let runtime = Runtime {
+        desktop: Rc::new(RefCell::new(Some(desktop))),
+        actions: Default::default(),
+        draining: Default::default(),
+    };
+    callbacks::install(&ui, runtime);
     ui
 }
 mod grouping;

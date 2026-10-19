@@ -29,9 +29,9 @@ fn emoji_message() -> StoredMessage {
 fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
     let view = emoji_message();
     let mut message = message_row(&emoji_message(), None);
-    links::decorate_message(&mut message, "葵");
+    rich_content::links::decorate_message(&mut message);
     let mut row = ChatRow::default();
-    preview::set(
+    rich_content::preview::set(
         &mut row,
         &view.body,
         view.outgoing,
@@ -51,7 +51,7 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
         row.preview.as_str()
     );
     let measure = |s: &str| s.chars().count() as f32;
-    let line = preview::layout(&row.preview_runs, "You: ", 100., 1., measure);
+    let line = rich_content::preview::layout(&row.preview_runs, "You: ", 100., 1., measure);
     assert_eq!(
         line.iter().map(|r| r.text.to_string()).collect::<String>(),
         format!("You: {}", row.preview)
@@ -83,20 +83,23 @@ fn preview_elision_keeps_images_atomic_and_text_on_grapheme_boundaries() {
         },
     ]));
     let measure = |s: &str| s.chars().count() as f32;
-    let short = preview::layout(&rows, "", 2., 1., measure);
+    let short = rich_content::preview::layout(&rows, "", 2., 1., measure);
     assert_eq!(
         short.iter().map(|r| r.text.to_string()).collect::<String>(),
         "a…"
     );
     assert!(!short.iter().any(|r| r.emoji));
-    let long = preview::layout(&rows, "", 5.5, 1., measure);
+    let long = rich_content::preview::layout(&rows, "", 5.5, 1., measure);
     assert!(long.iter().any(|r| r.emoji));
     assert_eq!(
         long.iter().map(|r| r.text.to_string()).collect::<String>(),
         "a[笑]e\u{301}…"
     );
     assert!(long.iter().all(|r| r.x + r.measured_width <= 5.5));
-    assert_eq!(preview::layout(&rows, "", 0., 1., measure).row_count(), 0);
+    assert_eq!(
+        rich_content::preview::layout(&rows, "", 0., 1., measure).row_count(),
+        0
+    );
 }
 
 #[test]
@@ -121,7 +124,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
         let mut images = HashMap::new();
         let view = m;
         let mut row = ChatRow::default();
-        preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
+        rich_content::preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
         assert_eq!(row.preview, text);
         if kind == MessageKind::File {
             assert_eq!(row.preview_runs.row_count(), 0);
@@ -129,7 +132,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
         }
         assert!(row.preview_runs.row_data(0).unwrap().thumbnail);
         let measure = |s: &str| s.chars().count() as f32;
-        let fallback = preview::layout(&row.preview_runs, "", 100., 1., measure);
+        let fallback = rich_content::preview::layout(&row.preview_runs, "", 100., 1., measure);
         assert!(!fallback.iter().any(|run| run.thumbnail));
         let picture = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
             &[0, 180, 100, 255],
@@ -137,14 +140,14 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
             1,
         ));
         images.insert(media_key.clone(), picture);
-        preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
+        rich_content::preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
         assert!(
-            preview::layout(&row.preview_runs, "", 100., 1., measure)
+            rich_content::preview::layout(&row.preview_runs, "", 100., 1., measure)
                 .iter()
                 .any(|r| r.thumbnail)
         );
         images.remove(&media_key);
-        preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
+        rich_content::preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
         assert_eq!(row.preview, text);
     }
 }
@@ -228,9 +231,9 @@ fn content_labels_agree_across_rows_previews_and_accessibility() {
         let mut m = message("");
         m.body = content;
         let mut chat = ChatRow::default();
-        preview::set(&mut chat, &m.body, m.outgoing, None, &HashMap::new(), 15);
+        rich_content::preview::set(&mut chat, &m.body, m.outgoing, None, &HashMap::new(), 15);
         let mut row = message_row(&m, None);
-        links::decorate_message(&mut row, "Alice");
+        rich_content::links::decorate_message(&mut row);
         assert_eq!(kind_label(&m.body).1, compact);
         assert_eq!(message_text(&m.body).1, full);
         assert_eq!(row.body, full);

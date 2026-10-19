@@ -1,5 +1,5 @@
 //! Original demo content, supplied as decoded RPC rows and backend assets.
-use crate::*;
+use super::*;
 use line::client::desktop::{
     assets::{Asset, Pixels},
     rich::RichContent,

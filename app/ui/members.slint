@@ -1,6 +1,6 @@
-import { ListRow, RowText } from "list-row.slint";
+import { DetailAction } from "types.slint";
+import { ListRow } from "list-row.slint";
 import { IconButton } from "icon-button.slint";
-import { Avatar } from "avatar.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { SearchField } from "search-field.slint";
@@ -12,7 +12,6 @@ export component Members inherits FocusScope {
     property <length> row-height: max(64px, Tokens.base * 2.8 + 16px);
     public function focus-first() { State.focus-profile-close(); }
     public function focus-last() { if list.visible { list.focus(); } else { search.focus-last(); } }
-    public function focus-list() { list.focus(); }
     function reveal() { if root.selected * root.row-height < -pane.offset { pane.jump(-root.selected * root.row-height); } else if (root.selected + 1) * root.row-height > -pane.offset + pane.visible-height { pane.jump(pane.visible-height - (root.selected + 1) * root.row-height); } }
     capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
     key-pressed(event) => {
@@ -67,7 +66,7 @@ export component Members inherits FocusScope {
                         title-note: member.is-self ? "You" : member.friend ? "Friend" : "";
                         avatar-size: 40px; trailing-width: 40px;
                         touch := TouchArea { enabled: !member.invited; mouse-cursor: pointer; clicked => { root.selected = i; list.focus(); if !member.invited { State.open-member(member.id); } } }
-                        IconButton { x: parent.width - 40px; y: (parent.height - 32px) / 2; visible: member.friend && !member.invited && !member.is-self && (touch.has-hover || (list.has-focus && root.selected == i)); enabled: self.visible; label: "Chat with " + member.name; icon: @image-url("../assets/icons/chats.svg"); activated => { State.detail-action("member-chat", member.id); } }
+                        IconButton { x: parent.width - 40px; y: (parent.height - 32px) / 2; visible: member.friend && !member.invited && !member.is-self && (touch.has-hover || (list.has-focus && root.selected == i)); enabled: self.visible; label: "Chat with " + member.name; icon: @image-url("../assets/icons/chats.svg"); activated => { State.detail-action(DetailAction.member-chat, member.id); } }
 
                       }
                     }

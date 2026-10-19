@@ -1,15 +1,38 @@
+import { DeliveryState, RecoveryKind, HistoryRowKind, MessageRow, MessageKind, RunPosition } from "types.slint";
 import { ReactionChip } from "reaction-chip.slint";
 import { ReplyQuote } from "reply-quote.slint";
 import { IconButton } from "icon-button.slint";
 import { Avatar } from "avatar.slint";
 import { DatePill } from "history-pill.slint";
 import { Button } from "button.slint";
-import { LineEdit, TextEdit, ScrollView, ComboBox } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
-import { ChatRow, FriendRow, MessageRow, ReactionRow, MessageKind, RunPosition } from "types.slint";
 import { RichFlow } from "rich-flow.slint";
-import { Pane } from "scrollpane.slint";
+
+enum MessageAction { react, select-text, copy-selection, copy-message }
+
+component MessageMenu inherits Rectangle {
+    in property <MessageRow> message;
+    in property <bool> text-actions;
+    in property <bool> rich;
+    callback action(MessageAction);
+    public function show(position: {x: length, y: length}) { menu.show(position); }
+    menu := ContextMenuArea {
+        width: 100%; height: 100%;
+        Menu {
+            if root.message.can-react: MenuItem { title: "Reply"; activated => { State.reply(root.message.id); } }
+            if root.message.can-react: MenuItem { title: "React"; activated => { root.action(MessageAction.react); } }
+            if root.text-actions && root.rich: MenuItem { title: "Select text"; activated => { root.action(MessageAction.select-text); } }
+            if root.text-actions && !root.rich: MenuItem { title: "Copy selection"; activated => { root.action(MessageAction.copy-selection); } }
+            if root.text-actions: MenuItem { title: "Copy message"; activated => { root.action(MessageAction.copy-message); } }
+            if root.text-actions && root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
+            if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = RecoveryKind.unsend; } }
+            for link in (root.text-actions && !root.rich ? root.message.links : []): MenuItem { title: "Open link " + link.url; activated => { State.open-link(link.url); } }
+            if root.text-actions && !root.rich && root.message.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
+        }
+        Rectangle { width: 100%; height: 100%; @children }
+    }
+}
 
 component TextAction inherits Rectangle {
     in property <string> text;
@@ -56,8 +79,8 @@ export component Message inherits TouchArea {
         // The history layout reserves at least 16 px before its first delegate.
         // Initial unlaid-out values must never count as an exposed message.
         if root.origin-y + root.y >= 16px && root.width > 0px && root.anchor-height > 1px {
-            State.row-geometry(root.message.id, root.anchor-top, root.anchor-height);
-            if root.message.id == State.unread-divider { State.row-geometry("unread", root.origin-y + root.y, 28px); }
+            State.row-geometry(root.message.row-kind, root.message.id, root.anchor-top, root.anchor-height);
+            if root.message.id == State.unread-divider { State.row-geometry(HistoryRowKind.unread, "", root.origin-y + root.y, 28px); }
         }
     }
     changed anchor-top => { root.report-geometry(); }
@@ -68,7 +91,7 @@ export component Message inherits TouchArea {
                         padding-top: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.first ? 12px : 2px;
                         if root.message.id == State.unread-divider: Text { text: "Unread messages"; color: Tokens.accent-strong; font-size: Tokens.small; horizontal-alignment: center; height: 28px; }
                         if root.message.day-label != "": HorizontalLayout { alignment: center; DatePill { text: root.message.day-label; } }
-                        if root.system-item: HorizontalLayout { alignment: center; DatePill { text: root.message.body; max-width: root.width - 24px; background: State.highlight-message == root.message.id ? Tokens.bubble-selection : Tokens.surface-2; } }
+                        if root.system-item: HorizontalLayout { alignment: center; DatePill { text: root.message.body; max-width: root.width - 24px; background: (State.highlight-message == root.message.id) ? Tokens.bubble-selection : Tokens.surface-2; } }
                         message-content := HorizontalLayout {
                         visible: !root.system-item;
                         height: root.system-item ? 0px : self.preferred-height;
@@ -89,7 +112,7 @@ export component Message inherits TouchArea {
                                 color: Tokens.secondary; font-size: Tokens.small; overflow: elide;
                                 TouchArea { accessible-role: button; accessible-label: "Sender profile: " + root.message.sender-name; accessible-action-default => { State.open-member(root.message.sender-id); } clicked => { State.open-member(root.message.sender-id); } }
                             }
-                            message-bubble := ContextMenuArea {
+                            message-bubble := MessageMenu {
                                     reactions := PopupWindow {
                                         x: root.message.outgoing ? min(0px, message-bubble.width - 216px) : 0px; y: -48px;
                                         width: 216px; height: 44px;
@@ -114,13 +137,16 @@ export component Message inherits TouchArea {
                                         }
                                     }
 
-                                Menu {
-                                    if root.message.can-react: MenuItem { title: "Reply"; activated => { State.reply(root.message.id); } }
-                                    if root.message.can-react: MenuItem { title: "React"; activated => { reactions.show(); } }
-                                    if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
-                                    if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
+                                message: root.message;
+                                text-actions: false; rich: false;
+                                action(kind) => {
+                                    if kind == MessageAction.react { reactions.show(); }
+                                    else if kind == MessageAction.select-text { root.selecting-rich = true; body.focus(); }
+                                    else if kind == MessageAction.copy-selection { body.copy(); }
+                                    else { root.copy-message(); }
                                 }
-                                property <bool> selected: body.has-focus || root.card-focused || root.rich-focused || State.highlight-message == root.message.id;
+
+                                property <bool> selected: body.has-focus || root.card-focused || root.rich-focused || (State.highlight-message == root.message.id);
                                 Rectangle { width: 100%; height: 100%;
                                 background: parent.selected ? Tokens.bubble-selection : root.message.sticker || root.message.photo ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface-2;
                                 border-width: parent.selected ? 2px : 0px;
@@ -146,17 +172,13 @@ export component Message inherits TouchArea {
                                         }
                                         TouchArea { mouse-cursor: pointer; clicked => { quote-focus.focus(); State.jump-message(root.message.reply-id); } }
                                     }
-                                    if root.message.rich-runs.length > 0 && !root.selecting-rich: ContextMenuArea {
+                                    if root.message.rich-runs.length > 0 && !root.selecting-rich: MessageMenu {
                                         visible: !root.rich-fallback;
                                         height: self.visible ? rich-flow.height : 0px;
-                                        Menu {
-                                            if root.message.can-react: MenuItem { title: "Reply"; activated => { State.reply(root.message.id); } }
-                                    if root.message.can-react: MenuItem { title: "React"; activated => { reactions.show(); } }
-                                            MenuItem { title: "Select text"; activated => { root.selecting-rich = true; body.focus(); } }
-                                            MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
-                                            if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
-                                            if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
-                                        }
+                                        message: root.message;
+                                        text-actions: true; rich: true;
+                                        action(kind) => { message-bubble.action(kind); }
+
                                         rich-focus := FocusScope {
                                             accessible-role: text; accessible-label: root.message.accessible-label; accessible-value: root.message.body; accessible-description: self.has-focus ? "Focused message" : root.message.accessible-label;
                                             changed has-focus => { root.rich-focused = self.has-focus; }
@@ -179,19 +201,13 @@ export component Message inherits TouchArea {
                                         }
                                     }
                                     if root.selecting-rich: Button { text: root.message.has-inline-emoji ? "Show emoji" : "Show message"; clicked => { root.selecting-rich = false; } }
-                                    ContextMenuArea {
+                                    MessageMenu {
                                         visible: !root.message.photo && !root.card && root.message.body != "" && (!root.message.sticker || root.message.image-key == "") && (root.message.rich-runs.length == 0 || root.selecting-rich || root.rich-fallback);
                                         height: self.visible ? body.preferred-height : 0px;
-                                        Menu {
-                                            if root.message.can-react: MenuItem { title: "Reply"; activated => { State.reply(root.message.id); } }
-                                    if root.message.can-react: MenuItem { title: "React"; activated => { reactions.show(); } }
-                                            MenuItem { title: "Copy selection"; activated => { body.copy(); } }
-                                            MenuItem { title: "Copy message"; activated => { root.copy-message(); } }
-                                            if root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
-                                            if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = "unsend"; } }
-                                            for link in root.message.links: MenuItem { title: "Open link " + link.url; activated => { State.open-link(link.url); } }
-                                            if root.message.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
-                                        }
+                                        message: root.message;
+                                        text-actions: true; rich: false;
+                                        action(kind) => { message-bubble.action(kind); }
+
                                         body := TextInput {
                                             text: root.showing-rich && !root.copying-rich ? "" : root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
                                             wrap: body-measure.min-width > self.width ? char-wrap : word-wrap; color: root.message.outgoing ? Tokens.outgoing-foreground : Tokens.foreground;
@@ -223,7 +239,7 @@ export component Message inherits TouchArea {
                                             card-title := TextInput { changed has-focus => { root.card-focused = self.has-focus; } read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else { State.focus-composer(); } return accept; } State.reading-key(event) } }
                                             card-meta := Text { text: root.message.detail; color: Tokens.secondary; font-size: Tokens.small; }
                                         }
-                                        if root.message.kind == MessageKind.file && (root.message.delivery == "Sent" || root.message.delivery == "Read") && (!root.message.file-failed || root.message.file-retryable): IconButton { label: root.message.file-failed ? "Retry file" : "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !State.file-saving && !root.message.local-media; activated => { State.save-file(root.message.id); } }
+                                        if root.message.kind == MessageKind.file && (root.message.delivery == DeliveryState.sent || root.message.delivery == DeliveryState.read) && (!root.message.file-failed || root.message.file-retryable): IconButton { label: root.message.file-failed ? "Retry file" : "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !State.file-saving && !root.message.local-media; activated => { State.save-file(root.message.id); } }
                                     }
                                     if !root.card && root.message.detail != "": Rectangle {
                                         height: detail.preferred-height;
@@ -317,10 +333,10 @@ export component Message inherits TouchArea {
             Text { text: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.clock : ""; accessible-label: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
             if root.message.outgoing && (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last): Image {
                 width: 16px; height: 16px;
-                source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/clock.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == "Not sent" ? @image-url("../assets/icons/error.svg") : @image-url("../assets/icons/check.svg");
+                source: root.message.delivery == DeliveryState.pending ? @image-url("../assets/icons/clock.svg") : root.message.delivery == DeliveryState.read ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == DeliveryState.rejected ? @image-url("../assets/icons/error.svg") : @image-url("../assets/icons/check.svg");
                 accessible-role: image;
-                accessible-label: root.message.delivery == "Sending…" ? "Sending" : root.message.delivery == "" ? "Sent" : root.message.delivery;
-                colorize: root.message.delivery == "Not sent" ? Tokens.danger : root.message.delivery == "Read" ? Tokens.accent-strong : Tokens.secondary;
+                accessible-label: root.message.delivery == DeliveryState.pending ? "Sending" : root.message.delivery == DeliveryState.sent ? "Sent" : root.message.delivery == DeliveryState.read ? "Read" : "Not sent";
+                colorize: root.message.delivery == DeliveryState.rejected ? Tokens.danger : root.message.delivery == DeliveryState.read ? Tokens.accent-strong : Tokens.secondary;
             }
         }
     }

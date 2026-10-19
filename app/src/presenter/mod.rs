@@ -1,4 +1,14 @@
 //! Slint is a presentation target; the controller owns the projection.
+mod assets;
+pub(crate) mod chats;
+mod compose;
+pub(crate) mod detail;
+pub(crate) mod format;
+pub(crate) mod messages;
+mod people;
+mod shell;
+pub(crate) mod system_events;
+
 use crate::*;
 use messages::compact_text;
 #[derive(Default)]
@@ -79,16 +89,14 @@ fn patch<K: PartialEq + Clone, R: Clone + PartialEq + 'static>(
     }
 }
 
-mod assets;
-pub(crate) mod chats;
-mod compose;
-pub(crate) mod detail;
-pub(crate) mod messages;
-mod people;
-mod shell;
-
 impl Presenter {
-    pub fn present(&mut self, ui: &AppWindow, state: &AppState, query: &str, category: i32) {
+    pub fn present(
+        &mut self,
+        ui: &AppWindow,
+        state: &AppState,
+        query: &str,
+        category: ChatCategory,
+    ) {
         self.present_compose(ui, state);
         self.present_people(ui, state);
         let detail_error = self.present_errors(ui, state);

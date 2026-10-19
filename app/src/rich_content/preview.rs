@@ -23,7 +23,7 @@ pub(crate) fn small(image: &slint::Image, size: i32) -> slint::Image {
 
 pub(crate) fn preview_runs(
     text: &str,
-    metadata: &[present::EmojiView],
+    metadata: &[presenter::format::EmojiView],
     images: &HashMap<String, slint::Image>,
     size: i32,
 ) -> ModelRc<RichRun> {

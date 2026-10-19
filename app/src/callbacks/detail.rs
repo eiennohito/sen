@@ -44,7 +44,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         ui.global::<State>().invoke_restore_detail_focus(all);
     });
     global_callback!(ui, actions, on_detail_action, |ui, d, kind, value| {
-        if kind == "member-chat" {
+        if kind == DetailAction::MemberChat {
             let id = ChatId(value.to_string());
             d.reveal = Some(id.clone());
             d.open_chat(&ui, id);
@@ -62,12 +62,12 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         let Some(page) = d.state.detail_page().cloned() else {
             return;
         };
-        let action = match (kind.as_str(), page) {
-            ("rename", DetailPage::Profile(mid)) => ProfileAction::Rename {
+        let action = match (kind, page) {
+            (DetailAction::Rename, DetailPage::Profile(mid)) => ProfileAction::Rename {
                 mid,
                 name: value.to_string(),
             },
-            ("add", DetailPage::Profile(mid)) => ProfileAction::AddFriend {
+            (DetailAction::Add, DetailPage::Profile(mid)) => ProfileAction::AddFriend {
                 mid,
                 chat: d
                     .state
@@ -76,11 +76,11 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
                     .map(|c| c.0.clone())
                     .unwrap_or_default(),
             },
-            ("mute", DetailPage::GroupInfo(chat)) => ProfileAction::Mute {
+            (DetailAction::Mute, DetailPage::GroupInfo(chat)) => ProfileAction::Mute {
                 disabled: !ui.global::<State>().get_group_muted(),
                 chat,
             },
-            ("leave", DetailPage::GroupInfo(chat)) => ProfileAction::Leave { chat },
+            (DetailAction::Leave, DetailPage::GroupInfo(chat)) => ProfileAction::Leave { chat },
             _ => return,
         };
         d.state.action_error = None;
@@ -97,8 +97,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             }
             ui.global::<State>().invoke_remember_detail_focus(!push);
             ui.set_member_query("".into());
-            d.state
-                .push_detail(DetailPage::Members(chat.clone()), "members".into());
+            d.state.push_detail(DetailPage::Members(chat.clone()));
             d.sender.send(Intent::Members(chat));
             d.render(&ui);
             ui.invoke_focus_profile_close();
@@ -122,13 +121,11 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
                 d.open_chat(&ui, chat.clone());
             }
             ui.set_show_conversation(true);
-            d.state
-                .push_detail(DetailPage::GroupInfo(chat.clone()), "header".into());
+            d.state.push_detail(DetailPage::GroupInfo(chat.clone()));
             d.sender.send(Intent::GroupInfo(chat.clone()));
             d.sender.send(Intent::Members(chat));
         } else {
-            d.state
-                .push_detail(DetailPage::Profile(id.clone()), "profile".into());
+            d.state.push_detail(DetailPage::Profile(id.clone()));
             if !d.state.profile_own(&id) {
                 d.sender.send(Intent::Contact(id));
             }
@@ -140,8 +137,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         ui.global::<State>()
             .invoke_remember_detail_focus(d.state.detail.is_empty());
         let id = id.to_string();
-        d.state
-            .push_detail(DetailPage::Profile(id.clone()), "member".into());
+        d.state.push_detail(DetailPage::Profile(id.clone()));
         d.sender.send(Intent::Contact(id));
         d.render(&ui);
         ui.invoke_focus_profile_close();

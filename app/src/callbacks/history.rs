@@ -29,7 +29,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     });
     global_callback!(ui, actions, on_return_to_message, |ui, d| {
         d.history.jump_target = None;
-        if let Some((key, offset, _)) = d.history.return_anchor.take() {
+        if let Some((key, offset)) = d.history.return_anchor.take() {
             // The origin is kept below the top cover, which may have changed.
             d.history
                 .jump_to(key, offset - ui.global::<State>().get_history_visible_top());
@@ -56,20 +56,33 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             ui.set_following(true);
         }
     });
-    global_callback!(ui, actions, on_row_geometry, |ui, d, id, top, height| {
-        if id == "unread" {
-            d.history.divider_top = Some(top);
-        } else if let Some(key) = id.strip_prefix("gap-") {
-            d.history
-                .gap_geometry
-                .insert(Key(key.parse().unwrap()), (top, height));
-        } else {
-            d.history
-                .geometry
-                .insert(Key(id.parse().unwrap()), (top, height));
+    global_callback!(
+        ui,
+        actions,
+        on_row_geometry,
+        |ui, d, kind, id, top, height| {
+            match kind {
+                HistoryRowKind::Unread => d.history.divider_top = Some(top),
+                HistoryRowKind::Gap | HistoryRowKind::Message => {
+                    let id = if kind == HistoryRowKind::Gap {
+                        id.strip_prefix("gap-").unwrap_or("")
+                    } else {
+                        &id
+                    };
+                    let Some(key) = super::message_key(id) else {
+                        return;
+                    };
+                    let geometry = if kind == HistoryRowKind::Gap {
+                        &mut d.history.gap_geometry
+                    } else {
+                        &mut d.history.geometry
+                    };
+                    geometry.insert(key, (top, height));
+                }
+            }
+            d.observe_reading(&ui);
         }
-        d.observe_reading(&ui);
-    });
+    );
     global_callback!(ui, actions, on_history_scrolled, |ui, d| {
         d.observe_reading(&ui);
         for intent in

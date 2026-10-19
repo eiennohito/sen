@@ -1,13 +1,10 @@
 import { ListRow, RowText } from "list-row.slint";
 import { EmptyState } from "empty-state.slint";
-import { PreviewLine } from "preview-line.slint";
-import { Avatar } from "avatar.slint";
-import { Button, LineEdit } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Pane } from "scrollpane.slint";
 import { SearchField } from "search-field.slint";
-import { IconButton } from "icon-button.slint";
+
 export component Friends inherits Rectangle {
     out property <bool> has-focus: friend-search.contains-focus || list-focus.has-focus;
     visible: State.section == 1;
