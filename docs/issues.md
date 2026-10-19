@@ -19,7 +19,7 @@ merge. "Branch" means the work exists but is not merged yet.
 | 23 | Live account verification | constraint | needs the device slot (user's call) |
 | 24 | Demo scenes and fixtures are compiled into the product binary | found | deslop pass: move to a dev package behind a feature |
 | 25 | Opening a chat from a notification or D-Bus activation skips saving the current draft (6 copies of "open chat") | audit | deslop pass, desktop glue batch |
-| 26 | Deslop batches from the audit: store schema/unread model, transport rewrite on stock ureq, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1 running: store, transport, crypto/credentials |
+| 26 | Deslop batches from the audit: store schema/unread model, transport rewrite on stock ureq, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1: crypto/CLI merged; store in review fixes; transport waiting on the HTTP stack choice (ureq → lighter async stack being measured) |
 
 ## Done (merged to main)
 
@@ -43,4 +43,5 @@ merge. "Branch" means the work exists but is not merged yet.
 - #12 List rows: single-line text from the presenter, one shared row component.
 - #13 Resend across sign-out/sign-in: nothing resends across sessions or restarts; failed sends are "Not sent" with Retry; our echo turns any row into Sent.
 - #14 Transient drops invisible, "No connection" only after 15 s without a network success, "Signed out: <reason>" as one state; the stream restarts after drops; undecryptable messages no longer break loading.
+- Deslop wave 1, crypto/CLI: `native_crypto` and the `line-auth` CLI deleted (−2.2k lines); an unreadable credentials file or failed keyring unlock is an error, never a fresh key over the sealed session.
 - #18 UI check `focus` 46 s → 11 s (95 → 14 s wide); all 16 groups ~80 s.
