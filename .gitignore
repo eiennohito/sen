@@ -9,3 +9,5 @@
 *.crx
 __pycache__/
 *.pyc
+
+/fonts/

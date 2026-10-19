@@ -5,6 +5,7 @@ import contextlib
 import json
 import os
 from pathlib import Path
+import fetch_emoji_font
 import resource
 import secrets
 import shutil
@@ -30,6 +31,8 @@ def launch_demo(binary, port, arguments=(), log=None):
                 'XDG_ACTIVATION_TOKEN', 'DESKTOP_STARTUP_ID', 'DBUS_SESSION_BUS_ADDRESS',
                 'WINIT_UNIX_BACKEND', 'SLINT_BACKEND', 'XMODIFIERS', 'GTK_IM_MODULE', 'QT_IM_MODULE'):
         environment.pop(key, None)
+    font_files = list(fetch_emoji_font.verified_files())
+    environment['LINE_EMOJI_FONT'] = str(font_files[0])
     token = secrets.token_hex(24)
     environment.update(LINE_UI_INSTANCE=token, LINE_DESKTOP_CREDENTIALS='plaintext-file',
                        SLINT_SCALE_FACTOR='1', SLINT_BACKEND='headless-software',

@@ -13,7 +13,7 @@ ui-debug = ["demo", "line-desktop-ui/ui-debug", "dep:i-slint-backend-selector"]
 line = { path = "..", features = ["demo"] }
 
 [dependencies]
-slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "unstable-winit-030", "renderer-software", "accessibility"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "unstable-winit-030", "unstable-fontique-011", "renderer-software", "accessibility"] }
 line = { path = ".." }
 line-desktop-ui = { path = "../ui" }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }

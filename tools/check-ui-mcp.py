@@ -282,6 +282,19 @@ def check_smoke():
     call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=before_shortcut)
 
 
+def check_emoji():
+    show_chats()
+    smoke_chat("Emoji 🌸 😀")
+    sample = "🌸 😀 ❤️ ❤︎ 👩‍💻 🇯🇵 1️⃣"
+    set_value("Message draft", sample)
+    click("Send")
+    wait_for(lambda: not element("Message draft", "TextInput").get("accessibleValue"), "emoji send did not finish")
+    wait_for(lambda: any(item.get("accessibleValue") == sample for item in bodies()), "emoji message was not sent")
+    set_value("Message draft", sample)
+    click("Message draft", "TextInput")
+    screenshot("emoji-surfaces")
+
+
 def check_signed_out():
     for section in ("Chats", "Friends"):
         click(section)
@@ -1157,7 +1170,7 @@ def check_rich():
     call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value="")
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     ctrl("v")
-    assert wait_element("Message draft", "TextInput").get("accessibleValue") == original, "rich copy lost emoji fallback or newlines"
+    wait_for(lambda: wait_element("Message draft", "TextInput").get("accessibleValue") == original, "rich copy lost emoji fallback or newlines")
     click("Show emoji", "Button")
     wait_element("[笑]", "Image")
     exports = demo_directory / "exports"
@@ -1217,6 +1230,7 @@ def check_unread():
 
 GROUPS = {
     'smoke': check_smoke,
+    'emoji': check_emoji,
     'focus': check_focus,
     'compose': check_compose,
     'scenarios': check_scenarios,

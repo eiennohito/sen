@@ -8,6 +8,7 @@ description = "Rust host and client adapter for the unmodified LINE Chrome crypt
 members = ["app", "ui"]
 default-members = ["."]
 resolver = "3"
+exclude = ["third_party/i-slint-renderer-software-1.18.1", "third_party/parley-0.11.1"]
 
 [features]
 default = []
@@ -68,3 +69,7 @@ opt-level = 0
 # The crypto module runs in wasmi; unoptimized it is ~10x slower in tests.
 [profile.dev.package."*"]
 opt-level = 2
+
+[patch.crates-io]
+i-slint-renderer-software = { path = "third_party/i-slint-renderer-software-1.18.1" }
+parley = { path = "third_party/parley-0.11.1" }

@@ -3,9 +3,8 @@
 
 use core::num::NonZeroU16;
 
-use alloc::rc::Rc;
 use alloc::vec::Vec;
-use skrifa::MetadataProvider;
+use skrifa::{MetadataProvider, raw::TableProvider};
 
 use crate::PhysicalLength;
 use crate::fixed::Fixed;
@@ -13,7 +12,7 @@ use i_slint_common::sharedfontique::fontique;
 use i_slint_core::lengths::PhysicalPx;
 use i_slint_core::textlayout::{Glyph, TextShaper};
 
-use super::RenderableVectorGlyph;
+use super::{RenderableVectorGlyph, VectorGlyphImage};
 
 // A length in font design space.
 struct FontUnit;
@@ -30,7 +29,7 @@ pub(crate) const SUBPIXEL_BIN_COUNT: i32 = 4;
 
 /// Cache key includes blob id, font index, pixel size, glyph id, a hash of normalized
 /// variation coordinates (so different variable font instances produce distinct cache
-/// entries) and the horizontal sub-pixel bin.
+/// entries), the horizontal sub-pixel bin, and the COLR foreground color.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 struct GlyphCacheKey {
     /// Font blob id.
@@ -45,13 +44,17 @@ struct GlyphCacheKey {
     coords_hash: u64,
     /// Horizontal sub-pixel bin.
     subpixel_bin: u8,
+    foreground: [u8; 3],
 }
 
 struct RenderableGlyphWeightScale;
 
 impl clru::WeightScale<GlyphCacheKey, RenderableVectorGlyph> for RenderableGlyphWeightScale {
     fn weight(&self, _: &GlyphCacheKey, value: &RenderableVectorGlyph) -> usize {
-        value.alpha_map.len()
+        match &value.image {
+            VectorGlyphImage::AlphaMap(data) => data.len(),
+            VectorGlyphImage::Rgba(image) => image.width() as usize * image.height() as usize * 4,
+        }
     }
 }
 
@@ -86,6 +89,8 @@ pub struct VectorFont {
     normalized_coords: Vec<i16>,
     /// Hash of normalized_coords for use in the glyph cache key.
     coords_hash: u64,
+    has_color_bitmaps: bool,
+    has_colr: bool,
 }
 
 fn hash_coords(coords: &[i16]) -> u64 {
@@ -156,6 +161,10 @@ impl VectorFont {
         let units_per_em = metrics.units_per_em;
         let scale = FontScaleFactor::new(pixel_size.get() as f32 / units_per_em as f32);
         let coords_hash = hash_coords(normalized_coords);
+        let swash_font =
+            swash::FontRef { data: font_blob.data(), offset: swash_offset, key: swash_key };
+        let has_color_bitmaps = swash_font.color_strikes().next().is_some();
+        let has_colr = face.colr().is_ok();
         Self {
             font_index,
             font_blob,
@@ -169,6 +178,8 @@ impl VectorFont {
             cap_height: (cap_height.cast() * scale).cast(),
             normalized_coords: normalized_coords.to_vec(),
             coords_hash,
+            has_color_bitmaps,
+            has_colr,
         }
     }
 
@@ -176,8 +187,11 @@ impl VectorFont {
         &self,
         glyph_id: core::num::NonZeroU16,
         subpixel_bin: u8,
+        foreground: [u8; 4],
         slint_context: &i_slint_core::SlintContext,
     ) -> Option<RenderableVectorGlyph> {
+        // Bitmap strikes ignore the subpixel offset.
+        let subpixel_bin = if self.has_color_bitmaps { 0 } else { subpixel_bin };
         GLYPH_CACHE.with(|cache| {
             let mut cache = cache.borrow_mut();
 
@@ -188,6 +202,11 @@ impl VectorFont {
                 glyph_id,
                 coords_hash: self.coords_hash,
                 subpixel_bin,
+                foreground: if self.has_colr {
+                    [foreground[0], foreground[1], foreground[2]]
+                } else {
+                    [0; 3]
+                },
             };
 
             if let Some(entry) = cache.get(&cache_key) {
@@ -204,20 +223,47 @@ impl VectorFont {
                     .size(self.pixel_size.get() as f32)
                     .normalized_coords(&self.normalized_coords)
                     .build();
-                let image = swash::scale::Render::new(&[swash::scale::Source::Outline])
-                    .format(swash::zeno::Format::Alpha)
-                    .offset(swash::zeno::Vector::new(subpixel_offset_x, 0.0))
-                    .render(&mut scaler, glyph_id.get())?;
+                let mut image = swash::scale::Render::new(&[
+                    swash::scale::Source::ColorOutline(0),
+                    swash::scale::Source::ColorBitmap(swash::scale::StrikeWith::BestFit),
+                    swash::scale::Source::Outline,
+                ])
+                .default_color(foreground)
+                .format(swash::zeno::Format::Alpha)
+                .offset(swash::zeno::Vector::new(subpixel_offset_x, 0.0))
+                .render(&mut scaler, glyph_id.get())?;
 
                 let placement = image.placement;
-                let alpha_map: Rc<[u8]> = image.data.into();
+                let image = if image.content == swash::scale::image::Content::Color {
+                    // Swash composites COLR layers premultiplied; decoded PNG bitmaps
+                    // have straight alpha and need premultiplication for the texture path.
+                    if matches!(image.source, swash::scale::Source::ColorBitmap(_)) {
+                        for pixel in image.data.as_chunks_mut::<4>().0 {
+                            for channel in 0..3 {
+                                pixel[channel] =
+                                    ((pixel[channel] as u16 * pixel[3] as u16 + 127) / 255) as u8;
+                            }
+                        }
+                    }
+                    VectorGlyphImage::Rgba(
+                        i_slint_core::graphics::SharedImageBuffer::RGBA8Premultiplied(
+                            i_slint_core::graphics::SharedPixelBuffer::clone_from_slice(
+                                &image.data,
+                                placement.width,
+                                placement.height,
+                            ),
+                        ),
+                    )
+                } else {
+                    VectorGlyphImage::AlphaMap(image.data.into())
+                };
 
                 Some(RenderableVectorGlyph {
                     x: Fixed::from_integer(placement.left),
                     y: Fixed::from_integer(placement.top - placement.height as i32),
                     width: PhysicalLength::new(placement.width.try_into().unwrap()),
                     height: PhysicalLength::new(placement.height.try_into().unwrap()),
-                    alpha_map,
+                    image,
                     pixel_stride: placement.width.try_into().unwrap(),
                     glyph_origin_x: placement.left as f32,
                 })
@@ -304,18 +350,114 @@ impl super::GlyphRenderer for VectorFont {
         glyph_id: core::num::NonZeroU16,
         slint_context: &i_slint_core::SlintContext,
     ) -> Option<super::RenderableGlyph> {
-        self.render_vector_glyph(glyph_id, 0, slint_context).map(|glyph| super::RenderableGlyph {
-            x: glyph.x,
-            y: glyph.y,
-            width: glyph.width,
-            height: glyph.height,
-            alpha_map: glyph.alpha_map.into(),
-            pixel_stride: glyph.pixel_stride,
-            sdf: false,
+        // This alpha-only path does not support color fonts; draw_glyph_run handles them.
+        if self.has_colr || self.has_color_bitmaps {
+            return None;
+        }
+        self.render_vector_glyph(glyph_id, 0, [0, 0, 0, 255], slint_context).and_then(|glyph| {
+            let VectorGlyphImage::AlphaMap(alpha_map) = glyph.image else {
+                return None;
+            };
+            Some(super::RenderableGlyph {
+                x: glyph.x,
+                y: glyph.y,
+                width: glyph.width,
+                height: glyph.height,
+                alpha_map: alpha_map.into(),
+                pixel_stride: glyph.pixel_stride,
+                sdf: false,
+            })
         })
     }
 
     fn scale_delta(&self) -> super::Fixed<u16, 8> {
         super::Fixed::from_integer(1)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Platform;
+    impl i_slint_core::platform::Platform for Platform {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<
+            alloc::rc::Rc<dyn i_slint_core::platform::WindowAdapter>,
+            i_slint_core::api::PlatformError,
+        > {
+            unreachable!("glyph rasterization does not create windows")
+        }
+    }
+
+    #[test]
+    fn bitmap_edges_are_premultiplied_and_subpixel_bins_share_one_cache_entry() {
+        let context = i_slint_core::SlintContext::new(alloc::boxed::Box::new(Platform));
+        let blob = fontique::Blob::new(std::sync::Arc::new(
+            include_bytes!("../tests/fonts/sbix.ttf").to_vec(),
+        ));
+        let font_ref = swash::FontRef::from_index(blob.data(), 0).unwrap();
+        let font = VectorFont::new_from_blob_and_index(
+            blob.clone(),
+            0,
+            font_ref.key,
+            font_ref.offset,
+            PhysicalLength::new(20),
+        );
+        let id = NonZeroU16::new(font_ref.charmap().map('😀')).unwrap();
+        let glyph = font.render_vector_glyph(id, 0, [0, 0, 0, 255], &context).unwrap();
+        let entries = GLYPH_CACHE.with(|cache| cache.borrow().len());
+        font.render_vector_glyph(id, 3, [0, 0, 0, 255], &context).unwrap();
+        assert_eq!(GLYPH_CACHE.with(|cache| cache.borrow().len()), entries);
+        let VectorGlyphImage::Rgba(i_slint_core::graphics::SharedImageBuffer::RGBA8Premultiplied(
+            image,
+        )) = glyph.image
+        else {
+            panic!("expected color bitmap")
+        };
+        assert!(image.as_bytes().as_chunks::<4>().0.iter().any(|p| p[3] > 0 && p[3] < 255));
+        for &[r, g, b, a] in image.as_bytes().as_chunks::<4>().0 {
+            assert!(r <= a && g <= a && b <= a, "non-premultiplied pixel: {:?}", [r, g, b, a]);
+        }
+    }
+
+    #[test]
+    fn colr_layers_are_premultiplied_and_use_the_text_foreground() {
+        let context = i_slint_core::SlintContext::new(alloc::boxed::Box::new(Platform));
+        let blob = fontique::Blob::new(std::sync::Arc::new(
+            include_bytes!("../tests/fonts/colr.ttf").to_vec(),
+        ));
+        let font_ref = swash::FontRef::from_index(blob.data(), 0).unwrap();
+        let font = VectorFont::new_from_blob_and_index(
+            blob.clone(),
+            0,
+            font_ref.key,
+            font_ref.offset,
+            PhysicalLength::new(20),
+        );
+        let id = NonZeroU16::new(font_ref.charmap().map('😀')).unwrap();
+        for foreground in [[0, 0, 255, 255], [0, 255, 0, 255]] {
+            let glyph = font.render_vector_glyph(id, 0, foreground, &context).unwrap();
+            let VectorGlyphImage::Rgba(
+                i_slint_core::graphics::SharedImageBuffer::RGBA8Premultiplied(image),
+            ) = glyph.image
+            else {
+                panic!("COLR glyph must be a premultiplied RGBA image");
+            };
+            let pixels = image.as_bytes();
+            let red = &pixels[(5 * image.width() as usize + 5) * 4..][..4];
+            assert!(
+                red[0] > 100 && red[0] <= red[3] && red[3] < 140,
+                "red layer: {red:?}, size={}x{}",
+                image.width(),
+                image.height()
+            );
+            assert_eq!(&red[1..3], &[0, 0]);
+            let text = &pixels[(5 * image.width() as usize + 15) * 4..][..4];
+            for (actual, expected) in text.iter().zip(foreground) {
+                assert!((i16::from(*actual) - i16::from(expected)).abs() <= 2);
+            }
+        }
     }
 }

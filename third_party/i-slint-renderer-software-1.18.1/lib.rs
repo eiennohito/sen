@@ -3238,11 +3238,18 @@ impl<T: ProcessScene> i_slint_core::item_rendering::ItemRendererFeatures for Sce
 use i_slint_core::textlayout::sharedparley::{self, fontique};
 
 #[cfg(feature = "systemfonts")]
+#[derive(Clone, Copy)]
+struct TextBrush {
+    color: Color,
+    stroke: bool,
+}
+
+#[cfg(feature = "systemfonts")]
 impl<T: ProcessScene> sharedparley::GlyphRenderer for SceneBuilder<'_, T> {
-    type PlatformBrush = Color;
+    type PlatformBrush = TextBrush;
 
     fn platform_brush_for_color(&mut self, color: &Color) -> Option<Self::PlatformBrush> {
-        Some(*color)
+        Some(TextBrush { color: *color, stroke: false })
     }
 
     fn platform_text_fill_brush(
@@ -3250,7 +3257,7 @@ impl<T: ProcessScene> sharedparley::GlyphRenderer for SceneBuilder<'_, T> {
         brush: Brush,
         _size: LogicalSize,
     ) -> Option<Self::PlatformBrush> {
-        Some(brush.color())
+        Some(TextBrush { color: brush.color(), stroke: false })
     }
 
     fn platform_text_stroke_brush(
@@ -3259,16 +3266,19 @@ impl<T: ProcessScene> sharedparley::GlyphRenderer for SceneBuilder<'_, T> {
         _physical_stroke_width: f32,
         _size: LogicalSize,
     ) -> Option<Self::PlatformBrush> {
-        Some(brush.color())
+        Some(TextBrush { color: brush.color(), stroke: true })
     }
 
     fn fill_rectangle(
         &mut self,
         mut physical_rect: sharedparley::PhysicalRect,
-        color: Color,
+        color: Self::PlatformBrush,
         radius: sharedparley::PhysicalLength,
-        border: Option<sharedparley::RectangleBorder<Color>>,
+        border: Option<sharedparley::RectangleBorder<Self::PlatformBrush>>,
     ) {
+        let color = color.color;
+        let border =
+            border.map(|b| sharedparley::RectangleBorder { brush: b.brush.color, width: b.width });
         let has_visible_border =
             border.as_ref().is_some_and(|b| b.width.get() > 0.0 && b.brush.alpha() > 0);
         if color.alpha() == 0 && !has_visible_border {
@@ -3346,7 +3356,8 @@ impl<T: ProcessScene> sharedparley::GlyphRenderer for SceneBuilder<'_, T> {
 
         const SUBPIXEL_BINS: i32 = fonts::vectorfont::SUBPIXEL_BIN_COUNT;
 
-        let color = self.alpha_color(color);
+        let TextBrush { color: foreground, stroke } = color;
+        let color = self.alpha_color(foreground);
         let physical_clip: euclid::Rect<i32, PhysicalPx> =
             (self.current_state.clip.translate(self.current_state.offset.to_vector()).cast()
                 * self.scale_factor)
@@ -3373,7 +3384,12 @@ impl<T: ProcessScene> sharedparley::GlyphRenderer for SceneBuilder<'_, T> {
             let dst_int_x = quantized_x.div_euclid(SUBPIXEL_BINS);
             let subpixel_bin = quantized_x.rem_euclid(SUBPIXEL_BINS) as u8;
 
-            let Some(glyph) = font.render_vector_glyph(id, subpixel_bin, slint_context) else {
+            let Some(glyph) = font.render_vector_glyph(
+                id,
+                subpixel_bin,
+                [foreground.red(), foreground.green(), foreground.blue(), 255],
+                slint_context,
+            ) else {
                 continue;
             };
 
@@ -3393,22 +3409,27 @@ impl<T: ProcessScene> sharedparley::GlyphRenderer for SceneBuilder<'_, T> {
                 continue;
             };
 
-            let data = {
-                let source_rect = euclid::rect(0, 0, glyph.width.0, glyph.height.0);
-                target_pixel_buffer::TextureDataContainer::Shared {
-                    buffer: SharedBufferData::AlphaMap {
-                        data: glyph.alpha_map,
-                        width: glyph.pixel_stride,
-                    },
-                    source_rect,
+            let source_rect = euclid::rect(0, 0, glyph.width.0, glyph.height.0);
+            let (buffer, colorize, alpha) = match glyph.image {
+                fonts::VectorGlyphImage::AlphaMap(data) => (
+                    SharedBufferData::AlphaMap { data, width: glyph.pixel_stride },
+                    Some(color),
+                    color.alpha(),
+                ),
+                fonts::VectorGlyphImage::Rgba(image) => {
+                    if stroke {
+                        continue;
+                    }
+                    (SharedBufferData::SharedImage(image), None, color.alpha())
                 }
             };
+            let data = target_pixel_buffer::TextureDataContainer::Shared { buffer, source_rect };
 
             let t = target_pixel_buffer::DrawTextureArgs {
                 data,
-                colorize: Some(color),
+                colorize,
                 // color already is mixed with global alpha
-                alpha: color.alpha(),
+                alpha,
                 dst_x: target_rect.origin.x as _,
                 dst_y: target_rect.origin.y as _,
                 dst_width: target_rect.size.width as _,
@@ -3419,5 +3440,85 @@ impl<T: ProcessScene> sharedparley::GlyphRenderer for SceneBuilder<'_, T> {
 
             self.processor.process_target_texture(&t, clipped_target.cast());
         }
+    }
+}
+
+#[cfg(all(test, feature = "systemfonts"))]
+mod color_glyph_tests {
+    use super::*;
+    use i_slint_core::platform::{Platform, WindowAdapter};
+    use sharedparley::GlyphRenderer;
+
+    struct TestPlatform;
+    impl Platform for TestPlatform {
+        fn create_window_adapter(
+            &self,
+        ) -> Result<Rc<dyn WindowAdapter>, i_slint_core::api::PlatformError> {
+            unreachable!()
+        }
+    }
+
+    #[test]
+    fn color_glyphs_respect_brush_alpha() {
+        std::thread::spawn(|| {
+            i_slint_core::platform::set_platform(alloc::boxed::Box::new(TestPlatform)).unwrap();
+            let window = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
+            let font = sharedparley::parley::FontData::new(
+                fontique::Blob::new(std::sync::Arc::new(
+                    include_bytes!("tests/fonts/colr.ttf").to_vec(),
+                )),
+                0,
+            );
+            for alpha in [0, 136, 255] {
+                let mut pixels = [PremultipliedRgbaColor::default(); 400];
+                let mut buffer = TargetPixelSlice { data: &mut pixels, pixel_stride: 20 };
+                let processor = RenderToBuffer {
+                    buffer: &mut buffer,
+                    dirty_range_cache: Vec::new(),
+                    dirty_region: PhysicalRegion {
+                        rectangles: [euclid::Box2D::new(
+                            euclid::point2(0, 0),
+                            euclid::point2(20, 20),
+                        ); 3],
+                        count: 1,
+                    },
+                    scale_factor: ScaleFactor::new(1.),
+                };
+                let cache = sharedparley::TextLayoutCache::default();
+                let mut scene = SceneBuilder::new(
+                    euclid::size2(20, 20),
+                    ScaleFactor::new(1.),
+                    WindowInner::from_pub(window.window()),
+                    processor,
+                    RenderingRotation::NoRotation,
+                    &cache,
+                );
+                scene.current_state.alpha = 0.5;
+                scene.draw_glyph_run(
+                    &font,
+                    sharedparley::PhysicalLength::new(20.),
+                    &[],
+                    &fontique::Synthesis::default(),
+                    TextBrush { color: Color::from_argb_u8(alpha, 0, 255, 0), stroke: false },
+                    sharedparley::PhysicalLength::new(20.),
+                    &mut core::iter::once(sharedparley::parley::layout::Glyph {
+                        id: 1,
+                        x: 0.,
+                        y: 0.,
+                        advance: 20.,
+                        style_index: 0,
+                    }),
+                );
+                // The right half is the foreground layer: text and global alpha each apply once.
+                let pixel = pixels[5 * 20 + 15];
+                assert!(
+                    (pixel.alpha as i16 - (alpha / 2) as i16).abs() <= 1,
+                    "alpha {alpha}: {pixel:?}"
+                );
+                assert_eq!(pixel.green, pixel.alpha);
+            }
+        })
+        .join()
+        .unwrap();
     }
 }

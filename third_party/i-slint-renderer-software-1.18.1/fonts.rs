@@ -38,6 +38,13 @@ impl RenderableGlyph {
     }
 }
 
+#[cfg(feature = "systemfonts")]
+#[derive(Clone)]
+pub enum VectorGlyphImage {
+    AlphaMap(Rc<[u8]>),
+    Rgba(i_slint_core::graphics::SharedImageBuffer),
+}
+
 // Subset of `RenderableGlyph`, specifically for VectorFonts.
 #[cfg(feature = "systemfonts")]
 #[derive(Clone)]
@@ -46,7 +53,7 @@ pub struct RenderableVectorGlyph {
     pub y: Fixed<i32, 8>,
     pub width: PhysicalLength,
     pub height: PhysicalLength,
-    pub alpha_map: Rc<[u8]>,
+    pub image: VectorGlyphImage,
     pub pixel_stride: u16,
     pub glyph_origin_x: f32,
 }

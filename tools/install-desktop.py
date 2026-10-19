@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Install the built app, launcher, and original icon for this user."""
+import fetch_emoji_font
 import argparse
 import os
 from pathlib import Path
@@ -37,6 +38,15 @@ temporary = destination.with_suffix(".new")
 shutil.copyfile(binary, temporary)
 temporary.chmod(0o755)
 temporary.replace(destination)
+try:
+    font_files = list(fetch_emoji_font.verified_files())
+except (OSError, ValueError) as error:
+    print(f"Warning: emoji font unavailable: {error}", file=sys.stderr)
+else:
+    font_dir = data_dir / "line-desktop/fonts"
+    font_dir.mkdir(parents=True, exist_ok=True)
+    for source in font_files:
+        shutil.copyfile(source, font_dir / source.name)
 shutil.copyfile(ROOT / "app/assets/icon.svg", icon)
 # Icon loaders watch the theme root, not individual application directories.
 # Updating an existing icon otherwise leaves Plasma's cached misses intact.

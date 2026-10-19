@@ -30,6 +30,7 @@ mod demo;
 #[cfg(feature = "demo")]
 mod demo_data;
 mod desktop_integration;
+mod emoji;
 mod event_loop;
 #[cfg(feature = "ui-debug")]
 mod latency;
