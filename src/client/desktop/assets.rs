@@ -670,6 +670,7 @@ mod tests {
     }
     #[test]
     fn decrypts_independent_go_media_fixture() {
+        // Regenerate fixtures/media.json with: go run tools/generate-media-fixture.go
         let fixture: Value =
             serde_json::from_str(include_str!("../../../fixtures/media.json")).unwrap();
         let bytes = decode(fixture["ciphertext"].as_str().unwrap()).unwrap();

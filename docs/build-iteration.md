@@ -4,10 +4,7 @@ Use `cargo build --profile fast --offline -p line-desktop` for local work.
 `fast` inherits release, enables incremental compilation, and sets opt-level 0
 for `line-desktop` and `line-desktop-ui`. Dependencies, including the software
 renderer, protocol adapter and crypto, remain optimised. Use `release` for the
-release gates, `message_perf`, crypto benchmarks and any timing-sensitive work.
-Run the ignored message probes with
-`cargo test --release --offline -p line-desktop message_perf -- --ignored
---nocapture --test-threads=1` when changing crate boundaries.
+release gates, crypto benchmarks and any timing-sensitive work.
 
 The generated modules belong to `ui/` (`line-desktop-ui`); the app re-exports
 its public API so Rust-only app edits reuse the compiled UI. Slint edits still
@@ -103,5 +100,5 @@ These follow-ups are unimplemented estimates, overlap, and must not be summed:
 
 Validate with release gates, exact headless pixels and the full MCP matrix.
 Time two warm semantic edits per profile for both Slint and app Rust, restoring
-and warming between samples. Compare the ignored release message probes for
-crate-boundary changes: cross-crate calls can lose inlining without LTO.
+and warming between samples. Measure runtime costs after crate-boundary changes: cross-crate calls can lose
+inlining without LTO.

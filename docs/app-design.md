@@ -113,9 +113,10 @@ evaluated then; keep CPU rendering and IME quality as requirements.
 
 ```mermaid
 flowchart LR
-    Controller[Controller / AppState] -->|intents| Engine[Worker / Engine]
+    Controller[Controller / AppState] -->|intents| Engine[Store thread / Engine]
     Engine --> Store[SQLite Store]
-    Engine --> Backend[LineBackend or FakeBackend]
+    Engine -->|jobs| Backend[Net thread / LineBackend or FakeBackend]
+    Backend -->|results| Engine
     Engine -->|FIFO deltas| Controller
     Controller --> Presenter[Presenter / Slint models]
 ```
@@ -123,7 +124,7 @@ flowchart LR
 See [core-model.md](core-model.md) for the store, engine, controller and
 presenter. The UI drains deltas on a 16 ms event-loop timer.
 
-The desktop uses `src/client.rs` and `src/client/chat.rs`.
+The desktop uses `src/client.rs` and `src/client/e2ee.rs`.
 `src/client/desktop.rs` owns the account operations, and its `assets` module
 owns authenticated media retrieval and private thumbnail caching.
 
@@ -153,7 +154,7 @@ worker, never instantiating WASM. Runtime recovery runs only when a WASM excepti
 share one asset HTTP agent and the thumbnail cache; they own media downloads,
 decryption and decoding. Three slots allow visible images to overlap while
 bounding simultaneous encoded downloads to 48 MiB. The asset client shares the
-HTTP runtime and keeps a separate pool. DNS uses the runtime resolver.
+HTTP runtime and keeps a separate pool. DNS uses async-net’s system lookup.
 Originals and files use the
 same pool, with explicit requests ahead of automatic thumbnails. A separate
 cancellable SSE transport thread delivers operations through the bounded worker queue;
@@ -195,7 +196,7 @@ are requested, preserving outstanding requests across overlapping scroll ranges.
 Returning rows request through the same thumbnail cache. Stickers use contain; photos use square crops.
 Loaded media labels omit the type glyph; text-only labels keep it, including
 albums. Notifications retain their prior text, including sticker STKTXT.
-`cargo test --release --offline -p line-desktop chat_preview_performance -- --ignored --nocapture` probes 500 chat rows and 60 scroll redraws.
+See [ui-latency.md](ui-latency.md) for the opt-in synthetic latency harness.
 
 Window deltas are fenced by subscription ID.
 Submission saves a durable pending item before queueing a network command,
@@ -302,9 +303,9 @@ The public-key response cache is bounded to 256 entries.
 
 See [chromium-ui-map.md](chromium-ui-map.md) for the 2026-10-15 live Chrome
 mapping, coverage matrix, and reconstruction sequence. That sequence takes
-priority over expanding behavior without a reference. Friends, bounded paging
-and rich-message adapters are now implemented in the worktree; group creation
-and management remain outside this plan. Account compatibility is unverified.
+priority over expanding behavior without a reference. Friends, bounded paging, rich-message adapters, group creation and profile
+actions have native adapters and synthetic coverage. Account compatibility is
+unverified. Open issues are tracked in [issues.md](issues.md).
 
 Crypto channels have a 64-entry cache keyed by conversation/key IDs and group
 sender. Resetting the WASM resets channel pointers. The engine merges store
@@ -356,8 +357,7 @@ unless an explicit background-mode preference is enabled; S12 owns that opt-in.
 Use `cargo build --profile fast --offline -p line-desktop` for local iteration.
 The app and generated UI crate use opt-level 0 with incremental compilation;
 renderer, protocol and crypto dependencies stay optimised. Use `release` for
-release gates and performance measurements, including the ignored `message_perf`
-probes and crypto benchmarks. Keep generated Slint modules in `line-desktop-ui`
+release gates and performance measurements, including crypto benchmarks. Keep generated Slint modules in `line-desktop-ui`
 so app Rust edits reuse the compiled UI; retain Slint sources under `app/ui/`
 to preserve resource paths. See [build iteration](build-iteration.md) for profile
 commands, generated-code costs and guidance for evaluating further reductions.
@@ -404,11 +404,9 @@ groups. Signed-out and missing-module groups have separate signed-out demos.
 DIRECTORY` saves intermediate and completed surfaces. All launches own private
 temporary XDG data/cache/config/state/runtime directories and a private D-Bus
 session. Startup retries MCP `initialize` for up to 30 seconds rather than
-reading a PID file or log marker. The retired standalone browser, composer,
-members, search and preview scripts are no longer validation entry points.
-The color-scheme override only applies to demo previews; normal windows keep
-the system scheme. `--demo-dark` is an alias
-for `--demo-color-scheme dark`; both use the same palette override.
+reading a PID file or log marker.
+`--demo-dark` selects the dark palette for demo previews; normal windows keep
+the system scheme.
 `--snapshot-profile` opens a
 profile in offline headless snapshots. `--snapshot-scene` selects `chats`,
 `chats-query`, `friends`, `friends-query`, `friends-empty-group`, `settings`,
@@ -424,7 +422,7 @@ the Friends list with the connection strip. Settings fills the window below
 the measured name and status line heights plus padding and spacing.
 The `chats-query-offline` and `return-offline` variants add the connection
 strip to the query and both-pill captures. Combine scenes with
-`--snapshot-size`, `--snapshot-text-size`, and `--demo-color-scheme`. In the UI,
+`--snapshot-size`, `--snapshot-text-size`, and `--demo-dark`. In the UI,
 `State.modal-open` includes the conversation sheet; `State.window-modal-open`
 covers only the other modal layers. The `chats-long-query` and
 `friends-long-query` scenes type a 66-character query with native caret
@@ -436,23 +434,6 @@ Private state stays out of Git and diagnostics. Before distributing the app,
 choose the project's license and the applicable Slint license, and resolve how
 users obtain the proprietary crypto artifact; the current repo does not bundle it.
 
-
-## History
-
-- `7084301`: CPU-rendered Slint desktop sketch and IME-first engineering constraints.
-- `6261e8d`: account worker integration, static media caching, desktop identity.
-- `6c36f13`: bounded crypto channel reuse, encrypted recent-page cache, Chrome reference map.
-- `f7ab75a`: narrow navigation, reading anchors and selectable messages; encrypted
-  durable drafts/outbox; explicit authentication recovery; bounded photo viewer.
-- `d1fbaa4`: preserve group sender identity through legacy message cache loading.
-- `fc4c112`: independent friend/group browsing, profile inspection and local chat navigation.
-- `3639708`: modular themed shell, XDG/activation integration, and sourced protocol
-  foundations; later session handoffs describe the current integration worktree.
-
-Current behavior is specified by [ux-model.md](ux-model.md); open problems are
-registered in [ux-sessions.md](ux-sessions.md) and verification in
-[ux-acceptance.md](ux-acceptance.md). History records delivery, not verification
-of the remaining physical desktop gates.
 
 The engine owns one account/session state: `Opening{epoch}` → `NoSession`,
 `SessionUnusable{reason}`, or `Ready`; explicit Start enters `SigningIn{epoch, previous}`.

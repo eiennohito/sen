@@ -8,15 +8,16 @@ in [ux-model.md](ux-model.md); engineering constraints are in
 
 ## Ownership
 
-```
- UI thread                         worker thread                    other threads
- ─────────                         ─────────────                    ─────────────
- Controller (AppState)  ──Intent──▶ Scheduler ──▶ Engine ──▶ Store (SQLite, sole writer)
-   │  ▲                                  ▲          │
-   │  └──────── Delta (FIFO) ────────────┼──────────┘
-   ▼                                     │
- Presenter → Slint models          Sync supervisor ◀── SSE thread (ops)
-                                   Asset fetchers (unchanged)
+```mermaid
+flowchart LR
+    UI[Controller / AppState] -->|Intent| Engine[Store thread / Engine]
+    Engine --> Store[SQLite / sole writer]
+    Engine -->|jobs| Net[Net thread / Backend / WASM]
+    Net -->|results| Engine
+    SSE[SSE thread] -->|operations| Engine
+    Assets[Asset workers] -->|completions| Engine
+    Engine -->|FIFO deltas| UI
+    UI --> Presenter[Presenter / Slint models]
 ```
 
 - **Store** is the only source of truth for messages, chats, contacts,

@@ -21,7 +21,7 @@ Reference files, kept outside Git:
 
 - `manifest.json`: SHA-256 `37374636a886e458ccbe1bf7195de7794c12131932a30270f8669d5c32a7eb42`
 - `static/js/main.js`: SHA-256 `2912a06d868c2829636be1613c622f28807efe74a7868cfb143678a38b80cc2a`
-- Crypto WASM: pinned separately in HANDOFF.md.
+- Crypto WASM: oracle fixtures pin module provenance; the app discovers the installed extension.
 
 Only public control labels, component classes, geometry, and protocol structure
 belong in this document. Do not commit screenshots of the account, profile
@@ -117,12 +117,12 @@ visibility, scrolling, and focus affect marking incoming messages read. Do not
 emit read acknowledgements merely to inspect these flows during the audit.
 Test confirmation-before-receipt, delayed/duplicate/out-of-order receipts,
 reconnect replay, switching chats while pending, and restart reconciliation.
-Native asynchronous read-receipt handling is not implemented yet.
+Native asynchronous receipt handling now merges per-member ranges into SQLite;
+account compatibility remains unverified.
 
 ### Message selection and copying
 
-The current native view does not allow selecting/copying message text. Provide
-mouse selection, keyboard selection/copy, and an accessible Copy action. Define
+The native view supports text selection, Ctrl+C and Copy message. Verify
 copy behavior for multiline text, links, replies, inline emoji, and mixed media;
 preserve meaningful text and line breaks. Selection must coexist with scrolling,
 context menus, and incoming updates without being cleared by image arrivals.
@@ -157,23 +157,20 @@ coverage requirements, not an exact visual specification. File, video, audio,
 contact, and system-message components are present in source but were not
 opened and verified individually.
 
-The current native message row loses sender identity, rich spans, reply
-structure, and much metadata. Model those explicitly before restyling bubbles.
+Native message rows now model sender identity, rich spans, replies and metadata.
 Preserve whitespace, links, multiline text, selection/copy, and accessible media
 labels. Standard reactions need consistent assets rather than font-dependent
 Unicode substitutes. Inline LINE emoji, stickers, reaction images, and ordinary
 UI icons are separate asset/rendering concerns.
 
-### Why inline emoji are missing — source trace
+### Inline emoji — source trace
 
 Chrome's decrypted JSON `REPLACE` field is copied into content metadata by its
-decoder (`yL` in the inspected bundle). The native decoder currently carries
-text/location, keyMaterial, and fileName, but discards `REPLACE`.
+decoder (`yL` in the inspected bundle). The native decoder preserves
+`REPLACE` and resolves inline runs in `src/client/desktop/rich.rs`.
 `REPLACE.sticon.resources` describes inline emoji; source helpers `LI` / `II`
-build emoji resources and ownership metadata. Before implementation, confirm
-whether all offsets are JavaScript UTF-16 indices using synthetic mixed
-Japanese/astral-emoji fixtures. Resolve spans into text/image runs; do not
-replace the entire text message with one thumbnail.
+build emoji resources and ownership metadata. Offsets use JavaScript UTF-16 indices, covered by synthetic mixed
+Japanese/astral-emoji fixtures. Runs preserve surrounding text.
 
 Sticker variants also use STK_IMG_TXT, STKOPT, STKHASH, STKPKGID, STKID, STKVER.
 Current caching covers static stickers/photos/paid reactions only. Animated,
@@ -237,37 +234,15 @@ inviteIntoChat, cancelChatInvitation, acceptChatInvitation,
 rejectChatInvitation, deleteSelfFromChat. Model membership/role state and
 confirmation/error handling before exposing mutating controls.
 
-Read-only members (P5a): the repository has no local `dumps/`, HAR, or captured
-getChats response. The existing client and synthetic parser fixtures support
-`extra.groupExtra.memberMids` as a map (MIDs are keys) and room `memberMids` as
-an array. There is no local trace establishing roles, join times, or map-value
-semantics. The map's existing count is retained; the legacy room array adds
-self exactly once. Invitees are excluded and absent membership stays unknown.
-
-The existing requests are `getChats` with
-`[{chatMids, withMembers: true, withInvitees: false}, 0]` and the sender/contact
-path's `getContactsV2` with
-`[{targetUserMids, neededContactCalendarEvents: []}, 0]`. Contact responses use
-`contacts[mid].contact`, with `displayNameOverridden`, `displayName`,
-`statusMessage`, and `picturePath`. Member resolution uses those existing
-shapes on the account worker in batches of at most 100 MIDs. Membership sets
-are retained for up to 128 groups/rooms. A separate 4096-entry member contact
-cache holds answered identities and server-answered absence; call failures
-cache nothing and remain eligible for panel Retry. It never evicts friend or
-1:1 contacts. Unknown identities show an initial and “Unknown member”; history
-keeps its sender fallback and can retry failed/absent identity lookups. Self's
-identity comes from the already-fetched account profile.
-
-There is no local trace identifying membership operation numbers, and no
-join/leave/removal/invitation decoder. The current decoder handles messages
-25/26/43, watermark 40, receipt 55 and withdrawal 64/65. Unrecognised operations
-already schedule chat-list/details refresh, and full sync fetches chat details.
-Those getChats responses replace retained member sets; an open list refreshes
-in place, including equal-count replacements. Freshness follows this existing
-chat refresh coverage and paging scope. No incremental membership decoding or
-live group/room compatibility is claimed. Member profiles allow Open chat only
-for a known friend or an existing conversation; mutation/invitation flows remain
-outside the read-only implementation.
+Members use `getChats` with
+`[{chatMids, withMembers: true, withInvitees: false}, 0]` and contact lookup via
+`getContactsV2` with `[{targetUserMids, neededContactCalendarEvents: []}, 0]`.
+`src/client/desktop.rs` resolves member identities in batches; SQLite retains
+contacts and membership. Unknown names remain “Unknown member”. Group creation
+and profile actions have separate native adapters; invitation acceptance and
+role semantics still need protocol evidence. See [issues.md](issues.md) and
+[protocol-traces.md](protocol-traces.md) for current gaps and captured shapes.
+Live group/room compatibility remains unverified.
 
 ## Performance work completed during this audit
 
@@ -277,21 +252,19 @@ Runtime initialization was 170.31 ms. This isolates a crypto bottleneck; it is
 not an end-to-end app speedup or a group/network benchmark. Reproduce with:
 
 ```sh
-cargo run --release --offline --example crypto-harness -- --bench
-cargo test --release --offline --lib cached_channel_is_reusable_across_messages -- --ignored
+cargo run --release --offline --features harness --example crypto-harness -- --bench
+cargo test --release --offline --lib cached_channel_is_reusable_across_messages
 ```
 
 The client now reuses up to 64 crypto channels, keyed by conversation and key
 IDs (plus sender for groups), destroying evicted channels and discarding all
 pointers when the runtime resets. Public keys remain separately bounded.
 
-Decoded-message memoization is fingerprinted on the complete raw message,
-including ciphertext and reaction metadata. Recent pages persist encrypted
-and authenticated under an account-scoped directory. Selection uses a cached
-page; explicit Refresh and post-send reload fetch from the server and reuse
-unchanged decoded messages. No automatic receive or background refresh exists:
-a cached view can be stale until Refresh. Cache access still requires the
-normal authenticated client startup; this is not offline account startup.
+Messages, drafts and pending sends now persist in the account's SQLite store.
+The engine serves stored windows before requesting missing pages and merges
+SSE operations and explicit refreshes into that store. With a validated saved
+account identity, stored content is available before connecting. The old
+encrypted page cache is no longer used.
 
 Asset arrivals now update affected Slint rows instead of replacing the entire
 chat/message model and rebuilding every reaction model for each image.
@@ -368,13 +341,8 @@ unknown remains unknown, with native private local overrides supplied separately
 
 The source request allocator `HO` starts from crypto-random positive 31-bit
 state, then increments. `kS` uses operation 25's reqSeq to replace the matching
-`local-{reqSeq}` item. Native reconciliation additionally persists a hash of
-the exact encrypted envelope (to/from/contentType/chunks) before transmission,
-so a different device's matching small reqSeq cannot confirm an unrelated item.
-Recent-page catch-up recovers the same binding by envelope hash even when the
-operation predates the restart revision. Bindings are retired only after the
-outbox state is durable. Legacy unresolved rows without a request identity cannot
-be guessed into a match.
+`local-{reqSeq}` item. Native pending sends persist request sequences in SQLite;
+confirmation and matching echoes reconcile to the existing stable store row.
 
 File download source `QO`/`zD` builds the bare OBS path: encrypted content uses
 SID/OID (defaults m/message id), legacy content uses `/r/talk/m/{messageId}`;
@@ -394,8 +362,6 @@ ranges preserve this sentinel (`open_end`) and do not turn it into infinity.
 Chrome's unread-participation helper JO tests contentMetadata.SKIP_BADGE_COUNT
 against the literal string "true". Native decoding preserves this flag separately
 from message kind and withdrawal state: counted system rows participate, skipped
-ordinary rows do not. Legacy cached metadata is refreshed (schema version 2); if offline, cached
-text remains visible while the transient UI eligibility flag suppresses unread
-participation until authoritative metadata arrives. The synthetic UI flag is
-never written back to protocol cache. Withdrawal operations request a
-fresh chat count rather than guessing a decrement.
+ordinary rows do not. The store retains unread participation independently of
+message text. Withdrawal operations request a fresh chat count rather than
+guessing a decrement.

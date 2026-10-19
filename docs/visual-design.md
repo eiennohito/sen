@@ -59,7 +59,7 @@ don't use shadows.
 Focus: a 2 px `accent-strong` ring at 2 px offset on every focusable control,
 following the control's radius. Focus never uses a fill change alone.
 
-Icons: one SVG family (the existing `app/ui/assets/icons`, extended), 20 px in
+Icons: one SVG family (the existing `app/assets/icons`, extended), 20 px in
 toolbars, 24 px on the rail, recoloured by role. No Unicode glyph appears as
 an icon anywhere. Needed additions: video, voice, file, contact, location,
 info, withdrawn, unknown, sticker, attach, send, close, back, more, search,
