@@ -711,7 +711,7 @@ impl Presenter {
             Connection::Connecting { .. } => ConnectionState::Connecting,
             Connection::Online => ConnectionState::Online,
             Connection::Offline { .. } => ConnectionState::Offline,
-            Connection::AuthExpired => ConnectionState::AuthExpired,
+            Connection::SignedOut | Connection::AuthExpired => ConnectionState::AuthExpired,
             Connection::SessionInvalid | Connection::Fatal => ConnectionState::SessionInvalid,
             Connection::SigningIn => ConnectionState::SigningIn,
         });
@@ -721,6 +721,7 @@ impl Presenter {
                 Connection::Online => "Connected",
                 Connection::Connecting { .. } => "Connecting…",
                 Connection::Offline { .. } => "Offline — reconnecting automatically",
+                Connection::SignedOut => "Not signed in",
                 Connection::AuthExpired => "Sign in required",
                 Connection::SessionInvalid => "Session unavailable",
                 Connection::Fatal => "Something went wrong — restart",

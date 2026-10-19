@@ -1466,7 +1466,7 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
 fn signed_out_account_intents_never_reach_the_backend() {
     let fake = FakeBackend::signed_out();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.until(|s| s.connection == Connection::AuthExpired);
+    app.until(|s| s.connection == Connection::SignedOut);
     for intent in [
         Intent::Friends,
         Intent::Contact("unknown-account-id".into()),
@@ -1497,7 +1497,7 @@ fn pairing_reasons_survive_the_engine() {
     use line_wasm_poc::client::error::SignInFailure::*;
     let fake = FakeBackend::signed_out();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
-    app.until(|s| s.connection == Connection::AuthExpired);
+    app.until(|s| s.connection == Connection::SignedOut);
     for reason in [
         CryptoModule("/missing/crypto.wasm".into()),
         StateDirectory("/readonly/state".into()),
@@ -1634,7 +1634,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
     loop {
         if matches!(
             worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Delta::Connection(Connection::AuthExpired)
+            Delta::Connection(Connection::SessionInvalid)
         ) {
             break;
         }
@@ -1648,6 +1648,9 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
                 assert_eq!(reason, SignInFailure::Cancelled);
                 break;
             }
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Stage(
+                line_wasm_poc::client::pairing::Stage::WaitingKeyring,
+            )) => {}
             Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
             _ => {}
         }
@@ -1687,13 +1690,16 @@ fn cancel_during_initial_open_does_not_wait_for_credentials() {
                 assert_eq!(reason, SignInFailure::Cancelled);
                 break;
             }
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Stage(
+                line_wasm_poc::client::pairing::Stage::WaitingKeyring,
+            )) => {}
             Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
             _ => {}
         }
     }
     release.send(()).unwrap();
-    // The startup and cancelled sign-in completions are both stale. A fresh
-    // attempt must still reach QR without either closing its screen.
+    // The startup fact belongs to the prior opening state. A fresh attempt
+    // must still reach QR without the cancelled attempt closing its screen.
     worker.sender.send(Intent::SignIn);
     loop {
         match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
@@ -1708,7 +1714,7 @@ fn cancel_during_initial_open_does_not_wait_for_credentials() {
 }
 
 #[test]
-fn disconnected_network_queue_completes_sign_in_with_failure() {
+fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
     use line_wasm_poc::client::error::SignInFailure;
     let worker = Worker::start_with::<FakeBackend>(StoreLocation::Memory, || {
         panic!("synthetic network worker crash")
@@ -1716,7 +1722,7 @@ fn disconnected_network_queue_completes_sign_in_with_failure() {
     loop {
         if matches!(
             worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Delta::Fatal
+            Delta::PairFailed { .. }
         ) {
             break;
         }
@@ -1727,9 +1733,76 @@ fn disconnected_network_queue_completes_sign_in_with_failure() {
             if let Delta::PairFailed { reason } =
                 worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap()
             {
-                assert_eq!(reason, SignInFailure::Server);
+                assert_eq!(reason, SignInFailure::Internal);
                 break;
             }
+        }
+    }
+}
+
+#[test]
+fn unusable_saved_session_allows_start_to_pair() {
+    use line_wasm_poc::client::error::{SavedSessionFailure, SignInFailure};
+    let fake = FakeBackend::signed_out();
+    let reason = SignInFailure::SavedSession(SavedSessionFailure::Keys);
+    fake.fail_open(Some(reason.clone()));
+    let opener = fake.clone();
+    let worker = Worker::start_with(StoreLocation::Memory, move || opener.open());
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::PairFailed { reason: actual } => {
+                assert_eq!(actual, reason);
+                break;
+            }
+            Delta::Fatal => panic!("saved session prevented backend startup"),
+            _ => {}
+        }
+    }
+    worker.sender.send(Intent::SignIn);
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::PairFailed { .. } | Delta::Fatal => panic!("unusable session blocked pairing"),
+            _ => {}
+        }
+    }
+    assert!(fake.calls().is_empty());
+    worker.sender.cancel_sign_in();
+}
+
+#[test]
+fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
+    use std::sync::mpsc;
+    let fake = FakeBackend::canned();
+    let (started, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let worker = Worker::start_with(StoreLocation::Memory, move || {
+        started.send(()).unwrap();
+        resume.recv().unwrap();
+        Ok(fake.clone())
+    });
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    worker.sender.send(Intent::SignIn);
+    worker.sender.cancel_sign_in();
+    loop {
+        if let Delta::PairFailed { reason } =
+            worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap()
+        {
+            assert_eq!(
+                reason,
+                line_wasm_poc::client::error::SignInFailure::Cancelled
+            );
+            break;
+        }
+    }
+    release.send(()).unwrap();
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Connection(Connection::Online) => break,
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_))
+            | Delta::Fatal
+            | Delta::PairFailed { .. } => panic!("valid session lost after cancellation"),
+            _ => {}
         }
     }
 }

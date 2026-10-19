@@ -20,9 +20,34 @@ pub enum Connection {
     Connecting { attempt: u32 },
     Online,
     Offline { retry_at: Instant, cause: NetCause },
+    SignedOut,
     AuthExpired,
     SessionInvalid,
     SigningIn,
+}
+/// Account facts have provenance; Connection is only the presentation/transport status.
+#[derive(Clone, Debug)]
+enum AccountSession {
+    Opening {
+        epoch: u64,
+    },
+    NoSession,
+    SessionUnusable {
+        reason: crate::client::error::SignInFailure,
+    },
+    Ready,
+    SigningIn {
+        epoch: u64,
+        previous: Box<AccountSession>,
+    },
+}
+impl AccountSession {
+    fn ready(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+    fn signing_in(&self) -> bool {
+        matches!(self, Self::SigningIn { .. })
+    }
 }
 /// Retry policy and scheduler resolution, injectable for offline tests.
 #[derive(Clone, Copy, Debug)]
@@ -511,8 +536,8 @@ impl Worker {
         let join = thread::spawn(move || {
             let fatal = tx.clone();
             let worker_inbox = inbox.clone();
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                || -> anyhow::Result<()> {
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> anyhow::Result<()> {
                     use sha2::{Digest, Sha256};
                     let mut account_root = None;
                     let mut store_mid = None;
@@ -538,40 +563,46 @@ impl Worker {
                                 net: {
                                     let (jobs, rx) = mpsc::channel::<NetJob>();
                                     let inbox = inbox.clone();
-                                    let fatal = tx.clone();
                                     let net_cancel = worker_cancel.clone();
                                     thread::Builder::new().name("line-net".into()).spawn(
                                         move || {
-                                            let outcome = std::panic::catch_unwind(
-                                                std::panic::AssertUnwindSafe(
-                                                    || -> anyhow::Result<()> {
-                                                        crate::client::desktop::set_cancellation_token(net_cancel);
-                                                        let mut backend = None;
-                                                        while let Ok(job) = rx.recv() {
-                                                            let opened = if backend.is_none() {
-                                                                match open() {
-                                                                    Ok(value) => { backend = Some(value); Ok(()) }
-                                                                    Err(error) => {
-                                                                        crate::reporting::log("backend-start", "open", error.as_ref());
-                                                                        Err(crate::client::error::classify(&error))
-                                                                    }
-                                                                }
-                                                            } else { Ok(()) };
-                                                            let completed = job(opened.map(|()| backend.as_mut().unwrap() as &mut dyn Backend));
-                                                            let mut q = inbox.lanes.lock().unwrap();
-                                                            if q.stopped { break; }
-                                                            q.completed.push_back(completed);
-                                                            inbox.wake.notify_all();
-                                                        }
-                                                        Ok(())
-                                                    },
-                                                ),
+                                            crate::client::desktop::set_cancellation_token(
+                                                net_cancel,
                                             );
-                                            if let Ok(Err(error)) = &outcome {
-                                                crate::reporting::log("backend-start", "fatal", error.as_ref());
-                                            }
-                                            if !matches!(outcome, Ok(Ok(()))) {
-                                                fatal.send(Delta::Fatal);
+                                            let mut backend = None;
+                                            while let Ok(job) = rx.recv() {
+                                                let opened = if backend.is_none() {
+                                                    match std::panic::catch_unwind(
+                                                        std::panic::AssertUnwindSafe(&mut open),
+                                                    ) {
+                                                        Ok(Ok(value)) => {
+                                                            backend = Some(value);
+                                                            Ok(())
+                                                        }
+                                                        Ok(Err(error)) => {
+                                                            crate::reporting::log(
+                                                                "backend-start",
+                                                                "open",
+                                                                error.as_ref(),
+                                                            );
+                                                            Err(crate::client::error::classify(
+                                                                &error,
+                                                            ))
+                                                        }
+                                                        Err(_) => Err(Error::Internal),
+                                                    }
+                                                } else {
+                                                    Ok(())
+                                                };
+                                                let completed = job(opened.map(|()| {
+                                                    backend.as_mut().unwrap() as &mut dyn Backend
+                                                }));
+                                                let mut q = inbox.lanes.lock().unwrap();
+                                                if q.stopped {
+                                                    break;
+                                                }
+                                                q.completed.push_back(completed);
+                                                inbox.wake.notify_all();
                                             }
                                         },
                                     )?;
@@ -586,8 +617,7 @@ impl Worker {
                                 waiting_assets: VecDeque::new(),
                                 waiting_retries: Vec::new(),
                                 active_refresh: None,
-                                has_session: false,
-                                session_known: false,
+                                account: AccountSession::Opening { epoch: 0 },
                                 operation: "startup".into(),
                                 force_list: true,
                                 force_window: false,
@@ -620,8 +650,7 @@ impl Worker {
                         Err(e) => return Err(e.into()),
                     }
                     Ok(())
-                },
-            ));
+                }));
             worker_inbox.lanes.lock().unwrap().stopped = true;
             worker_inbox.wake.notify_all();
             if let Ok(Err(error)) = &outcome {
@@ -673,8 +702,7 @@ struct Engine {
     )>,
     waiting_retries: Vec<String>,
     active_refresh: Option<Refresh>,
-    has_session: bool,
-    session_known: bool,
+    account: AccountSession,
     operation: String,
     force_list: bool,
     force_window: bool,
@@ -722,7 +750,9 @@ impl Engine {
         let generation = self.generation;
         let job: NetJob = Box::new(move |backend| {
             crate::client::desktop::set_cancellation_token(cancel);
-            let result = backend.and_then(run);
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backend.and_then(run)))
+                    .unwrap_or(Err(Error::Internal));
             if let Err(error) = &result {
                 crate::reporting::log(&operation, "rpc", error);
             }
@@ -730,6 +760,9 @@ impl Engine {
                 engine.operation = operation;
                 engine.net_pending -= 1;
                 let current = generation == engine.generation;
+                if matches!(result, Err(Error::Internal)) {
+                    engine.emit(Delta::InternalError("network job panicked"));
+                }
                 if current && let Err(error) = &result {
                     engine.error(error.clone());
                 }
@@ -792,6 +825,30 @@ impl Engine {
         self.connection = c.clone();
         self.emit(Delta::Connection(c));
     }
+    fn present_account(&mut self, report: bool) -> Result<()> {
+        match &self.account {
+            AccountSession::Ready => {
+                self.start_assets();
+                self.online()?;
+            }
+            AccountSession::SessionUnusable { reason } => {
+                let reason = reason.clone();
+                let expired = matches!(reason, crate::client::error::SignInFailure::Expired);
+                if report {
+                    self.emit(Delta::PairFailed { reason });
+                }
+                self.connection(if expired {
+                    Connection::AuthExpired
+                } else {
+                    Connection::SessionInvalid
+                });
+            }
+            AccountSession::NoSession => self.connection(Connection::SignedOut),
+            AccountSession::Opening { .. } => self.connection(Connection::Local),
+            AccountSession::SigningIn { .. } => {}
+        }
+        Ok(())
+    }
     fn error(&mut self, e: Error) {
         let connection = match e {
             Error::Auth => Connection::AuthExpired,
@@ -809,6 +866,19 @@ impl Engine {
             self.reconnect_at = None;
         }
         self.continuous = false;
+        match connection {
+            Connection::AuthExpired => {
+                self.account = AccountSession::SessionUnusable {
+                    reason: crate::client::error::SignInFailure::Expired,
+                }
+            }
+            Connection::SessionInvalid => {
+                self.account = AccountSession::SessionUnusable {
+                    reason: crate::client::error::SignInFailure::SessionIdentity,
+                }
+            }
+            _ => {}
+        }
         self.connection(connection);
     }
     fn rpc_failed(&mut self, r: Refresh, e: Error) {
@@ -856,24 +926,26 @@ impl Engine {
                 after: 80,
             })?;
         }
+        let probe_gen = self.generation;
         self.rpc_completion(
-            |backend| Ok(backend.has_session()),
-            |engine, has_session, current| {
-                engine.session_known = true;
-                if !current {
-                    return Ok(());
-                }
-                engine.has_session = matches!(has_session, Ok(true));
-                if let Err(Error::SignIn(reason)) = &has_session {
-                    engine.emit(Delta::PairFailed {
-                        reason: reason.clone(),
-                    });
-                }
-                if engine.has_session {
-                    engine.start_assets();
-                    engine.online()?;
-                } else {
-                    engine.connection(Connection::AuthExpired);
+            |backend| backend.session(),
+            move |engine, result, _| {
+                let fact = match result {
+                    Ok(true) => AccountSession::Ready,
+                    Ok(false) => AccountSession::NoSession,
+                    Err(Error::SignIn(reason)) => AccountSession::SessionUnusable { reason },
+                    Err(_) => AccountSession::SessionUnusable { reason: crate::client::error::SignInFailure::Internal },
+                };
+                match &mut engine.account {
+                    AccountSession::Opening { epoch } if *epoch == probe_gen => {
+                        engine.account = fact;
+                        engine.present_account(true)?;
+                    }
+                    AccountSession::SigningIn { previous, .. }
+                        if matches!(previous.as_ref(), AccountSession::Opening { epoch } if *epoch == probe_gen) => {
+                        **previous = fact;
+                    }
+                    _ => {}
                 }
                 Ok(())
             },
@@ -889,19 +961,7 @@ impl Engine {
             let work = {
                 let mut q = self.inbox.lanes.lock().unwrap();
                 loop {
-                    if !self.session_known && q.users.iter().any(|i| matches!(i, Intent::Stop)) {
-                        break Work::User(Intent::Stop);
-                    }
-                    let user = if self.session_known {
-                        q.users.pop_front()
-                    } else {
-                        // Local sign-in and cancellation must work even while open()
-                        // is blocked on credentials. Leave account work queued.
-                        q.users
-                            .iter()
-                            .position(|i| matches!(i, Intent::SignIn | Intent::CancelSignIn))
-                            .and_then(|index| q.users.remove(index))
-                    };
+                    let user = q.users.pop_front();
                     if let Some(i) = user {
                         break Work::User(i);
                     }
@@ -913,6 +973,7 @@ impl Engine {
                         break Work::Completed(done);
                     }
                     if self.net_pending == 0
+                        && self.account.ready()
                         && self.connection == Connection::Online
                         && let Some(r) = q
                             .refresh
@@ -928,6 +989,7 @@ impl Engine {
                         break Work::Refresh(r);
                     }
                     if self.net_pending == 0
+                        && self.account.ready()
                         && (matches!(self.connection,Connection::Offline {retry_at,..} if Instant::now()>=retry_at)
                             || self.reconnect_at.is_some_and(|at| Instant::now() >= at))
                     {
@@ -1034,6 +1096,9 @@ impl Engine {
         Ok(())
     }
     fn online(&mut self) -> Result<()> {
+        if !self.account.ready() {
+            return Ok(());
+        }
         self.reconnect_at = None;
         self.attempt = self.attempt.saturating_add(1);
         self.connection(Connection::Connecting {
@@ -1051,7 +1116,7 @@ impl Engine {
                             &account.own_mid
                         };
                         if !own_mid.is_empty() && own_mid != p.mid {
-                            engine.connection(Connection::SessionInvalid);
+                            engine.error(Error::SessionInvalid);
                             return Ok(());
                         }
                         if account.own_mid.is_empty()
@@ -1227,7 +1292,7 @@ impl Engine {
         Ok(())
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
-        if !self.has_session
+        if !self.account.ready()
             && !matches!(
                 i,
                 Intent::SignIn
@@ -1235,6 +1300,19 @@ impl Engine {
                     | Intent::Prefs(_)
                     | Intent::SearchChats { .. }
                     | Intent::ChatList { .. }
+                    | Intent::Friends
+                    | Intent::Contact(_)
+                    | Intent::GroupInfo(_)
+                    | Intent::Members(_)
+                    | Intent::Window(_)
+                    | Intent::Page { .. }
+                    | Intent::Asset(_)
+                    | Intent::Original(_)
+                    | Intent::File { .. }
+                    | Intent::Draft { .. }
+                    | Intent::Copy(_)
+                    | Intent::Discard(_)
+                    | Intent::MoreChats
                     | Intent::Stop
             )
         {
@@ -1242,18 +1320,35 @@ impl Engine {
         }
         match i {
             Intent::SignIn => {
-                if self.connection == Connection::SigningIn {
+                if self.account.signing_in() {
                     return Ok(());
                 }
                 self.generation += 1;
                 self.stop_stream();
                 let cancel = Arc::new(AtomicBool::new(false));
                 *self.inbox.pair_cancel.lock().unwrap() = cancel.clone();
+                let previous = std::mem::replace(&mut self.account, AccountSession::NoSession);
+                let reuse = !matches!(
+                    previous,
+                    AccountSession::Ready
+                        | AccountSession::SessionUnusable {
+                            reason: crate::client::error::SignInFailure::Expired
+                                | crate::client::error::SignInFailure::SessionIdentity
+                        }
+                );
+                self.account = AccountSession::SigningIn {
+                    epoch: self.generation,
+                    previous: Box::new(previous),
+                };
                 self.connection(Connection::SigningIn);
+                self.emit(Delta::Pair(PairEvent::Stage(
+                    crate::client::pairing::Stage::WaitingKeyring,
+                )));
                 let inbox = self.inbox.clone();
                 let generation = self.generation;
-                self.rpc(
+                self.rpc_completion(
                     move |backend| {
+                        if reuse && matches!(backend.session(), Ok(true)) { return Ok(false); }
                         if cancel.load(Ordering::Relaxed) {
                             return Err(Error::SignIn(
                                 crate::client::error::SignInFailure::Cancelled,
@@ -1265,7 +1360,7 @@ impl Engine {
                                 let mut lanes = inbox.lanes.lock().unwrap();
                                 lanes.completed.push_back(Box::new(move |engine| {
                                     if engine.generation == generation
-                                        && engine.connection == Connection::SigningIn
+                                        && engine.account.signing_in()
                                     {
                                         engine.emit(Delta::Pair(e));
                                     }
@@ -1273,12 +1368,22 @@ impl Engine {
                                 }));
                                 inbox.wake.notify_all();
                             }),
-                        )
+                        ).map(|()| true)
                     },
-                    move |engine, result| {
+                    move |engine, result, _| {
+                        // Successful install is authoritative even when Cancel raced.
+                        // A reused startup session also survives cancellation.
+                        if result.is_err() && !matches!(engine.account, AccountSession::SigningIn { epoch, .. } if epoch == generation) { return Ok(()); }
                         match result {
-                            Ok(()) => {
+                            Ok(paired) => {
+                                if !paired && engine.account.ready() { return Ok(()); }
+                                engine.account = AccountSession::Ready;
+                                engine.connection(Connection::Connecting { attempt: engine.attempt.saturating_add(1) });
                                 engine.generation += 1;
+                                if !paired {
+                                    engine.start_assets();
+                                    return engine.online();
+                                }
                                 {
                                     let mut lanes = engine.inbox.lanes.lock().unwrap();
                                     lanes.live.clear();
@@ -1300,7 +1405,7 @@ impl Engine {
                                 engine.chat_keys.clear();
                                 engine.message_keys.clear();
                                 engine.emit(Delta::Reset);
-                                engine.has_session = true;
+                                engine.account = AccountSession::Ready;
                                 engine.start_assets();
                                 engine.online()?;
                                 engine.publish()?;
@@ -1308,20 +1413,17 @@ impl Engine {
                             Err(error) => {
                                 use crate::client::error::SignInFailure;
                                 crate::reporting::log("sign-in", "pairing", &error);
-                                let reason = if engine
-                                    .inbox
-                                    .pair_cancel
-                                    .lock()
-                                    .unwrap()
-                                    .load(Ordering::Relaxed)
-                                {
-                                    SignInFailure::Cancelled
-                                } else if let Error::SignIn(reason) = error {
-                                    reason
-                                } else {
-                                    SignInFailure::Server
+                                let reason = if let Error::SignIn(reason) = error { reason } else { SignInFailure::Internal };
+                                let previous = match std::mem::replace(&mut engine.account, AccountSession::NoSession) {
+                                    AccountSession::SigningIn { previous, .. } => *previous,
+                                    other => other,
                                 };
-                                engine.connection(Connection::AuthExpired);
+                                engine.account = previous;
+                                engine.connection(match &engine.account {
+                                    AccountSession::NoSession => Connection::SignedOut,
+                                    AccountSession::SessionUnusable { reason: SignInFailure::Expired } => Connection::AuthExpired,
+                                    _ => Connection::SessionInvalid,
+                                });
                                 engine.emit(Delta::PairFailed { reason });
                             }
                         }
@@ -1330,14 +1432,19 @@ impl Engine {
                 );
             }
             Intent::CancelSignIn => {
-                if self.connection == Connection::SigningIn {
+                if self.account.signing_in() {
                     self.inbox
                         .pair_cancel
                         .lock()
                         .unwrap()
                         .store(true, Ordering::Relaxed);
-                    self.generation += 1;
-                    self.connection(Connection::AuthExpired);
+                    let previous =
+                        match std::mem::replace(&mut self.account, AccountSession::NoSession) {
+                            AccountSession::SigningIn { previous, .. } => *previous,
+                            other => other,
+                        };
+                    self.account = previous;
+                    self.present_account(false)?;
                     self.emit(Delta::PairFailed {
                         reason: crate::client::error::SignInFailure::Cancelled,
                     });
@@ -1682,7 +1789,7 @@ impl Engine {
                 self.publish()?;
             }
             Intent::Unsend(key) => {
-                if self.connection == Connection::SigningIn {
+                if self.account.signing_in() {
                     self.emit(Delta::UnsendFailed(key));
                     return Ok(());
                 }
@@ -1930,7 +2037,7 @@ impl Engine {
         self.inbox.refresh(r);
     }
     fn refresh(&mut self, r: Refresh) -> Result<()> {
-        if self.connection == Connection::SigningIn {
+        if !self.account.ready() {
             return Ok(());
         }
         match r {
@@ -2147,7 +2254,28 @@ impl Engine {
         asset: crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<()> {
-        if let Some(media) = &self.media {
+        if !self.account.ready() {
+            let mid = self.store.account()?.own_mid;
+            let mid = if mid.is_empty() {
+                self.store_mid.clone().unwrap_or_default()
+            } else {
+                mid
+            };
+            let key = asset.key();
+            let response_purpose = purpose.clone();
+            self.rpc(
+                move |backend| backend.cached_media(&mid, &asset, purpose),
+                move |engine, result| {
+                    use crate::client::desktop::assets::{Completion, Failure};
+                    engine.emit(asset_delta(Completion {
+                        key,
+                        purpose: response_purpose,
+                        result: result.ok().flatten().ok_or(Failure::Network),
+                    }));
+                    Ok(())
+                },
+            );
+        } else if let Some(media) = &self.media {
             (media.request)(asset, purpose);
         } else {
             self.waiting_assets.push_back((asset, purpose));
@@ -2155,7 +2283,23 @@ impl Engine {
         Ok(())
     }
     fn live(&mut self, e: StreamEvent) -> Result<()> {
-        if !self.has_session || self.connection == Connection::SigningIn {
+        // An authenticated connection from the still-current stream can recover
+        // expired authorization. A failed local load has no stream to recover it.
+        if matches!(&e, StreamEvent::Connection(Ok(())))
+            && matches!(
+                self.account,
+                AccountSession::SessionUnusable {
+                    reason: crate::client::error::SignInFailure::Expired
+                }
+            )
+            && self
+                .stream
+                .as_ref()
+                .is_some_and(|(stop, _)| !stop.load(Ordering::Relaxed))
+        {
+            self.account = AccountSession::Ready;
+        }
+        if !self.account.ready() {
             match e {
                 StreamEvent::Connection(_)
                 | StreamEvent::Connecting(_)
@@ -2174,7 +2318,7 @@ impl Engine {
                     let _ = complete.send(false);
                     return Ok(());
                 }
-                _ if !self.has_session => return Ok(()),
+                _ if !self.account.ready() => return Ok(()),
                 _ => {}
             }
         }
@@ -2320,7 +2464,10 @@ impl Engine {
                 self.continuous = false;
                 if !matches!(
                     self.connection,
-                    Connection::AuthExpired | Connection::SessionInvalid | Connection::Fatal
+                    Connection::SignedOut
+                        | Connection::AuthExpired
+                        | Connection::SessionInvalid
+                        | Connection::Fatal
                 ) {
                     self.retry_later(Refresh::Stream);
                 }

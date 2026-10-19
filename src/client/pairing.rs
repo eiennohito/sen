@@ -5,6 +5,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 /// Protocol progress, independent of desktop wording. Display retains CLI logs.
 #[derive(Clone, Copy, Debug)]
 pub enum Stage {
+    WaitingKeyring,
     RecoveringKeys,
     Authenticated,
     CreatingSession,
@@ -21,6 +22,7 @@ pub enum Stage {
 impl std::fmt::Display for Stage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::WaitingKeyring => f.write_str("Waiting for the keyring to unlock…"),
             Self::RecoveringKeys => f.write_str("Recovering E2EE keys from saved pairing metadata"),
             Self::Authenticated => {
                 f.write_str("SUCCESS: saved session authenticated and E2EE keys restored")
@@ -104,8 +106,19 @@ pub fn sign_in(
     cancel: &AtomicBool,
     emit: impl Fn(Event),
 ) -> Result<()> {
+    sign_in_validated(state, wasm_path, cancel, emit, |_| Ok(()))
+}
+
+pub(crate) fn sign_in_validated<T>(
+    state: &Path,
+    wasm_path: &Path,
+    cancel: &AtomicBool,
+    emit: impl Fn(Event),
+    validate: impl FnOnce(&Path) -> Result<T>,
+) -> Result<T> {
     let ui = NativeLogin { emit, cancel };
     ui.check()?;
+    ui.set(Stage::WaitingKeyring)?;
     let probe_state = state.to_owned();
     let probe_wasm = wasm_path.to_owned();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
@@ -176,14 +189,15 @@ pub fn sign_in(
         display: "none".into(),
     };
     login_with(&opts, &wasm, &ui)?;
+    let validated = validate(&staged)?;
     ui.check()?;
-    install_session(state, &staged).context(super::error::Error::SignIn(
+    install_session(state, &staged, Some(cancel)).context(super::error::Error::SignIn(
         super::error::SignInFailure::StateDirectory(parent.into()),
     ))?;
-    Ok(())
+    Ok(validated)
 }
 
-fn install_session(state: &Path, staged: &Path) -> Result<()> {
+fn install_session(state: &Path, staged: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
     let bytes = fs::read(staged)?;
     // Preserve old credentials so their separately encrypted drafts remain
     // recoverable. Never re-key or migrate drafts into a newly paired account.
@@ -192,6 +206,10 @@ fn install_session(state: &Path, staged: &Path) -> Result<()> {
         let backup = state.with_extension(format!("before-sign-in-{stamp}.json"));
         private_write(&backup, &fs::read(state)?)?;
     }
+    ensure!(
+        !cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)),
+        super::error::Error::SignIn(super::error::SignInFailure::Cancelled)
+    );
     private_write(state, &bytes)?;
     let _ = fs::remove_file(staged);
     Ok(())
@@ -225,7 +243,7 @@ pub fn failure(error: &anyhow::Error, cancelled: bool) -> super::error::SignInFa
     if error.to_string() == "QR code expired before phone verification" {
         return SignInFailure::Phone;
     }
-    SignInFailure::Server
+    SignInFailure::Internal
 }
 
 pub(super) fn phone_error(error: anyhow::Error) -> anyhow::Error {
@@ -253,8 +271,11 @@ mod tests {
             if exists {
                 fs::write(&wasm, b"unsupported module")?;
             }
-            let error = sign_in(&state, &wasm, &AtomicBool::new(false), |_| {
-                panic!("prerequisite failure requested a QR")
+            let error = sign_in(&state, &wasm, &AtomicBool::new(false), |event| {
+                assert!(
+                    matches!(event, Event::Stage(Stage::WaitingKeyring)),
+                    "prerequisite failure requested a QR"
+                );
             })
             .unwrap_err();
             assert_eq!(
@@ -331,7 +352,7 @@ mod tests {
         let staged = root.join("new.json");
         private_write(&state, b"old session")?;
         private_write(&staged, b"new session")?;
-        install_session(&state, &staged)?;
+        install_session(&state, &staged, None)?;
         assert_eq!(fs::read(&state)?, b"new session");
         let backup = fs::read_dir(&root)?
             .find_map(|e| {

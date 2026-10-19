@@ -468,3 +468,10 @@ Current behavior is specified by [ux-model.md](ux-model.md); open problems are
 registered in [ux-sessions.md](ux-sessions.md) and verification in
 [ux-acceptance.md](ux-acceptance.md). History records delivery, not verification
 of the remaining physical desktop gates.
+
+The engine owns one account/session state: `Opening{epoch}` → `NoSession`,
+`SessionUnusable{reason}`, or `Ready`; explicit Start enters `SigningIn{epoch, previous}`.
+Connection is a transport/presentation projection, never evidence of a session.
+Probe facts apply only to their opening epoch (including a pending attempt's prior state).
+Cancel restores that prior state; staged credentials are opened and validated before install,
+which commits sign-in even if Cancel races. Local cached work remains available in every state.

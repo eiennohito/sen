@@ -82,6 +82,9 @@ pub trait Backend: Send {
     fn has_session(&self) -> bool {
         true
     }
+    fn session(&self) -> Result<bool> {
+        Ok(self.has_session())
+    }
     fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()>;
     fn friends(&mut self) -> Result<Vec<crate::store::Friend>>;
     fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>>;
@@ -93,6 +96,15 @@ pub trait Backend: Send {
         asset: &crate::client::desktop::assets::Asset,
     ) -> std::result::Result<Option<String>, crate::client::desktop::assets::Failure>;
     fn retry_asset(&mut self, key: &str);
+    /// Cache-only access; must never authorize or download an asset.
+    fn cached_media(
+        &mut self,
+        _mid: &str,
+        _asset: &crate::client::desktop::assets::Asset,
+        _purpose: crate::client::desktop::assets::Purpose,
+    ) -> Result<Option<crate::client::desktop::assets::Payload>> {
+        Ok(None)
+    }
     fn media(
         &mut self,
         asset: &crate::client::desktop::assets::Asset,
@@ -189,7 +201,9 @@ impl FakeBackend {
         self.0.lock().unwrap().open_failure = reason;
     }
     pub fn open(&self) -> anyhow::Result<Self> {
-        if let Some(reason) = self.0.lock().unwrap().open_failure.clone() {
+        if let Some(reason) = self.0.lock().unwrap().open_failure.clone()
+            && !matches!(reason, crate::client::error::SignInFailure::SavedSession(_))
+        {
             return Err(Error::SignIn(reason).into());
         }
         Ok(self.clone())
@@ -504,6 +518,12 @@ impl Backend for FakeBackend {
     fn has_session(&self) -> bool {
         !self.0.lock().unwrap().signed_out
     }
+    fn session(&self) -> Result<bool> {
+        if let Some(reason) = self.0.lock().unwrap().open_failure.clone() {
+            return Err(Error::SignIn(reason));
+        }
+        Ok(self.has_session())
+    }
     fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
         use crate::client::{desktop::assets::Pixels, pairing::Stage};
         if let Some(reason) = self.0.lock().unwrap().sign_in_failure.take() {
@@ -636,6 +656,21 @@ impl Backend for FakeBackend {
                 ))),
             },
         ));
+    }
+    fn cached_media(
+        &mut self,
+        _mid: &str,
+        asset: &crate::client::desktop::assets::Asset,
+        _purpose: crate::client::desktop::assets::Purpose,
+    ) -> Result<Option<crate::client::desktop::assets::Payload>> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .pixels
+            .get(&asset.key())
+            .cloned()
+            .map(crate::client::desktop::assets::Payload::Image))
     }
     fn media(
         &mut self,
@@ -1024,6 +1059,7 @@ impl Backend for FakeBackend {
 
 pub struct LineBackend {
     cache: std::path::PathBuf,
+    session_failure: Option<crate::client::error::SignInFailure>,
     fetchers: Option<Arc<crate::client::desktop::assets::Fetchers>>,
     client: Option<crate::client::desktop::Client>,
     state: std::path::PathBuf,
@@ -1039,16 +1075,28 @@ impl LineBackend {
         wasm: &std::path::Path,
         cache: &std::path::Path,
     ) -> anyhow::Result<Self> {
+        let (client, session_failure) = if state.exists() {
+            match crate::client::desktop::Client::open_local(state, wasm, cache) {
+                Ok(client) => (Some(client), None),
+                Err(error) => {
+                    crate::reporting::log("saved-session", "open", error.as_ref());
+                    let reason = match crate::client::error::classify(&error) {
+                        Error::SignIn(reason) => reason,
+                        _ => crate::client::error::SignInFailure::SavedSession(
+                            crate::client::error::SavedSessionFailure::Corrupt,
+                        ),
+                    };
+                    (None, Some(reason))
+                }
+            }
+        } else {
+            (None, None)
+        };
         Ok(Self {
             fetchers: None,
             cache: cache.into(),
-            client: if state.exists() {
-                Some(crate::client::desktop::Client::open_local(
-                    state, wasm, cache,
-                )?)
-            } else {
-                None
-            },
+            client,
+            session_failure,
             state: state.into(),
             wasm: wasm.into(),
         })
@@ -1110,34 +1158,47 @@ impl Backend for LineBackend {
     fn has_session(&self) -> bool {
         self.client.is_some()
     }
+    fn session(&self) -> Result<bool> {
+        match &self.session_failure {
+            Some(reason) => Err(Error::SignIn(reason.clone())),
+            None => Ok(self.has_session()),
+        }
+    }
     fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
         use crate::client::{
             desktop::{self, assets::Pixels},
             pairing,
         };
         desktop::set_cancellation_token(cancel.clone());
-        pairing::sign_in(&self.state, &self.wasm, &cancel, move |event| {
-            deliver(match event {
-                pairing::Event::Stage(stage) => PairEvent::Stage(stage),
-                pairing::Event::Qr {
-                    width,
-                    height,
-                    rgba,
-                } => PairEvent::Qr(Arc::new(Pixels {
-                    width,
-                    height,
-                    rgba,
-                })),
-                pairing::Event::Pin(pin) => PairEvent::Pin(pin),
-                pairing::Event::Scanned => PairEvent::Scanned,
-            })
-        })
+        let mut client = pairing::sign_in_validated(
+            &self.state,
+            &self.wasm,
+            &cancel,
+            move |event| {
+                deliver(match event {
+                    pairing::Event::Stage(stage) => PairEvent::Stage(stage),
+                    pairing::Event::Qr {
+                        width,
+                        height,
+                        rgba,
+                    } => PairEvent::Qr(Arc::new(Pixels {
+                        width,
+                        height,
+                        rgba,
+                    })),
+                    pairing::Event::Pin(pin) => PairEvent::Pin(pin),
+                    pairing::Event::Scanned => PairEvent::Scanned,
+                })
+            },
+            |staged| desktop::Client::open_local(staged, &self.wasm, &self.cache),
+        )
         .map_err(|error| {
             crate::reporting::log("sign-in", "pairing", error.as_ref());
             Error::SignIn(pairing::failure(&error, cancel.load(Ordering::Relaxed)))
         })?;
-        self.client =
-            Some(desktop::Client::open_local(&self.state, &self.wasm, &self.cache).map_err(rpc)?);
+        client.installed_at(&self.state);
+        self.client = Some(client);
+        self.session_failure = None;
         Ok(())
     }
 
@@ -1214,6 +1275,29 @@ impl Backend for LineBackend {
     }
     fn retry_asset(&mut self, key: &str) {
         self.fetchers.as_ref().unwrap().retry(key);
+    }
+    fn cached_media(
+        &mut self,
+        mid: &str,
+        asset: &crate::client::desktop::assets::Asset,
+        purpose: crate::client::desktop::assets::Purpose,
+    ) -> Result<Option<crate::client::desktop::assets::Payload>> {
+        use crate::client::desktop::assets::{ImageCache, Payload, Purpose};
+        if mid.is_empty() {
+            return Ok(None);
+        }
+        let asset = match purpose {
+            Purpose::Thumbnail => asset.clone(),
+            Purpose::Original { .. } => match asset.original() {
+                Some(asset) => asset,
+                None => return Ok(None),
+            },
+            Purpose::File { .. } => return Ok(None),
+        };
+        ImageCache::new(&self.cache, mid)
+            .and_then(|mut cache| cache.read(&asset))
+            .map(|pixels| pixels.map(Payload::Image))
+            .map_err(rpc)
     }
     fn media(
         &mut self,

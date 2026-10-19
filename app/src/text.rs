@@ -57,6 +57,7 @@ pub(crate) fn profile_failure(failure: line_wasm_poc::engine::ProfileFailure) ->
 pub(crate) fn pairing_stage(stage: line_wasm_poc::client::pairing::Stage) -> String {
     use line_wasm_poc::client::pairing::Stage;
     match stage {
+        Stage::WaitingKeyring => "Waiting for the keyring to unlock…".into(),
         Stage::RecoveringKeys => "Recovering E2EE keys from saved pairing metadata".into(),
         Stage::Authenticated => {
             "SUCCESS: saved session authenticated and E2EE keys restored".into()
@@ -103,5 +104,9 @@ pub fn sign_in_failure(reason: &line_wasm_poc::client::error::SignInFailure) -> 
         Server => "LINE refused sign-in. Try again later.".into(),
         Phone => "Phone approval was rejected or timed out. Start again and approve sign-in on your phone.".into(),
         Cancelled => String::new(),
+        SavedSession(reason) => format!("Your saved sign-in can't be used: {reason}. Sign in again to replace it."),
+        Expired => "Sign-in expired. Sign in again.".into(),
+        SessionIdentity => "The saved sign-in belongs to a different account. Sign in again.".into(),
+        Internal => "Sign-in stopped because of an internal error. See the log and try again.".into(),
     }
 }

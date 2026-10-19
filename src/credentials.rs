@@ -9,7 +9,7 @@
 //! agent and debug instances without a keyring (e.g. the private D-Bus session
 //! of `tools/run-ui-debug.py`): it keeps the mode-0600 plaintext file and
 //! refuses sealed files.
-use crate::client::private_write;
+use crate::client::{error::SavedSessionFailure, private_write};
 use aes_gcm::{
     Aes256Gcm, KeyInit,
     aead::{Aead, Payload},
@@ -60,7 +60,21 @@ pub fn save(path: &Path, state: &Value) -> Result<()> {
 /// Like `load`, and seals a legacy plaintext file when the keyring is
 /// reachable. Call once per account start, before the sync thread can save.
 pub fn load_migrating(path: &Path) -> Result<Value> {
-    load_migrating_with(path, Store::from_environment()?, &secret_service::Keyring)
+    load_migrating_with(
+        path,
+        Store::from_environment().context(SavedSessionFailure::CredentialsStore.error())?,
+        &secret_service::Keyring,
+    )
+    .map_err(|error| {
+        if error
+            .downcast_ref::<crate::client::error::Error>()
+            .is_some()
+        {
+            error
+        } else {
+            error.context(SavedSessionFailure::Corrupt.error())
+        }
+    })
 }
 /// Fails early, before a phone approval, when new credentials could not be sealed.
 pub fn check_writable() -> Result<()> {
@@ -80,13 +94,13 @@ fn sealed(value: &Value) -> bool {
 }
 
 pub fn load_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
-    let envelope = parse(&fs::read(path).context("read saved session")?)?;
+    let envelope = parse(&fs::read(path).context(SavedSessionFailure::Io.error())?)?;
     if !sealed(&envelope) {
         return Ok(envelope);
     }
     ensure!(
         store == Store::Keyring,
-        "the saved session is sealed with the desktop keyring; unset {ENVIRONMENT} to use it"
+        SavedSessionFailure::CredentialsStore.error()
     );
     open(&envelope, keys)
 }
@@ -126,7 +140,7 @@ pub fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> 
 }
 
 pub fn load_migrating_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
-    let original = fs::read(path).context("read saved session")?;
+    let original = fs::read(path).context(SavedSessionFailure::Io.error())?;
     let state = load_with(path, store, keys)?;
     if store == Store::PlaintextFile || sealed(&parse(&original)?) {
         return Ok(state);
@@ -136,14 +150,17 @@ pub fn load_migrating_with(path: &Path, store: Store, keys: &impl Keys) -> Resul
     };
     let bytes = seal(&id, &key, &original)?;
     // Verify the stored key and the envelope before the plaintext goes away.
-    let stored = keys.get(&id)?.context("keyring did not keep the new key")?;
+    let stored = keys
+        .get(&id)
+        .context(SavedSessionFailure::Keyring.error())?
+        .context(SavedSessionFailure::Keyring.error())?;
     ensure!(
         open(&parse(&bytes)?, &MapKeys::single(&id, stored))? == state,
         "sealed session did not round-trip"
     );
     // Do not overwrite a concurrent save made since the first read.
-    if fs::read(path)? == original {
-        private_write(path, &bytes)?;
+    if fs::read(path).context(SavedSessionFailure::Io.error())? == original {
+        private_write(path, &bytes).context(SavedSessionFailure::Io.error())?;
     }
     Ok(state)
 }
@@ -200,8 +217,9 @@ fn open(envelope: &Value, keys: &impl Keys) -> Result<Value> {
             .context("sealed session ciphertext")?,
     )?;
     let key = keys
-        .get(id)?
-        .context("the desktop keyring does not hold this session's key")?;
+        .get(id)
+        .context(SavedSessionFailure::Keyring.error())?
+        .context(SavedSessionFailure::Keyring.error())?;
     let plain = Aes256Gcm::new((&key).into())
         .decrypt(
             (&nonce).into(),

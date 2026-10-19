@@ -106,15 +106,13 @@ impl Client {
     pub fn open_local(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
         let has_session = state_path.exists();
         let state = if has_session {
-            crate::credentials::load_migrating(state_path).context(super::error::Error::SignIn(
-                super::error::SignInFailure::Keyring,
-            ))?
+            crate::credentials::load_migrating(state_path)?
         } else {
             json!({"wasm_sha256":HASH})
         };
         ensure!(
             state["wasm_sha256"] == HASH,
-            "saved session WASM version mismatch"
+            super::error::SavedSessionFailure::Version.error()
         );
         let wasm = fs::read(wasm_path).context(super::error::Error::SignIn(
             super::error::SignInFailure::CryptoModule(wasm_path.into()),
@@ -127,7 +125,9 @@ impl Client {
         );
         let mut api = Api::new(&wasm)?;
         if has_session {
-            validate_keys(&mut api.rt, &state)?;
+            validate_keys(&mut api.rt, &state)
+                .context(super::error::SavedSessionFailure::Keys.error())?;
+            access(&state).context(super::error::SavedSessionFailure::Corrupt.error())?;
         }
         let my_mid = state["profile"]["mid"]
             .as_str()
@@ -137,7 +137,8 @@ impl Client {
         let cache = ImageCache::new(
             cache_root,
             if my_mid.is_empty() { "local" } else { &my_mid },
-        )?;
+        )
+        .context(super::error::SavedSessionFailure::ImageCache.error())?;
         let sequence = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         Ok(Self {
             api,
@@ -153,6 +154,10 @@ impl Client {
             sequence,
             cache: Arc::new(std::sync::Mutex::new(cache)),
         })
+    }
+
+    pub(crate) fn installed_at(&mut self, path: &Path) {
+        self.session_path = path.into();
     }
 
     fn talk(&mut self, method: &str, args: Value) -> Result<Value> {

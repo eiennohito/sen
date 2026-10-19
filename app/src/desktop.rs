@@ -338,6 +338,13 @@ impl Desktop {
                 #[cfg(not(feature = "ui-debug"))]
                 let _ = kind;
             }
+            Delta::Connection(Connection::SignedOut) => {
+                ui.global::<State>()
+                    .set_session_cause("Not signed in".into());
+            }
+            Delta::Connection(Connection::AuthExpired) => {
+                ui.global::<State>().set_session_cause("".into());
+            }
             Delta::Pair(event) => {
                 use line_wasm_poc::backend::PairEvent;
                 match event {
@@ -371,10 +378,21 @@ impl Desktop {
                     self.state.detail.clear();
                 }
                 ui.set_auth_error(text::sign_in_failure(reason).into());
+                if !cancelled {
+                    ui.global::<State>()
+                        .set_session_cause(text::sign_in_failure(reason).into());
+                }
             }
-            Delta::Connection(Connection::Online) if ui.get_auth_busy() => {
-                self.state.panel = Panel::Chats;
-                self.state.detail.clear();
+            Delta::Connection(Connection::Online) => {
+                ui.global::<State>().set_session_cause("".into());
+                ui.set_auth_error("".into());
+                ui.set_auth_qr(slint::Image::default());
+                ui.set_auth_pin("".into());
+                ui.set_auth_cancelling(false);
+                if self.state.panel == Panel::SignIn {
+                    self.state.panel = Panel::Chats;
+                    self.state.detail.clear();
+                }
             }
             Delta::Notify(m) => {
                 if self.state.selected.as_ref() == Some(&m.chat_id) && !ui.get_following() {

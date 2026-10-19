@@ -7,6 +7,8 @@ pub enum NetCause {
 pub enum Error {
     #[error("sign-in failed: {0:?}")]
     SignIn(SignInFailure),
+    #[error("internal network worker error")]
+    Internal,
     #[error("offline")]
     Offline(NetCause),
     #[error("authorization expired")]
@@ -76,6 +78,10 @@ pub enum SignInFailure {
     Server,
     Phone,
     Cancelled,
+    SavedSession(SavedSessionFailure),
+    Expired,
+    SessionIdentity,
+    Internal,
 }
 
 impl SignInFailure {
@@ -88,6 +94,34 @@ impl SignInFailure {
             Self::Server => "server",
             Self::Phone => "phone",
             Self::Cancelled => "cancelled",
+            Self::SavedSession(_) => "saved-session",
+            Self::Internal => "internal",
+            Self::Expired => "expired",
+            Self::SessionIdentity => "session-identity",
         }
+    }
+}
+
+/// Local saved-session failures, independent of LINE authentication.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SavedSessionFailure {
+    #[error("the saved crypto version is unsupported")]
+    Version,
+    #[error("Letter Sealing keys are missing or do not match")]
+    Keys,
+    #[error("the saved data is corrupt")]
+    Corrupt,
+    #[error("the credentials store does not match")]
+    CredentialsStore,
+    #[error("the keyring is locked or unavailable, or its key is missing")]
+    Keyring,
+    #[error("the saved session could not be read or written")]
+    Io,
+    #[error("the image cache could not be opened")]
+    ImageCache,
+}
+impl SavedSessionFailure {
+    pub(crate) fn error(self) -> Error {
+        Error::SignIn(SignInFailure::SavedSession(self))
     }
 }
