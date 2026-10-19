@@ -21,8 +21,9 @@ Nothing has been released and nothing outside this repository calls it, so
 there is nothing to stay compatible with. When something is renamed, moved
 or redesigned, every caller changes in the same commit. No aliases,
 re-exports, forwarding `<=>` properties, shims, fallbacks for old formats or
-"preserves the old API" layers. Old on-disk data that no longer fits is
-migrated once or discarded, not supported in parallel.
+"preserves the old API" layers. Until the first real release all local
+data is temporary: a store, cache or setting that no longer fits is
+discarded and recreated, not migrated or supported in parallel.
 
 ## Everyday usability gate
 
