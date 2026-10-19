@@ -44,6 +44,7 @@ fn client(transport: http::Transport) -> (Client, PathBuf) {
     let client = Client {
         api: Api {
             rt: Runtime::stub().unwrap(),
+            client_version: "9.8.7".into(),
             http: transport,
             synthetic_signature: true,
             key_cache: HashMap::new(),

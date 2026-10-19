@@ -52,6 +52,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut dark = false;
     let mut snapshot_profile = false;
     let mut background = false;
+    let mut client_version = None;
     let mut locations = line_client::locations::Locations::from_environment()?;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -96,6 +97,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             "--state" => {
                 locations.session = args.next().ok_or("missing state")?.into();
             }
+            "--client-version" => {
+                client_version = Some(args.next().ok_or("missing client version")?)
+            }
             "--wasm" => {
                 locations.wasm = args.next().ok_or("missing wasm")?.into();
             }
@@ -119,6 +123,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         snapshot_profile,
         background,
         locations,
+        client_version,
     })
 }
 

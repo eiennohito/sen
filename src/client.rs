@@ -1,7 +1,7 @@
 //! Debug QR pairing against the same endpoints as LINE Chrome.
 //! Rust owns protocol/state/WASM, all HTTPS (RPC, SSE, media) and QR encoding.
 pub mod error;
-use crate::{HASH, VERSION, locations::Locations, runtime::Runtime, sign};
+use crate::{locations::Locations, runtime::Runtime, sign};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{
     Engine,
@@ -31,6 +31,7 @@ use qr::png as qr_png;
 
 struct Options {
     command: String,
+    client_version: String,
     wasm: PathBuf,
     state: PathBuf,
     qr_file: Option<PathBuf>,
@@ -49,6 +50,7 @@ impl Options {
     ) -> Result<Self> {
         let command = args.next().unwrap_or_else(|| "help".into());
         let mut wasm = None;
+        let mut client_version = String::new();
         let mut state = None;
         let mut qr_file = None;
         let mut display = String::from(if terminal { "ascii" } else { "none" });
@@ -57,6 +59,7 @@ impl Options {
                 .next()
                 .with_context(|| format!("missing value for {arg}"))?;
             match arg.as_str() {
+                "--client-version" => client_version = value,
                 "--wasm" => wasm = Some(PathBuf::from(value)),
                 "--state" => state = Some(PathBuf::from(value)),
                 "--qr-file" => qr_file = Some(value.into()),
@@ -77,6 +80,7 @@ impl Options {
         }
         Ok(Self {
             command,
+            client_version,
             wasm: wasm.unwrap_or_default(),
             state: state.unwrap_or_default(),
             qr_file,
@@ -162,18 +166,20 @@ struct Api {
     #[cfg(test)]
     synthetic_signature: bool,
     rt: Runtime,
+    client_version: String,
     http: http::Transport,
     key_cache: std::collections::HashMap<String, Value>,
     channels: std::collections::HashMap<String, (u32, u64)>,
     channel_tick: u64,
 }
 impl Api {
-    fn new(wasm: &[u8]) -> Result<Self> {
+    fn new(wasm: &[u8], client_version: &str) -> Result<Self> {
         Ok(Self {
             #[cfg(test)]
             synthetic_signature: false,
-            rt: Runtime::new(wasm)?,
-            http: http::Transport::new()?,
+            rt: Runtime::for_version(wasm, client_version)?,
+            client_version: client_version.into(),
+            http: http::Transport::new()?.with_client_version(client_version),
             key_cache: Default::default(),
             channels: Default::default(),
             channel_tick: 0,
@@ -214,14 +220,14 @@ impl Api {
         let signature = if self.synthetic_signature {
             "synthetic".into()
         } else {
-            sign(&mut self.rt, path, &body, access)?
+            sign(&mut self.rt, path, &body, access, &self.client_version)?
         };
         #[cfg(not(test))]
-        let signature = sign(&mut self.rt, path, &body, access)?;
+        let signature = sign(&mut self.rt, path, &body, access, &self.client_version)?;
         let mut headers = vec![
             ("Content-Type", "application/json"),
             ("User-Agent", UA),
-            ("x-line-chrome-version", VERSION),
+            ("x-line-chrome-version", self.client_version.as_str()),
             ("x-lal", "en_US"),
             ("x-hmac", signature.as_str()),
         ];
@@ -442,11 +448,11 @@ fn validate_keys(rt: &mut Runtime, state: &Value) -> Result<usize> {
 }
 fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
     let mut state = crate::credentials::load(&opts.state)?;
-    ensure!(
-        state["wasm_sha256"] == HASH,
-        "saved session WASM version mismatch"
-    );
-    let mut api = Api::new(wasm)?;
+    state["module_version"] = json!(opts.client_version);
+    if let Some(object) = state.as_object_mut() {
+        object.remove("wasm_sha256");
+    }
+    let mut api = Api::new(wasm, &opts.client_version)?;
     if state["e2ee_keys"].as_array().is_none_or(|k| k.is_empty()) {
         progress.set(pairing::Stage::RecoveringKeys)?;
         let key = login_key(&mut api.rt, &state)?;
@@ -454,7 +460,8 @@ fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
         api.rt.destroy("Curve25519Key", key)?;
         save_state(&opts.state, &state)?;
     }
-    let count = validate_keys(&mut api.rt, &state)?;
+    let count =
+        validate_keys(&mut api.rt, &state).context(error::SavedSessionFailure::Keys.error())?;
     progress.set(pairing::Stage::RestoredKeys(count))?;
     let profile = api.profile(access(&state)?)?;
     ensure!(
@@ -540,7 +547,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     if new_directory {
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
-    let mut api = Api::new(wasm)?;
+    let mut api = Api::new(wasm, &opts.client_version)?;
     progress.set(pairing::Stage::CreatingSession)?;
     let created = api.qr("createSession", json!({}), "", 0)?;
     let session = required(&created, "authSessionId")?.to_owned();
@@ -626,7 +633,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     if token["accessToken"].as_str().is_none_or(|s| s.is_empty()) {
         token = json!({"accessToken":required(&result,"authToken")?});
     }
-    let mut state = json!({"format":1,"version":VERSION,"wasm_sha256":HASH,"token_v3_issue_result":token,"certificate":result["certificate"],"login_key":STANDARD.encode(wrapped),"login_metadata":result["metaData"],"e2ee_keys":[],"validated":false});
+    let mut state = json!({"format":1,"module_version":opts.client_version,"token_v3_issue_result":token,"certificate":result["certificate"],"login_key":STANDARD.encode(wrapped),"login_metadata":result["metaData"],"e2ee_keys":[],"validated":false});
     // Preserve the successful session and wrapped login key before any new
     // keychain operation, so a failure can be diagnosed/recovered with status.
     save_state(&opts.state, &state)?;
@@ -648,10 +655,10 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     status(opts, wasm, progress)
 }
 fn run() -> Result<()> {
-    let opts = Options::parse()?;
+    let mut opts = Options::parse()?;
     if ["help", "--help", "-h"].contains(&opts.command.as_str()) {
         println!(
-            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: $XDG_DATA_HOME/line-desktop/ltsm.wasm (fallback $HOME/.local/share/line-desktop/ltsm.wasm).\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are sealed in a mode-0600 file whose key is kept in the desktop keyring (Secret Service).\nLINE_DESKTOP_CREDENTIALS=plaintext-file keeps an unsealed file instead (debug and agent instances without a keyring).\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
+            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--client-version VERSION] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: newest installed LINE for Chrome extension (Chrome/Chromium profiles under ~/.config).\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are sealed in a mode-0600 file whose key is kept in the desktop keyring (Secret Service).\nLINE_DESKTOP_CREDENTIALS=plaintext-file keeps an unsealed file instead (debug and agent instances without a keyring).\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
         );
         return Ok(());
     }
@@ -668,11 +675,13 @@ fn run() -> Result<()> {
         ["login", "status", "chat-check"].contains(&opts.command.as_str()),
         "unknown command"
     );
-    let wasm = fs::read(&opts.wasm).context("read LINE WASM")?;
-    ensure!(
-        format!("{:x}", Sha256::digest(&wasm)) == HASH,
-        "unsupported WASM release"
-    );
+    let module = crate::crypto_module::resolve(
+        &opts.wasm,
+        (!opts.client_version.is_empty()).then_some(opts.client_version.as_str()),
+    )?;
+    opts.wasm = module.wasm.clone();
+    opts.client_version = module.version.clone();
+    let wasm = module.read()?;
     let progress = Progress::new(&opts.state)?;
     let result = match opts.command.as_str() {
         "login" => login(&opts, &wasm, &progress),

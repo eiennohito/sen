@@ -52,7 +52,7 @@ def quoted(value):
 
 arguments = [destination]
 if args.dev_paths:
-    arguments.extend(["--state", ROOT / "artifacts/auth/session.json", "--wasm", ROOT / "artifacts/line-3.7.2/ltsm.wasm"])
+    arguments.extend(["--state", ROOT / "artifacts/auth/session.json"])
 command = "/usr/bin/env -- " + " ".join(quoted(v) for v in arguments)
 # D-Bus service Exec uses shell-like quoting without desktop field-code expansion.
 service_command = " ".join(shlex.quote(str(v)) for v in arguments)

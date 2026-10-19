@@ -1,5 +1,6 @@
 use super::*;
-use crate::{HASH, runtime::Runtime};
+use crate::runtime::Runtime;
+const FIXTURE_SHA256: &str = "58bb4e189ab9bbd7d72ed415258da36afd50e306cb019bab75329d4f5f1b65b3";
 use anyhow::Context;
 use base64::{
     Engine,
@@ -23,16 +24,16 @@ fn decode(value: &Value) -> Vec<u8> {
 fn wasm(test_name: &str) -> Result<Vec<u8>> {
     let path = std::env::var_os("LINE_CRYPTO_ORACLE_PATH")
         .map(std::path::PathBuf::from)
-        .map(Ok)
-        .unwrap_or_else(|| crate::locations::Locations::from_environment().map(|paths| paths.wasm))
-        .map_err(anyhow::Error::msg)?;
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/line-3.7.2/ltsm.wasm")
+        });
     wasm_at(&path).with_context(|| format!("SKIP native crypto oracle: {test_name}: fixture missing or invalid; set LINE_CRYPTO_ORACLE_PATH"))
 }
 
 fn wasm_at(path: &Path) -> Result<Vec<u8>> {
     let bytes = fs::read(path)?;
     ensure!(
-        format!("{:x}", Sha256::digest(&bytes)) == HASH,
+        format!("{:x}", Sha256::digest(&bytes)) == FIXTURE_SHA256,
         "oracle hash"
     );
     Ok(bytes)
@@ -524,7 +525,7 @@ fn secure_key_boundary() -> Result<()> {
     let token = rt.string(crate::TOKEN)?;
     let key = rt.static_call("SecureKey", "loadToken", &[token])?;
     rt.free_string(token)?;
-    let p = rt.bytes(&Sha256::digest(crate::VERSION));
+    let p = rt.bytes(&Sha256::digest("3.7.2"));
     let s = rt.bytes(&Sha256::digest(b"synthetic access token"));
     let derived = rt.method("SecureKey", "deriveKey", key, &[p, s])?;
     let hmac = rt.construct("Hmac", &[derived as u64])?;

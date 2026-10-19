@@ -5,7 +5,7 @@ pub enum NetCause {
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
-    #[error("sign-in failed: {0:?}")]
+    #[error("sign-in failed: {0}")]
     SignIn(SignInFailure),
     #[error("internal network worker error")]
     Internal,
@@ -80,6 +80,8 @@ pub(crate) fn classify(error: &anyhow::Error) -> Error {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignInFailure {
     CryptoModule(std::path::PathBuf),
+    ExtensionMissing(Vec<std::path::PathBuf>),
+    CryptoChanged { version: String, missing: String },
     StateDirectory(std::path::PathBuf),
     Keyring,
     Network,
@@ -95,7 +97,9 @@ pub enum SignInFailure {
 impl SignInFailure {
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::CryptoModule(_) => "crypto-module",
+            Self::CryptoModule(_) | Self::ExtensionMissing(_) | Self::CryptoChanged { .. } => {
+                "crypto-module"
+            }
             Self::StateDirectory(_) => "state-directory",
             Self::Keyring => "keyring",
             Self::Network => "network",
@@ -113,8 +117,6 @@ impl SignInFailure {
 /// Local saved-session failures, independent of LINE authentication.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SavedSessionFailure {
-    #[error("the saved crypto version is unsupported")]
-    Version,
     #[error("Letter Sealing keys are missing or do not match")]
     Keys,
     #[error("the saved data is corrupt")]
@@ -131,5 +133,26 @@ pub enum SavedSessionFailure {
 impl SavedSessionFailure {
     pub(crate) fn error(self) -> Error {
         Error::SignIn(SignInFailure::SavedSession(self))
+    }
+}
+
+impl std::fmt::Display for SignInFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CryptoChanged { version, missing } => write!(
+                f,
+                "LINE for Chrome {version} changed its crypto module (missing {missing}); this app doesn't support it yet"
+            ),
+            Self::ExtensionMissing(paths) => write!(
+                f,
+                "Install LINE for Chrome — this app uses its crypto module\nLooked in:\n{}",
+                paths
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ),
+            _ => write!(f, "{self:?}"),
+        }
     }
 }

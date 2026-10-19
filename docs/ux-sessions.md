@@ -29,7 +29,7 @@ credentials stay sealed (T11). The implemented ownership and storage model is de
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| T9 | Crypto runs the Chrome WASM blob in the `wasmi` interpreter for every encrypt and decrypt; the sync thread instantiates a second runtime; the user must supply `ltsm.wasm`. | `src/runtime.rs:506` | Trial done: `src/native_crypto.rs` ports derivation, HMAC, AES-GCM, Letter Sealing V1/V2 and X25519, proven byte-for-byte against the blob (see [crypto-port.md](crypto-port.md)); about 11,000× faster on a V2 decrypt. Blocked: `SecureKey` (SKB) keys are opaque, so stored-key loading, token recovery and MID decoding still need the blob. Next: decide whether to switch message crypto to native while keeping wasmi for key unwrapping. |
+| T9 | One account worker owns the process WASM runtime for key-bound operations (signing and channel crypto). The stream borrows authorization and requests refresh from that worker; media file crypto runs natively. Startup discovers the newest installed LINE Chrome extension and probes required interfaces. | `src/runtime.rs`, `src/crypto_module.rs`, `src/client/desktop/sync.rs` | Second-runtime receive API removed; recovery drops the old instance before replacement. Sessions are independent of module builds. The optional native-crypto trial stays unchanged; see [crypto-port.md](crypto-port.md). |
 
 ## P — Protocol gaps
 

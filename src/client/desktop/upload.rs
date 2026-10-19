@@ -65,7 +65,7 @@ impl Client {
                         .expect("JSON"),
                 )
             };
-            let application = format!("CHROMEOS\t{VERSION}\tChrome_OS\t");
+            let application = format!("CHROMEOS\t{}\tChrome_OS\t", http.client_version);
             let total = (encrypted.len() + preview.len()) as f32;
             progress(0.);
             let oid = http.upload(

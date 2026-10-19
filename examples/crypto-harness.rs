@@ -3,7 +3,9 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use line_client::{HASH, VERSION, runtime::Runtime, sign};
+use line_client::{runtime::Runtime, sign};
+const FIXTURE_VERSION: &str = "3.7.2";
+const FIXTURE_SHA256: &str = "58bb4e189ab9bbd7d72ed415258da36afd50e306cb019bab75329d4f5f1b65b3";
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::Path};
 
@@ -36,13 +38,19 @@ fn replay_har(rt: &mut Runtime, path: &Path) -> Result<usize> {
             continue;
         };
         ensure!(
-            get("x-line-chrome-version").unwrap_or(VERSION) == VERSION,
+            get("x-line-chrome-version").unwrap_or(FIXTURE_VERSION) == FIXTURE_VERSION,
             "unsupported captured version"
         );
         let body = req["postData"]["text"].as_str().unwrap_or("");
         // At startup Chrome signs with an empty token argument even while the
         // browser sends a session cookie. Do not substitute the cookie here.
-        let actual = sign(rt, &path, body, get("x-line-access").unwrap_or(""))?;
+        let actual = sign(
+            rt,
+            &path,
+            body,
+            get("x-line-access").unwrap_or(""),
+            FIXTURE_VERSION,
+        )?;
         ensure!(actual == expected, "signature mismatch for {path}");
         checked += 1;
     }
@@ -355,9 +363,7 @@ fn main() -> Result<()> {
     }
     let export = args.first().is_some_and(|s| s == "--export-test-key");
     let bench = args.first().is_some_and(|s| s == "--bench");
-    let default_wasm = line_client::locations::Locations::from_environment()
-        .map_err(anyhow::Error::msg)?
-        .wasm;
+    let default_wasm = Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/line-3.7.2/ltsm.wasm");
     let wasm = if export {
         args.get(2)
     } else if bench {
@@ -370,14 +376,14 @@ fn main() -> Result<()> {
     .unwrap_or(&default_wasm);
     let bytes = fs::read(wasm).with_context(|| {
         format!(
-            "read {}; run tools/install-crypto-module.sh first",
+            "read {}; supply the pinned oracle fixture explicitly",
             wasm.display()
         )
     })?;
     let hash = format!("{:x}", Sha256::digest(&bytes));
     ensure!(
-        hash == HASH,
-        "unsupported WASM hash {hash}; adapter pinned to Chrome {VERSION}"
+        hash == FIXTURE_SHA256,
+        "unsupported WASM hash {hash}; adapter pinned to Chrome {FIXTURE_VERSION}"
     );
     if export {
         return export_test_key(&bytes, args.get(1).context("missing output filename")?);
@@ -387,7 +393,7 @@ fn main() -> Result<()> {
         return benchmark(&bytes);
     }
     ensure!(args.len() <= 2, "usage: crypto-harness [WASM [HAR]]");
-    println!("LINE Chrome {VERSION}, unmodified WASM SHA-256 {hash}");
+    println!("LINE Chrome {FIXTURE_VERSION}, unmodified WASM SHA-256 {hash}");
     let mut rt = Runtime::new(&bytes)?;
     println!(
         "PASS: instantiated WASM and discovered {} embind classes",

@@ -632,6 +632,7 @@ fn environment_proxy() -> Result<Option<ureq::Proxy>> {
 
 #[derive(Clone)]
 pub(super) struct Transport {
+    pub(in crate::client) client_version: String,
     config: Config,
     agent: Agent,
     #[cfg(test)]
@@ -639,6 +640,10 @@ pub(super) struct Transport {
 }
 
 impl Transport {
+    pub(super) fn with_client_version(mut self, version: &str) -> Self {
+        self.client_version = version.into();
+        self
+    }
     pub(super) fn new() -> Result<Self> {
         Ok(Self::with_parts(
             environment_proxy()?,
@@ -649,6 +654,7 @@ impl Transport {
     pub(super) fn assets(&self) -> Self {
         // A stalled asset lookup must not hold the RPC resolver's lock.
         Self {
+            client_version: self.client_version.clone(),
             config: self.config,
             agent: Agent::with_parts(
                 self.agent.config().clone(),
@@ -673,6 +679,7 @@ impl Transport {
             .max_idle_age(timing.pool_idle)
             .build();
         Self {
+            client_version: String::new(),
             config: timing,
             agent: Agent::with_parts(config, PollConnector::default(), resolver),
             #[cfg(test)]

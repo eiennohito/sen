@@ -50,7 +50,8 @@ fn local_server(
 ) -> (http::Transport, mpsc::Receiver<String>, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let http = http::Transport::local(format!("http://{}", listener.local_addr().unwrap()));
+    let http = http::Transport::local(format!("http://{}", listener.local_addr().unwrap()))
+        .with_client_version("9.8.7");
     let (tx, rx) = mpsc::channel();
     let serve = Arc::new(serve);
     let thread = thread::spawn(move || {
@@ -342,7 +343,7 @@ fn shared_http_preserves_asset_hosts_paths_headers_and_no_redirects() {
         assert!(!lower.contains("content-type:"));
         if headers.contains("/r/talk/") {
             assert!(lower.contains("x-line-access: synthetic\r\n"));
-            assert!(lower.contains("x-line-application: chromeos\t"));
+            assert!(lower.contains("x-line-application: chromeos\t9.8.7\tchrome_os\t"));
             assert!(lower.contains("x-talk-meta:"));
         } else {
             assert!(!lower.contains("x-line-"));

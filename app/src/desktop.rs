@@ -367,6 +367,8 @@ impl Desktop {
                 ui.global::<State>().set_auth_prerequisite_missing(matches!(
                     reason,
                     line_client::client::error::SignInFailure::CryptoModule(_)
+                        | line_client::client::error::SignInFailure::ExtensionMissing(_)
+                        | line_client::client::error::SignInFailure::CryptoChanged { .. }
                 ));
                 ui.set_auth_cancelling(false);
                 ui.set_auth_qr(slint::Image::default());

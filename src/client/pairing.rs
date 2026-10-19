@@ -106,18 +106,42 @@ pub fn sign_in(
     cancel: &AtomicBool,
     emit: impl Fn(Event),
 ) -> Result<()> {
-    sign_in_validated(state, wasm_path, cancel, emit, |_| Ok(()))
+    if cancel.load(Ordering::Relaxed) {
+        return Err(super::error::Error::SignIn(super::error::SignInFailure::Cancelled).into());
+    }
+    let module = crate::crypto_module::resolve(wasm_path, None)?;
+    sign_in_validated(state, &module.wasm, &module.version, cancel, emit, |_| {
+        Ok(())
+    })
 }
 
 pub(crate) fn sign_in_validated<T>(
     state: &Path,
     wasm_path: &Path,
+    client_version: &str,
     cancel: &AtomicBool,
     emit: impl Fn(Event),
     validate: impl FnOnce(&Path) -> Result<T>,
 ) -> Result<T> {
     let ui = NativeLogin { emit, cancel };
     ui.check()?;
+    drop(
+        Runtime::for_version(
+            &fs::read(wasm_path).context(super::error::Error::SignIn(
+                super::error::SignInFailure::CryptoModule(wasm_path.into()),
+            ))?,
+            client_version,
+        )
+        .map_err(|error| {
+            if error.downcast_ref::<super::error::Error>().is_some() {
+                error
+            } else {
+                error.context(super::error::Error::SignIn(
+                    super::error::SignInFailure::CryptoModule(wasm_path.into()),
+                ))
+            }
+        })?,
+    );
     ui.set(Stage::WaitingKeyring)?;
     let probe_state = state.to_owned();
     let probe_wasm = wasm_path.to_owned();
@@ -132,12 +156,6 @@ pub(crate) fn sign_in_validated<T>(
             let wasm = fs::read(&wasm_path).context(super::error::Error::SignIn(
                 super::error::SignInFailure::CryptoModule(wasm_path.clone()),
             ))?;
-            ensure!(
-                format!("{:x}", Sha256::digest(&wasm)) == HASH,
-                super::error::Error::SignIn(super::error::SignInFailure::CryptoModule(
-                    wasm_path.clone()
-                ))
-            );
             // Fail local prerequisites before requesting a phone approval.
             let parent = state
                 .parent()
@@ -183,6 +201,7 @@ pub(crate) fn sign_in_validated<T>(
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
     let opts = Options {
         command: "login".into(),
+        client_version: client_version.into(),
         state: staged.clone(),
         wasm: wasm_path.into(),
         qr_file: None,
@@ -271,12 +290,19 @@ mod tests {
             if exists {
                 fs::write(&wasm, b"unsupported module")?;
             }
-            let error = sign_in(&state, &wasm, &AtomicBool::new(false), |event| {
-                assert!(
-                    matches!(event, Event::Stage(Stage::WaitingKeyring)),
-                    "prerequisite failure requested a QR"
-                );
-            })
+            let error = sign_in_validated(
+                &state,
+                &wasm,
+                "9.8.7",
+                &AtomicBool::new(false),
+                |event| {
+                    assert!(
+                        matches!(event, Event::Stage(Stage::WaitingKeyring)),
+                        "prerequisite failure requested a QR"
+                    );
+                },
+                |_| Ok(()),
+            )
             .unwrap_err();
             assert_eq!(
                 failure(&error, false),

@@ -1,4 +1,4 @@
-//! Fixed XDG locations for session credentials, the crypto module and cache.
+//! XDG locations for credentials and cache; an empty WASM path requests extension discovery.
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
@@ -23,7 +23,7 @@ impl Locations {
         let data = base("XDG_DATA_HOME", ".local/share").join("line-desktop");
         Ok(Self {
             session: data.join("session.json"),
-            wasm: data.join("ltsm.wasm"),
+            wasm: PathBuf::new(),
             cache: base("XDG_CACHE_HOME", ".cache").join("line-desktop"),
         })
     }
@@ -43,7 +43,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!(paths.session, Path::new("/data/line-desktop/session.json"));
-        assert_eq!(paths.wasm, Path::new("/data/line-desktop/ltsm.wasm"));
+        assert_eq!(paths.wasm, Path::new(""));
         assert_eq!(paths.cache, Path::new("/cache/line-desktop"));
         for invalid in [None, Some(""), Some("relative")] {
             let paths = Locations::resolve(|key| {
@@ -58,10 +58,7 @@ mod tests {
                 paths.session,
                 Path::new("/home/synthetic/.local/share/line-desktop/session.json")
             );
-            assert_eq!(
-                paths.wasm,
-                Path::new("/home/synthetic/.local/share/line-desktop/ltsm.wasm")
-            );
+            assert_eq!(paths.wasm, Path::new(""));
             assert_eq!(
                 paths.cache,
                 Path::new("/home/synthetic/.cache/line-desktop")
@@ -95,9 +92,6 @@ mod tests {
             paths.session,
             Path::new("/home/test/.local/share/line-desktop/session.json")
         );
-        assert_eq!(
-            paths.wasm,
-            Path::new("/home/test/.local/share/line-desktop/ltsm.wasm")
-        );
+        assert_eq!(paths.wasm, Path::new(""));
     }
 }

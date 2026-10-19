@@ -197,12 +197,8 @@ pub(super) fn decrypt(
 
 pub(super) fn run(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
     let state = crate::credentials::load(&opts.state)?;
-    ensure!(
-        state["wasm_sha256"] == HASH,
-        "saved session WASM version mismatch"
-    );
-    let mut api = Api::new(wasm)?;
-    validate_keys(&mut api.rt, &state)?;
+    let mut api = Api::new(wasm, &opts.client_version)?;
+    validate_keys(&mut api.rt, &state).context(error::SavedSessionFailure::Keys.error())?;
     let profile = api.profile(access(&state)?)?;
     let my_mid = required(&profile, "mid")?;
     progress.set("Fetching bounded recent chat previews for decryption check")?;
@@ -247,10 +243,7 @@ pub(super) fn run(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()
                     continue;
                 }
             };
-            // A thrown WASM exception poisons its instance. Each candidate gets
-            // a fresh runtime, including failures during key preparation.
-            let mut candidate = Api::new(wasm)?;
-            match decrypt(&mut candidate, &state, my_mid, message, &envelope) {
+            match decrypt(&mut api, &state, my_mid, message, &envelope) {
                 Ok(plaintext) => {
                     let decoded: Value = serde_json::from_slice(&plaintext)
                         .context("decrypted payload is not valid UTF-8 JSON; body not logged")?;
@@ -270,6 +263,8 @@ pub(super) fn run(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()
                     // Only application-defined errors reach here; no server body
                     // or message contents are included in RPC/runtime diagnostics.
                     println!("Encrypted preview attempt {failed} failed: {error:#}");
+                    api.channels.clear();
+                    api.rt.reinitialize(wasm, &opts.client_version)?;
                 }
             }
             if failed >= 5 {
@@ -294,11 +289,12 @@ mod tests {
     fn cached_channel_is_reusable_across_messages() -> Result<()> {
         let fixture: Value =
             serde_json::from_str(include_str!("../../fixtures/letter-sealing-v2.json"))?;
-        let mut api = Api::new(&fs::read(
-            crate::locations::Locations::from_environment()
-                .map_err(anyhow::Error::msg)?
-                .wasm,
-        )?)?;
+        let mut api = Api::new(
+            &fs::read(
+                Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/line-3.7.2/ltsm.wasm"),
+            )?,
+            "3.7.2",
+        )?;
         let h = api.rt.bytes(&decode(required(&fixture, "exported_key")?)?);
         let key = api.rt.static_call("Curve25519Key", "loadKey", &[h])?;
         api.rt.release(h)?;

@@ -103,31 +103,32 @@ pub struct Client {
 }
 
 impl Client {
-    pub fn open_local(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
+    pub fn open_local(
+        state_path: &Path,
+        wasm_path: &Path,
+        cache_root: &Path,
+        client_version: &str,
+    ) -> Result<Self> {
+        let module = crate::crypto_module::CryptoModule {
+            wasm: wasm_path.into(),
+            version: client_version.into(),
+        };
+        let wasm = module.read()?;
+        let mut api = Api::new(&wasm, client_version)?;
         let has_session = state_path.exists();
-        let state = if has_session {
+        let mut state = if has_session {
             crate::credentials::load(state_path)?
         } else {
-            json!({"wasm_sha256":HASH})
+            json!({})
         };
-        ensure!(
-            state["wasm_sha256"] == HASH,
-            super::error::SavedSessionFailure::Version.error()
-        );
-        let wasm = fs::read(wasm_path).context(super::error::Error::SignIn(
-            super::error::SignInFailure::CryptoModule(wasm_path.into()),
-        ))?;
-        ensure!(
-            format!("{:x}", Sha256::digest(&wasm)) == HASH,
-            super::error::Error::SignIn(super::error::SignInFailure::CryptoModule(
-                wasm_path.into()
-            ))
-        );
-        let mut api = Api::new(&wasm)?;
         if has_session {
             validate_keys(&mut api.rt, &state)
                 .context(super::error::SavedSessionFailure::Keys.error())?;
             access(&state).context(super::error::SavedSessionFailure::Corrupt.error())?;
+        }
+        state["module_version"] = json!(client_version);
+        if let Some(object) = state.as_object_mut() {
+            object.remove("wasm_sha256");
         }
         let my_mid = state["profile"]["mid"]
             .as_str()
@@ -164,10 +165,18 @@ impl Client {
         chat::talk(&mut self.api, access(&self.state)?, method, args)
     }
 
-    pub fn open(state_path: &Path, wasm_path: &Path, cache_root: &Path) -> Result<Self> {
-        let mut client = Self::open_local(state_path, wasm_path, cache_root)?;
+    pub fn open(
+        state_path: &Path,
+        wasm_path: &Path,
+        cache_root: &Path,
+        client_version: &str,
+    ) -> Result<Self> {
+        let mut client = Self::open_local(state_path, wasm_path, cache_root, client_version)?;
         client.online_profile()?;
         Ok(client)
+    }
+    pub fn has_session(&self) -> bool {
+        access(&self.state).is_ok_and(|token| !token.is_empty())
     }
     pub fn local_mid(&self) -> &str {
         &self.my_mid
@@ -237,6 +246,9 @@ impl Client {
         .to_owned();
         Some((chat, self.message(raw)))
     }
+    pub fn client_version(&self) -> &str {
+        &self.api.client_version
+    }
     pub fn stream_access(&self) -> Arc<std::sync::RwLock<String>> {
         self.stream_access.clone()
     }
@@ -256,7 +268,10 @@ impl Client {
     /// Reset only the poisoned WASM store, preserving validated public-key data.
     fn reset_runtime(&mut self) -> Result<()> {
         let keys = std::mem::take(&mut self.api.key_cache);
-        self.api = Api::new(&self.wasm)?;
+        self.api.channels.clear();
+        self.api
+            .rt
+            .reinitialize(&self.wasm, &self.api.client_version)?;
         self.api.key_cache = keys;
         Ok(())
     }

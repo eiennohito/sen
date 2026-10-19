@@ -128,8 +128,32 @@ The desktop and CLI now share `src/client.rs` and `src/client/chat.rs`.
 owns authenticated media retrieval and private thumbnail caching. The CLI is
 a thin frontend over the same transport, session, and WASM implementation.
 
+The crypto module source is the installed LINE Chrome extension, ID
+`ophjlpahpchlmihnnnihgmmeilfjmjjc`. Startup searches
+`~/.config/google-chrome*/*/Extensions/<id>/<ver>/` and
+`~/.config/chromium/*/Extensions/<id>/<ver>/`, selecting the newest numeric
+manifest version across all profiles. The extension's asset manifest locates
+the WASM (with `static/js/ltsm.wasm` as its loader fallback). There is no app
+module copy or install script. The manifest's `version` is passed into signing,
+headers and receive URLs. `--wasm` and `--client-version` are developer overrides;
+only explicit test/oracle fixtures pin repository artifacts.
+
+Immediately after instantiation the host probes the required embind classes,
+constructors, methods and functions. Missing interfaces produce a typed
+“LINE for Chrome <ver> changed its crypto module (missing <name>); this app
+doesn't support it yet” error on both sign-in and the strip, and in the log.
+No extension produces “Install LINE for Chrome — this app uses its crypto
+module” with searched paths. Sessions are independent of module builds; the
+module version is diagnostic only. Failed key restore follows SessionUnusable
+with its reason. LINE could refuse an old client: shows as refused sign-in/session.
+
 The GUI thread owns Slint models and text editing. The account worker owns its
-WASM runtime, tokens, key caches and RPC requests. Three blocking asset threads
+single process WASM runtime, tokens, key caches and RPC requests. Signing and
+key-bound channel operations share that worker-owned runtime through its queue;
+the stream thread borrows authorization and requests token refresh from the
+worker, never instantiating WASM. Runtime recovery drops the old instance before
+creating its replacement. Media file crypto stays native, and the optional
+`native-crypto` trial feature is unchanged. Three blocking asset threads
 share one asset HTTP agent and the thumbnail cache; they own media downloads,
 decryption and decoding. Three slots allow visible images to overlap while
 bounding simultaneous encoded downloads to 48 MiB. The asset agent uses the

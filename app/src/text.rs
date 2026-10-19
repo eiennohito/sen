@@ -101,7 +101,8 @@ pub fn storage_failure(reason: line_client::engine::StorageFailure) -> &'static 
 pub fn sign_in_failure(reason: &line_client::client::error::SignInFailure) -> String {
     use line_client::client::error::SignInFailure::*;
     match reason {
-        CryptoModule(path) => format!("Crypto module missing or unsupported. Install the supported module at {} and try again.", path.display()),
+        CryptoModule(path) => format!("Cannot read the LINE crypto module at {}. Check LINE for Chrome or the developer override.", path.display()),
+        ExtensionMissing(_) | CryptoChanged { .. } => reason.to_string(),
         StateDirectory(path) => format!("State directory is not writable: {}. Grant write permission and try again.", path.display()),
         Keyring => "Unlock your keyring (KWallet/GNOME Keyring) and try again. Ensure Secret Service is running with a default keyring.".into(),
         Network => "Can't reach LINE. Check your network connection and try again.".into(),

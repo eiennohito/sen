@@ -1511,6 +1511,11 @@ fn pairing_reasons_survive_the_engine() {
     app.until(|s| s.connection == Connection::SignedOut);
     for reason in [
         CryptoModule("/missing/crypto.wasm".into()),
+        ExtensionMissing(vec!["/synthetic/chromium/*/Extensions".into()]),
+        CryptoChanged {
+            version: "9.8.7".into(),
+            missing: "E2EEChannel.decryptV2".into(),
+        },
         StateDirectory("/readonly/state".into()),
         Keyring,
         Network,

@@ -1,8 +1,13 @@
-//! Minimal Rust host for LINE Chrome 3.7.2's unmodified Emscripten/embind WASM.
+//! Rust host for the installed LINE Chrome extension's Emscripten/embind WASM.
 //! Binding registration and emval conventions informed by beeper/line (MIT).
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use std::{collections::BTreeMap, fs::File, io::Read};
 use wasmi::{Caller, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store, Val};
+
+// Public callback source embedded in the extension, matched as interface data.
+const CALLBACK_THROW: &str = "{ throw UTF8ToString($0) + ': ' + UTF8ToString($1) }";
+const CALLBACK_RANDOM_INIT: &str = "{ if (undefined === Module.getRandomValues) { try { var window_ = 'object' === typeof(window) ? window : self; var crypto_ = 'undefined' !== typeof(window_.crypto) ? window_.crypto : window_.msCrypto; if('function' !== typeof(crypto_.getRandomValues)) { throw 'Crypto.getRandomValues is not a function'; } Module.getRandomValues = function(data) { crypto_.getRandomValues(data); }; } catch (e) { } } if (undefined === Module.getRandomValues) { try { var crypto_ = require('crypto'); if('function' !== typeof(crypto_['randomFillSync'])) { throw 'crypto.randomFillSync is not a function'; } Module.getRandomValues = function(data) { crypto_['randomFillSync'](data); }; } catch (e) { } } return undefined === Module.getRandomValues ? 1 : 0; }";
+const CALLBACK_RANDOM_FILL: &str = "{ var ret = 1; var data = HEAPU8.subarray($0, $0 + $1); try { Module.getRandomValues(data); ret = 0; } catch (e) { ret = 1; } return ret; }";
 
 #[derive(Clone, Debug)]
 enum Value {
@@ -420,21 +425,23 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             write(&mut c, result, origin)?;
         }
         "o" => {
-            // Emscripten embeds three JS callbacks, identified by offsets in this release.
-            // No JavaScript is executed: each callback is implemented here in Rust.
-            match p[0] {
-                1_456_932 => bail!(
+            // Identify known embedded callback source at the supplied pointer,
+            // so data relocation across extension builds needs no fixed offsets.
+            // No JavaScript is executed; these callbacks are implemented in Rust.
+            let source = cstr(&c, p[0])?;
+            match source.as_str() {
+                CALLBACK_THROW => bail!(
                     "LTSM {}: {}",
                     cstr(&c, u32_at(&c, p[2])?)?,
                     cstr(&c, u32_at(&c, p[2] + 4)?)?
                 ),
-                1_456_985 => {}
-                1_457_725 => {
+                CALLBACK_RANDOM_INIT => {}
+                CALLBACK_RANDOM_FILL => {
                     let ptr = u32_at(&c, p[2])?;
                     let n = u32_at(&c, p[2] + 4)?;
                     write(&mut c, ptr, &random_bytes(n as usize)?)?;
                 }
-                id => bail!("unsupported EM_JS callback {id}"),
+                _ => bail!("unsupported EM_JS callback"),
             }
         }
         "p" => result = malloc(&mut c, p[0] as usize)?,
@@ -495,12 +502,16 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
     Ok(())
 }
 
-pub struct Runtime {
+#[derive(Debug, thiserror::Error)]
+#[error("missing crypto interface {0}")]
+struct MissingInterface(String);
+
+struct RuntimeInstance {
     store: Store<Host>,
     instance: Instance,
     poisoned: bool,
 }
-impl Runtime {
+impl RuntimeInstance {
     #[cfg(test)]
     pub(crate) fn stub() -> Result<Self> {
         let engine = Engine::default();
@@ -539,19 +550,19 @@ impl Runtime {
             instance,
             poisoned: false,
         };
+        for name in ["P", "T", "V", "R"] {
+            if rt.instance.get_func(&rt.store, name).is_none() {
+                return Err(MissingInterface(name.into()).into());
+            }
+        }
+        if rt.instance.get_memory(&rt.store, "O").is_none() {
+            return Err(MissingInterface("O".into()).into());
+        }
+        if rt.instance.get_table(&rt.store, "Q").is_none() {
+            return Err(MissingInterface("Q".into()).into());
+        }
         rt.export("P", &[])?; // C++ constructors
         rt.export("T", &[])?; // embind type and class registrations
-        let binding = rt
-            .store
-            .data()
-            .globals
-            .get("isAvailable")
-            .cloned()
-            .context("isAvailable binding")?;
-        ensure!(
-            rt.invoke(binding, &[])? != 0,
-            "LTSM not available for this origin"
-        );
         Ok(rt)
     }
     fn export(&mut self, name: &str, args: &[Val]) -> Result<Vec<Val>> {
@@ -773,6 +784,275 @@ impl Runtime {
     }
     pub fn free_string(&mut self, p: u64) -> Result<()> {
         self.export("R", &[Val::I32(p as i32)])?;
+        Ok(())
+    }
+}
+
+/// Owned by the account worker. Stream and asset workers request key-bound
+/// operations from that owner; the UI never locks or executes the runtime.
+pub struct Runtime {
+    inner: Option<RuntimeInstance>,
+}
+impl Runtime {
+    pub fn new(bytes: &[u8]) -> Result<Self> {
+        Ok(Self {
+            inner: Some(RuntimeInstance::new(bytes)?),
+        })
+    }
+    pub fn for_version(bytes: &[u8], version: &str) -> Result<Self> {
+        let rt = Self::new(bytes).map_err(|error| {
+            if let Some(missing) = error.downcast_ref::<MissingInterface>() {
+                crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged {
+                    version: version.into(),
+                    missing: missing.0.clone(),
+                })
+                .into()
+            } else {
+                error
+            }
+        })?;
+        rt.validate_interface(version)?;
+        let mut rt = rt;
+        let inner = rt.inner.as_mut().context("crypto runtime unavailable")?;
+        let binding = inner.store.data().globals["isAvailable"].clone();
+        ensure!(
+            inner.invoke(binding, &[])? != 0,
+            "LTSM not available for this origin"
+        );
+        Ok(rt)
+    }
+    pub fn reinitialize(&mut self, bytes: &[u8], version: &str) -> Result<()> {
+        // No second live instance, even while recovering from an exception.
+        self.inner = None;
+        *self = Self::for_version(bytes, version)?;
+        Ok(())
+    }
+    #[cfg(test)]
+    pub(crate) fn stub() -> Result<Self> {
+        Ok(Self {
+            inner: Some(RuntimeInstance::stub()?),
+        })
+    }
+    pub fn validate_interface(&self, version: &str) -> Result<()> {
+        let host = self
+            .inner
+            .as_ref()
+            .context("crypto runtime unavailable")?
+            .store
+            .data();
+        let missing = |name: String| {
+            crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged {
+                version: version.into(),
+                missing: name,
+            })
+        };
+        if !host.globals.contains_key("isAvailable") {
+            return Err(missing("isAvailable".into()).into());
+        }
+        for (name, methods, statics, constructor) in [
+            ("SecureKey", &["deriveKey"][..], &["loadToken"][..], false),
+            ("Hmac", &["digest"][..], &[][..], true),
+            (
+                "Curve25519Key",
+                &["createChannel", "getPublicKey", "exportKey"][..],
+                &["loadKey", "generate"][..],
+                false,
+            ),
+            (
+                "E2EEKey",
+                &[
+                    "createChannel",
+                    "getPublicKey",
+                    "exportKey",
+                    "getKeyId",
+                    "getVersion",
+                ][..],
+                &["loadKey"][..],
+                false,
+            ),
+            (
+                "E2EEChannel",
+                &[
+                    "unwrapE2EEKeyChain",
+                    "unwrapGroupSharedKey",
+                    "encryptV1",
+                    "encryptV2",
+                    "decryptV1",
+                    "decryptV2",
+                ][..],
+                &[][..],
+                false,
+            ),
+            ("E2EEKeychain", &["size", "get"][..], &[][..], false),
+        ] {
+            let class = host
+                .classes
+                .values()
+                .find(|c| c.name == name)
+                .ok_or_else(|| missing(name.into()))?;
+            if constructor && !class.constructors.iter().any(|b| b.args == 1) {
+                return Err(missing(format!("{name}.constructor")).into());
+            }
+            for method in methods {
+                let mut current = class;
+                loop {
+                    if current.methods.contains_key(*method) {
+                        break;
+                    }
+                    match host.classes.get(&current.base) {
+                        Some(base) => current = base,
+                        None => return Err(missing(format!("{name}.{method}")).into()),
+                    }
+                }
+            }
+            for method in statics {
+                if !class.statics.contains_key(*method) {
+                    return Err(missing(format!("{name}.{method}")).into());
+                }
+            }
+        }
+        Ok(())
+    }
+    pub fn bindings(&self) -> Vec<(String, Vec<String>)> {
+        self.inner
+            .as_ref()
+            .map(|inner| inner.bindings())
+            .unwrap_or_default()
+    }
+    pub fn static_call(&mut self, class: &str, name: &str, args: &[u64]) -> Result<u32> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .static_call(class, name, args)
+    }
+    pub fn construct(&mut self, class: &str, args: &[u64]) -> Result<u32> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .construct(class, args)
+    }
+    pub fn method(&mut self, class: &str, name: &str, this: u32, args: &[u64]) -> Result<u32> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .method(class, name, this, args)
+    }
+    pub fn destroy(&mut self, class: &str, ptr: u32) -> Result<()> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .destroy(class, ptr)
+    }
+    pub fn read_memory(&self, address: usize, len: usize) -> Result<Vec<u8>> {
+        self.inner
+            .as_ref()
+            .context(crate::client::Error::Crypto)?
+            .read_memory(address, len)
+    }
+    pub fn bytes(&mut self, bytes: &[u8]) -> u64 {
+        self.inner
+            .as_mut()
+            .map(|inner| inner.bytes(bytes))
+            .unwrap_or(0)
+    }
+    pub fn release(&mut self, handle: u64) -> Result<()> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .release(handle)
+    }
+    pub fn object(&mut self, handle: u32) -> Result<u32> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .object(handle)
+    }
+    pub fn output(&mut self, handle: u32) -> Result<Vec<u8>> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .output(handle)
+    }
+    pub fn string(&mut self, s: &str) -> Result<u64> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .string(s)
+    }
+    pub fn free_string(&mut self, p: u64) -> Result<()> {
+        self.inner
+            .as_mut()
+            .context(crate::client::Error::Crypto)?
+            .free_string(p)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn missing_interface_has_a_typed_versioned_error() -> Result<()> {
+        let error = Runtime::for_version(b"\0asm\x01\0\0\0", "9.8.7")
+            .err()
+            .context("expected missing export")?;
+        assert!(error.to_string().contains("missing P"));
+        let mut rt = Runtime::stub()?;
+        let error = rt.validate_interface("9.8.7").unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<crate::client::Error>(), Some(crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged { version, missing })) if version == "9.8.7" && missing == "isAvailable")
+        );
+        assert_eq!(
+            error.to_string(),
+            "sign-in failed: LINE for Chrome 9.8.7 changed its crypto module (missing isAvailable); this app doesn't support it yet"
+        );
+        rt.inner.as_mut().unwrap().store.data_mut().globals.insert(
+            "isAvailable".into(),
+            Binding {
+                invoker: 0,
+                context: 0,
+                args: 0,
+                types: vec![],
+            },
+        );
+        assert!(
+            rt.validate_interface("9.8.7")
+                .unwrap_err()
+                .to_string()
+                .contains("missing SecureKey")
+        );
+        rt.inner.as_mut().unwrap().store.data_mut().classes.insert(
+            1,
+            Class {
+                name: "SecureKey".into(),
+                ..Default::default()
+            },
+        );
+        assert!(
+            rt.validate_interface("9.8.7")
+                .unwrap_err()
+                .to_string()
+                .contains("missing SecureKey.deriveKey")
+        );
+        Ok(())
+    }
+    #[test]
+    #[ignore = "reads only the installed extension's public files; no credentials or network"]
+    fn installed_extension_interface_and_versioned_signing() -> Result<()> {
+        let module = crate::crypto_module::resolve(std::path::Path::new(""), None)?;
+        let mut rt = Runtime::for_version(&module.read()?, &module.version)?;
+        let a = crate::sign(&mut rt, "/synthetic", "{}", "synthetic", &module.version)?;
+        let b = crate::sign(
+            &mut rt,
+            "/synthetic",
+            "{}",
+            "synthetic",
+            "synthetic-other-version",
+        )?;
+        assert_ne!(a, b);
+        let key = rt.static_call("Curve25519Key", "generate", &[1])?;
+        let public = rt.method("Curve25519Key", "getPublicKey", key, &[])?;
+        assert_eq!(rt.output(public)?.len(), 32);
+        rt.destroy("Curve25519Key", key)?;
         Ok(())
     }
 }

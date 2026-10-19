@@ -86,7 +86,9 @@ These paths have synthetic coverage; live compatibility and native read markers
 remain unverified while Chrome owns the account slot. Unknown mute state is not
 shown as a known server preference.
 
-Run `tools/install-crypto-module.sh` to copy and verify `ltsm.wasm` from the newest installed Chrome LINE extension, then launch `line-desktop` and choose **Sign in** to pair with your phone. Session credentials and the module use `$XDG_DATA_HOME/line-desktop/` (default `~/.local/share/line-desktop/`); cache uses `$XDG_CACHE_HOME/line-desktop/` (default `~/.cache/line-desktop/`). The desktop keyring seals saved sign-in credentials. `line-auth` shares the session/module defaults; `--state FILE`, `--wasm FILE` and the app's `--cache-dir DIR` are developer overrides.
+Install LINE for Chrome, then launch `line-desktop` and choose **Sign in** to pair with your phone. At startup the app uses the newest installed extension (`ophjlpahpchlmihnnnihgmmeilfjmjjc`) across `~/.config/google-chrome*/*/Extensions/<id>/<ver>/` and `~/.config/chromium/*/Extensions/<id>/<ver>/`. It reads the crypto WASM from the extension's own asset manifest (or `static/js/ltsm.wasm`) and uses `manifest.json`'s version for requests and signing. No module copy or installation script is needed. Required crypto interfaces are checked before sign-in; unsupported changes appear on the sign-in screen and status strip and are logged. If the extension is missing, the app lists the searched locations.
+
+Session credentials use `$XDG_DATA_HOME/line-desktop/` (default `~/.local/share/line-desktop/`); cache uses `$XDG_CACHE_HOME/line-desktop/` (default `~/.cache/line-desktop/`). The desktop keyring seals saved sign-in credentials. Sessions survive extension updates; the module version is diagnostic only. If the updated module cannot restore saved keys, the app explains that the saved session is unusable. LINE could refuse an old client; this appears as refused sign-in/session. `line-auth` shares these defaults. `--state FILE`, `--wasm FILE`, `--client-version VERSION` and the app's `--cache-dir DIR` are developer overrides. A WASM override outside an extension needs `--client-version` when no extension is installed. Tests and crypto oracle fixtures may explicitly pin a module copy; the app never defaults to one. One account worker owns the process's WASM runtime for signing and key-bound channel crypto. Media file crypto runs natively on background workers; the optional native-crypto trial remains experimental.
 
 Private desktop state uses `$XDG_STATE_HOME/line-desktop` (normally under
 `~/.local/state`). Empty or relative XDG directories fall back to `$HOME`.
@@ -109,7 +111,7 @@ headless snapshots fix the clock to 2026-10-18 at 14:00 local time.
 
 Install the built executable, original app icon, and desktop launcher for the
 current user (the launcher uses XDG defaults; `--dev-paths` explicitly selects
-repository development paths):
+the repository development session path; crypto still follows the installed extension):
 
 ```sh
 cargo build --release -p line-desktop
@@ -241,13 +243,13 @@ offline snapshot options.
 ## Protocol tools
 
 The root package remains the default Cargo target, so ordinary CLI builds do not
-compile the GUI. Obtain the official extension WASM separately; see
-[HANDOFF.md](HANDOFF.md) for its supported version, hash, state handling, and
-verified protocol details. The blob is not included in Git.
+compile the GUI. Install LINE for Chrome for automatic module discovery; the
+blob is not included in the repository. [HANDOFF.md](HANDOFF.md) records
+historical protocol verification and fixture details.
 
 ```sh
 cargo build --release --bins
-# CLI defaults: $XDG_DATA_HOME/line-desktop/{session.json,ltsm.wasm}
+# CLI session: $XDG_DATA_HOME/line-desktop/session.json; WASM: newest installed LINE Chrome extension
 # (fallback $HOME/.local/share/line-desktop/).
 target/release/line-auth status
 target/release/line-auth chat-check
