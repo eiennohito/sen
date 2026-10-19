@@ -28,6 +28,8 @@ struct CachedFriend {
 struct MessageInputs {
     message: StoredMessage,
     sender: Option<Friend>,
+    reactors: Vec<(String, Option<Friend>)>,
+    own_mid: String,
     sender_friend: bool,
     system_text: Option<String>,
     reply: Option<(StoredMessage, String)>,
@@ -39,6 +41,7 @@ struct ChatInputs {
     chat: ChatInput,
     unread_count: u32,
     title: String,
+    avatar: Option<line::client::desktop::assets::Asset>,
     preview: Option<StoredMessage>,
     system_text: Option<String>,
     activity: i64,

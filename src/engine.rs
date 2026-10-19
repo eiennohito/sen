@@ -2254,6 +2254,7 @@ impl Engine {
                 engine.list_more = page.more;
                 engine.list_sweep.extend(page.chats.clone());
                 engine.store.upsert_chats(&engine.list_sweep, !page.more)?;
+                engine.resolve_senders(&page.previews)?;
                 for m in page.previews {
                     engine.store.apply_live(&m.chat_id, &m, false)?;
                 }

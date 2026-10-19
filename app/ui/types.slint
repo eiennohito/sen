@@ -7,7 +7,8 @@ export enum MessageKind { text, photo, sticker, video, voice, file, location, co
 export struct LinkRow { label: string, url: string }
 export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, draft: bool, draft-preview: string, failed: bool, muted: bool, outgoing-preview: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, activity: string, time: string, avatar: image, avatar-key: string }
 export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, status-runs: [RichRun], group: bool, avatar: image, avatar-key: string }
-export struct ReactionRow { label: string, image-key: string, picture: image, has-picture: bool }
+export struct ReactorRow { id: string, name: string, initial: string, avatar-key: string, avatar: image }
+export struct ReactionRow { id: int, label: string, glyph: string, count: int, own: bool, reactors: [ReactorRow], image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
     uploading: bool, upload-progress: float, file-missing: bool, local-media: bool,
     own-reaction: int, can-react: bool, reaction-count: int,

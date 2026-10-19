@@ -1,9 +1,10 @@
-import { DemoAutomation } from "types.slint";
+import { ReactionRow, DemoAutomation } from "types.slint";
 import { AttachmentItem } from "types.slint";
 import { StickerTab, StickerItem, ComposeFriend } from "types.slint";
 import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
+    in-out property <[ReactionRow]> reaction-kinds;
     in-out property <MessageRow> composer-reply;
     callback reply(string);
     callback cancel-reply();

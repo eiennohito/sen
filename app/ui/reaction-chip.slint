@@ -1,0 +1,70 @@
+import { FeedbackRect } from "connection-notice.slint";
+import { ReactionRow } from "types.slint";
+import { State } from "state.slint";
+import { Tokens } from "tokens.slint";
+import { Avatar } from "avatar.slint";
+import { Pane } from "scrollpane.slint";
+
+component ReactionMark inherits Rectangle {
+    in property <ReactionRow> reaction;
+    width: 20px; height: 20px;
+    if root.reaction.image-key != "": Image { width: parent.width; height: parent.height; source: root.reaction.picture; image-fit: contain; accessible-role: image; accessible-label: root.reaction.label + " reaction"; accessible-description: root.reaction.has-picture ? "Loaded" : "Loading"; }
+    if root.reaction.image-key == "": Text { width: parent.width; height: parent.height; text: root.reaction.glyph; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+}
+
+export component ReactionChip inherits Rectangle {
+    in property <ReactionRow> reaction;
+    in property <[ReactionRow]> groups;
+    property <FeedbackRect> popup-rect;
+    height: 28px; width: content.preferred-width; horizontal-stretch: 0;
+    border-radius: 14px; background: root.reaction.own ? Tokens.selection : Tokens.bg;
+    border-width: 1px; border-color: root.reaction.own ? Tokens.accent : Tokens.divider;
+    content := HorizontalLayout {
+        padding-left: 8px; padding-right: 8px; padding-top: 4px; padding-bottom: 4px; spacing: 4px; alignment: center;
+        ReactionMark { reaction: root.reaction; }
+        Text { text: root.reaction.count; color: Tokens.foreground; font-size: Tokens.small; vertical-alignment: center; }
+    }
+    chip-focus := FocusScope {
+        accessible-role: button; accessible-label: root.reaction.label + ", " + root.reaction.count + " reactions";
+        accessible-item-selected: root.reaction.own;
+        accessible-description: self.has-focus ? "Focused reaction" : "";
+        // MCP reports popup contents in popup-local coordinates. Expose the
+        // popup's actual placement in window coordinates for offline checks.
+        if State.demo-reset-enabled: popup-bounds := Rectangle {
+            x: root.popup-rect.x; y: root.popup-rect.y; width: root.popup-rect.width; height: root.popup-rect.height;
+            background: transparent;
+        }
+        accessible-action-default => { self.focus(); reactors.show(); }
+        key-pressed(event) => { if event.text == Key.Return || event.text == " " { reactors.show(); return accept; } reject }
+        Rectangle { background: transparent; border-radius: 14px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent; }
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { chip-focus.focus(); reactors.show(); } }
+    reactors := PopupWindow {
+        close-policy: close-on-click-outside;
+        property <FeedbackRect> bounds: { x: self.x, y: self.y, width: self.width, height: self.height };
+        changed bounds => { root.popup-rect = self.bounds; }
+        init => { root.popup-rect = self.bounds; }
+        x: max(-root.absolute-position.x, min(0px, State.window-width - root.absolute-position.x - self.width));
+        y: max(-root.absolute-position.y, min(root.height, State.window-height - root.absolute-position.y - self.height));
+        width: min(State.window-width, max(120px, actors.preferred-width + 12px));
+        height: min(State.window-height, min(320px, actors.preferred-height));
+        Rectangle {
+            accessible-role: list; accessible-label: "Who reacted";
+            background: Tokens.bg; border-radius: 8px; border-width: 1px; border-color: Tokens.border;
+            Pane {
+                actors := VerticalLayout {
+                    padding: 12px; spacing: 8px;
+                    for group in root.groups: VerticalLayout {
+                        spacing: 4px;
+                        ReactionMark { reaction: group; accessible-role: image; accessible-label: group.label; }
+                        for actor in group.reactors: HorizontalLayout {
+                            height: 32px; spacing: 8px;
+                            Avatar { width: 28px; height: 28px; identity: actor.id; initial: actor.initial; picture: actor.avatar; label: actor.name + " avatar"; }
+                            Text { min-width: self.preferred-width; text: actor.name; color: Tokens.text; font-size: Tokens.small; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

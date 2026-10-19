@@ -3,6 +3,17 @@ use super::*;
 impl Presenter {
     pub fn install(&self, ui: &AppWindow) {
         let state = ui.global::<State>();
+        state.set_reaction_kinds(ModelRc::new(VecModel::from(
+            PREDEFINED_REACTIONS
+                .iter()
+                .map(|(id, label, glyph)| ReactionRow {
+                    id: *id as i32,
+                    label: (*label).into(),
+                    glyph: (*glyph).into(),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        )));
         state.set_preparing_sign_in_text(text::PREPARING_SIGN_IN.into());
         state.set_signed_in_text(text::SIGNED_IN.into());
         ui.set_chats(ModelRc::new(self.chats.clone()));

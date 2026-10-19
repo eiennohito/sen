@@ -16,6 +16,17 @@ impl Presenter {
             });
         let inputs = MessageInputs {
             message: m.clone(),
+            reactors: m
+                .reactions
+                .iter()
+                .map(|r| {
+                    (
+                        crate::system_events::name(state, &r.actor),
+                        state.contact(&r.actor).cloned(),
+                    )
+                })
+                .collect(),
+            own_mid: state.profile.mid.clone(),
             sender: sender.clone(),
             // Only an unnamed sender needs the friend lookup for its fallback.
             sender_friend: sender.as_ref().is_some_and(|s| s.name.is_none())
@@ -30,6 +41,31 @@ impl Presenter {
             return row.clone();
         }
         let mut row = message_row(m, system_text.as_deref());
+        if !m.body.is_withdrawn() {
+            row.reactions = ModelRc::new(VecModel::from(reaction_views(
+                &m.reactions,
+                |id| {
+                    let key = state
+                        .contact(id)
+                        .and_then(|c| c.avatar.as_ref())
+                        .map(|a| a.key())
+                        .unwrap_or_default();
+                    let name = crate::system_events::name(state, id);
+                    line_desktop_ui::ReactorRow {
+                        id: id.into(),
+                        initial: name_initial(if id == state.profile.mid {
+                            text::member_name(state.contact(id).and_then(|c| c.name.as_deref()))
+                        } else {
+                            &name
+                        }),
+                        name: name.into(),
+                        avatar_key: key.clone().into(),
+                        avatar: self.images.get(&key).cloned().unwrap_or_default(),
+                    }
+                },
+                &state.profile.mid,
+            )));
+        }
         row.sender_name = sender
             .as_ref()
             .map(|s| {
@@ -264,6 +300,119 @@ pub(crate) fn compact_text(content: &Content, state: &AppState, sender: &str) ->
 #[cfg(test)]
 mod content_tests {
     use super::*;
+
+    #[test]
+    fn reaction_chips_group_assets_counts_and_reactors() {
+        let mut state = AppState::default();
+        state.profile.mid = "self".into();
+        state.contacts.insert(
+            "friend".into(),
+            Friend {
+                id: "friend".into(),
+                name: Some("Aoi".into()),
+                ..Default::default()
+            },
+        );
+        let asset = line::client::desktop::assets::Asset::avatar("/reaction").unwrap();
+        let mut m = crate::tests::message("Reactions");
+        m.reactions = vec![
+            Reaction {
+                actor: "friend".into(),
+                kind: ReactionKind::Paid(Some(asset.clone())),
+            },
+            Reaction {
+                actor: "self".into(),
+                kind: ReactionKind::Paid(Some(asset.clone())),
+            },
+            Reaction {
+                actor: "unknown".into(),
+                kind: ReactionKind::Predefined(2),
+            },
+        ];
+        let mut presenter = presenter::Presenter::default();
+        let row = presenter.row(&m, &state);
+        assert_eq!(row.reactions.row_count(), 2);
+        let paid = row.reactions.row_data(0).unwrap();
+        assert_eq!(paid.image_key, asset.key());
+        assert_eq!(paid.glyph, "");
+        assert_eq!(paid.count, 2);
+        assert!(paid.own);
+        assert_eq!(
+            paid.reactors
+                .iter()
+                .map(|r| r.name.to_string())
+                .collect::<Vec<_>>(),
+            ["Aoi", "You"]
+        );
+        let predefined = row.reactions.row_data(1).unwrap();
+        assert_eq!(predefined.glyph, "👍");
+        assert_eq!(predefined.count, 1);
+        assert!(!predefined.own);
+        assert_eq!(
+            predefined.reactors.row_data(0).unwrap().name,
+            "Unknown member"
+        );
+        state.contacts.get_mut("friend").unwrap().name = Some("Renamed".into());
+        assert_eq!(
+            presenter
+                .row(&m, &state)
+                .reactions
+                .row_data(0)
+                .unwrap()
+                .reactors
+                .row_data(0)
+                .unwrap()
+                .name,
+            "Renamed"
+        );
+    }
+
+    #[test]
+    fn own_reactor_avatar_follows_profile_contact_and_profile_changes() {
+        let mut state = AppState::default();
+        let mut presenter = presenter::Presenter::default();
+        let mut message = crate::tests::message("Own reaction");
+        message.reactions = vec![Reaction {
+            actor: "self".into(),
+            kind: ReactionKind::Predefined(3),
+        }];
+        for (name, picture) in [("Offline preview", None), ("Renamed", Some("/own-photo"))] {
+            state.apply(Delta::Profile(line::store::Profile {
+                mid: "self".into(),
+                display_name: name.into(),
+                picture_path: picture.map(str::to_owned),
+                ..Default::default()
+            }));
+            let contact = state.contact("self").unwrap();
+            let key = contact.avatar.as_ref().map(|a| a.key()).unwrap_or_default();
+            let image = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(2, 2));
+            if picture.is_some() {
+                presenter.images.insert(key.clone(), image.clone());
+            }
+            let row = presenter.row(&message, &state);
+            let actor = row
+                .reactions
+                .row_data(0)
+                .unwrap()
+                .reactors
+                .row_data(0)
+                .unwrap();
+            assert_eq!(actor.name, "You");
+            assert_eq!(
+                actor.initial,
+                name_initial(text::member_name(contact.name.as_deref()))
+            );
+            assert_eq!(actor.avatar_key, key);
+            assert_eq!(
+                actor.avatar.size(),
+                if picture.is_some() {
+                    image.size()
+                } else {
+                    slint::Image::default().size()
+                }
+            );
+        }
+    }
 
     #[test]
     fn reply_rows_keep_full_text_while_composer_quotes_are_compact() {

@@ -21,6 +21,7 @@ impl Presenter {
             }
             let inputs = ChatInputs {
                 chat: c.clone(),
+                avatar: chat_avatar(state, id).cloned(),
                 unread_count: item.unread_count,
                 title: title.to_owned(),
                 preview: item.preview.clone(),
@@ -75,7 +76,7 @@ impl Presenter {
                 row.time = "New".into();
                 row.preview = "No messages yet".into();
             }
-            if let Some(asset) = c.avatar.as_ref() {
+            if let Some(asset) = chat_avatar(state, id) {
                 row.avatar_key = asset.key().into();
                 if let Some(image) = self.images.get(row.avatar_key.as_str()) {
                     row.avatar = image.clone();
@@ -98,50 +99,37 @@ impl Presenter {
                 .map(|n| n as i32)
                 .unwrap_or(-1),
         );
-        if let Some(c) = state.selected.as_ref().and_then(|id| state.chats.get(id)) {
-            ui.set_chat_title(single_line(chat_title(&c.chat, state)).into());
-            ui.global::<State>().set_chat_id(c.chat.id.0.clone().into());
-            ui.global::<State>()
-                .set_chat_initial(name_initial(chat_title(&c.chat, state)));
-            let avatar = c
-                .chat
-                .avatar
-                .as_ref()
-                .and_then(|asset| self.images.get(&asset.key()))
-                .cloned()
-                .unwrap_or_default();
-            ui.global::<State>().set_chat_avatar(avatar);
-            ui.set_chat_group(c.chat.is_group);
-            ui.set_member_count(c.chat.member_count.unwrap_or(0) as i32);
+        if let Some(id) = &state.selected {
+            let chat = state.chats.get(id).map(|c| &c.chat);
+            let contact = state.contact(&id.0);
+            let title = chat
+                .map(|c| chat_title(c, state))
+                .unwrap_or_else(|| contact.map(text::friend_name).unwrap_or("Conversation"));
+            let group = chat.is_some_and(|c| c.is_group);
+            let avatar = chat_avatar(state, id);
+            ui.set_chat_title(single_line(title).into());
+            ui.global::<State>().set_chat_id(id.0.clone().into());
+            ui.global::<State>().set_chat_initial(name_initial(title));
+            ui.global::<State>().set_chat_avatar(
+                avatar
+                    .and_then(|a| self.images.get(&a.key()))
+                    .cloned()
+                    .unwrap_or_default(),
+            );
+            ui.set_chat_group(group);
+            let count = chat.and_then(|c| c.member_count).unwrap_or(0);
+            ui.set_member_count(count as i32);
             ui.set_chat_subtitle(
-                if c.chat.is_group {
-                    format!("{} members", c.chat.member_count.unwrap_or(0))
+                if group {
+                    format!("{count} members")
                 } else {
                     String::new()
                 }
                 .into(),
             );
         }
-        if let Some(id) = &state.selected
-            && !state.chats.contains_key(id)
-        {
-            let friend = state.friends.iter().find(|f| f.id == id.0);
-            let title = friend.map(text::friend_name).unwrap_or(&id.0);
-            ui.set_chat_title(title.into());
-            ui.global::<State>().set_chat_id(id.0.clone().into());
-            ui.global::<State>().set_chat_initial(name_initial(title));
-            ui.global::<State>().set_chat_avatar(
-                friend
-                    .and_then(|f| f.avatar.as_ref())
-                    .and_then(|a| self.images.get(&a.key()))
-                    .cloned()
-                    .unwrap_or_default(),
-            );
-            ui.set_chat_group(false);
-            ui.set_member_count(0);
-            ui.set_chat_subtitle("".into());
-        }
     }
+
     pub fn patch_draft(&mut self, chat: &ChatId, draft: &Option<Draft>) {
         let Some((inputs, row)) = self.rendered_chats.get_mut(chat) else {
             return;
@@ -170,4 +158,19 @@ pub(crate) fn chat_title<'a>(chat: &'a ChatInput, state: &'a AppState) -> &'a st
         .and_then(|c| c.name.as_deref())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or("Conversation")
+}
+
+pub(super) fn chat_avatar<'a>(
+    state: &'a AppState,
+    id: &ChatId,
+) -> Option<&'a line::client::desktop::assets::Asset> {
+    let chat = state.chats.get(id).map(|c| &c.chat);
+    if chat.is_some_and(|c| c.is_group) {
+        chat.and_then(|c| c.avatar.as_ref())
+    } else {
+        state
+            .contact(&id.0)
+            .and_then(|c| c.avatar.as_ref())
+            .or_else(|| chat.and_then(|c| c.avatar.as_ref()))
+    }
 }
