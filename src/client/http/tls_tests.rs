@@ -1,341 +1,53 @@
-//! Local TLS only. Neither the generated CA nor the reset synchronization is
-//! available in production builds; certificate and hostname checks stay enabled.
-use super::{tests::accept, *};
-use rcgen::{BasicConstraints, CertificateParams, CertifiedIssuer, IsCa, KeyPair, KeyUsagePurpose};
-use rustls::{ServerConfig, ServerConnection, StreamOwned, pki_types::PrivatePkcs8KeyDer};
+use super::{tests::*, *};
+use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use std::{
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     net::TcpListener,
-    sync::{Mutex, atomic::AtomicUsize, mpsc},
     thread,
 };
-
-type TlsStream = StreamOwned<ServerConnection, TcpStream>;
-const SECOND_BODY: &str = "{\"request\":2}";
-
 fn fixture() -> (Transport, TcpListener, Arc<ServerConfig>) {
-    let mut params = CertificateParams::new(Vec::new()).unwrap();
-    params.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
-    params.key_usages = vec![KeyUsagePurpose::KeyCertSign, KeyUsagePurpose::CrlSign];
-    let ca = CertifiedIssuer::self_signed(params, KeyPair::generate().unwrap()).unwrap();
-    let key = KeyPair::generate().unwrap();
-    let leaf = CertificateParams::new(vec!["localhost".into()])
-        .unwrap()
-        .signed_by(&key, &ca)
-        .unwrap();
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut server = ServerConfig::builder_with_provider(provider)
-        .with_safe_default_protocol_versions()
-        .unwrap()
-        .with_no_client_auth()
-        .with_single_cert(
-            vec![leaf.der().clone()],
-            PrivatePkcs8KeyDer::from(key.serialize_der()).into(),
-        )
-        .unwrap();
-    // Late TLS session tickets would correctly make the idle socket peek reject
-    // readable bytes. Disable tickets so this test specifically exercises reuse.
-    server.send_tls13_tickets = 0;
+    let ca = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca.cert.der().clone()).unwrap();
+    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(ca.signing_key.serialize_der()).into();
+    let config =
+        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+            .with_safe_default_protocol_versions()
+            .unwrap()
+            .with_no_client_auth()
+            .with_single_cert(vec![ca.cert.der().clone()], key)
+            .unwrap();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let root = ureq::tls::Certificate::from_der(ca.der().as_ref()).to_owned();
-    let config = Agent::config_builder()
-        .proxy(None)
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .timeout_connect(Some(Config::testing().connect))
-        .max_idle_age(Config::testing().pool_idle)
-        .tls_config(
-            ureq::tls::TlsConfig::builder()
-                .root_certs(vec![root].into())
-                .build(),
-        )
-        .build();
-    let transport = Transport {
-        client_version: "9.8.7".into(),
-        config: Config::testing(),
-        agent: Agent::with_parts(config, PollConnector::default(), PollResolver::default()),
-        base: format!(
+    let transport = Transport::configured(
+        "test",
+        format!(
             "https://localhost:{}",
             listener.local_addr().unwrap().port()
         ),
-    };
-    (transport, listener, Arc::new(server))
+        None,
+        roots,
+    )
+    .unwrap();
+    (transport, listener, Arc::new(config))
 }
-
-fn tls_accept(listener: &TcpListener, config: &Arc<ServerConfig>) -> BufReader<TlsStream> {
-    BufReader::new(StreamOwned::new(
-        ServerConnection::new(config.clone()).unwrap(),
-        accept(listener),
-    ))
-}
-
-fn read_post(stream: &mut BufReader<TlsStream>) -> Vec<u8> {
-    let mut line = String::new();
-    stream.read_line(&mut line).unwrap();
-    assert_eq!(line, "POST /api/test HTTP/1.1\r\n");
-    assert_eq!(stream.get_ref().conn.server_name(), Some("localhost"));
-    let mut length = None;
-    loop {
-        line.clear();
-        assert!(stream.read_line(&mut line).unwrap() > 0);
-        if line == "\r\n" {
-            break;
-        }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = Some(value.trim().parse().unwrap());
-        }
-    }
-    let mut body = vec![0; length.unwrap()];
-    stream.read_exact(&mut body).unwrap();
-    body
-}
-
-fn respond(stream: &mut BufReader<TlsStream>) {
-    stream
-        .get_mut()
-        .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
-        .unwrap();
-    stream.get_mut().flush().unwrap();
-}
-
-fn reset(stream: BufReader<TlsStream>) {
-    socket2::SockRef::from(&stream.get_ref().sock)
-        .set_linger(Some(Duration::ZERO))
-        .unwrap();
-    drop(stream);
-}
-
-#[derive(Debug)]
-struct ResetControl {
-    armed: AtomicBool,
-    reset: mpsc::Sender<()>,
-    acknowledged: Mutex<mpsc::Receiver<()>>,
-    connections: AtomicUsize,
-    swallowed: AtomicUsize,
-}
-
-// This connector preserves the actual production PollTransport ->
-// RustlsConnector/RustlsTransport -> RequestTransport stack. The middle hook
-// only synchronizes a real server reset after the idle peek, before the write.
-#[derive(Debug, Default)]
-struct ResetConnector {
-    tls: RustlsConnector,
-    control: Option<Arc<ResetControl>>,
-}
-impl Connector for ResetConnector {
-    type Out = Box<dyn UreqTransport>;
-    fn connect(
-        &self,
-        details: &ConnectionDetails,
-        _: Option<()>,
-    ) -> Result<Option<Self::Out>, ureq::Error> {
-        let control = self.control.as_ref().unwrap().clone();
-        control.connections.fetch_add(1, Ordering::Relaxed);
-        let inner = PollTcpConnector.connect(details, None::<()>)?.unwrap();
-        let socket = ACTIVE.with(|slot| {
-            slot.borrow()
-                .as_ref()
-                .unwrap()
-                .socket
-                .as_ref()
-                .unwrap()
-                .clone()
-        });
-        let tcp = ResetBeforeWrite {
-            inner,
-            socket,
-            control: control.clone(),
-        };
-        let tls = self.tls.connect(details, Some(tcp))?.unwrap();
-        Ok(Some(Box::new(RequestTransport {
-            inner: Box::new(ObserveTls {
-                inner: Box::new(tls),
-                control,
-            }),
-            last_attempt: 0,
-        })))
-    }
-}
-
-#[derive(Debug)]
-struct ResetBeforeWrite {
-    inner: Box<dyn UreqTransport>,
-    socket: Arc<Socket>,
-    control: Arc<ResetControl>,
-}
-impl UreqTransport for ResetBeforeWrite {
-    fn buffers(&mut self) -> &mut dyn Buffers {
-        self.inner.buffers()
-    }
-    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
-        if self.control.armed.swap(false, Ordering::Relaxed) {
-            self.control.reset.send(()).unwrap();
-            self.control
-                .acknowledged
-                .lock()
-                .unwrap()
-                .recv_timeout(Duration::from_secs(2))
-                .unwrap();
-            let deadline = Instant::now() + Duration::from_secs(2);
-            // Wait for the real RST to reach the client kernel. No fake I/O
-            // error is returned: PollTransport performs the failed write.
-            loop {
-                match self.socket.stream.peek(&mut [0]) {
-                    Err(error) if retryable(&error) => assert!(Instant::now() < deadline),
-                    Err(error) => {
-                        assert_eq!(error.kind(), io::ErrorKind::ConnectionReset);
-                        break;
-                    }
-                    Ok(0) => break,
-                    result => panic!("expected reset, got {result:?}"),
-                }
-            }
-        }
-        self.inner.transmit_output(amount, timeout)
-    }
-    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
-        self.inner.await_input(timeout)
-    }
-    fn is_open(&mut self) -> bool {
-        self.inner.is_open()
-    }
-}
-
-#[derive(Debug)]
-struct ObserveTls {
-    inner: Box<dyn UreqTransport>,
-    control: Arc<ResetControl>,
-}
-impl UreqTransport for ObserveTls {
-    fn buffers(&mut self) -> &mut dyn Buffers {
-        self.inner.buffers()
-    }
-    fn transmit_output(&mut self, amount: usize, timeout: NextTimeout) -> Result<(), ureq::Error> {
-        let result = self.inner.transmit_output(amount, timeout);
-        if result.is_ok()
-            && ACTIVE.with(|slot| slot.borrow().as_ref().unwrap().write_failure.is_some())
-        {
-            self.control.swallowed.fetch_add(1, Ordering::Relaxed);
-        }
-        result
-    }
-    fn await_input(&mut self, timeout: NextTimeout) -> Result<bool, ureq::Error> {
-        self.inner.await_input(timeout)
-    }
-    fn is_open(&mut self) -> bool {
-        self.inner.is_open()
-    }
-    fn is_tls(&self) -> bool {
-        self.inner.is_tls()
-    }
-}
-
-#[test]
-fn tls_reused_header_failure_returns_without_resending() {
-    let (mut transport, listener, config) = fixture();
-    let (reset_now, wait_reset) = mpsc::channel();
-    let (acknowledge, acknowledged) = mpsc::channel();
-    let (done, wait_done) = mpsc::channel();
-    let control = Arc::new(ResetControl {
-        armed: AtomicBool::new(false),
-        reset: reset_now,
-        acknowledged: Mutex::new(acknowledged),
-        connections: AtomicUsize::new(0),
-        swallowed: AtomicUsize::new(0),
-    });
-    transport.agent = Agent::with_parts(
-        transport.agent.config().clone(),
-        ResetConnector {
-            tls: RustlsConnector::default(),
-            control: Some(control.clone()),
-        },
-        PollResolver::default(),
-    );
-    let server = thread::spawn(move || {
-        let mut first = tls_accept(&listener, &config);
-        assert_eq!(read_post(&mut first), b"{}");
-        respond(&mut first);
-        wait_reset.recv_timeout(Duration::from_secs(3)).unwrap();
-        reset(first);
-        acknowledge.send(()).unwrap();
-        wait_done.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
-    });
-    transport
-        .request("/api/test", "{}", &[], Duration::from_millis(600))
-        .unwrap();
-    control.armed.store(true, Ordering::Relaxed);
-    let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
-    done.send(()).unwrap();
-    server.join().unwrap();
-    assert_eq!(
-        crate::client::error::classify(&result.unwrap_err()),
-        crate::client::error::Failure::NotDelivered
-    );
-    assert_eq!(control.connections.load(Ordering::Relaxed), 1);
-    assert_eq!(
-        control.swallowed.load(Ordering::Relaxed),
-        1,
-        "must exercise rustls swallowing a real socket write error"
-    );
-}
-
-#[test]
-fn tls_failure_after_full_send_is_not_retried() {
-    let (transport, listener, config) = fixture();
-    let (done, wait_done) = mpsc::channel();
-    let server = thread::spawn(move || {
-        let mut stream = tls_accept(&listener, &config);
-        assert_eq!(read_post(&mut stream), b"{}");
-        respond(&mut stream);
-        assert_eq!(read_post(&mut stream), SECOND_BODY.as_bytes());
-        reset(stream);
-        wait_done.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
-    });
-    transport
-        .request("/api/test", "{}", &[], Duration::from_millis(600))
-        .unwrap();
-    let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
-    done.send(()).unwrap();
-    server.join().unwrap();
-    assert_eq!(
-        result.unwrap_err().to_string(),
-        "HTTPS transport failed; response not logged"
-    );
-}
-
 #[test]
 fn streaming_get_uses_verified_tls_directly_and_through_connect() {
-    for (proxied, wrong_host) in [(false, false), (true, false), (true, true)] {
+    for (proxied, wrong_host) in [(false, false), (true, false), (false, true), (true, true)] {
         let (mut transport, listener, config) = fixture();
         let address = listener.local_addr().unwrap();
         if wrong_host {
             transport.base = format!("https://127.0.0.1:{}", address.port());
         }
         if proxied {
-            let proxy =
-                ureq::Proxy::new(&format!("http://fake-user:fake-password@{address}")).unwrap();
-            let agent_config = Agent::config_builder()
-                .proxy(Some(proxy))
-                .max_redirects(0)
-                .http_status_as_error(false)
-                .timeout_connect(Some(Config::testing().connect))
-                .tls_config(transport.agent.config().tls_config().clone())
-                .build();
-            transport.agent = Agent::with_parts(
-                agent_config,
-                PollConnector::default(),
-                PollResolver::default(),
+            transport.proxy = Some(
+                Proxy::parse(
+                    &format!("http://fake-user:fake-password@{address}"),
+                    String::new(),
+                )
+                .unwrap(),
             );
         }
+        let (received, wait) = std::sync::mpsc::channel();
         let base = transport.base.clone();
         let server = thread::spawn(move || {
             let socket = accept(&listener);
@@ -350,14 +62,18 @@ fn streaming_get_uses_verified_tls_directly_and_through_connect() {
                         base.trim_start_matches("https://")
                     )
                 );
+                let mut authorized = false;
                 loop {
                     line.clear();
                     assert!(reader.read_line(&mut line).unwrap() > 0);
                     assert!(!line.contains("origin-token"));
+                    authorized |= line.trim()
+                        == "Proxy-Authorization: Basic ZmFrZS11c2VyOmZha2UtcGFzc3dvcmQ=";
                     if line == "\r\n" {
                         break;
                     }
                 }
+                assert!(authorized);
                 reader
                     .get_mut()
                     .write_all(b"HTTP/1.1 200 OK\r\n\r\n")
@@ -393,20 +109,27 @@ fn streaming_get_uses_verified_tls_directly_and_through_connect() {
                 }
             }
             assert!(cookie);
-            reader.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 9\r\n\r\ndata: 1\n\n").unwrap();
+            reader.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 18\r\n\r\ndata: 1\n\n").unwrap();
+            reader.get_mut().flush().unwrap();
+            wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            reader.get_mut().write_all(b"data: 2\n\n").unwrap();
             reader.get_mut().flush().unwrap();
         });
         let result = transport.stream(
             "/api/test",
             &[("Cookie", "lct=origin-token")],
-            Arc::new(AtomicBool::new(false)),
+            Arc::new(CancelToken::new()),
             Duration::from_secs(2),
             |status, headers, body| {
                 assert_eq!(status, 200);
                 assert_eq!(headers["content-type"], "text/event-stream");
+                let mut first = [0; 9];
+                body.read_exact(&mut first)?;
+                assert_eq!(&first, b"data: 1\n\n");
+                received.send(()).unwrap();
                 let mut bytes = Vec::new();
                 body.read_to_end(&mut bytes)?;
-                assert_eq!(bytes, b"data: 1\n\n");
+                assert_eq!(bytes, b"data: 2\n\n");
                 Ok(())
             },
         );
@@ -423,29 +146,25 @@ fn streaming_get_uses_verified_tls_directly_and_through_connect() {
 }
 
 #[test]
-fn buffered_http_and_tls_bytes_survive_a_spent_watchdog_budget() {
+fn no_proxy_bypasses_proxy() {
     let (mut transport, listener, config) = fixture();
-    let agent_config = Agent::config_builder()
-        .proxy(None)
-        .max_redirects(0)
-        .http_status_as_error(false)
-        .timeout_connect(Some(Config::testing().connect))
-        .input_buffer_size(1024)
-        .tls_config(transport.agent.config().tls_config().clone())
-        .build();
-    transport.agent = Agent::with_parts(
-        agent_config,
-        PollConnector::default(),
-        PollResolver::default(),
+    let proxy = TcpListener::bind("127.0.0.1:0").unwrap();
+    proxy.set_nonblocking(true).unwrap();
+    transport.proxy = Some(
+        Proxy::parse(
+            &format!("http://{}", proxy.local_addr().unwrap()),
+            "localhost,.example.test".into(),
+        )
+        .unwrap(),
     );
-    let payload = format!(":{}\nevent: ping\n\n", "x".repeat(2048));
-    let expected = payload.clone();
-    let (ready, wait) = mpsc::channel();
+    assert!(transport.proxy.as_ref().unwrap().bypass("sub.example.test"));
+    assert!(!transport.proxy.as_ref().unwrap().bypass("badexample.test"));
     let server = thread::spawn(move || {
-        let mut socket = tls_accept(&listener, &config);
+        let mut socket = BufReader::new(StreamOwned::new(
+            ServerConnection::new(config).unwrap(),
+            accept(&listener),
+        ));
         let mut line = String::new();
-        socket.read_line(&mut line).unwrap();
-        assert_eq!(line, "GET /api/test HTTP/1.1\r\n");
         loop {
             line.clear();
             assert!(socket.read_line(&mut line).unwrap() > 0);
@@ -455,45 +174,16 @@ fn buffered_http_and_tls_bytes_survive_a_spent_watchdog_budget() {
         }
         socket
             .get_mut()
-            .write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
             .unwrap();
         socket.get_mut().flush().unwrap();
-        wait.recv_timeout(Duration::from_secs(2)).unwrap();
-        socket.get_mut().write_all(payload.as_bytes()).unwrap();
-        socket.get_mut().flush().unwrap();
-        assert_eq!(socket.get_mut().sock.read(&mut [0]).unwrap(), 0);
     });
     transport
-        .stream(
-            "/api/test",
-            &[],
-            Arc::new(AtomicBool::new(false)),
-            Duration::from_secs(2),
-            |status, _, body| {
-                assert_eq!(status, 200);
-                ready.send(()).unwrap();
-                let mut bytes = vec![0; expected.len()];
-                body.read_exact(&mut bytes[..1])?;
-                // One TLS record exceeds the HTTP input buffer; exhaust only the
-                // budget, leaving bytes buffered in both HTTP and rustls.
-                ACTIVE.with(|slot| {
-                    let mut slot = slot.borrow_mut();
-                    let watchdog = slot.as_mut().unwrap().watchdog.as_mut().unwrap();
-                    watchdog.remaining = Duration::ZERO;
-                    watchdog.timeout = Duration::from_millis(100);
-                });
-                body.read_exact(&mut bytes[1..])?;
-                assert_eq!(bytes, expected.as_bytes());
-                body.ping();
-                let error = body.read(&mut [0]).unwrap_err();
-                assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-                assert_eq!(
-                    crate::client::error::classify(&error.into()),
-                    crate::client::error::Failure::Unanswered
-                );
-                Ok(())
-            },
-        )
+        .request("/api/test", "{}", &[], Duration::from_secs(2))
         .unwrap();
+    assert_eq!(
+        proxy.accept().unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
     server.join().unwrap();
 }

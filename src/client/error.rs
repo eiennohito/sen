@@ -1,4 +1,5 @@
 //! The single network-policy boundary.
+use super::http::TransportError;
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Failure {
     #[error("request not written")]
@@ -36,12 +37,33 @@ pub enum Error {
     #[error("sign-in failed: {0:?}")]
     SignIn(SignInFailure),
 }
-/// Transport evidence is recorded before its request scope is released.
+/// Whether hyper may have delivered the request, with a redacted transport cause.
 #[derive(Debug, thiserror::Error)]
 #[error("HTTPS transport failed; response not logged")]
 pub(crate) struct TransportFailure {
     pub write_started: bool,
-    pub source: ureq::Error,
+    pub source: TransportError,
+}
+
+pub(super) fn find_source<T: std::error::Error + Send + Sync + 'static>(
+    error: &anyhow::Error,
+) -> Option<&T> {
+    error
+        .downcast_ref::<T>()
+        .or_else(|| causes(error).find_map(|cause| cause.downcast_ref::<T>()))
+}
+
+fn causes(error: &anyhow::Error) -> impl Iterator<Item = &(dyn std::error::Error + 'static)> {
+    std::iter::successors(
+        Some(error.as_ref() as &(dyn std::error::Error + 'static)),
+        |cause| {
+            cause
+                .downcast_ref::<std::io::Error>()
+                .and_then(std::io::Error::get_ref)
+                .map(|inner| inner as &(dyn std::error::Error + 'static))
+                .or_else(|| cause.source())
+        },
+    )
 }
 
 pub fn classify(error: &anyhow::Error) -> Failure {
@@ -51,19 +73,13 @@ pub fn classify(error: &anyhow::Error) -> Failure {
     if let Some(failure) = error.downcast_ref::<Failure>() {
         return failure.clone();
     }
-    for cause in error.chain() {
-        if let Some(error) = cause.downcast_ref::<TransportFailure>().or_else(|| {
-            cause
-                .downcast_ref::<std::io::Error>()?
-                .get_ref()?
-                .downcast_ref::<TransportFailure>()
-        }) {
+    for cause in causes(error) {
+        if let Some(error) = cause.downcast_ref::<TransportFailure>() {
             return match error.source {
-                ureq::Error::Io(_)
-                | ureq::Error::Timeout(_)
-                | ureq::Error::ConnectionFailed
-                | ureq::Error::HostNotFound
-                | ureq::Error::Tls(_) => {
+                TransportError::Io(_)
+                | TransportError::Timeout
+                | TransportError::ConnectionFailed
+                | TransportError::ProxyConfiguration => {
                     if error.write_started {
                         Failure::Unanswered
                     } else {
@@ -333,6 +349,28 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn classification_uses_the_first_matching_cause() {
+        let rpc = crate::client::RpcError {
+            gateway: 0,
+            method: "test".into(),
+            http: 503,
+            code: 0,
+            status: 0,
+        };
+        let error = TransportFailure {
+            write_started: false,
+            source: TransportError::Io(std::io::Error::other(rpc)),
+        };
+        assert_eq!(
+            classify(&anyhow::Error::new(error).context("outer")),
+            Failure::NotDelivered
+        );
+        // Policy failures nested in IO are not promoted to top-level overrides.
+        let nested = anyhow::Error::new(std::io::Error::other(Failure::NotDelivered));
+        assert!(matches!(classify(&nested), Failure::Bug(_)));
+    }
+
+    #[test]
     fn response_code_table() {
         let signed_out = [
             (1, SignOutReason::AuthenticationFailed),
@@ -392,7 +430,7 @@ mod tests {
         for write_started in [false, true] {
             let error = TransportFailure {
                 write_started,
-                source: ureq::Error::Io(std::io::ErrorKind::ConnectionReset.into()),
+                source: TransportError::Io(std::io::ErrorKind::ConnectionReset.into()),
             };
             assert_eq!(
                 classify(&error.into()),
@@ -563,9 +601,8 @@ pub(crate) fn media_failure(error: &anyhow::Error) -> super::desktop::assets::Fa
     }
     match classify(error) {
         Failure::NotDelivered | Failure::Unanswered => {
-            if error
-                .downcast_ref::<TransportFailure>()
-                .is_some_and(|error| matches!(error.source, ureq::Error::Timeout(_)))
+            if find_source::<TransportFailure>(error)
+                .is_some_and(|error| matches!(error.source, TransportError::Timeout))
             {
                 Media::Timeout
             } else {
@@ -588,4 +625,38 @@ pub fn media_retry(failure: super::desktop::assets::Failure, automatic: bool) ->
 
 pub(crate) fn transport_loss(error: &anyhow::Error) -> bool {
     matches!(classify(error), Failure::NotDelivered | Failure::Unanswered)
+}
+
+#[cfg(test)]
+mod top_level_tests {
+    use super::*;
+
+    #[test]
+    fn refresh_checks_do_not_follow_io_sources() {
+        let rpc = || super::super::RpcError {
+            gateway: 0,
+            method: "test".into(),
+            http: 200,
+            code: 119,
+            status: 0,
+        };
+        assert!(needs_refresh::<()>(&Err(rpc().into())));
+        let wrapped = std::io::Error::other(rpc());
+        assert!(!needs_refresh::<()>(&Err(wrapped.into())));
+    }
+
+    #[test]
+    fn media_and_missing_file_checks_do_not_follow_io_sources() {
+        use super::super::desktop::assets::Failure as Media;
+        assert_eq!(
+            media_failure(&Media::UnsupportedHost.into()),
+            Media::UnsupportedHost
+        );
+        let wrapped = std::io::Error::other(Media::UnsupportedHost);
+        assert_eq!(media_failure(&wrapped.into()), Media::Decode);
+        let missing = || std::io::Error::from(std::io::ErrorKind::NotFound);
+        assert_eq!(media_failure(&missing().into()), Media::Http(404));
+        let wrapped = std::io::Error::other(missing());
+        assert_eq!(media_failure(&wrapped.into()), Media::Decode);
+    }
 }

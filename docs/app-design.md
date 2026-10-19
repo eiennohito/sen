@@ -152,9 +152,9 @@ the stream thread borrows authorization and requests token refresh from the
 worker, never instantiating WASM. Runtime recovery runs only when a WASM exception poisons the store. It builds a new instance, then assigns it, propagating any failure. Missing device keys, RPC errors and parse errors fail only their item and preserve runtime caches. Latest peer and group keys are fetched per send; key-ID data and channels are cached. Media file crypto stays native. Three blocking asset threads
 share one asset HTTP agent and the thumbnail cache; they own media downloads,
 decryption and decoding. Three slots allow visible images to overlap while
-bounding simultaneous encoded downloads to 48 MiB. The asset agent uses the
-shared HTTP implementation with a separate resolver/pool, so a stalled asset
-DNS lookup cannot hold the RPC resolver lock. Originals and files use the
+bounding simultaneous encoded downloads to 48 MiB. The asset client shares the
+HTTP runtime and keeps a separate pool. DNS uses the runtime resolver.
+Originals and files use the
 same pool, with explicit requests ahead of automatic thumbnails. A separate
 cancellable SSE transport thread delivers operations through the bounded worker queue;
 desktop D-Bus service/attention work runs outside the UI thread. Do not move a Wasmi store
@@ -207,68 +207,32 @@ then clears the submitted editor. Confirmation links the server ID to the same
 stable store key; it never clears newer text or changes focus. Known server IDs reconcile to
 that same row identity on refresh. Failed sends show “Not sent: <reason>” with Retry/Delete, including unanswered or mid-send rows after restart; they are never automatically resent, and our echo (op 25/43 with our reqSeq) confirms a row in any state as Sent.
 
-Each `Api` owns one persistent `ureq::Agent` with rustls and WebPKI roots for
-HTTP/1.1 RPCs (no ALPN h2); the agent pool reuses connections. Requests use the
-fixed HTTPS gateway, disable redirects (`max_redirects(0)`), and return all HTTP
-statuses (including 3xx) without following them. RPCs honour HTTP(S) environment
-proxies using curl's HTTPS precedence: `https_proxy`, `HTTPS_PROXY`, then
-`all_proxy`/`ALL_PROXY`; `http_proxy`/`HTTP_PROXY` never apply to HTTPS. Empty
-values are skipped; a selected invalid or unsupported URL fails with a static
-error. `no_proxy`/`NO_PROXY` exclusions apply. CONNECT keeps TLS verified against
-the real gateway host. API paths and headers are validated before sending.
-Response bodies are capped at 1 MiB while reading,
-including chunked and close-delimited bodies. DNS, TCP and TLS share one 10-second
-connect budget; each request also has one total deadline covering the body and
-any permitted retry.
+RPC, SSE and media use separate hyper 1 HTTP/1 clients with verified rustls
+(ring, WebPKI roots). One process-wide executor thread drives connections with
+`async_io::block_on`; callers block on request futures. Each client retains at most
+one idle connection per host for 15 seconds. Only a request hyper returns unsent
+from a stale idle connection is retried, once. Every request returned unsent is
+NotDelivered; requests possibly sent are Unanswered.
 
-A custom resolver polls cancellation/deadlines every 50 ms while an OS lookup
-runs on a helper thread. It caches successful answers for 30 seconds, including
-before pooled requests, and retains at most one outstanding lookup per agent
-across cancelled requests. Cache TTL starts when the lookup starts. An abandoned
-failure cannot fail a later request, and answers older than one 10-second connect
-budget are discarded rather than cached. An OS lookup already running cannot
-be interrupted; its receiver is retained so repeated cancellations do not create
-more helpers.
+Production URLs must use HTTPS. DNS, TCP, HTTP CONNECT and TLS share a 10-second
+connect budget, or 5 seconds for assets. RPC and media GET have total deadlines
+(media GET 15 seconds). Uploads have no total cap: 60 seconds without a 64 KiB
+body frame being consumed by hyper or response bytes expires the idle deadline.
+Payload frames share one owned encrypted buffer. Cancellation races requests and
+body reads and drops the connection. Errors never include tokens, proxy
+credentials, URLs or bodies. Redirects are not followed.
 
-A custom TCP connector beneath the stock rustls/CONNECT connectors polls TCP
-connection establishment and uses 50 ms socket read/write timeouts. It retries
-polling timeouts while checking the worker stop flag and absolute deadlines, preserving partial writes. Worker
-cancellation shuts down the socket and prevents reuse. Sign-in Cancel uses a
-separate pairing flag and can wait for the current RPC to finish.
+Public assets carry no RPC or private media headers. The configured asset host
+allowlist and 16 MiB download cap apply before decoding.
+Proxy selection uses https_proxy/HTTPS_PROXY then all_proxy/ALL_PROXY, lower-case
+first, with no_proxy/NO_PROXY exclusions (exact host, domain suffix, `*`). HTTP
+CONNECT supports Basic credentials and verified target TLS. An applicable proxy
+with any scheme other than http is a configuration error and never bypassed.
 
-The pool expires idle connections after 15 seconds: a conservative margin below
-an assumed gateway keep-alive window of at least 30 seconds, not a live gateway
-measurement. A non-blocking socket peek discards EOF or unexpected readable data
-before reuse. POSTs never retry inside the transport. Socket writes after the
-origin TLS handshake record whether any request byte was written; failures before
-that point are NotDelivered and failures after it are Unanswered. The engine
-reschedules NotDelivered sends only within their current session, using the same
-persisted request sequence. Pooled connections consult the current request's
-token and deadline.
-Transport errors never include tokens, proxy credentials, URLs, or bodies. No
-dependency is forked and HTTPS uses no async runtime. Assets use the same
-transport with GET, a 5-second connect budget, a 15-second total deadline, no
-redirects and a 16 MiB encoded-body cap (including files and originals). Public
-avatars/stickers/reactions carry no RPC or media headers; private OBS assets
-carry only the existing media headers. The asset host allowlist and decoder
-limits are unchanged. No component spawns curl.
-
-SSE uses a separate agent with the same proxy selection, verified TLS, resolver
-and socket polling as RPCs, keeping its long-lived connection out of the RPC
-pool. Each stream attempt forces a fresh connection and closes it on return.
-The existing sync thread reads response lines directly, with no curl child,
-reader thread or line queue. Status comes from the HTTP response; HTTP 200 opens
-the stream regardless of content type, preserving the curl path's behaviour.
-HTTP 401/403 retain the existing token-refresh/expiry path. EOF and resets return
-immediately to the existing reconnect path. The stop token is passed directly to
-the stream request scope and installed for the sync thread's RPCs.
-
-The 30-second ping watchdog counts only time spent waiting in socket reads.
-Callbacks, catch-up and queue backpressure do not consume its budget. Only a
-decoded ping resets it; other events do not. Once the budget is spent, expiry
-is judged before the next socket read, including when a partial line trickles
-in. Data already buffered in HTTP or TLS is decoded first. Expiry reports
-`SSE ping expired` with the `TimedOut` I/O kind.
+SSE uses a fresh connection. HTTP 200 opens the stream regardless of content type;
+401/403 enter the refresh path. Its ping watchdog counts only time waiting for
+body bytes, excluding callbacks. Only a decoded ping resets the budget; other
+events and partial lines do not. Expiry or a read error restarts the stream.
 
 Each raw line remains capped at 1 MiB (including its newline), with one extra
 byte read to detect overflow; decoder data remains capped at 1 MiB per frame.

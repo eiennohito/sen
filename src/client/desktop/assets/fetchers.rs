@@ -1,11 +1,9 @@
 use super::*;
 use crate::client::error::{media_failure, media_retry};
+use crate::client::http::CancelToken;
 use std::{
     collections::HashSet,
-    sync::{
-        Condvar, Mutex,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::{Condvar, Mutex},
     thread::{self, JoinHandle},
     time::Instant,
 };
@@ -124,15 +122,15 @@ struct Queue {
 struct Shared {
     queue: Mutex<Queue>,
     ready: Condvar,
-    stop: Arc<AtomicBool>,
-    global_stop: Arc<AtomicBool>,
+    stop: Arc<CancelToken>,
+    global_stop: Arc<CancelToken>,
     priority: Arc<Priority>,
     failures: Failures,
 }
 
 impl Shared {
     fn stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed) || self.global_stop.load(Ordering::Relaxed)
+        self.stop.is_cancelled() || self.global_stop.is_cancelled()
     }
 }
 
@@ -145,19 +143,19 @@ impl Fetchers {
     pub(in crate::client::desktop) fn start(
         http: http::Transport,
         cache: Arc<Mutex<ImageCache>>,
-        global_stop: Arc<AtomicBool>,
+        global_stop: Arc<CancelToken>,
         priority: Arc<Priority>,
         failures: Failures,
-        authorize: impl Fn(&Asset, &AtomicBool) -> std::result::Result<Option<String>, Failure>
+        authorize: impl Fn(&Asset, &CancelToken) -> std::result::Result<Option<String>, Failure>
         + Send
         + Sync
         + 'static,
-        publish: impl Fn(Completion, &AtomicBool) + Send + Sync + 'static,
+        publish: impl Fn(Completion, &CancelToken) + Send + Sync + 'static,
     ) -> Self {
         let shared = Arc::new(Shared {
             queue: Mutex::new(Queue::default()),
             ready: Condvar::new(),
-            stop: Arc::new(AtomicBool::new(false)),
+            stop: Arc::new(CancelToken::new()),
             global_stop,
             priority,
             failures,
@@ -412,7 +410,7 @@ impl Fetchers {
 
 impl Drop for Fetchers {
     fn drop(&mut self) {
-        self.shared.stop.store(true, Ordering::Relaxed);
+        self.shared.stop.cancel();
         self.shared.ready.notify_all();
         for thread in self.threads.drain(..) {
             let _ = thread.join();

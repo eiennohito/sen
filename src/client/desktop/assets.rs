@@ -71,7 +71,7 @@ impl Asset {
         self.failure
     }
     pub fn kind(&self) -> &'static str {
-        if self.private || official_url(&self.url) {
+        if self.private || self.url.starts_with("https://manager.line-scdn.net/") {
             "photo"
         } else if self.url.contains("/sticonshop/") {
             "reaction"
@@ -104,6 +104,8 @@ impl Asset {
         } else {
             return None;
         };
+        let failure = (!http::Transport::production_asset_url(&url, None))
+            .then_some(Failure::UnsupportedHost);
         Some(Self {
             url,
             private: false,
@@ -114,7 +116,7 @@ impl Asset {
             original_url: None,
             original_suffix: None,
             name: None,
-            failure: None,
+            failure,
         })
     }
 
@@ -185,7 +187,11 @@ impl Asset {
                 local: None,
                 original_url: download.map(str::to_owned),
                 name: None,
-                failure: (!official_url(url) || download.is_some_and(|u| !official_url(u)))
+                failure: std::iter::once(url)
+                    .chain(download)
+                    .any(|url| {
+                        !http::Transport::production_asset_url(url, Some("manager.line-scdn.net"))
+                    })
                     .then_some(Failure::UnsupportedHost),
             });
         }
@@ -263,6 +269,10 @@ impl Asset {
         if let Some(url) = &self.original_url {
             let mut original = self.clone();
             original.url = url.clone();
+            original.failure = self.failure.or_else(|| {
+                (!http::Transport::production_asset_url(url, Some("manager.line-scdn.net")))
+                    .then_some(Failure::UnsupportedHost)
+            });
             original.original_url = None;
             original.dimension = 8192;
             return Some(original);
@@ -298,7 +308,7 @@ impl Asset {
         if let Some(failure) = self.failure {
             return Err(failure.into());
         }
-        ensure!(allowed_url(&self.url), Failure::UnsupportedHost);
+        ensure!(http.allowed_asset_url(&self.url), Failure::UnsupportedHost);
         let application = format!("CHROMEOS\t{}\tChrome_OS\t", http.client_version);
         let mut headers = Vec::new();
         if self.private {
@@ -322,24 +332,6 @@ impl Asset {
 
 fn route_failure(sid: &str, oid: &str) -> Option<Failure> {
     (segment(sid).is_none() || segment(oid).is_none()).then_some(Failure::RejectedPath)
-}
-
-fn allowed_url(url: &str) -> bool {
-    let Some(rest) = url.strip_prefix("https://") else {
-        return false;
-    };
-    let host = rest.split('/').next().unwrap_or_default();
-    matches!(
-        host,
-        "profile.line-scdn.net"
-            | "stickershop.line-scdn.net"
-            | "obs.line-apps.com"
-            | "manager.line-scdn.net"
-    ) && !url.contains(['\r', '\n', '\\'])
-}
-
-fn official_url(url: &str) -> bool {
-    url.starts_with("https://manager.line-scdn.net/") && allowed_url(url)
 }
 
 fn segment(value: &str) -> Option<&str> {
@@ -772,27 +764,31 @@ mod tests {
         assert!(!oa.private && oa.key_material.is_none() && oa.talk_meta.is_none());
         assert!(oa.failure.is_none());
         for url in [
-            "http://manager.line-scdn.net/id",
             "https://manager.line-scdn.net.evil.invalid/id",
             "https://manager.line-scdn.net@evil.invalid/id",
             "https://manager.line-scdn.net:443/id",
             "https://evil.invalid/id",
+            "http://manager.line-scdn.net/id",
+            "https://profile.line-scdn.net/id",
+            "https://obs.line-apps.com/id",
+            "https://stickershop.line-scdn.net/id",
         ] {
             let bad =
                 Asset::photo(&json!({"id":"99","contentMetadata":{"PREVIEW_URL":url}})).unwrap();
-            assert_eq!(bad.failure, Some(Failure::UnsupportedHost));
+            assert_eq!(bad.failure(), Some(Failure::UnsupportedHost));
             let bad_original = Asset::photo(
                 &json!({"id":"99","contentMetadata":{"PREVIEW_URL":oa.url,"DOWNLOAD_URL":url}}),
             )
             .unwrap()
             .original()
             .unwrap();
-            assert_eq!(bad_original.failure, Some(Failure::UnsupportedHost));
+            assert_eq!(bad_original.failure(), Some(Failure::UnsupportedHost));
         }
         assert!(Asset::avatar("https://evil.invalid/image").is_none());
         assert!(Asset::sticker(&json!({"STKID":"../../escape"})).is_none());
-        assert!(!allowed_url(
-            "https://obs.line-apps.com@evil.invalid/r/talk/m/1"
-        ));
+        assert!(
+            !http::Transport::local("test", String::new())
+                .allowed_asset_url("https://obs.line-apps.com@evil.invalid/r/talk/m/1")
+        );
     }
 }

@@ -60,7 +60,7 @@ pub struct Message {
 }
 
 /// Install the owning worker's cancellation token for all synchronous requests.
-pub fn set_cancellation_token(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+pub fn set_cancellation_token(cancel: std::sync::Arc<crate::client::http::CancelToken>) {
     set_request_cancel(cancel);
 }
 
@@ -601,17 +601,17 @@ impl Client {
 
     pub fn asset_fetchers(
         &self,
-        stop: Arc<std::sync::atomic::AtomicBool>,
+        stop: Arc<crate::client::http::CancelToken>,
         priority: Arc<assets::Priority>,
         failures: assets::Failures,
         authorize: impl Fn(
             &Asset,
-            &std::sync::atomic::AtomicBool,
+            &crate::client::http::CancelToken,
         ) -> std::result::Result<Option<String>, assets::Failure>
         + Send
         + Sync
         + 'static,
-        publish: impl Fn(assets::Completion, &std::sync::atomic::AtomicBool) + Send + Sync + 'static,
+        publish: impl Fn(assets::Completion, &crate::client::http::CancelToken) + Send + Sync + 'static,
     ) -> assets::Fetchers {
         failures.scope(&self.my_mid);
         assets::Fetchers::start(

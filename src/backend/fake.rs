@@ -480,7 +480,7 @@ impl Backend for FakeBackend {
         }
         Ok(!self.0.lock().unwrap().signed_out)
     }
-    fn sign_in(&mut self, cancel: Arc<AtomicBool>, deliver: PairDeliver) -> Result<()> {
+    fn sign_in(&mut self, cancel: Arc<CancelToken>, deliver: PairDeliver) -> Result<()> {
         use crate::client::{desktop::assets::Pixels, pairing::Stage};
         {
             let mut state = self.0.lock().unwrap();
@@ -508,7 +508,7 @@ impl Backend for FakeBackend {
                 rgba,
             })));
             deliver(PairEvent::Stage(Stage::AwaitScan));
-            while !cancel.load(Ordering::Relaxed) {
+            while !cancel.is_cancelled() {
                 std::thread::sleep(Duration::from_millis(10));
             }
             return Err(Failure::SignedOut(SignOutReason::Unavailable(
@@ -561,7 +561,7 @@ impl Backend for FakeBackend {
             })
             .collect())
     }
-    fn start_assets(&mut self, stop: Arc<AtomicBool>, deliver: Deliver) {
+    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) {
         self.0.lock().unwrap().assets = Some(deliver.clone());
         let fake = self.clone();
         let retry = self.clone();
@@ -1002,7 +1002,7 @@ impl Backend for FakeBackend {
     fn stream(
         &mut self,
         revision: i64,
-        stop: Arc<AtomicBool>,
+        stop: Arc<CancelToken>,
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>> {
         self.rpc(FakeRpc::Stream(revision))?;
@@ -1013,7 +1013,7 @@ impl Backend for FakeBackend {
             if !deliver(StreamEvent::Connection(Ok(()))) {
                 return;
             }
-            while !stop.load(Ordering::Relaxed) {
+            while !stop.is_cancelled() {
                 std::thread::park_timeout(Duration::from_millis(20));
             }
         }))
@@ -1051,7 +1051,7 @@ mod tests {
         fake.offline(true);
         fake.fail_sign_in(Some(SignInFailure::Server));
         crate::client::take_network_touched();
-        let result = fake.sign_in(Arc::new(AtomicBool::new(false)), Arc::new(|_| {}));
+        let result = fake.sign_in(Arc::new(CancelToken::new()), Arc::new(|_| {}));
         assert_eq!(
             result,
             Err(Failure::SignedOut(SignOutReason::Unavailable(

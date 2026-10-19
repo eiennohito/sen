@@ -26,7 +26,7 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 pub use chat::benchmark_history;
 mod chat;
 pub mod desktop;
-mod http;
+pub mod http;
 pub mod pairing;
 mod qr;
 use qr::png as qr_png;
@@ -76,8 +76,8 @@ impl fmt::Display for RpcError {
     }
 }
 impl std::error::Error for RpcError {}
-thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> = const { std::cell::RefCell::new(None) }; }
-fn set_request_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
+thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<crate::client::http::CancelToken>>> = const { std::cell::RefCell::new(None) }; }
+fn set_request_cancel(cancel: std::sync::Arc<crate::client::http::CancelToken>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
 }
 

@@ -1,6 +1,6 @@
 //! Explicit native sign-in. QR/PIN data stays in memory; old sessions are retained.
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use crate::client::http::CancelToken;
 
 /// Protocol progress, independent of desktop wording.
 #[derive(Clone, Copy, Debug)]
@@ -30,11 +30,11 @@ pub enum Event {
 }
 struct NativeLogin<'a, F> {
     emit: F,
-    cancel: &'a AtomicBool,
+    cancel: &'a CancelToken,
 }
 impl<F: Fn(Event)> NativeLogin<'_, F> {
     fn check(&self) -> Result<()> {
-        ensure!(!self.cancel.load(Ordering::Relaxed), "sign-in cancelled");
+        ensure!(!self.cancel.is_cancelled(), "sign-in cancelled");
         Ok(())
     }
     fn set(&self, stage: Stage) -> Result<()> {
@@ -181,10 +181,10 @@ pub fn sign_in(
     state: &Path,
     wasm_override: Option<PathBuf>,
     version_override: Option<String>,
-    cancel: &AtomicBool,
+    cancel: &CancelToken,
     emit: impl Fn(Event),
 ) -> Result<()> {
-    if cancel.load(Ordering::Relaxed) {
+    if cancel.is_cancelled() {
         return Err(super::error::Error::SignIn(super::error::SignInFailure::Cancelled).into());
     }
     let module = crate::crypto_module::resolve(wasm_override, version_override)?;
@@ -194,7 +194,7 @@ pub fn sign_in(
 pub(crate) fn sign_in_validated<T>(
     state: &Path,
     module: crate::crypto_module::CryptoModule,
-    cancel: &AtomicBool,
+    cancel: &CancelToken,
     emit: impl Fn(Event),
     validate: impl FnOnce(&Path, Api) -> Result<T>,
 ) -> Result<T> {
@@ -263,7 +263,7 @@ pub(crate) fn sign_in_validated<T>(
     Ok(validated)
 }
 
-fn install_session(state: &Path, staged: &Path, cancel: Option<&AtomicBool>) -> Result<()> {
+fn install_session(state: &Path, staged: &Path, cancel: Option<&CancelToken>) -> Result<()> {
     let bytes = fs::read(staged)?;
     // Preserve old credentials so their separately encrypted drafts remain
     // recoverable. Never re-key or migrate drafts into a newly paired account.
@@ -273,7 +273,7 @@ fn install_session(state: &Path, staged: &Path, cancel: Option<&AtomicBool>) -> 
         private_write(&backup, &fs::read(state)?)?;
     }
     ensure!(
-        !cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)),
+        !cancel.is_some_and(|cancel| cancel.is_cancelled()),
         super::error::Error::SignIn(super::error::SignInFailure::Cancelled)
     );
     private_write(state, &bytes)?;
@@ -317,7 +317,7 @@ mod tests {
                     wasm: wasm.clone(),
                     version: "9.8.7".into(),
                 },
-                &AtomicBool::new(false),
+                &CancelToken::new(),
                 |event| {
                     assert!(
                         matches!(event, Event::Stage(Stage::WaitingKeyring)),
@@ -395,12 +395,12 @@ mod tests {
         let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
         let mut api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
         api.http = http;
-        let cancel = AtomicBool::new(false);
+        let cancel = CancelToken::new();
         let events = std::cell::RefCell::new(Vec::new());
         let ui = NativeLogin {
             emit: |event| {
                 if matches!(event, Event::Scanned) {
-                    cancel.store(true, Ordering::Relaxed);
+                    cancel.cancel();
                 }
                 events.borrow_mut().push(event);
             },
@@ -432,7 +432,7 @@ mod tests {
         let modules = qrcodegen::QrCode::encode_text(link, qrcodegen::QrCodeEcc::Low)?.size();
         let png = qr_png(link)?;
         let events = std::cell::RefCell::new(Vec::new());
-        let cancel = AtomicBool::new(false);
+        let cancel = CancelToken::new();
         let ui = NativeLogin {
             emit: |event| events.borrow_mut().push(event),
             cancel: &cancel,
@@ -458,7 +458,7 @@ mod tests {
         );
         assert!(pixels.contains(&[0, 0, 0, 255]));
         assert!(pixels.contains(&[255, 255, 255, 255]));
-        cancel.store(true, Ordering::Relaxed);
+        cancel.cancel();
         assert!(ui.qr(&png).is_err());
         assert!(events.borrow().is_empty());
         Ok(())
@@ -489,7 +489,11 @@ mod tests {
                 &state,
                 Some(root.join("unused.wasm")),
                 None,
-                &AtomicBool::new(true),
+                &{
+                    let token = CancelToken::new();
+                    token.cancel();
+                    token
+                },
                 |_| panic!("cancelled flow emitted an event")
             )
             .is_err()

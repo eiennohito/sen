@@ -1,4 +1,5 @@
 use line::client::error::{Refusal, SignOutReason};
+use line::client::http::CancelToken;
 use line::{
     backend::{Failure, FakeBackend, FakeRpc, LiveOp, Op},
     controller::AppState,
@@ -678,7 +679,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
 #[test]
 fn cached_intents_complete_while_backend_rpc_is_blocked() {
     use line::{backend::*, engine::WindowSub, store::*};
-    use std::sync::{Arc, atomic::AtomicBool};
+    use std::sync::Arc;
     struct Blocked(
         FakeBackend,
         Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>,
@@ -720,7 +721,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             self.0.profile_action(action, full, seq)
         }
 
-        fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
+        fn sign_in(&mut self, c: Arc<CancelToken>, d: PairDeliver) -> Result<()> {
             self.0.sign_in(c, d)
         }
         fn friends(&mut self) -> Result<Vec<line::store::Friend>> {
@@ -731,7 +732,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             self.wait();
             self.0.members(c)
         }
-        fn start_assets(&mut self, s: Arc<AtomicBool>, d: Deliver) {
+        fn start_assets(&mut self, s: Arc<CancelToken>, d: Deliver) {
             self.0.start_assets(s, d)
         }
         fn authorize(
@@ -818,7 +819,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         fn stream(
             &mut self,
             r: i64,
-            s: Arc<AtomicBool>,
+            s: Arc<CancelToken>,
             d: Deliver,
         ) -> Result<Box<dyn FnOnce() + Send>> {
             self.0.stream(r, s, d)
@@ -1003,7 +1004,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
     use line::{backend::*, store::*};
     use std::sync::{
         Arc,
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicUsize, Ordering},
         mpsc,
     };
 
@@ -1055,7 +1056,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
             self.fake.profile_action(action, full, seq)
         }
 
-        fn sign_in(&mut self, c: Arc<AtomicBool>, d: PairDeliver) -> Result<()> {
+        fn sign_in(&mut self, c: Arc<CancelToken>, d: PairDeliver) -> Result<()> {
             self.fake.sign_in(c, d)
         }
         fn friends(&mut self) -> Result<Vec<line::store::Friend>> {
@@ -1064,7 +1065,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn members(&mut self, c: &ChatId) -> Result<Vec<line::store::Member>> {
             self.fake.members(c)
         }
-        fn start_assets(&mut self, s: Arc<AtomicBool>, d: Deliver) {
+        fn start_assets(&mut self, s: Arc<CancelToken>, d: Deliver) {
             self.fake.start_assets(s, d)
         }
         fn authorize(
@@ -1149,7 +1150,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn stream(
             &mut self,
             r: i64,
-            s: Arc<AtomicBool>,
+            s: Arc<CancelToken>,
             d: Deliver,
         ) -> Result<Box<dyn FnOnce() + Send>> {
             self.fake.stream(r, s, d)
