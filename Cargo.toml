@@ -55,3 +55,7 @@ opt-level = 0
 
 [profile.fast.package.line-desktop-ui]
 opt-level = 0
+
+# The crypto module runs in wasmi; unoptimized it is ~10x slower in tests.
+[profile.dev.package."*"]
+opt-level = 2
