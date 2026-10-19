@@ -29,7 +29,7 @@ impl Presenter {
                     name: single_line(text::friend_name(f)).into(),
                     initial: name_initial(text::friend_name(f)),
                     status: single_line(&f.status).into(),
-                    status_runs: preview::preview_runs(
+                    status_runs: rich_content::preview::preview_runs(
                         &f.status,
                         &metadata,
                         &self.images,

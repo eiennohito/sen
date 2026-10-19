@@ -9,7 +9,7 @@ fn rich_fixture() -> Vec<MessageRow> {
     };
     row.rich_runs = runs(
         body,
-        &[present::EmojiView {
+        &[presenter::format::EmojiView {
             span: line::store::InlineEmoji {
                 start_utf16: 3,
                 end_utf16: 6,
@@ -89,7 +89,7 @@ fn missing_emoji_reserves_the_loaded_geometry() {
         let _window = snapshot::install().unwrap();
         let ui = create_app_window().unwrap();
         let mut message = rich_fixture().remove(1);
-        links::decorate_message(&mut message, "contact");
+        rich_content::links::decorate_message(&mut message);
         let before = layout(&ui, &message.rich_runs, 140., 24.);
         if let Some(runs) = message
             .rich_runs
@@ -168,7 +168,7 @@ fn public_scaled_metrics_match_painted_segments() {
         ] {
             probe.set_sample(sample.into());
             let mut row = MessageRow { body: sample.into(), ..Default::default() };
-            links::decorate_message(&mut row, "c");
+            rich_content::links::decorate_message(&mut row);
             let pieces = if row.rich_runs.row_count() > 0 { row.rich_runs } else { runs(sample, &[]) };
             for size in [12., 15., 18., 22., 24.] {
                 probe.set_size(size);
@@ -214,7 +214,7 @@ fn layout_failure_keeps_the_native_body_selectable() {
             outgoing: true,
             ..Default::default()
         };
-        links::decorate_message(&mut row, "contact");
+        rich_content::links::decorate_message(&mut row);
         assert_eq!(row.links.row_count(), 1);
         let oversized = ModelRc::new(VecModel::from(vec![RichRun {
             text: "a".repeat(2050).into(),
@@ -287,7 +287,7 @@ fn break_tokens_preserve_fallback_and_multiline_copy_source() {
     };
     let rows = runs(
         body,
-        &[present::EmojiView {
+        &[presenter::format::EmojiView {
             span,
             image_key: "image-key".into(),
         }],
@@ -332,7 +332,7 @@ fn maximum_rich_flow_measures_and_reflows_at_narrow_large_text() {
         };
         let runs = runs(
             &body,
-            &[present::EmojiView {
+            &[presenter::format::EmojiView {
                 span,
                 image_key: "synthetic".into(),
             }],
@@ -420,7 +420,7 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                         outgoing: true,
                         ..Default::default()
                     };
-                    links::decorate_message(&mut row, "contact");
+                    rich_content::links::decorate_message(&mut row);
                     ui.set_messages(ModelRc::new(VecModel::from(vec![row])));
                     let pixels = render(&window, size);
                     let runs = observed.borrow().clone();
@@ -676,7 +676,7 @@ fn inline_links_replace_matching_text_without_changing_the_body() {
             .into(),
         ..Default::default()
     };
-    links::decorate_message(&mut row, "contact");
+    rich_content::links::decorate_message(&mut row);
     assert_eq!(
         row.rich_runs
             .iter()
@@ -707,7 +707,7 @@ fn failure_marks_stay_beside_the_bubble() {
                     body: "Meet at eleven.".into(),
                     outgoing: true,
                     recoverable: true,
-                    delivery: "Not sent".into(),
+                    delivery: DeliveryState::Rejected,
                     time: "12:01".into(),
                     clock: "12:01".into(),
                     ..Default::default()
@@ -745,7 +745,7 @@ fn coarse_runs_keep_words_and_cjk_break_opportunities() {
         body: body.into(),
         ..Default::default()
     };
-    links::decorate_message(&mut row, "contact");
+    rich_content::links::decorate_message(&mut row);
     let rows: Vec<_> = row.rich_runs.iter().collect();
     assert!(rows.len() < 25);
     assert!(rows.iter().any(|r| r.text == "after "));
@@ -772,7 +772,7 @@ fn link_edges_preserve_closing_punctuation_at_every_width() {
                 body: body.into(),
                 ..Default::default()
             };
-            links::decorate_message(&mut row, "contact");
+            rich_content::links::decorate_message(&mut row);
             assert!(
                 row.rich_runs
                     .iter()
@@ -814,7 +814,7 @@ fn oversized_links_share_the_last_line_and_measure_whole_segments() {
             body: format!("https://example.org/{} after", "abcdefghij".repeat(8)).into(),
             ..Default::default()
         };
-        links::decorate_message(&mut row, "contact");
+        rich_content::links::decorate_message(&mut row);
         let lines = layout(&ui, &row.rich_runs, 260., 24.);
         let links: Vec<_> = lines.iter().filter(|r| r.link_start).collect();
         assert!(links.len() > 3);
@@ -833,7 +833,7 @@ fn oversized_links_share_the_last_line_and_measure_whole_segments() {
         assert!(after.x > 0.);
         let mut rounded = row.clone();
         rounded.body = "https://a.b.c.d.e.f.g.h.i.j.k.l/m?n=o&p=q。".into();
-        links::decorate_message(&mut rounded, "contact");
+        rich_content::links::decorate_message(&mut rounded);
         let segments = layout(&ui, &rounded.rich_runs, 1000., 24.);
         let link = segments.iter().find(|r| r.link_start).unwrap();
         let plain = layout(
@@ -860,19 +860,19 @@ fn pathological_link_bodies_keep_the_original_and_menu_links() {
         body: body.clone().into(),
         ..Default::default()
     };
-    links::decorate_message(&mut row, "contact");
+    rich_content::links::decorate_message(&mut row);
     assert_eq!(row.rich_runs.row_count(), 0);
     assert!(row.rich_fallback);
     assert_eq!(row.body, body);
     assert_eq!(row.links.row_count(), 1);
-    links::decorate_message(&mut row, "contact");
+    rich_content::links::decorate_message(&mut row);
     assert_eq!(row.rich_runs.row_count(), 0);
     let mut row = MessageRow {
         body: "https://example.org/".into(),
         rich_fallback: true,
         ..Default::default()
     };
-    links::decorate_message(&mut row, "contact");
+    rich_content::links::decorate_message(&mut row);
     assert_eq!(
         row.rich_runs.row_count(),
         0,
@@ -904,7 +904,7 @@ fn first_frame_never_paints_unpositioned_or_overlapping_runs() {
                 };
                 row.outgoing = true;
                 row.reply_id = "".into();
-                links::decorate_message(&mut row, "contact");
+                rich_content::links::decorate_message(&mut row);
                 let observed = watch_layout(&ui);
                 ui.set_messages(ModelRc::new(VecModel::from(vec![row])));
                 ui.show().unwrap();

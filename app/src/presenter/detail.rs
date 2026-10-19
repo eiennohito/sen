@@ -22,13 +22,12 @@ impl Presenter {
                 .action
                 .as_ref()
                 .map(|a| match a {
-                    line::backend::ProfileAction::Rename { .. } => "rename",
-                    line::backend::ProfileAction::AddFriend { .. } => "add",
-                    line::backend::ProfileAction::Mute { .. } => "mute",
-                    line::backend::ProfileAction::Leave { .. } => "leave",
+                    line::backend::ProfileAction::Rename { .. } => DetailAction::Rename,
+                    line::backend::ProfileAction::AddFriend { .. } => DetailAction::Add,
+                    line::backend::ProfileAction::Mute { .. } => DetailAction::Mute,
+                    line::backend::ProfileAction::Leave { .. } => DetailAction::Leave,
                 })
-                .unwrap_or("")
-                .into(),
+                .unwrap_or(DetailAction::None),
         );
         g.set_detail_error(
             state

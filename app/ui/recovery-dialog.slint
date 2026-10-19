@@ -1,23 +1,23 @@
+import { RecoveryKind, RecoveryAction } from "types.slint";
 import { IconButton } from "icon-button.slint";
 import { Button } from "button.slint";
-
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
 export component RecoveryDialog inherits Rectangle {
-    visible: State.recovery-kind != "";
+    visible: State.recovery-kind != RecoveryKind.none;
     width: 100%; height: 100%;
     background: Tokens.scrim;
     TouchArea { }
-    property <bool> opened: State.recovery-kind != "";
+    property <bool> opened: State.recovery-kind != RecoveryKind.none;
     changed opened => { if self.opened { cancel.focus(); } }
     FocusScope {
         key-pressed(event) => {
             if !State.ime-active && event.text == Key.Tab {
-                if event.modifiers.shift && cancel.has-focus { if State.recovery-kind == "edit" { append.focus(); } else { confirm.focus(); } return accept; }
+                if event.modifiers.shift && cancel.has-focus { if State.recovery-kind == RecoveryKind.edit { append.focus(); } else { confirm.focus(); } return accept; }
                 if !event.modifiers.shift && (append.has-focus || confirm.has-focus) { cancel.focus(); return accept; }
             }
-            if !State.ime-active && event.text == Key.Escape { State.resolve-recovery("cancel"); return accept; }
+            if !State.ime-active && event.text == Key.Escape { State.resolve-recovery(RecoveryAction.cancel); return accept; }
             reject
         }
         Rectangle {
@@ -28,16 +28,16 @@ export component RecoveryDialog inherits Rectangle {
             content := VerticalLayout {
                 padding: 24px; spacing: 12px;
                 HorizontalLayout { spacing: 8px;
-                Text { text: State.recovery-kind == "unsend" ? "Unsend message?" : "Use message text?"; font-size: Tokens.heading; wrap: word-wrap; }
-                IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.resolve-recovery("cancel"); } }
+                Text { text: State.recovery-kind == RecoveryKind.unsend ? "Unsend message?" : "Use message text?"; font-size: Tokens.heading; wrap: word-wrap; }
+                IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.resolve-recovery(RecoveryAction.cancel); } }
                 }
-                Text { text: State.recovery-kind == "unsend" ? "It will be removed for everyone." : "There is already a draft in this conversation. Replace it or append this message?"; color: Tokens.foreground; wrap: word-wrap; }
+                Text { text: State.recovery-kind == RecoveryKind.unsend ? "It will be removed for everyone." : "There is already a draft in this conversation. Replace it or append this message?"; color: Tokens.foreground; wrap: word-wrap; }
                 HorizontalLayout {
                     spacing: 8px; alignment: end;
-                    cancel := Button { text: "Cancel"; clicked => { State.resolve-recovery("cancel"); } }
-                    replace := Button { visible: State.recovery-kind == "edit"; enabled: self.visible; text: "Replace"; clicked => { State.resolve-recovery("replace"); } }
-                    append := Button { visible: State.recovery-kind == "edit"; enabled: self.visible; text: "Append"; primary: true; clicked => { State.resolve-recovery("append"); } }
-                    confirm := Button { visible: State.recovery-kind == "unsend"; enabled: self.visible; text: "Unsend"; primary: true; danger: State.recovery-kind == "unsend"; clicked => { State.resolve-recovery(State.recovery-kind); } }
+                    cancel := Button { text: "Cancel"; clicked => { State.resolve-recovery(RecoveryAction.cancel); } }
+                    replace := Button { visible: State.recovery-kind == RecoveryKind.edit; enabled: self.visible; text: "Replace"; clicked => { State.resolve-recovery(RecoveryAction.replace); } }
+                    append := Button { visible: State.recovery-kind == RecoveryKind.edit; enabled: self.visible; text: "Append"; primary: true; clicked => { State.resolve-recovery(RecoveryAction.append); } }
+                    confirm := Button { visible: State.recovery-kind == RecoveryKind.unsend; enabled: self.visible; text: "Unsend"; primary: true; danger: State.recovery-kind == RecoveryKind.unsend; clicked => { State.resolve-recovery(RecoveryAction.unsend); } }
                 }
             }
         }

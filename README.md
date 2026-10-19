@@ -14,7 +14,7 @@ cargo build --offline --release -p line-desktop --features demo
 target/release/line-desktop --demo
 # Headless rendering, with no account access:
 target/release/line-desktop --snapshot /tmp/line-preview.ppm
-target/release/line-desktop --demo-photos --snapshot /tmp/line-small.ppm --snapshot-size 360x520 --snapshot-text-size 24
+target/release/line-desktop --demo --snapshot-scene photos --snapshot /tmp/line-small.ppm --snapshot-size 360x520 --snapshot-text-size 24
 ```
 
 The `demo` feature enables synthetic scenarios and snapshots. F12 opens Demo

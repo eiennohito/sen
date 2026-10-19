@@ -32,7 +32,6 @@ export component Pane inherits Rectangle {
             State.connection-area-x = root.area-x;
             State.connection-area-y = root.area-y;
             State.connection-area-width = root.width;
-            State.connection-area-height = root.height;
         }
     }
     in-out property <length> offset: 0px;
@@ -46,8 +45,6 @@ export component Pane inherits Rectangle {
     changed offset => { root.scrolling = true; hide.running = true; hide.restart(); if root.virtual { root.scrolled(); } }
     // Timers repeat and start running by default; each one here fires once.
     hide := Timer { interval: 1s; running: false; triggered => { self.running = false; root.scrolling = false; } }
-    in property <length> content-width;
-    in property <bool> horizontal-scrollbar-policy;
     clip: true;
     property <length> seek-y;
     seek-settle := Timer {

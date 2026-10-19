@@ -272,7 +272,7 @@ fn patch_runs(
                     continue;
                 };
                 let image = picture.get_or_insert_with(|| {
-                    size.map(|size| preview::small(image, size))
+                    size.map(|size| rich_content::preview::small(image, size))
                         .unwrap_or_else(|| image.clone())
                 });
                 if !run.has_picture || run.picture != *image {

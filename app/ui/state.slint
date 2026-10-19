@@ -1,7 +1,4 @@
-import { ReactionRow, DemoAutomation } from "types.slint";
-import { AttachmentItem } from "types.slint";
-import { StickerTab, StickerItem, ComposeFriend } from "types.slint";
-import { PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
+import { RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, ReactionRow, DemoAutomation, AttachmentItem, StickerTab, StickerItem, ComposeFriend, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 // Shared presentation state. AppWindow preserves the public Rust binding API.
 export global State {
     in-out property <[ReactionRow]> reaction-kinds;
@@ -38,7 +35,6 @@ export global State {
     in-out property <image> chat-avatar;
     in-out property <PanelState> panel: none;
     callback request-panel(PanelState);
-    in-out property <bool> preview-demo;
     in-out property <bool> window-active: false;
     in-out property <int> unread-conversations;
     in-out property <bool> unread-stale;
@@ -57,7 +53,7 @@ export global State {
     changed show-conversation => { self.read-state-changed(); }
 
     in-out property <int> section: 0;
-    in-out property <int> category: 0;
+    in-out property <ChatCategory> category: ChatCategory.all;
     callback filter-category();
     callback switch-chat(int);
     callback focus-chat-list();
@@ -121,13 +117,13 @@ export global State {
     callback forget-detail-focus();
     callback restore-detail-focus(bool);
     callback finish-detail-restore(bool);
-    callback detail-action(string, string);
+    callback detail-action(DetailAction, string);
     callback profile-photo();
     in-out property <int> detail-depth;
-    changed detail-depth => { if self.detail-depth == 0 { self.detail-dialog = ""; } }
+    changed detail-depth => { if self.detail-depth == 0 { self.detail-dialog = DetailAction.none; } }
     in-out property <int> detail-page;
     in-out property <bool> detail-busy;
-    in-out property <string> detail-running;
+    in-out property <DetailAction> detail-running;
     in-out property <bool> viewer-from-detail;
     in-out property <string> detail-error;
     in-out property <string> conversation-error;
@@ -148,7 +144,7 @@ export global State {
     in-out property <int> group-count;
     in-out property <int> invitee-count;
     in-out property <bool> chat-left;
-    in-out property <string> detail-dialog;
+    in-out property <DetailAction> detail-dialog;
 
     out property <bool> members-open: self.detail-page == 2;
     out property <bool> member-profile: self.detail-page == 0 && self.detail-depth > 1;
@@ -174,7 +170,7 @@ export global State {
         let browser-hidden = self.covered-content == 3 && self.previous-covered-content == 0 && self.browser-focus-hidden;
         self.browser-focus-hidden = false;
         self.previous-covered-content = self.covered-content;
-        if self.recovery-kind != "" || self.demo-scenarios-open || self.detail-dialog != "" { return; }
+        if self.recovery-kind != RecoveryKind.none || self.demo-scenarios-open || self.detail-dialog != DetailAction.none { return; }
         // Closing a modal back to the stack restores its recorded opener.
         if previous == 2 && self.detail-open && !self.window-modal-open { return; }
         if self.auth-open { self.focus-auth-start(); }
@@ -203,14 +199,14 @@ export global State {
     in-out property <int> editor-anchor;
     in-out property <bool> composer-focused;
     in-out property <string> unsend-feedback-id;
-    in-out property <string> recovery-kind;
+    in-out property <RecoveryKind> recovery-kind;
     in-out property <string> recovery-id;
     in-out property <string> recovery-focus-id;
-    in-out property <string> recovery-focus-action;
+    in-out property <RecoveryKind> recovery-focus-action;
     callback restore-editor(int, int);
     callback discard-message(string);
     callback retry-message(string);
-    callback resolve-recovery(string);
+    callback resolve-recovery(RecoveryAction);
     callback quit();
     in-out property <bool> send-pending;
     pure callback has-text(string) -> bool;
@@ -251,7 +247,7 @@ export global State {
     in-out property <bool> viewer-saving;
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
-    out property <bool> window-modal-open: self.attachments-open || self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.demo-scenarios-open || self.recovery-kind != "" || self.detail-dialog != "";
+    out property <bool> window-modal-open: self.attachments-open || self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.demo-scenarios-open || self.recovery-kind != RecoveryKind.none || self.detail-dialog != DetailAction.none;
     in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
     callback viewer-step(int);
     callback save-photo();
@@ -268,7 +264,6 @@ export global State {
     in-out property <length> connection-area-x;
     in-out property <length> connection-area-y;
     in-out property <length> connection-area-width;
-    in-out property <length> connection-area-height;
     out property <bool> retrying-connection: self.connection == ConnectionState.connecting;
     out property <bool> auth-open: self.panel == PanelState.sign-in;
     out property <bool> auth-busy: self.connection == ConnectionState.signing-in;
@@ -315,7 +310,6 @@ export global State {
     in-out property <bool> narrow: self.window-width < self.narrow-width;
     in-out property <length> window-width;
     in-out property <length> window-height;
-    in-out property <length> conversation-height;
     in-out property <length> history-width;
     in-out property <length> history-extent;
     callback browse(int);
@@ -346,7 +340,6 @@ export global State {
     callback recover-message(string);
     callback demo-event(int);
 
-    callback show-profile();
     callback close-profile();
     callback focus-composer();
     callback focus-cycle-end();
@@ -374,7 +367,7 @@ export global State {
     public function reading-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
         if self.browser-key(event) == accept { return accept; }
-        if self.recovery-kind != "" { return reject; }
+        if self.recovery-kind != RecoveryKind.none { return reject; }
         if event.text == Key.End { self.latest(); self.focus-history(); return accept; }
         if event.text == Key.UpArrow { self.history-scroll(self.text-size * 1.4px); }
         else if event.text == Key.DownArrow { self.history-scroll(-self.text-size * 1.4px); }
@@ -409,7 +402,7 @@ export global State {
     changed history-interacting => { self.read-state-changed(); }
     changed history-dragging => { self.read-state-changed(); }
     changed history-visible-top => { self.read-state-changed(); }
-    callback row-geometry(string, length, length);
+    callback row-geometry(HistoryRowKind, string, length, length);
     callback history-scrolled();
     callback latest-request();
     callback jump-message(string);

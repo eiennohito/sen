@@ -1,3 +1,4 @@
+use super::system_events;
 use super::*;
 
 impl Presenter {
@@ -108,7 +109,7 @@ impl Presenter {
             sender_name: if m.outgoing {
                 "You".into()
             } else {
-                crate::system_events::name(state, &m.sender_id).into()
+                system_events::name(state, &m.sender_id).into()
             },
             sender_id: m.sender_id.clone().into(),
             body: single_line(&compact_text(&m.body, state, &m.sender_id)).into(),

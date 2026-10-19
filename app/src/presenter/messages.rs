@@ -1,9 +1,10 @@
+use super::system_events;
 use super::*;
 
 impl Presenter {
     pub(super) fn row(&mut self, m: &StoredMessage, state: &AppState) -> MessageRow {
         let sender = state.contact(&m.sender_id).cloned();
-        let system_text = crate::system_events::text(&m.body, state, &m.sender_id);
+        let system_text = system_events::text(&m.body, state, &m.sender_id);
         let reply = m
             .reply
             .as_ref()
@@ -11,7 +12,7 @@ impl Presenter {
             .map(|target| {
                 (
                     target.clone(),
-                    crate::system_events::name(state, &target.sender_id),
+                    system_events::name(state, &target.sender_id),
                 )
             });
         let inputs = MessageInputs {
@@ -21,7 +22,7 @@ impl Presenter {
                 .iter()
                 .map(|r| {
                     (
-                        crate::system_events::name(state, &r.actor),
+                        system_events::name(state, &r.actor),
                         state.contact(&r.actor).cloned(),
                     )
                 })
@@ -50,7 +51,7 @@ impl Presenter {
                         .and_then(|c| c.avatar.as_ref())
                         .map(|a| a.key())
                         .unwrap_or_default();
-                    let name = crate::system_events::name(state, id);
+                    let name = system_events::name(state, id);
                     line_desktop_ui::ReactorRow {
                         id: id.into(),
                         initial: name_initial(if id == state.profile.mid {
@@ -98,12 +99,11 @@ impl Presenter {
             .unwrap_or_default()
             .into();
         row.delivery = match &m.delivery {
-            Delivery::Pending => "Sending…",
-            Delivery::Sent => "Sent",
-            Delivery::Read => "Read",
-            Delivery::Rejected { .. } => "Not sent",
-        }
-        .into();
+            Delivery::Pending => DeliveryState::Pending,
+            Delivery::Sent => DeliveryState::Sent,
+            Delivery::Read => DeliveryState::Read,
+            Delivery::Rejected { .. } => DeliveryState::Rejected,
+        };
         if let Some(_item) = m
             .body
             .image()
@@ -183,7 +183,7 @@ impl Presenter {
             row.reply_sender = quoted.sender_name;
             row.reply_sender_id = quoted.sender_id;
             row.reply_preview = single_line(
-                &crate::system_events::text(&target.body, state, &target.sender_id)
+                &system_events::text(&target.body, state, &target.sender_id)
                     .unwrap_or_else(|| message_text(&target.body).1),
             )
             .into();
@@ -191,7 +191,7 @@ impl Presenter {
             row.reply_picture = quoted.picture;
             row.reply_has_picture = quoted.has_picture && (quoted.photo || quoted.sticker);
         }
-        links::decorate_message(&mut row, "Contact");
+        rich_content::links::decorate_message(&mut row);
         self.rendered.insert(m.key, (inputs, row.clone()));
         row
     }
@@ -236,6 +236,7 @@ impl Presenter {
                     RowKey::Gap(m.key),
                     MessageRow {
                         id: format!("gap-{}", m.key.0).into(),
+                        row_kind: HistoryRowKind::Gap,
                         body: "Loading messages…".into(),
                         kind: MessageKind::System,
                         ..Default::default()
@@ -294,7 +295,7 @@ impl Presenter {
 }
 
 pub(crate) fn compact_text(content: &Content, state: &AppState, sender: &str) -> String {
-    crate::system_events::text(content, state, sender).unwrap_or_else(|| kind_label(content).1)
+    system_events::text(content, state, sender).unwrap_or_else(|| kind_label(content).1)
 }
 
 #[cfg(test)]
@@ -449,18 +450,12 @@ mod content_tests {
             presenter.row(&message, &state).sender_name,
             "Unknown member"
         );
-        assert_eq!(
-            crate::system_events::name(&state, "sender"),
-            "Unknown member"
-        );
+        assert_eq!(system_events::name(&state, "sender"), "Unknown member");
         state.friends.push(contact);
         assert_eq!(
             presenter.row(&message, &state).sender_name,
             "Unnamed friend"
         );
-        assert_eq!(
-            crate::system_events::name(&state, "sender"),
-            "Unnamed friend"
-        );
+        assert_eq!(system_events::name(&state, "sender"), "Unnamed friend");
     }
 }

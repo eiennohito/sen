@@ -1,11 +1,12 @@
 //! Rich text uses native measured runs; the original body remains the copy source.
 use crate::*;
+pub(crate) const MAX_RUNS: usize = 2048;
 
-pub(crate) fn runs(body: &str, emoji: &[present::EmojiView]) -> ModelRc<RichRun> {
+pub(crate) fn runs(body: &str, emoji: &[presenter::format::EmojiView]) -> ModelRc<RichRun> {
     let mut rows = Vec::new();
     let mut offset = 0;
     for item in emoji {
-        if rows.len() > 2048 {
+        if rows.len() > crate::rich_content::MAX_RUNS {
             break;
         }
         let span = &item.span;
@@ -32,7 +33,7 @@ pub(crate) fn runs(body: &str, emoji: &[present::EmojiView]) -> ModelRc<RichRun>
         rows.push(RichRun::default());
     }
     // A pathological rich body falls back to the complete selectable body.
-    if rows.len() > 2048 {
+    if rows.len() > crate::rich_content::MAX_RUNS {
         rows.clear();
     }
     ModelRc::new(VecModel::from(rows))
@@ -56,7 +57,7 @@ fn text_runs(text: &str, rows: &mut Vec<RichRun>) {
                     ..Default::default()
                 });
             }
-            if rows.len() > 2048 {
+            if rows.len() > crate::rich_content::MAX_RUNS {
                 return;
             }
         }
@@ -66,6 +67,8 @@ fn text_runs(text: &str, rows: &mut Vec<RichRun>) {
 
 pub(crate) mod flow;
 pub(crate) mod links;
+pub(crate) mod preview;
+pub(crate) mod spans;
 
 pub(crate) fn install(ui: &AppWindow) {
     ui.global::<State>().on_rich_source(|rows| {
@@ -84,7 +87,7 @@ pub(crate) fn install(ui: &AppWindow) {
             let Some(ui) = preview_weak.upgrade() else {
                 return ModelRc::default();
             };
-            crate::preview::layout(&rows, &prefix, width, size, |text| {
+            crate::rich_content::preview::layout(&rows, &prefix, width, size, |text| {
                 let key = (text.into(), size.to_bits());
                 if let Some(value) = preview_metrics.borrow_mut().get(&key) {
                     return value.0;

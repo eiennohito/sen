@@ -17,16 +17,11 @@ pub enum DetailPage {
     GroupInfo(ChatId),
     Members(ChatId),
 }
-#[derive(Clone, Debug)]
-pub struct DetailEntry {
-    pub page: DetailPage,
-    pub opener: String,
-}
 pub struct AppState {
     pub uploads: BTreeMap<Key, f32>,
     pub sticker_packages: Vec<StickerPackage>,
     pub sticker_packages_failed: bool,
-    pub detail: Vec<DetailEntry>,
+    pub detail: Vec<DetailPage>,
     pub contacts: BTreeMap<String, crate::store::Friend>,
     pub group_info: BTreeMap<ChatId, serde_json::Value>,
     pub notices: BTreeMap<String, serde_json::Value>,
@@ -158,21 +153,18 @@ impl AppState {
                 friend || (f.name.is_some() && self.chats.contains_key(&ChatId(mid.into())))
             })
     }
-    pub fn push_detail(&mut self, page: DetailPage, opener: String) {
-        self.detail.push(DetailEntry { page, opener });
+    pub fn push_detail(&mut self, page: DetailPage) {
+        self.detail.push(page);
         self.panel = Panel::Detail;
         self.action_error = None;
     }
-    pub fn pop_detail(&mut self) -> Option<String> {
-        let entry = self.detail.pop();
+    pub fn pop_detail(&mut self) {
+        self.detail.pop();
         self.finish_detail_navigation();
-        entry.map(|e| e.opener)
     }
-    pub fn close_detail(&mut self) -> Option<String> {
-        let first = self.detail.first().map(|e| e.opener.clone());
+    pub fn close_detail(&mut self) {
         self.detail.clear();
         self.finish_detail_navigation();
-        first
     }
     fn finish_detail_navigation(&mut self) {
         self.panel = if self.detail.is_empty() {
@@ -183,7 +175,7 @@ impl AppState {
         self.action_error = None;
     }
     pub fn detail_page(&self) -> Option<&DetailPage> {
-        self.detail.last().map(|e| &e.page)
+        self.detail.last()
     }
     pub fn submit(&mut self) -> Option<Intent> {
         if self.composer.trim().is_empty()
@@ -526,7 +518,7 @@ mod content_model_tests {
     #[test]
     fn selecting_from_detail_uses_chats_and_waits_for_matching_window() {
         let mut state = AppState::default();
-        state.push_detail(DetailPage::Profile("member".into()), "opener".into());
+        state.push_detail(DetailPage::Profile("member".into()));
         state.select(ChatId("chat".into()));
         assert_eq!(state.panel, Panel::Chats);
         assert!(state.detail.is_empty());

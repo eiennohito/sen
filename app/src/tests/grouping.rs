@@ -28,7 +28,7 @@ fn grouping_uses_identity_time_and_delivery() {
         MessageRow {
             sender_name: "Same name".into(),
             time: "Arbitrary display text".into(),
-            delivery: "Arbitrary status".into(),
+            delivery: DeliveryState::Rejected,
             ..Default::default()
         };
         5
@@ -99,7 +99,7 @@ fn own_member_uses_account_profile_and_keeps_you_note() {
             },
             is_self: true,
         });
-        presenter.present(&ui, &state, "", 0);
+        presenter.present(&ui, &state, "", ChatCategory::All);
         let member = ui.get_members().row_data(0).unwrap();
         assert_eq!(member.name, "Account name");
         assert_eq!(member.status, "Account status");

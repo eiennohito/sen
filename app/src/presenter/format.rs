@@ -13,30 +13,18 @@ impl EmojiView {
     }
 }
 
-#[cfg(feature = "demo")]
 thread_local! {
-    static FIXED_NOW: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
+    static CLOCK: std::cell::Cell<fn() -> i64> = const { std::cell::Cell::new(system_millis) };
 }
-
-pub(crate) fn now_millis() -> i64 {
-    #[cfg(feature = "demo")]
-    if let Some(now) = FIXED_NOW.with(|now| now.get()) {
-        return now;
-    }
+fn system_millis() -> i64 {
     chrono::Local::now().timestamp_millis()
 }
-
+pub(crate) fn now_millis() -> i64 {
+    CLOCK.with(|clock| (clock.get())())
+}
 #[cfg(feature = "demo")]
-pub(crate) fn fix_snapshot_clock() {
-    use chrono::TimeZone;
-    FIXED_NOW.with(|now| {
-        now.set(Some(
-            chrono::Local
-                .with_ymd_and_hms(2026, 10, 18, 14, 0, 0)
-                .unwrap()
-                .timestamp_millis(),
-        ))
-    });
+pub(crate) fn set_clock(clock: fn() -> i64) {
+    CLOCK.with(|current| current.set(clock));
 }
 
 pub(crate) fn name_initial(name: &str) -> slint::SharedString {
@@ -324,9 +312,9 @@ pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> Messa
     };
     let detail = match &m.body {
         Content::Video { duration, .. } | Content::Voice { duration, .. } => {
-            duration.map(crate::present::duration)
+            duration.map(crate::presenter::format::duration)
         }
-        Content::File { size, .. } => size.map(crate::present::file_size),
+        Content::File { size, .. } => size.map(crate::presenter::format::file_size),
         _ => None,
     }
     .unwrap_or_default();

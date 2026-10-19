@@ -2,9 +2,9 @@ macro_rules! callback {($ui:ident, $actions:ident, $name:ident, |$u:ident,$d:ide
         let weak=$ui.as_weak(); let actions=$actions.clone();
         $ui.$name(move |$($arg),*| {let weak=weak.clone(); actions.push(move |$d|{if let Some($u)=weak.upgrade() {$body}});});
     }};}
-macro_rules! global_callback {($ui:ident, $actions:ident, $name:ident, |$u:ident,$d:ident $(,$arg:ident)*| $body:block)=>{{
+macro_rules! global_callback {($ui:ident, $actions:ident, $name:ident $(, [$($capture:ident),*])?, |$u:ident,$d:ident $(,$arg:ident)*| $body:block $(=> $result:expr)?)=>{{
         let weak=$ui.as_weak(); let actions=$actions.clone();
-        $ui.global::<State>().$name(move |$($arg),*| {let weak=weak.clone(); actions.push(move |$d|{if let Some($u)=weak.upgrade() {$body}});});
+        $ui.global::<State>().$name(move |$($arg),*| {let weak=weak.clone(); $($(let $capture = $capture.clone();)*)? actions.push(move |$d|{if let Some($u)=weak.upgrade() {$body}}); $($result)? });
     }};}
 macro_rules! focus_bridge {
     ($ui:ident, $actions:ident, $on:ident,$invoke:ident) => {
@@ -37,7 +37,7 @@ pub(crate) fn install(ui: &AppWindow, actions: Runtime) {
         let weak = ui.as_weak();
         let chat = ui.global::<State>().get_chat_id();
         std::thread::spawn(move || {
-            let result = links::open(&url);
+            let result = rich_content::links::open(&url);
             let _ = weak.upgrade_in_event_loop(move |ui| {
                 let g = ui.global::<State>();
                 if g.get_chat_id() == chat {
@@ -51,4 +51,8 @@ pub(crate) fn install(ui: &AppWindow, actions: Runtime) {
         });
     });
     rich_content::install(ui);
+}
+
+fn message_key(id: &str) -> Option<Key> {
+    id.parse().ok().map(Key)
 }

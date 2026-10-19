@@ -1,4 +1,4 @@
-use super::links::url_break;
+use super::spans::url_break;
 use crate::*;
 
 pub(crate) const METRIC_ENTRIES: usize = 4096;
@@ -198,7 +198,7 @@ pub(crate) fn layout(
         let mut x = 0.;
         for mut run in line.drain(..) {
             run.line_width = line_width;
-            if output.len() == 2048 {
+            if output.len() == crate::rich_content::MAX_RUNS {
                 return false;
             }
             run.measured_width = run.measured_width.min((available - x).max(0.));
@@ -281,7 +281,7 @@ pub(crate) fn layout(
     if !finish(&mut line) {
         return ModelRc::default();
     }
-    if output.len() > 2048 {
+    if output.len() > crate::rich_content::MAX_RUNS {
         return ModelRc::default();
     }
     if let Some(first) = output.first_mut() {

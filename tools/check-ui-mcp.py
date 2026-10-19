@@ -251,6 +251,27 @@ def check_detail_stack():
     click("Chats")
     smoke_chat("葵")
 
+def check_idle():
+    def switches():
+        status = Path(f"/proc/{demo_pid}/task/{demo_pid}/status").read_text()
+        return int(next(line.split()[1] for line in status.splitlines()
+                        if line.startswith("voluntary_ctxt_switches:")))
+
+    def measure(label):
+        time.sleep(2)  # Let scrolling, transient UI and worker activity settle.
+        before = switches()
+        started = time.monotonic()
+        time.sleep(2)
+        rate = (switches() - before) / (time.monotonic() - started)
+        print(f"IDLE {label}: {rate:.1f} main-thread voluntary switches/s", flush=True)
+        assert rate < 50, f"{label}: main thread woke {rate:.1f}/s while idle (limit 50/s)"
+
+    show_chats()
+    measure("chat list")
+    click("葵", "Button")
+    measure("open chat")
+
+
 def check_smoke():
     global draft, before_shortcut
     show_chats()
@@ -281,7 +302,6 @@ def check_smoke():
     assert any(item.get("accessibleValue") == before_shortcut for item in tree()), "submitted draft did not appear in history"
     wait_element("Sent", "Image")
     call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=before_shortcut)
-
 
 def check_emoji():
     show_chats()
@@ -1436,7 +1456,7 @@ def connect(process):
     if len(markers) != 1:
         raise WrongInstanceError('connected instance is not an automation demo')
     marker = call('get_element_properties', elementHandle=markers[0])
-    if marker.get('accessibleLabel') != 'Demo automation':
+    if marker.get('accessibleLabel') != process.demo_token:
         raise WrongInstanceError('connected instance is not a demo')
     if marker.get('accessibleValue') != process.demo_token + ':0':
         raise WrongInstanceError('MCP answered from the wrong process')
@@ -1459,7 +1479,7 @@ def reset_demo():
 
 
 def main():
-    global args, current_group, demo_directory
+    global args, current_group, demo_directory, demo_pid
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--seed', type=int, help='Reproduce the randomized --all group order')
     parser.add_argument('--all', action='store_true', help='Run the normal and wide behavioural matrix')
@@ -1489,6 +1509,9 @@ def main():
     started = time.monotonic()
     failures = 0
     for wide, groups in matrix:
+        # Smoke probes startup idle before reset can stop a mistakenly running timer.
+        if 'smoke' in groups:
+            groups = ['smoke'] + [group for group in groups if group != 'smoke']
         args.wide = wide
         # Ask the OS for an unused port; readiness is determined only by initialize.
         with socket.socket() as reservation:
@@ -1498,7 +1521,7 @@ def main():
         if args.dark:
             flags += ['--demo-dark']
         if groups[0] in ('signed-out', 'missing-module'):
-            flags += ['--demo-signed-out']
+            flags += ['--demo', '--snapshot-scene', 'signed-out']
         if groups == ['missing-module']:
             flags += ['--snapshot-case', 'missing-module']
         with tempfile.TemporaryFile(dir=UI_TEMP, mode='w+') as log:
@@ -1508,10 +1531,14 @@ def main():
                 with launch_demo(args.binary, args.port, flags, log) as process:
                     demo_directory = process.demo_directory
                     connect(process)
+                    children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
+                    demo_pid = next(int(pid) for pid in children if Path(f"/proc/{pid}/comm").read_text().strip() == "line-desktop")
                     for index, group in enumerate(groups):
                         current_group = group + ('-wide' if wide else '')
                         group_started = launch_started if index == 0 else time.monotonic()
                         try:
+                            if group == 'smoke':
+                                check_idle()
                             if group not in ('signed-out', 'missing-module'):
                                 reset_demo()
                             GROUPS[group]()

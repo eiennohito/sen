@@ -2,8 +2,8 @@ use crate::*;
 
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     global_callback!(ui, actions, on_reply, |ui, d, id| {
-        if let Ok(key) = id.parse::<i64>()
-            && let Some(message) = d.state.messages.get(&Key(key))
+        if let Some(key) = super::message_key(&id)
+            && let Some(message) = d.state.messages.get(&key)
             && let Some(server) = &message.server_id
         {
             d.state.composer_reply = Some(line::store::ReplyReference {
@@ -27,10 +27,10 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         ui.invoke_focus_composer();
     });
     global_callback!(ui, actions, on_react, |ui, d, id, kind| {
-        if let Ok(key) = id.parse() {
+        if let Some(key) = super::message_key(&id) {
             ui.global::<State>().set_reaction_error_id("".into());
             d.sender.send(Intent::React {
-                key: Key(key),
+                key,
                 kind: kind as u32,
             });
         }
@@ -70,28 +70,35 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     callback!(ui, actions, on_retry_message, |_ui, d, id| {
-        let key = Key(id.parse().unwrap());
+        let Some(key) = super::message_key(&id) else {
+            return;
+        };
         d.sender.send(Intent::Retry(key));
     });
     callback!(ui, actions, on_resolve_recovery, |ui, d, action| {
         let id = ui.get_recovery_id();
+        let Some(key) = super::message_key(&id) else {
+            return;
+        };
         let kind = ui.get_recovery_kind();
-        ui.set_recovery_kind("".into());
-        if action == "cancel" || kind == "unsend" {
+        ui.set_recovery_kind(RecoveryKind::None);
+        if action == RecoveryAction::Cancel || kind == RecoveryKind::Unsend {
             ui.invoke_focus_history();
             ui.set_recovery_focus_id(id.clone());
             ui.set_recovery_focus_action(kind);
         }
-        if action == "unsend" {
+        if action == RecoveryAction::Unsend {
             ui.set_unsend_feedback_id("".into());
-            d.sender.send(Intent::Unsend(Key(id.parse().unwrap())));
+            d.sender.send(Intent::Unsend(key));
         }
-        if action == "replace" {
-            d.sender.send(Intent::Copy(Key(id.parse().unwrap())));
+        if action == RecoveryAction::Replace {
+            d.sender.send(Intent::Copy(key));
             ui.invoke_focus_composer();
         }
-        if action == "append" {
-            let m = &d.state.messages[&Key(id.parse().unwrap())];
+        if action == RecoveryAction::Append {
+            let Some(m) = d.state.messages.get(&key) else {
+                return;
+            };
             d.state.composer = format!("{}\n{}", ui.get_draft(), m.body.as_text());
             ui.set_draft(d.state.composer.clone().into());
             d.capture_draft(&ui);
@@ -100,14 +107,20 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     callback!(ui, actions, on_recover_message, |ui, d, id| {
+        let Some(key) = super::message_key(&id) else {
+            return;
+        };
         if ui.get_draft().is_empty() {
-            d.sender.send(Intent::Copy(Key(id.parse().unwrap())));
+            d.sender.send(Intent::Copy(key));
         } else {
             ui.set_recovery_id(id);
-            ui.set_recovery_kind("edit".into());
+            ui.set_recovery_kind(RecoveryKind::Edit);
         }
     });
     global_callback!(ui, actions, on_discard_message, |_ui, d, id| {
-        d.sender.send(Intent::Discard(Key(id.parse().unwrap())));
+        let Some(key) = super::message_key(&id) else {
+            return;
+        };
+        d.sender.send(Intent::Discard(key));
     });
 }

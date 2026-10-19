@@ -7,7 +7,7 @@ use std::{
 };
 
 #[derive(Default)]
-struct Selection {
+pub(crate) struct Selection {
     generation: u64,
     chat: Option<ChatId>,
     items: Vec<Attachment>,
@@ -40,7 +40,7 @@ fn present(ui: &AppWindow, selection: &Selection) {
             .iter()
             .map(|i| AttachmentItem {
                 name: i.name.clone().into(),
-                size: present::file_size(i.size).into(),
+                size: presenter::format::file_size(i.size).into(),
                 photo: i.photo.is_some(),
                 picture: picture(&i.preview),
                 error: if i.too_large() { "Too large" } else { "" }.into(),
@@ -48,7 +48,7 @@ fn present(ui: &AppWindow, selection: &Selection) {
             .collect::<Vec<_>>(),
     )));
 }
-fn begin(
+pub(crate) fn begin(
     ui: &AppWindow,
     desktop: &Desktop,
     selected: &std::sync::Arc<std::sync::Mutex<Selection>>,
@@ -139,98 +139,50 @@ fn uri_paths(text: &str) -> Vec<PathBuf> {
         .collect()
 }
 fn chooser() -> Result<Vec<PathBuf>, String> {
-    (|| -> Result<_, Box<dyn std::error::Error>> {
-        use zbus::{
-            blocking::{Connection, Proxy},
-            zvariant::{OwnedObjectPath, OwnedValue, Value},
-        };
-        let bus = Connection::session()?;
-        static NEXT: AtomicU64 = AtomicU64::new(1);
-        let token = format!(
-            "line_{}_{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        );
-        let sender = bus
-            .unique_name()
-            .ok_or("missing bus identity")?
-            .as_str()
-            .trim_start_matches(':')
-            .replace('.', "_");
-        let path = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
-        let request = Proxy::new(
-            &bus,
-            "org.freedesktop.portal.Desktop",
-            path.as_str(),
-            "org.freedesktop.portal.Request",
-        )?;
-        let mut signals = request.receive_signal("Response")?;
-        let portal = Proxy::new(
-            &bus,
-            "org.freedesktop.portal.Desktop",
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.FileChooser",
-        )?;
-        let options = HashMap::from([
-            ("handle_token", Value::from(token.as_str())),
-            ("multiple", Value::from(true)),
-            ("modal", Value::from(true)),
-        ]);
-        let returned: OwnedObjectPath = portal.call("OpenFile", &("", "Attach files", options))?;
-        if returned.as_str() != path {
-            return Err("unexpected portal request path".into());
-        }
-        let response = signals.next().ok_or("file chooser closed")?;
-        let (code, mut results): (u32, HashMap<String, OwnedValue>) =
-            response.body().deserialize()?;
-        if code != 0 {
-            return Ok(vec![]);
-        }
-        let uris = Vec::<String>::try_from(results.remove("uris").ok_or("missing selection")?)?;
-        Ok(uris.into_iter().flat_map(|uri| uri_paths(&uri)).collect())
-    })()
+    desktop_env::portal::choose(
+        "OpenFile",
+        "Attach files",
+        HashMap::from([("multiple", true.into())]),
+    )
+    .map(|uris| {
+        uris.unwrap_or_default()
+            .into_iter()
+            .flat_map(|uri| uri_paths(&uri))
+            .collect()
+    })
     .map_err(|_| "Couldn't open file chooser.".into())
 }
 pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
-    macro_rules! bind {
-        ($on:ident, $selected:ident, |$ui:ident, $d:ident $(,$arg:ident)*| $body:block) => {{
-            let weak = ui.as_weak(); let runtime = actions.clone();
-            ui.global::<State>().$on(move |$($arg),*| {
-                let weak = weak.clone(); let $selected = $selected.clone();
-                runtime.push(move |$d| { if let Some($ui) = weak.upgrade() { $body } });
-            });
-        }};
-    }
-
     let selection = std::sync::Arc::new(std::sync::Mutex::new(Selection::default()));
     let selected = selection.clone();
-    bind!(on_attach, selected, |ui, d| {
+    global_callback!(ui, actions, on_attach, [selected], |ui, d| {
         begin(&ui, d, &selected, chooser);
     });
     let selected = selection.clone();
-    bind!(on_drop_attachment, selected, |ui, d, uri| {
+    global_callback!(ui, actions, on_drop_attachment, [selected], |ui, d, uri| {
         let paths = uri_paths(&uri);
         if !paths.is_empty() {
             begin(&ui, d, &selected, move || Ok(paths));
         }
     });
+    #[cfg(feature = "ui-debug")]
+    dev::automation::inject_attachments(ui, actions, selection.clone());
     let selected = selection.clone();
-    bind!(on_inject_attachments, selected, |ui, d, paths| {
-        if cfg!(feature = "ui-debug") && ui.global::<State>().get_automation_background() {
-            let paths: Vec<PathBuf> = serde_json::from_str(&paths).unwrap_or_default();
-            begin(&ui, d, &selected, move || Ok(paths));
+    global_callback!(
+        ui,
+        actions,
+        on_remove_attachment,
+        [selected],
+        |ui, _d, index| {
+            let mut selection = selected.lock().unwrap();
+            if (index as usize) < selection.items.len() {
+                selection.items.remove(index as usize).delete_clipboard();
+            }
+            present(&ui, &selection);
         }
-    });
+    );
     let selected = selection.clone();
-    bind!(on_remove_attachment, selected, |ui, _d, index| {
-        let mut selection = selected.lock().unwrap();
-        if (index as usize) < selection.items.len() {
-            selection.items.remove(index as usize).delete_clipboard();
-        }
-        present(&ui, &selection);
-    });
-    let selected = selection.clone();
-    bind!(on_cancel_attachments, selected, |ui, _d| {
+    global_callback!(ui, actions, on_cancel_attachments, [selected], |ui, _d| {
         let mut selection = selected.lock().unwrap();
         selection.generation += 1;
         for item in selection.items.drain(..) {
@@ -240,7 +192,7 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
         ui.invoke_focus_composer();
     });
     let selected = selection.clone();
-    bind!(on_send_attachments, selected, |ui, d| {
+    global_callback!(ui, actions, on_send_attachments, [selected], |ui, d| {
         let mut selection = selected.lock().unwrap();
         if let Some(chat) = selection.chat.take() {
             let items = std::mem::take(&mut selection.items)
@@ -260,7 +212,7 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     let selected = selection.clone();
-    bind!(on_paste_text, selected, |ui, d| {
+    global_callback!(ui, actions, on_paste_text, [selected], |ui, d| {
         if d.state.selected == selected.lock().unwrap().chat
             && !ui.global::<State>().get_modal_open()
         {
@@ -268,54 +220,47 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
             global.set_paste_text_serial(global.get_paste_text_serial() + 1);
         }
     });
-    let weak = ui.as_weak();
-    let runtime = actions.clone();
-    ui.global::<State>().on_paste_attachment(move || {
-        let weak = weak.clone();
-        let selected = selection.clone();
-        runtime.push(move |d| {
-            if let Some(ui) = weak.upgrade() {
-                let root = d.clipboard_root.clone();
-                begin(&ui, d, &selected, move || {
-                    let paste_text = || {
-                        weak.upgrade_in_event_loop(|ui| ui.global::<State>().invoke_paste_text())
-                    };
-                    let Ok(mut clipboard) = arboard::Clipboard::new() else {
-                        let _ = paste_text();
-                        return Ok(vec![]);
-                    };
-                    if let Ok(image) = clipboard.get_image() {
-                        use std::os::unix::fs::DirBuilderExt;
-                        std::fs::DirBuilder::new()
-                            .recursive(true)
-                            .mode(0o700)
-                            .create(&root)
-                            .map_err(|e| e.to_string())?;
-                        static NEXT: AtomicU64 = AtomicU64::new(1);
-                        let path = root.join(format!(
-                            "Clipboard-{}-{}.png",
-                            std::process::id(),
-                            NEXT.fetch_add(1, Ordering::Relaxed)
-                        ));
-                        let rgba = image::RgbaImage::from_raw(
-                            image.width as u32,
-                            image.height as u32,
-                            image.bytes.into_owned(),
-                        )
-                        .ok_or("Invalid clipboard image")?;
-                        rgba.save(&path).map_err(|e| e.to_string())?;
-                        Ok(vec![path])
-                    } else {
-                        let text = clipboard.get_text().unwrap_or_default();
-                        let paths = uri_paths(&text);
-                        if paths.is_empty() {
-                            let _ = paste_text();
-                        }
-                        Ok(paths)
-                    }
-                });
+    let selected = selection.clone();
+    global_callback!(ui, actions, on_paste_attachment, [selected], |ui, d| {
+        let weak = ui.as_weak();
+        let root = d.clipboard_root.clone();
+        begin(&ui, d, &selected, move || {
+            let paste_text = || {
+                weak.upgrade_in_event_loop(|ui| ui.global::<State>().invoke_paste_text())
+            };
+            let Ok(mut clipboard) = arboard::Clipboard::new() else {
+                let _ = paste_text();
+                return Ok(vec![]);
+            };
+            if let Ok(image) = clipboard.get_image() {
+                use std::os::unix::fs::DirBuilderExt;
+                std::fs::DirBuilder::new()
+                    .recursive(true)
+                    .mode(0o700)
+                    .create(&root)
+                    .map_err(|e| e.to_string())?;
+                static NEXT: AtomicU64 = AtomicU64::new(1);
+                let path = root.join(format!(
+                    "Clipboard-{}-{}.png",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                let rgba = image::RgbaImage::from_raw(
+                    image.width as u32,
+                    image.height as u32,
+                    image.bytes.into_owned(),
+                )
+                .ok_or("Invalid clipboard image")?;
+                rgba.save(&path).map_err(|e| e.to_string())?;
+                Ok(vec![path])
+            } else {
+                let text = clipboard.get_text().unwrap_or_default();
+                let paths = uri_paths(&text);
+                if paths.is_empty() {
+                    let _ = paste_text();
+                }
+                Ok(paths)
             }
         });
-        true
-    });
+    } => true);
 }

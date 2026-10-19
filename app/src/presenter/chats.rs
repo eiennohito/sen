@@ -1,3 +1,4 @@
+use super::system_events;
 use super::*;
 
 impl Presenter {
@@ -6,7 +7,7 @@ impl Presenter {
         ui: &AppWindow,
         state: &AppState,
         query: &str,
-        category: i32,
+        category: ChatCategory,
     ) {
         let mut chats = Vec::new();
         for (index, id) in state.chat_order.iter().enumerate() {
@@ -14,8 +15,8 @@ impl Presenter {
             let c = &item.chat;
             let title = chat_title(c, state);
             if !title.to_lowercase().contains(query)
-                || (category == 1 && c.is_group)
-                || (category == 2 && !c.is_group)
+                || (category == ChatCategory::Friends && c.is_group)
+                || (category == ChatCategory::Groups && !c.is_group)
             {
                 continue;
             }
@@ -28,7 +29,7 @@ impl Presenter {
                 system_text: item
                     .preview
                     .as_ref()
-                    .and_then(|m| crate::system_events::text(&m.body, state, &m.sender_id)),
+                    .and_then(|m| system_events::text(&m.body, state, &m.sender_id)),
                 activity: item.activity_ms,
                 failed: item.failed_count,
                 draft: item.draft.clone(),
@@ -64,7 +65,7 @@ impl Presenter {
                 ..Default::default()
             };
             if let Some(m) = &item.preview {
-                preview::set(
+                rich_content::preview::set(
                     &mut row,
                     &m.body,
                     m.outgoing,

@@ -21,7 +21,7 @@ pub(crate) fn set_enabled(
     enabled: bool,
 ) -> Result<(), String> {
     use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-    let destination = directory.join(crate::desktop_integration::DESKTOP_FILE);
+    let destination = directory.join(crate::desktop_env::desktop_integration::DESKTOP_FILE);
     if destination.exists()
         && !fs::read_to_string(&destination)
             .is_ok_and(|text| text.contains("X-LINE-Managed=true\n"))
@@ -73,7 +73,7 @@ pub(crate) fn set_enabled(
     command = format!("/usr/bin/env -- {command}");
     let contents = format!(
         "[Desktop Entry]\nType=Application\nName=LINE\nExec={command}\nIcon={}\nTerminal=false\nStartupNotify=true\nX-LINE-Managed=true\n",
-        crate::desktop_integration::APP_ID
+        crate::desktop_env::desktop_integration::APP_ID
     );
     let result = file
         .write_all(contents.as_bytes())
@@ -90,7 +90,7 @@ mod tests {
     #[test]
     fn autostart_is_explicit_and_keeps_custom_entries() {
         let root = std::env::temp_dir().join(format!("line-autostart-test-{}", std::process::id()));
-        let entry = root.join(crate::desktop_integration::DESKTOP_FILE);
+        let entry = root.join(crate::desktop_env::desktop_integration::DESKTOP_FILE);
         assert!(!entry.exists());
         set_enabled(&root, Path::new("/tmp/LINE % preview"), true).unwrap();
         let contents = fs::read_to_string(&entry).unwrap();

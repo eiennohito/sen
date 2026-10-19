@@ -1,8 +1,6 @@
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
-export struct FeedbackRect { x: length, y: length, width: length, height: length }
-
 component Action inherits Rectangle {
     in property <length> text-size: Tokens.base;
     in property <string> label;
@@ -43,14 +41,9 @@ export component ConnectionNotice inherits Rectangle {
     background: Tokens.warning-surface;
     property <string> status: State.signed-out ? State.session-cause : State.fatal ? "Something went wrong — restart" : "Offline. Reconnecting…";
     property <length> status-width: max(0px, root.width - 64px - (sign-in.visible ? sign-in.preferred-width + 8px : 0px));
-    out property <string> compact-status: root.status;
-    full-status := Text { visible: false; text: root.status; font-size: Tokens.base; }
     accessible-role: banner; accessible-label: State.connection-failed ? "Connection needs attention" : "Connection restored";
     public function focus-first() { sign-in.focus-action(); }
     public function focus-action() { sign-in.focus-action(); }
-    public function actions-fit() -> bool {
-        return (!sign-in.visible || sign-in.absolute-position.x + sign-in.width <= root.absolute-position.x + root.width + 0.5px);
-    }
     TouchArea { scroll-event(event) => { accept } }
     FocusScope {
         focus-on-tab-navigation: false;
@@ -58,7 +51,7 @@ export component ConnectionNotice inherits Rectangle {
         HorizontalLayout {
             padding-left: 16px; padding-right: 16px; spacing: 8px; alignment: start;
             Rectangle { width: 20px; height: 36px; Image { y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/warning.svg"); colorize: Tokens.text; } }
-            Text { width: root.status-width; text: root.compact-status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
+            Text { width: root.status-width; text: root.status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
             sign-in := Action {
                 visible: State.connection-failed && State.sign-in-available; width: self.visible ? self.preferred-width : 0px;
                 label: "Sign in"; description: "Sign in again";

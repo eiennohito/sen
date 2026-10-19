@@ -10,8 +10,7 @@ use std::{
 };
 use zbus::zvariant::OwnedValue;
 
-mod dbus;
-use dbus::{close, connect, listen, notification_available, notify};
+use super::dbus::{close, connect, listen, notification_available, notify};
 #[derive(Clone, Debug)]
 pub(crate) struct Notice {
     pub chat: String,
@@ -35,17 +34,17 @@ struct Pending {
     probe: bool,
 }
 type Handler = Box<dyn Fn(Event) + Send>;
-struct Shared {
+pub(super) struct Shared {
     latest: AtomicU64,
     pending: Mutex<Pending>,
     available: AtomicBool,
     handler: Mutex<Option<Handler>>,
-    ids: Mutex<HashMap<u32, (String, String)>>,
-    closed: Mutex<HashSet<u32>>,
+    pub(super) ids: Mutex<HashMap<u32, (String, String)>>,
+    pub(super) closed: Mutex<HashSet<u32>>,
     stop: AtomicBool,
 }
 impl Shared {
-    fn event(&self, event: Event) {
+    pub(super) fn event(&self, event: Event) {
         if let Some(handler) = self.handler.lock().unwrap().as_ref() {
             handler(event);
         }
@@ -228,11 +227,11 @@ impl Worker {
             && connection
                 .emit_signal(
                     None::<&str>,
-                    crate::desktop_integration::OBJECT,
+                    crate::desktop_env::desktop_integration::OBJECT,
                     "com.canonical.Unity.LauncherEntry",
                     "Update",
                     &(
-                        crate::desktop_integration::APPLICATION_URI,
+                        crate::desktop_env::desktop_integration::APPLICATION_URI,
                         badge_properties(count),
                     ),
                 )
@@ -260,7 +259,7 @@ impl Worker {
             };
             let now = self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             let sound = notice.sound
-                && crate::attention_policy::sound_due(self.sounds.get(&chat).copied(), now);
+                && crate::notifications::policy::sound_due(self.sounds.get(&chat).copied(), now);
             let previous = self.ids.get(&chat).copied().unwrap_or(0);
             match notify(connection, &notice, previous, sound) {
                 Ok(id) => {
@@ -287,11 +286,11 @@ impl Worker {
         if let Some(connection) = self.connection {
             let _ = connection.emit_signal(
                 None::<&str>,
-                crate::desktop_integration::OBJECT,
+                crate::desktop_env::desktop_integration::OBJECT,
                 "com.canonical.Unity.LauncherEntry",
                 "Update",
                 &(
-                    crate::desktop_integration::APPLICATION_URI,
+                    crate::desktop_env::desktop_integration::APPLICATION_URI,
                     badge_properties(0),
                 ),
             );
@@ -461,7 +460,10 @@ mod service_tests {
         let badge = badges.next().unwrap().unwrap();
         let (uri, mut properties): (String, HashMap<String, OwnedValue>) =
             badge.body().deserialize().unwrap();
-        assert_eq!(uri, crate::desktop_integration::APPLICATION_URI);
+        assert_eq!(
+            uri,
+            crate::desktop_env::desktop_integration::APPLICATION_URI
+        );
         assert_eq!(
             i64::try_from(properties.remove("count").unwrap()).unwrap(),
             2

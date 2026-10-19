@@ -1,7 +1,7 @@
 # UI latency audit (L2)
 
 Measured offline in a release `ui-debug` build, using the software snapshot
-backend at 980×720. The opt-in harness is in `app/src/latency.rs`:
+backend at 980×720. The opt-in harness is in `app/src/dev/latency.rs`:
 
 ```sh
 cargo build --release --offline -p line-desktop --features ui-debug

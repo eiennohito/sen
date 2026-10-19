@@ -1,31 +1,20 @@
+import { ChatCategory } from "types.slint";
 import { ListRow, RowText } from "list-row.slint";
 import { EmptyState } from "empty-state.slint";
-import { Avatar } from "avatar.slint";
 import { Button } from "button.slint";
-import { LineEdit, TextEdit, ScrollView, ListView, ComboBox } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
-import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { IconButton } from "icon-button.slint";
-import { FeedbackRect } from "connection-notice.slint";
 import { Pane } from "scrollpane.slint";
-import { PreviewLine } from "preview-line.slint";
 import { SearchField } from "search-field.slint";
 
 export component Chats inherits Rectangle {
+    property <[{kind: ChatCategory, label: string}]> categories: [{kind: ChatCategory.all, label: "All"}, {kind: ChatCategory.friends, label: "Friends"}, {kind: ChatCategory.groups, label: "Groups"}];
     property <int> demo-reset: State.demo-reset-generation;
     changed demo-reset => { reveal-settle.stop(); root.reveal-y = 0px; chips-focus.cursor = 0; chat-list.jump(0px); }
     visible: State.section == 0;
     out property <bool> has-focus: search.contains-focus || chips-focus.has-focus || list-focus.has-focus;
-    public function scroll(delta: length) { chat-list.scroll(delta); }
-    public function jump(y: length) { chat-list.jump(y); }
-    out property <FeedbackRect> first-row-bounds: { x: chat-list.absolute-position.x, y: chat-list.absolute-position.y + chat-list.visible-top + State.list-y, width: root.visible && (!State.narrow || !State.show-conversation) && State.section == 0 && State.chats.length > 0 ? chat-list.visible-width : 0px, height: State.chat-row-height };
-    out property <FeedbackRect> visible-first-row-bounds: {
-        x: root.first-row-bounds.x,
-        y: max(root.first-row-bounds.y, chat-list.absolute-position.y + chat-list.visible-top),
-        width: root.first-row-bounds.width,
-        height: max(0px, min(root.first-row-bounds.y + root.first-row-bounds.height, chat-list.absolute-position.y + chat-list.height) - max(root.first-row-bounds.y, chat-list.absolute-position.y + chat-list.visible-top))
-    };
     out property <length> viewport-height: chat-list.visible-height;
     changed viewport-height => { State.chat-list-height = root.viewport-height; }
     property <length> reveal-y;
@@ -87,27 +76,27 @@ export component Chats inherits Rectangle {
                     }
                 }
                 chips-focus := FocusScope {
-                    property <int> cursor: State.category;
-                    accessible-role: button; accessible-label: ["All", "Friends", "Groups"][self.cursor];
+                    property <int> cursor: State.category == ChatCategory.all ? 0 : State.category == ChatCategory.friends ? 1 : 2;
+                    accessible-role: button; accessible-label: root.categories[self.cursor].label;
                     accessible-description: self.has-focus ? "Focused filter" : "";
                     key-pressed(event) => {
                         if State.ime-active { return reject; }
                         if event.text == Key.Tab { if event.modifiers.shift { search.focus-last(); } else { new-chat-button.focus-button(); } return accept; }
                         if event.text == Key.LeftArrow || event.text == Key.RightArrow { self.cursor = mod(self.cursor + (event.text == Key.RightArrow ? 1 : 2), 3); return accept; }
-                        if event.text == Key.Return || event.text == " " { State.category = self.cursor; State.filter-category(); return accept; }
+                        if event.text == Key.Return || event.text == " " { State.category = root.categories[self.cursor].kind; State.filter-category(); return accept; }
                         reject
                     }
                     HorizontalLayout {
                     spacing: 4px;
-                    for category[i] in ["All", "Friends", "Groups"]: Rectangle {
+                    for c[i] in root.categories: Rectangle {
                         height: 28px; border-radius: 14px;
-                        background: State.category == i ? Tokens.text : Tokens.surface-2;
-                        border-width: chips-focus.has-focus && chips-focus.cursor == i ? 2px : 0px; border-color: (chips-focus.has-focus && chips-focus.cursor == i) || State.category == i ? Tokens.accent : Tokens.border;
-                        accessible-role: button; accessible-label: category;
-                        accessible-item-selectable: true; accessible-item-selected: State.category == i;
-                        accessible-action-default => { chips-focus.cursor = i; chips-focus.focus(); State.category = i; State.filter-category(); }
-                        RowText { text: category; color: State.category == i ? Tokens.bg : Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
-                        TouchArea { mouse-cursor: pointer; clicked => { chips-focus.cursor = i; chips-focus.focus(); State.category = i; State.filter-category(); } }
+                        background: State.category == c.kind ? Tokens.text : Tokens.surface-2;
+                        border-width: chips-focus.has-focus && chips-focus.cursor == i ? 2px : 0px; border-color: (chips-focus.has-focus && chips-focus.cursor == i) || State.category == c.kind ? Tokens.accent : Tokens.border;
+                        accessible-role: button; accessible-label: c.label;
+                        accessible-item-selectable: true; accessible-item-selected: State.category == c.kind;
+                        accessible-action-default => { chips-focus.cursor = i; chips-focus.focus(); State.category = c.kind; State.filter-category(); }
+                        RowText { text: c.label; color: State.category == c.kind ? Tokens.bg : Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { mouse-cursor: pointer; clicked => { chips-focus.cursor = i; chips-focus.focus(); State.category = c.kind; State.filter-category(); } }
                     }
                 }
                 }
@@ -128,7 +117,6 @@ export component Chats inherits Rectangle {
                 chat-list := Pane {
                     connection-feedback: State.narrow && !State.show-conversation && State.section == 0 && !(State.detail-open && State.profile-sheet);
                     offset <=> State.list-y;
-                    content-width: self.visible-width;
                 virtual: true;
                 virtual-height: chat-view.content-height;
                 chat-view := ListView {

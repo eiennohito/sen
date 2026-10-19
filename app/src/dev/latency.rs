@@ -1,5 +1,5 @@
 //! Opt-in offline measurements: LINE_UI_LATENCY=1 with --demo --snapshot PATH.
-use crate::*;
+use super::*;
 use slint::platform::software_renderer::MinimalSoftwareWindow;
 use std::{cell::Cell, time::Instant};
 thread_local! { pub static RENDERS: Cell<usize> = const { Cell::new(0) }; }
@@ -154,10 +154,8 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
                     is_self: false,
                 })
                 .collect();
-            d.state.push_detail(
-                DetailPage::Members(d.state.selected.clone().unwrap()),
-                "header".into(),
-            );
+            d.state
+                .push_detail(DetailPage::Members(d.state.selected.clone().unwrap()));
         }
         d.render(ui);
         draw();

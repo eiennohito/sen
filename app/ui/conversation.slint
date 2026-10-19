@@ -1,15 +1,14 @@
+import { RecoveryKind } from "types.slint";
 import { EmptyState } from "empty-state.slint";
 import { DatePill } from "history-pill.slint";
 import { Avatar } from "avatar.slint";
 import { Button } from "button.slint";
-import { LineEdit, TextEdit, ScrollView, ListView, ComboBox } from "std-widgets.slint";
+import { ListView } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
-import { ChatRow, FriendRow, MessageRow, ReactionRow } from "types.slint";
 import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 import { Message } from "message.slint";
-import { FeedbackRect } from "connection-notice.slint";
 import { Composer } from "composer.slint";
 
 component HistoryPill inherits Rectangle {
@@ -48,8 +47,6 @@ export component Conversation inherits Rectangle {
     loading-timer := Timer { interval: 300ms; running: State.window-loading && !root.loading-delayed; triggered => { root.loading-delayed = true; } }
     property <int> demo-reset: State.demo-reset-generation;
     changed demo-reset => { more-menu.close(); }
-    out property <FeedbackRect> header-bounds: { x: header.absolute-position.x, y: header.absolute-position.y, width: root.visible ? header.width : 0px, height: header.height };
-    out property <FeedbackRect> composer-bounds: { x: composer-surface.absolute-position.x, y: composer-surface.absolute-position.y, width: root.visible ? composer-surface.width : 0px, height: composer-surface.height };
     property <bool> latest-visible: !State.following && State.has-chat;
     property <string> latest-label: State.history-needs-refresh ? "Latest · updates available" : State.new-count > 0 ? "Latest · " + State.new-count + " new" : "Latest";
 
@@ -125,7 +122,7 @@ export component Conversation inherits Rectangle {
                 key-pressed(event) => {
                     if State.ime-active { return reject; }
                     if State.browser-key(event) == accept { return accept; }
-                    if State.recovery-kind != "" { return reject; }
+                    if State.recovery-kind != RecoveryKind.none { return reject; }
                     if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-sign-in-opener(); } else { more-button.focus-button(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
                     if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
@@ -229,7 +226,6 @@ composer-surface := Composer { }
     public function focus-after-header() { if State.connection-actions-enabled { State.focus-connection-first(); } else { history-focus.focus(); } }
     public function focus-first() { if State.narrow { back-button.focus-button(); } else { title-focus.focus(); } }
     public function focus-last() { if State.has-chat { composer-surface.focus-last(); } else { history-focus.focus(); } }
-    public function focus-members() { members-button.focus-button(); }
     public function focus-header() { more-button.focus-button(); }
     public function restore-editor(anchor: int, caret: int) { composer-surface.restore-editor(anchor, caret); }
     public function focus-editor() { composer-surface.focus-editor(); }
@@ -247,7 +243,5 @@ composer-surface := Composer { }
     // Pills plus the 8 px gap below them remain outside read exposure.
     property <length> pill-height: root.latest-visible || State.return-visible ? history-surface.height - history-pills.y : 0px;
     changed pill-height => { State.history-pill-height = root.pill-height; }
-    init => { State.history-width = history.width; State.history-viewport-height = history.visible-height; State.history-visible-top = root.visible-top; State.history-cover-inset = root.cover-inset; State.history-pill-height = root.pill-height; State.conversation-height = root.height; State.history-extent = history.extent; }
-    changed height => { State.conversation-height = root.height; }
 
 }

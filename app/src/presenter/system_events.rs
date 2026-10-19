@@ -17,7 +17,7 @@ pub(crate) fn name(state: &AppState, mid: &str) -> String {
     } else {
         crate::text::member_name(contact.and_then(|f| f.name.as_deref()))
     };
-    crate::present::single_line(name)
+    crate::presenter::format::single_line(name)
 }
 
 fn event_text(event: &Event<'_>, sender: &str, name: impl Fn(&str) -> String) -> String {

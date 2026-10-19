@@ -2,8 +2,8 @@
 use crate::*;
 #[derive(Default)]
 pub struct Background {
-    tray: Option<tray::Tray>,
-    events: Option<std::sync::mpsc::Receiver<tray::Event>>,
+    tray: Option<desktop_env::tray::Tray>,
+    events: Option<std::sync::mpsc::Receiver<desktop_env::tray::Event>>,
     autostart_value: bool,
 }
 impl Background {
@@ -11,7 +11,7 @@ impl Background {
         let s = ui.global::<State>();
         if prefs.background && self.tray.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
-            self.tray = Some(tray::Tray::start(move |e| {
+            self.tray = Some(desktop_env::tray::Tray::start(move |e| {
                 let _ = tx.send(e);
                 crate::event_loop::wake();
             }));
@@ -25,10 +25,10 @@ impl Background {
             s.set_tray_available(false);
         }
         if prefs.autostart != self.autostart_value {
-            let result = autostart::directory().and_then(|directory| {
+            let result = desktop_env::autostart::directory().and_then(|directory| {
                 let executable = std::env::current_exe()
                     .map_err(|_| "Could not find the executable for autostart.".to_owned())?;
-                autostart::set_enabled(&directory, &executable, prefs.autostart)
+                desktop_env::autostart::set_enabled(&directory, &executable, prefs.autostart)
             });
             s.set_autostart_status(result.err().unwrap_or_default().into());
             self.autostart_value = prefs.autostart;
@@ -39,17 +39,17 @@ impl Background {
         if let Some(events) = &self.events {
             for event in events.try_iter() {
                 match event {
-                    tray::Event::Available(v) => s.set_tray_available(v),
-                    tray::Event::Open => {
+                    desktop_env::tray::Event::Available(v) => s.set_tray_available(v),
+                    desktop_env::tray::Event::Open => {
                         let _ = ui.show();
                     }
-                    tray::Event::Mute => {
+                    desktop_env::tray::Event::Mute => {
                         s.set_notifications_paused(!s.get_notifications_paused());
                         if let Some(tray) = &self.tray {
                             tray.set_muted(s.get_notifications_paused());
                         }
                     }
-                    tray::Event::Quit => {
+                    desktop_env::tray::Event::Quit => {
                         let _ = slint::quit_event_loop();
                     }
                 }

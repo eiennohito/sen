@@ -5,8 +5,7 @@ export component IconButton inherits Rectangle {
     in property <string> label;
     in property <string> focus-description;
     in property <bool> enabled: true;
-    in property <bool> selected;
-    in property <color> icon-color: root.selected ? Tokens.accent : Tokens.text;
+    in property <color> icon-color: Tokens.text;
     callback activated();
     callback key-pressed(KeyEvent) -> EventResult;
     key-pressed(event) => { reject }
