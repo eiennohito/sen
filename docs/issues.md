@@ -19,7 +19,11 @@ merge. "Branch" means the work exists but is not merged yet.
 | 23 | Live account verification | constraint | needs the device slot (user's call) |
 | 24 | Demo scenes and fixtures are compiled into the product binary | found | deslop pass: move to a dev package behind a feature |
 | 25 | Opening a chat from a notification or D-Bus activation skips saving the current draft (6 copies of "open chat") | audit | deslop pass, desktop glue batch |
-| 26 | Deslop batches from the audit: store schema/unread model, transport rewrite on stock ureq, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1: crypto/CLI merged; store in review fixes; transport waiting on the HTTP stack choice (ureq → lighter async stack being measured) |
+| 26 | Deslop batches from the audit: store schema/unread model, transport rewrite, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1: crypto/CLI and store merged; transport being rewritten on hyper + smol-family runtime (chosen over reqwest+tokio and isahc: 2.4 MB vs 5.7/6.3 MB, 52 vs 92/113 crates) |
+| 27 | Server id ordering exists in four forms: `server_sort` padding, the same padding in SQL, `(len, str)` comparisons in reading.rs, and a derived `Ord` on `ServerId` that compares strings (wrong numerically) | store review | wave 2 client core: numeric `Ord` on `ServerId`, one sort key |
+| 28 | `ChatInput` carries both the raw server count and the computed `unread_count`; the demo set the wrong one and only a UI check caught it | store review | wave 2 content model: computed count lives on the list row, not the input |
+| 29 | Three private `/dev/urandom` readers (runtime, credentials, engine reqSeq) | store review | wave 2 client core: one helper |
+| 30 | UI check launch race: a group occasionally connects before the app listens (`Connection refused` at 0.2 s) | found | wave 3 check-ui restructure |
 
 ## Done (merged to main)
 
@@ -44,4 +48,5 @@ merge. "Branch" means the work exists but is not merged yet.
 - #13 Resend across sign-out/sign-in: nothing resends across sessions or restarts; failed sends are "Not sent" with Retry; our echo turns any row into Sent.
 - #14 Transient drops invisible, "No connection" only after 15 s without a network success, "Signed out: <reason>" as one state; the stream restarts after drops; undecryptable messages no longer break loading.
 - Deslop wave 1, crypto/CLI: `native_crypto` and the `line-auth` CLI deleted (−2.2k lines); an unreadable credentials file or failed keyring unlock is an error, never a fresh key over the sealed session.
+- Deslop wave 1, store: one schema with a version check (a change discards the local store), validated `ServerId`, one unread function (reading to the newest message clears the count at once), reqSeq random per process like the extension.
 - #18 UI check `focus` 46 s → 11 s (95 → 14 s wide); all 16 groups ~80 s.
