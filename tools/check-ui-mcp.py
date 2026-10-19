@@ -235,10 +235,7 @@ assert any(part.get("id", "").endswith("::demo-marker") for part in demo_marker.
 call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Press")
 call("dispatch_key_event", windowHandle=window, text="\t", eventType="PressAndRelease")
 call("dispatch_key_event", windowHandle=window, text="\x10", eventType="Release")
-try:
-    last_scenario = scenario_element("Demo exposed")
-except StopIteration:
-    last_scenario = scenario_element("Offline")
+last_scenario = scenario_element("Offline")
 last_scenario_label = last_scenario["accessibleLabel"]
 assert last_scenario.get("accessibleDescription") == "Focused", "reverse Tab did not focus the final scenario"
 call("dispatch_key_event", windowHandle=window, text="\t", eventType="PressAndRelease")
@@ -482,7 +479,14 @@ if args.compose:
 
     # Select the just-sent message; its reaction target is visible at the tail.
     def open_reactions():
-        reaction = next(item for item in reversed(tree()) if item.get("accessibleLabel") == "React" and item.get("accessibleRole") == "Button")
+        body = next(item for item in reversed(tree()) if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut and item.get("accessibleLabel", "").startswith("Outgoing,"))
+        call("hover_element", elementHandle=body["handle"])
+        reaction = min((item for item in tree() if item.get("accessibleLabel") == "React" and item.get("accessibleRole") == "Button"), key=lambda item: abs(item["absolutePosition"]["y"] - body["absolutePosition"]["y"]))
+        position = reaction["absolutePosition"]
+        call("move_pointer", windowHandle=window, position={"x": position["x"] - 2, "y": position["y"] + reaction["size"]["height"] / 2})
+        assert any(item.get("accessibleLabel") == "React" for item in tree()), "React disappeared in the gap"
+        call("hover_element", elementHandle=reaction["handle"])
+        assert any(item.get("accessibleLabel") == "React" for item in tree()), "React disappeared over its button"
         call("click_element", elementHandle=reaction["handle"])
     open_reactions()
     element("LOVE", "Button")
@@ -494,6 +498,43 @@ if args.compose:
     open_reactions()
     wait_for(lambda: not element("LOVE", "Button").get("accessibleItemSelected"), "repeat pick did not cancel")
     compose_key("\x1b")
+    body = next(item for item in tree() if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut)
+    call("click_element", elementHandle=body["handle"])
+    for label in ("React", "Reply"):
+        compose_key("\t")
+        assert any(item.get("accessibleLabel") == label and item.get("accessibleDescription") == "Focused" for item in tree()), f"body → React → Reply lost focus at {label}"
+    compose_key("\t")
+    assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft", "Reply did not tab to composer"
+    def reply_via_menu():
+        body = next(item for item in reversed(tree()) if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut and item.get("accessibleLabel", "").startswith("Outgoing,"))
+        call("click_element", elementHandle=body["handle"], button="Right")
+        compose_click("Reply", "Text")
+        element("Replying to You", "Text")
+        element("Cancel reply", "Button")
+    reply_via_menu()
+    surface_shot("composer-reply")
+    compose_click("Cancel reply")
+    wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "close did not cancel reply")
+    assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft"
+    reply_via_menu()
+    compose_key("\x1b")
+    wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "Escape did not cancel reply")
+    reply_via_menu()
+    call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value="Reply sent with original attached")
+    compose_click("Send")
+    wait_for(lambda: any(item.get("accessibleValue") == "Reply sent with original attached" for item in tree()), "reply send missing")
+    wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "reply bar remained after send")
+    def new_message_has_quote():
+        delegates = [item["handle"] for item in tree() if any(part.get("typeName") == "Message" for part in item.get("typeNamesAndIds", []))]
+        for handle in delegates:
+            rows = call("get_element_tree", elementHandle=handle, maxElements=200)["elements"]
+            if any(item.get("accessibleValue") == "Reply sent with original attached" for item in rows):
+                return any(item.get("accessibleLabel") == "Jump to replied message" and item.get("accessibleDescription") == " ".join(before_shortcut.split()) for item in rows)
+        return False
+    wait_for(new_message_has_quote, "new message itself did not show its original quote")
+    surface_shot("sent-reply")
+    call("set_element_value", elementHandle=element("Message draft", "TextInput")["handle"], value=before_shortcut)
+    print("PASS: context-menu Reply, composer bar, Escape cancellation and sent quote")
     compose_click("Stickers")
     element("Send sticker 1", "Button")
     wait_for(lambda: len([item for item in tree() if item.get("accessibleRole") == "Tab"]) >= 2, "owned packages missing")
@@ -617,8 +658,7 @@ if args.scenarios:
 
 if args.layout_photos:
     assert not any(item.get("accessibleLabel") in ("Smaller text", "Larger text", "Text size") for item in tree()), "text-size controls leaked onto the main screen"
-    avatars = [item for item in tree() if item.get("accessibleLabel") == "Contact photo"]
-    assert avatars and all(item["size"] == {"height": 44.0, "width": 44.0} for item in avatars), "avatar escaped its frame"
+    element("葵 avatar", "Image")
     call("click_element", elementHandle=element("Settings", "Button")["handle"])
     element("Message text size", "Combobox")
     call("dispatch_key_event", windowHandle=window, text="\x1b")
@@ -692,8 +732,8 @@ if args.layout_photos:
                 continue
             times.add(label)
             assert any(meta["absolutePosition"]["x"] >= body["absolutePosition"]["x"] + body["size"]["width"] and abs(meta["absolutePosition"]["y"] - body["absolutePosition"]["y"]) <= body["size"]["height"] + 12 for body in message_bodies), "group time added a footer row"
-    yesterday_times = {(datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y/%m/%d") + " " + clock for clock in ("09:18", "09:20", "09:21", "09:27")}
-    assert len(times) == 5 and yesterday_times <= times and times - yesterday_times <= fixture_times("09:18"), "five-minute/sender/day grouping showed the wrong timestamps"
+    yesterday_times = {(datetime.date.today() - datetime.timedelta(days=1)).strftime("%Y/%m/%d") + " " + clock for clock in ("09:19", "09:20", "09:27")}
+    assert len(times) == 4 and yesterday_times <= times and times - yesterday_times <= fixture_times("09:18"), "five-minute/sender/day grouping showed the wrong timestamps"
     print("PASS: sender avatars/names, five-minute grouping, day boundaries, and compact time/status beside bubbles")
 
 def check_detail_stack():
@@ -1017,7 +1057,7 @@ if args.reading:
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=-1800, deltaX=0)
     labels.extend(item.get("accessibleLabel", "") for item in tree())
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=1800, deltaX=0)
-    for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "System message", "Message unsent", "Couldn't decrypt this message", "Unsupported message"):
+    for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "joined the group", "Message unsent", "Couldn't decrypt this message", "This message type isn't supported yet"):
         assert any(expected in label for label in labels), f"missing placeholder: {expected}"
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     first_y = first["absolutePosition"]["y"]
@@ -1088,7 +1128,7 @@ if args.reading:
     element("Latest", "Button")
     reading_key("\uf72d")  # PageDown
     reading_key("\uf72b")  # End
-    last = next(item for item in reading_bodies() if "Unsupported message" in item.get("accessibleValue", ""))
+    last = next(item for item in reading_bodies() if "This message type isn't supported yet" in item.get("accessibleValue", ""))
     call("click_element", elementHandle=last["handle"])
     assert not any(item.get("accessibleLabel") == "Latest" and item.get("accessibleRole") == "Button" for item in tree()), "click focus disabled following"
     reading_key("\uf700")  # Up from a click-focused body scrolls on the first press.

@@ -285,10 +285,10 @@ mod tests {
         use std::io::{BufRead, BufReader, Read};
         let (http, server) = local_server(|listener| {
             for response in [
-                json!({"code":0,"data":{"authSessionId":"synthetic"}}),
-                json!({"code":0,"data":{"callbackUrl":"line://au/q/test","longPollingMaxCount":2}}),
+                json!({"code":0,"message":"OK","data":{"authSessionId":"synthetic"}}),
+                json!({"code":0,"message":"OK","data":{"callbackUrl":"line://au/q/test","longPollingMaxCount":2}}),
                 json!({"code":10052,"data":{"statusCode":410}}),
-                json!({"code":0,"data":{}}),
+                json!({"code":0,"message":"OK","data":{}}),
             ] {
                 let mut socket = BufReader::new(accept(&listener));
                 let mut line = String::new();

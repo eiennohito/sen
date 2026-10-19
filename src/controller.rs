@@ -55,6 +55,7 @@ pub struct AppState {
     pub reaches_start: bool,
     pub reaches_end: bool,
     pub composer: String,
+    pub composer_reply: Option<crate::store::ReplyReference>,
     pub submitting: Option<(ChatId, String)>,
     pub prefs: Prefs,
     pub error: Option<StorageFailure>,
@@ -93,6 +94,7 @@ impl Default for AppState {
             reaches_start: false,
             reaches_end: false,
             composer: String::new(),
+            composer_reply: None,
             submitting: None,
             prefs: Prefs::default(),
             error: None,
@@ -147,12 +149,17 @@ impl AppState {
         let chat = self.selected.clone()?;
         let text = self.composer.clone();
         self.submitting = Some((chat.clone(), text.clone()));
-        Some(Intent::Send { chat, text })
+        Some(Intent::Send {
+            chat,
+            text,
+            reply: self.composer_reply.clone(),
+        })
     }
 
     pub fn select(&mut self, chat: ChatId) -> Intent {
         if self.selected.as_ref() != Some(&chat) {
             self.composer.clear();
+            self.composer_reply = None;
         }
         if self.selected.as_ref() != Some(&chat) {
             self.detail.clear();
@@ -239,6 +246,9 @@ impl AppState {
             Delta::Submitted { chat, text } => {
                 if self.selected.as_ref() == Some(&chat) && self.composer == text {
                     self.composer.clear();
+                }
+                if self.selected.as_ref() == Some(&chat) {
+                    self.composer_reply = None;
                 }
                 self.submitting = None;
             }
@@ -339,6 +349,7 @@ impl AppState {
                 self.reaches_end = reaches_end;
             }
             Delta::Draft { chat, draft } if self.selected.as_ref() == Some(&chat) => {
+                self.composer_reply = draft.as_ref().and_then(|d| d.reply.clone());
                 self.composer = draft.map(|d| d.text).unwrap_or_default()
             }
             Delta::Copy { chat, text } if self.selected.as_ref() == Some(&chat) => {

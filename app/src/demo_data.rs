@@ -96,20 +96,7 @@ pub(super) fn avatar(index: usize) -> slint::Image {
             ]);
         }
     }
-    let pixels = std::thread::spawn(move || {
-        crate::assets::circular_avatar(&line::client::desktop::assets::Pixels {
-            width: 80,
-            height: 120,
-            rgba,
-        })
-    })
-    .join()
-    .unwrap();
-    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-        &pixels.rgba,
-        pixels.width,
-        pixels.height,
-    ))
+    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(&rgba, 80, 120))
 }
 
 pub fn image_asset(fake: &FakeBackend, name: &str, image: slint::Image) -> Asset {
@@ -225,7 +212,7 @@ pub(super) fn rich(row: &mut MessageInput, rich: RichContent) {
     };
 }
 pub fn group(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
-    [
+    let mut rows: Vec<_> = [
         ("Morning!", "2026/10/17 09:18", "aoi", "葵", false),
         ("Shall we walk?", "2026/10/17 09:19", "aoi", "葵", false),
         ("Yes!", "2026/10/17 09:20", "ren", "蓮", false),
@@ -259,7 +246,31 @@ pub fn group(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
         }
         row
     })
-    .collect()
+    .collect();
+    for (i, (kind, params)) in [
+        ("C_PN", "aoi\u{1e}Weekend plans"),
+        ("C_MJ", "ren"),
+        ("C_PI", "aoi"),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let mut row = message(
+            fake,
+            chat,
+            base + 7 + i as i64,
+            "",
+            "2026/10/18 09:19",
+            false,
+        );
+        row.body = Content::System {
+            kind: Some(kind.into()),
+            params: Some(params.into()),
+            text: None,
+        };
+        rows.push(row);
+    }
+    rows
 }
 pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
     let target = message(
@@ -342,7 +353,8 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
                     _ => None,
                 },
                 contact_name: (content_type == 13).then(|| "葵".into()),
-                system_text: (content_type == 18).then(|| body.into()),
+                system_key: (content_type == 18).then(|| "C_MJ".into()),
+                system_args: (content_type == 18).then(|| "alice".into()),
                 withdrawn: content_type == 1000,
                 ..Default::default()
             },
@@ -463,6 +475,36 @@ pub fn seed(fake: &FakeBackend) {
     }
 }
 
+pub fn hidden_events(fake: &FakeBackend) {
+    let hidden = (0..2)
+        .map(|i| {
+            let mut row = message(
+                fake,
+                "official-hidden",
+                950 + i,
+                "",
+                "2026/10/18 09:20",
+                false,
+            );
+            row.body = Content::System {
+                kind: Some("OA_UNKNOWN".into()),
+                params: None,
+                text: None,
+            };
+            row
+        })
+        .collect::<Vec<_>>();
+    fake.add_chat(ChatInput {
+        id: ChatId("official-hidden".into()),
+        title: "Official hidden events".into(),
+        unread_count: 2,
+        last_message_id: hidden.last().map(|m| m.server_id.clone()),
+        last_message_ms: hidden.last().map(|m| m.created_ms),
+        ..Default::default()
+    });
+    fake.set_page(ChatId("official-hidden".into()), hidden);
+}
+
 pub fn reading(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
     [0, 1, 7, 2, 3, 14, 15, 13, 18, 18, 0, 999]
         .into_iter()
@@ -484,6 +526,8 @@ pub fn reading(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
                 &mut row,
                 RichContent {
                     content_type,
+                    system_key: (i == 8).then(|| "C_MJ".into()),
+                    system_args: (i == 8).then(|| "alice".into()),
                     withdrawn: i == 9,
                     ..Default::default()
                 },
@@ -700,4 +744,84 @@ pub fn sticker(fake: &FakeBackend, chat: &str) -> MessageInput {
     fake.delay_asset(&asset, std::time::Duration::from_secs(1));
     *row.body.image_mut() = Some(asset);
     row
+}
+
+/// Review fixtures exercise independent shapes and quotes using the normal store.
+pub fn run_review(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
+    fake.set_contact(Friend {
+        id: "aoi".into(),
+        name: "葵".into(),
+        avatar: Some(image_asset(fake, "run-avatar", avatar(0))),
+        ..Default::default()
+    });
+    [
+        "Hi",
+        "A much wider message about the riverside walk",
+        "OK",
+        "Bring a jacket and meet us by the station",
+    ]
+    .into_iter()
+    .cycle()
+    .take(8)
+    .enumerate()
+    .map(|(i, text)| {
+        let mut row = message(fake, chat, 8000 + i as i64, text, "12:00", i >= 4);
+        row.sender_id = if i >= 4 { "self" } else { "aoi" }.into();
+        row.created_ms += i as i64 * 1000;
+        row
+    })
+    .collect()
+}
+pub fn quote_review(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
+    let mut originals = vec![
+        message(
+            fake,
+            chat,
+            8100,
+            "A very long original text with Japanese 日本語 and enough words to elide the quote without widening the reply",
+            "11:00",
+            true,
+        ),
+        message(fake, chat, 8101, "", "11:01", false),
+        message(fake, chat, 8102, "", "11:02", false),
+        message(fake, chat, 8103, "", "11:03", false),
+    ];
+    originals[1].body = Content::Photo {
+        size: None,
+        asset: Some(image_asset(fake, "quote-photo", photo(false))),
+        album_count: None,
+        caption: None,
+    };
+    originals[2].body = Content::Sticker {
+        pkg: "demo".into(),
+        id: "1".into(),
+        ver: Some("1".into()),
+        asset: Some(image_asset(fake, "quote-sticker", avatar(1))),
+        text: Some("A sticker".into()),
+    };
+    originals[3].body = Content::Withdrawn;
+    let mut rows = originals;
+    for (i, target) in [8100, 8101, 8102, 9999, 8103].into_iter().enumerate() {
+        let mut row = message(
+            fake,
+            chat,
+            8110 + i as i64,
+            [
+                "Reply to a long text",
+                "Reply to a photo",
+                "Reply to a sticker",
+                "Reply to missing original",
+                "Reply to unsent message",
+            ][i],
+            "12:00",
+            i % 2 == 0,
+        );
+        row.created_ms += i as i64 * 1000;
+        row.reply = Some(Box::new(ReplyReference {
+            message_id: target.to_string(),
+            service_code: Some(1),
+        }));
+        rows.push(row);
+    }
+    rows
 }

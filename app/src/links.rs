@@ -166,10 +166,10 @@ pub(crate) fn placeholder(kind: MessageKind) -> Option<&'static str> {
         MessageKind::File => Some("File"),
         MessageKind::Location => Some("Location"),
         MessageKind::Contact => Some("Contact"),
-        MessageKind::System => Some("System message"),
+        MessageKind::System => None,
         MessageKind::Withdrawn => Some("Message unsent"),
         MessageKind::Undecryptable => Some("Couldn't decrypt this message"),
-        MessageKind::Unknown => Some("Unsupported message"),
+        MessageKind::Unknown => Some("This message type isn't supported yet"),
     }
 }
 
@@ -272,14 +272,14 @@ mod tests {
         decorate_message(&mut row, "葵");
         assert_eq!(row.accessible_label, "Incoming from 葵, 12:30: Hello");
         row.outgoing = true;
-        row.delivery = "Unconfirmed".into();
+        row.delivery = "Not sent".into();
         decorate_message(&mut row, "葵");
-        assert_eq!(row.accessible_label, "Outgoing, 12:30, Unconfirmed: Hello");
+        assert_eq!(row.accessible_label, "Outgoing, 12:30, Not sent: Hello");
     }
 
     #[test]
     fn placeholder_kinds_are_distinct() {
-        let kinds = [1, 2, 3, 7, 13, 14, 15, 18, 99];
+        let kinds = [1, 2, 3, 7, 13, 14, 15, 99];
         let labels = kinds.map(|value| placeholder(kind(value, false, false)).unwrap());
         assert_eq!(
             labels

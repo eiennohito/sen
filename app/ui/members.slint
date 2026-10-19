@@ -1,3 +1,4 @@
+import { ListRow, RowText } from "list-row.slint";
 import { IconButton } from "icon-button.slint";
 import { Avatar } from "avatar.slint";
 import { State } from "state.slint";
@@ -57,20 +58,14 @@ export component Members inherits FocusScope {
                     spacing: 0px;
                     for member[i] in State.members: VerticalLayout {
                       if member.invited && (i == 0 || !State.members[i - 1].invited): Text { text: "Invited (" + State.invitee-count + ")"; color: Tokens.secondary; }
-                      Rectangle {
+                      ListRow {
                         width: pane.visible-width; height: root.row-height;
                         background: touch.has-hover ? Tokens.surface : transparent;
                         border-width: list.has-focus && root.selected == i ? 2px : 0px; border-color: Tokens.accent; border-radius: 6px;
                         if !member.invited: Rectangle { width: 100%; height: 100%; accessible-role: button; accessible-label: "Open member: " + member.name + (member.is-self ? ", You" : ""); accessible-action-default => { root.selected=i;list.focus();State.open-member(member.id); } }
-                        Avatar { x: 8px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; identity: member.id; initial: member.initial; picture: member.avatar; }
-                        VerticalLayout {
-                            x: 60px; width: max(0px, parent.width - 108px); height: parent.height; alignment: center; spacing: 4px;
-                            HorizontalLayout { spacing: 8px;
-                                Text { text: member.name; overflow: elide; font-weight: 600; horizontal-stretch: 1; }
-                                if member.is-self || member.friend: Text { horizontal-stretch: 0; text: member.is-self ? "You" : "Friend"; font-size: Tokens.small; color: Tokens.secondary; }
-                            }
-                            if member.status != "": Text { text: member.status; overflow: elide; color: Tokens.secondary; font-size: Tokens.small; }
-                        }
+                        identity: member.id; initial: member.initial; avatar: member.avatar; title: member.name; subtitle: member.status;
+                        title-note: member.is-self ? "You" : member.friend ? "Friend" : "";
+                        avatar-size: 40px; trailing-width: 40px;
                         touch := TouchArea { enabled: !member.invited; mouse-cursor: pointer; clicked => { root.selected = i; list.focus(); if !member.invited { State.open-member(member.id); } } }
                         IconButton { x: parent.width - 40px; y: (parent.height - 32px) / 2; visible: member.friend && !member.invited && !member.is-self && (touch.has-hover || (list.has-focus && root.selected == i)); enabled: self.visible; label: "Chat with " + member.name; icon: @image-url("../assets/icons/chats.svg"); activated => { State.detail-action("member-chat", member.id); } }
 

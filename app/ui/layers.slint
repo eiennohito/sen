@@ -1,3 +1,4 @@
+import { RowText } from "list-row.slint";
 import { ComboBox, CheckBox } from "preferences.slint";
 import { Button } from "button.slint";
 import { PanelState } from "types.slint";
@@ -33,7 +34,7 @@ component SettingsSections inherits FocusScope {
         accessible-role: tab; accessible-label: section;
         accessible-item-selectable: true; accessible-item-selected: root.current == i;
         accessible-action-default => { root.current = i; root.focus(); }
-        Text { x: 8px; width: parent.width - 16px; height: parent.height; text: section; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
+        RowText { x: 8px; width: parent.width - 16px; height: parent.height; text: section; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
         touch := TouchArea { mouse-cursor: pointer; clicked => { root.current = i; root.focus(); } }
     }
 }

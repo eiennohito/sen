@@ -10,6 +10,7 @@ pub mod locations;
 pub mod native_crypto;
 pub mod runtime;
 pub mod store;
+pub mod system_events;
 #[cfg(any(test, feature = "harness"))]
 pub mod test_support;
 use anyhow::Result;

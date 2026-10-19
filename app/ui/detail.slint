@@ -1,3 +1,4 @@
+import { RowText } from "list-row.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { IconButton } from "icon-button.slint";
@@ -29,7 +30,7 @@ component DetailRow inherits Rectangle {
     opacity: root.enabled ? 1 : 0.4;
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled; accessible-checked: root.checked; accessible-value: root.toggle ? (root.checked ? "On" : "Off") : ""; accessible-description: root.has-focus ? "Focused" : "";
     accessible-action-default => { if root.enabled { root.activated(); } }
-    Text { x: 12px; width: parent.width - 72px; height: parent.height; text: root.label; color: root.danger ? Tokens.danger : Tokens.text; vertical-alignment: center; }
+    RowText { x: 12px; width: parent.width - 72px; height: parent.height; text: root.label; color: root.danger ? Tokens.danger : Tokens.text; vertical-alignment: center; }
     if !root.toggle && !root.danger: Image { x: parent.width - 28px; y: 16px; width: 20px; height: 20px; source: @image-url("../assets/icons/next.svg"); colorize: Tokens.secondary; }
     if root.toggle: Rectangle { x: parent.width - 52px; y: 14px; width: 40px; height: 24px; border-radius: 12px; background: root.checked ? Tokens.accent : Tokens.surface-2;
         Rectangle { x: root.checked ? 18px : 2px; y: 2px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.bg; }

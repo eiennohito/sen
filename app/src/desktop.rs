@@ -20,6 +20,9 @@ impl Desktop {
         let global = ui.global::<State>();
         reading::Geometry {
             y: ui.get_history_y(),
+            at_bottom: global.get_following()
+                && global.get_history_extent() + ui.get_history_y()
+                    <= global.get_text_size() as f32,
             visible_top: global.get_history_visible_top(),
             height: global.get_history_viewport_height(),
             pill_height: global.get_history_pill_height(),
@@ -61,6 +64,8 @@ impl Desktop {
         );
     }
     pub(crate) fn render(&mut self, ui: &AppWindow) {
+        ui.global::<State>()
+            .set_device_scale(ui.window().scale_factor());
         #[cfg(feature = "ui-debug")]
         latency::RENDERS.set(latency::RENDERS.get() + 1);
         // Text typed or set without an edit event stays; only engine changes replace it.
@@ -95,6 +100,15 @@ impl Desktop {
 
         self.presenter
             .present(ui, &self.state, &self.query, self.category);
+        self.presenter
+            .request_status_assets(&mut self.assets, &self.sender);
+        if let Some(id) = &self.history.jump_target
+            && let Some(target) = self.state.reply_targets.get(id)
+        {
+            let key = target.key;
+            self.history.jump_target = None;
+            self.jump_to_message(ui, key);
+        }
         // A chat opened from a profile is revealed once its row exists.
         if let Some(index) = self
             .reveal
@@ -111,6 +125,38 @@ impl Desktop {
             }
         }
     }
+    pub(crate) fn jump_to_message(&mut self, ui: &AppWindow, key: Key) {
+        let origin = reading::return_anchor(
+            &self.history,
+            self.state.rows(),
+            Self::reading_geometry(ui),
+            ui.get_following(),
+        );
+        self.history.return_anchor = origin;
+        self.history.opening_history = false;
+        self.history.restore_anchor = Some((key, ui.global::<State>().get_history_visible_top()));
+        let known = self.history.geometry.contains_key(&key);
+        self.history.restore_ready = known;
+        if !known {
+            self.history.geometry.clear();
+        }
+        ui.set_following(false);
+        ui.global::<State>().set_return_visible(origin.is_some());
+        ui.global::<State>()
+            .set_highlight_message(key.0.to_string().into());
+        let weak = ui.as_weak();
+        self.history.highlight_timer.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_secs(2),
+            move || {
+                if let Some(ui) = weak.upgrade() {
+                    ui.global::<State>().set_highlight_message("".into());
+                }
+            },
+        );
+        let intent = self.state.subscribe_window(Anchor::Key(key), 80, 80);
+        self.sender.send(intent);
+    }
     pub(crate) fn select(&mut self, ui: &AppWindow, index: usize) {
         if let Some(id) = self.state.chat_order.get(index).cloned() {
             if let Some(n) = &self.notifications {
@@ -121,6 +167,8 @@ impl Desktop {
             self.history.opening_history = true;
             self.history.divider_top = None;
             self.history.return_anchor = None;
+            self.history.jump_target = None;
+            self.history.highlight_timer.stop();
             ui.global::<State>().set_return_visible(false);
             ui.global::<State>().set_highlight_message("".into());
             self.history.restore_anchor = None;
@@ -178,6 +226,7 @@ impl Desktop {
             self.sender.send(Intent::Draft {
                 chat: chat.clone(),
                 draft: Draft {
+                    reply: self.state.composer_reply.clone(),
                     text: self.state.composer.clone(),
                     cursor: ui.get_editor_caret() as usize,
                     anchor: ui.get_editor_anchor() as usize,

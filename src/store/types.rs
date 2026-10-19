@@ -155,6 +155,8 @@ pub struct Profile {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ContactProfile {
+    #[serde(rename = "statusMessageContentMetadata")]
+    pub status_metadata: serde_json::Value,
     #[serde(rename = "displayName")]
     pub original_name: Option<String>,
     #[serde(rename = "displayNameOverridden")]
@@ -342,6 +344,7 @@ pub struct Changes {
 /// Page cursors certify continuity between the fetched range and its anchor.
 #[derive(Clone, Debug)]
 pub enum PageKind {
+    Around { id: ServerId },
     Recent,
     Older { before: Cursor },
     Newer { after: Cursor },
@@ -389,6 +392,7 @@ pub struct Account {
 /// Durable composer content and selection position.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Draft {
+    pub reply: Option<ReplyReference>,
     pub text: String,
     pub cursor: usize,
     pub anchor: usize,

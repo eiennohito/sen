@@ -21,65 +21,43 @@ pub(crate) fn small(image: &slint::Image, size: i32) -> slint::Image {
     ))
 }
 
-pub(crate) fn set(row: &mut ChatRow, message: &MessageRow, size: i32) {
-    row.preview = match message.kind {
-        MessageKind::Sticker => "Sticker".into(),
-        MessageKind::Photo => "Photo".into(),
-        MessageKind::Video => "Video".into(),
-        MessageKind::Voice => "Voice".into(),
-        MessageKind::File => "File".into(),
-        MessageKind::Location => "Location".into(),
-        MessageKind::Contact => "Contact".into(),
-        _ => single_line(&message.body).into(),
-    };
-    row.outgoing_preview = message.outgoing;
-    let mut runs = Vec::new();
+pub(crate) fn preview_runs(
+    text: &str,
+    metadata: &[account::EmojiView],
+    images: &HashMap<String, slint::Image>,
+    size: i32,
+) -> ModelRc<RichRun> {
+    let source = rich_content::runs(text, metadata);
+    if !source.iter().any(|r| r.emoji) {
+        return ModelRc::default();
+    }
+    let mut runs: Vec<RichRun> = Vec::new();
     let mut pictures = HashMap::new();
-    if !message.image_key.is_empty()
-        && matches!(
-            message.kind,
-            MessageKind::Photo | MessageKind::Sticker | MessageKind::Video
-        )
-    {
-        runs.push(RichRun {
-            image_key: message.image_key.clone(),
-            picture: small(&message.picture, size),
-            has_picture: message.has_picture && !message.image_failed,
-            thumbnail: true,
-            contain: message.kind == MessageKind::Sticker,
-            ..Default::default()
-        });
-        runs.push(RichRun {
-            text: row.preview.clone(),
-            thumbnail_text: row.preview.clone(),
-            ..Default::default()
-        });
-    } else if message.rich_runs.iter().any(|run| run.emoji) && !message.rich_fallback {
-        let mut space = false;
-        let mut started = false;
-        for mut run in message.rich_runs.iter() {
-            if run.emoji {
-                if space {
-                    if let Some(last) = runs.last_mut().filter(|last| !last.emoji) {
-                        last.text = format!("{} ", last.text).into();
-                    } else {
-                        runs.push(RichRun {
-                            text: " ".into(),
-                            ..Default::default()
-                        });
-                    }
+    let mut space = false;
+    let mut started = false;
+    for mut run in source.iter() {
+        if run.emoji {
+            if space {
+                if let Some(last) = runs.last_mut().filter(|r| !r.emoji) {
+                    last.text = format!("{} ", last.text).into();
+                } else {
+                    runs.push(RichRun {
+                        text: " ".into(),
+                        ..Default::default()
+                    });
                 }
-                space = false;
-                started = true;
-                if run.has_picture {
-                    run.picture = pictures
-                        .entry(run.image_key.clone())
-                        .or_insert_with(|| small(&run.picture, size))
-                        .clone();
-                }
-                runs.push(run);
-                continue;
             }
+            space = false;
+            started = true;
+            if let Some(image) = images.get(run.image_key.as_str()) {
+                run.picture = pictures
+                    .entry(run.image_key.clone())
+                    .or_insert_with(|| small(image, size))
+                    .clone();
+                run.has_picture = true;
+            }
+            runs.push(run);
+        } else {
             let mut text = String::new();
             for ch in run.text.chars() {
                 if ch.is_whitespace() {
@@ -97,7 +75,7 @@ pub(crate) fn set(row: &mut ChatRow, message: &MessageRow, size: i32) {
             run.newline = false;
             run.url = "".into();
             if !run.text.is_empty() {
-                if let Some(last) = runs.last_mut().filter(|last| !last.emoji) {
+                if let Some(last) = runs.last_mut().filter(|r| !r.emoji) {
                     last.text = format!("{}{}", last.text, run.text).into();
                 } else {
                     runs.push(run);
@@ -105,19 +83,55 @@ pub(crate) fn set(row: &mut ChatRow, message: &MessageRow, size: i32) {
             }
         }
     }
-    for run in &mut runs {
-        if !run.has_picture
-            && !run.image_key.is_empty()
-            && let Some(old) = row
-                .preview_runs
-                .iter()
-                .find(|old| old.image_key == run.image_key && old.has_picture)
-        {
-            run.picture = old.picture;
-            run.has_picture = true;
-        }
-    }
-    row.preview_runs = ModelRc::new(VecModel::from(runs));
+    ModelRc::new(VecModel::from(runs))
+}
+
+pub(crate) fn set(
+    row: &mut ChatRow,
+    view: &account::MessageView,
+    images: &HashMap<String, slint::Image>,
+    size: i32,
+) {
+    let kind = links::kind(
+        view.rich.content_type,
+        view.rich.withdrawn,
+        view.decryption_failed,
+    );
+    row.preview = match kind {
+        MessageKind::Sticker => "Sticker".into(),
+        MessageKind::Photo => "Photo".into(),
+        MessageKind::Video => "Video".into(),
+        MessageKind::Voice => "Voice".into(),
+        MessageKind::File => "File".into(),
+        MessageKind::Location => "Location".into(),
+        MessageKind::Contact => "Contact".into(),
+        _ => single_line(&message_text(view)).into(),
+    };
+    row.outgoing_preview = view.outgoing;
+    row.preview_runs = if !view.image_key.is_empty()
+        && matches!(
+            kind,
+            MessageKind::Photo | MessageKind::Sticker | MessageKind::Video
+        ) {
+        let image = images.get(&view.image_key);
+        ModelRc::new(VecModel::from(vec![
+            RichRun {
+                image_key: view.image_key.clone().into(),
+                picture: image.map(|i| small(i, size)).unwrap_or_default(),
+                has_picture: image.is_some(),
+                thumbnail: true,
+                contain: kind == MessageKind::Sticker,
+                ..Default::default()
+            },
+            RichRun {
+                text: row.preview.clone(),
+                thumbnail_text: row.preview.clone(),
+                ..Default::default()
+            },
+        ]))
+    } else {
+        preview_runs(&view.body, &view.emoji, images, size)
+    };
 }
 
 pub(crate) fn layout(

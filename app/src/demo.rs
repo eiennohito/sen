@@ -95,6 +95,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             demo_data::reading(fake, "reading"),
         ),
         14 => {
+            demo_data::hidden_events(fake);
             for (target, count) in [(chat.clone(), 3), (ChatId("weekend".into()), 2)] {
                 let mut rows = fake.page(&target);
                 // New ids must sort after everything already read.
@@ -113,8 +114,14 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                         op: Op::Message((row).into()),
                     });
                 }
+                let mut snapshot = d.state.chats[&target].chat.clone();
+                snapshot.unread_count += count as u32;
+                snapshot.last_message_id = rows.last().map(|row| row.server_id.clone());
+                snapshot.last_message_ms = rows.last().map(|row| row.created_ms);
+                fake.add_chat(snapshot);
                 fake.set_page(target, rows);
             }
+            d.sender.send(Intent::MoreChats);
         }
         15 => {
             for i in 0..40 {
@@ -189,10 +196,12 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             d.sender.send(Intent::Send {
                 chat: chat.clone(),
                 text: "駅に着いたら連絡してね。See you soon! 🐈".into(),
+                reply: None,
             });
             d.sender.send(Intent::Draft {
                 chat,
                 draft: Draft {
+                    reply: None,
                     text: d.state.composer.clone(),
                     cursor: 0,
                     anchor: 0,
@@ -206,6 +215,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 d.sender.send(Intent::Send {
                     chat,
                     text: "Rejected message".into(),
+                    reply: None,
                 });
             }
         }
@@ -291,6 +301,18 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
         fake.set_page(
             ChatId("alice".into()),
             demo_data::rich_fixture(fake, "alice", 900),
+        );
+    }
+    if scene == "run-review" {
+        fake.set_page(
+            ChatId("weekend".into()),
+            demo_data::run_review(fake, "weekend"),
+        );
+    }
+    if scene == "quote-review" || scene == "reply-review" {
+        fake.set_page(
+            ChatId("alice".into()),
+            demo_data::quote_review(fake, "alice"),
         );
     }
     if scene == "groups" {
@@ -383,6 +405,7 @@ fn fixture(
     d.sender.send(Intent::Draft {
         chat: chat.clone(),
         draft: Draft {
+            reply: None,
             text: d.state.composer.clone(),
             cursor: ui.get_editor_caret() as usize,
             anchor: ui.get_editor_anchor() as usize,
@@ -419,6 +442,11 @@ pub(crate) fn stage(
             d.render(ui);
         });
     }
+    if scene == "reply-review"
+        && let Some(id) = desktop.update(|d| d.state.rows().first().map(|m| m.key.0.to_string()))
+    {
+        ui.global::<State>().invoke_reply(id.into());
+    }
     if scene == "friends" {
         ui.invoke_browse(1);
     }
@@ -427,6 +455,13 @@ pub(crate) fn stage(
         "members" | "member-profile" | "group-header" | "room-header"
     ) {
         desktop.update(|d| d.select(ui, 1));
+    }
+    if scene == "run-review" {
+        desktop.update(|d| {
+            if let Some(index) = d.state.chat_order.iter().position(|id| id.0 == "weekend") {
+                d.select(ui, index);
+            }
+        });
     }
     if scene.starts_with("members") || scene.starts_with("member-profile") {
         ui.invoke_open_members();
@@ -475,7 +510,7 @@ pub(crate) fn settle(ui: &AppWindow, desktop: &Runtime, worker: &Worker) {
     }
 }
 
-pub(crate) fn worker(fake: FakeBackend, text_size: i32, assets: assets::Assets) -> Worker {
+pub(crate) fn worker(fake: FakeBackend, text_size: i32) -> Worker {
     use std::sync::atomic::{AtomicBool, Ordering};
     let initial = AtomicBool::new(true);
     let worker = Worker::start_projected(
@@ -485,15 +520,12 @@ pub(crate) fn worker(fake: FakeBackend, text_size: i32, assets: assets::Assets) 
             offline_after: std::time::Duration::from_millis(300),
             ..Default::default()
         },
-        move |delta| {
-            let delta = match delta {
-                Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
-                    prefs.text_size = text_size;
-                    Delta::Prefs(prefs)
-                }
-                other => other,
-            };
-            assets.project(delta)
+        move |delta| match delta {
+            Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
+                prefs.text_size = text_size;
+                Delta::Prefs(prefs)
+            }
+            other => other,
         },
     );
     worker.sender.send(Intent::Prefs(Prefs {

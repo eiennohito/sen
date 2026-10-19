@@ -264,7 +264,7 @@ fn replaces_idle_connection_closed_by_server() {
         transport
             .request("/api/test", "{}", &[], Duration::from_millis(400))
             .unwrap(),
-        (200, b"{}".to_vec())
+        (200, String::new(), b"{}".to_vec())
     );
     server.join().unwrap();
     assert_eq!(sockets.lock().unwrap().len(), 2);

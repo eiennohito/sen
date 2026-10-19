@@ -36,6 +36,7 @@ mod presenter;
 mod preview;
 mod rich_content;
 mod snapshot;
+mod system_events;
 mod text;
 mod tray;
 mod viewer;

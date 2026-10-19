@@ -83,7 +83,7 @@ impl Store {
     }
     fn initialize(mut conn: Connection) -> Result<Self> {
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 6 {
+        if version > 7 {
             return Err(StoreError::NewerSchema(version));
         }
         conn.execute_batch(
@@ -118,14 +118,17 @@ impl Store {
             tx.pragma_update(None, "user_version", 5)?;
             tx.commit()?;
         }
+        if version < 6 {
+            conn.execute_batch("BEGIN; ALTER TABLE draft ADD COLUMN reply_json TEXT NOT NULL DEFAULT 'null'; ALTER TABLE contact ADD COLUMN status_metadata TEXT NOT NULL DEFAULT '{}'; PRAGMA user_version=6; COMMIT;")?;
+        }
         conn.execute_batch("CREATE TABLE IF NOT EXISTS sticker_packages (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);")?;
         conn.execute_batch("CREATE INDEX IF NOT EXISTS message_pending_chat ON message(chat_id,delivery) WHERE server_id IS NULL;
             CREATE INDEX IF NOT EXISTS message_server_order ON message(chat_id,sort_id) WHERE server_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS message_incoming_order ON message(chat_id,sort_id) WHERE outgoing=0 AND server_id IS NOT NULL;")?;
-        if version < 6 {
+        if version < 7 {
             let tx = conn.transaction()?;
             tx.execute(r#"UPDATE message SET delivery='{"Rejected":{"reason":"Unanswered"}}' WHERE delivery='"Uncertain"'"#, [])?;
-            tx.pragma_update(None, "user_version", 6)?;
+            tx.pragma_update(None, "user_version", 7)?;
             tx.commit()?;
         }
         Ok(Self {

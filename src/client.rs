@@ -279,7 +279,7 @@ impl Api {
         if poll_seconds > 0 {
             headers.push(("X-LST", millis.as_str()));
         }
-        let (http, bytes) = self.http.request(
+        let (http, content_type, bytes) = self.http.request(
             path,
             &body,
             &headers,
@@ -289,7 +289,7 @@ impl Api {
                 30
             }),
         )?;
-        error::decode_response(path, http, &bytes)
+        error::decode_response(path, http, &content_type, &bytes)
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {
         let service = if poll_seconds > 0 {

@@ -288,6 +288,7 @@ pub(super) fn needs_refresh<T>(result: &anyhow::Result<T>) -> bool {
 pub(crate) fn decode_response(
     path: &str,
     http: u16,
+    content_type: &str,
     bytes: &[u8],
 ) -> anyhow::Result<serde_json::Value> {
     let response: serde_json::Value = match serde_json::from_slice(bytes) {
@@ -302,32 +303,35 @@ pub(crate) fn decode_response(
             }
             .into());
         }
-        Err(_) => return Err(Failure::Bug("response decode failed".into()).into()),
+        Err(_) => return Err(Failure::Bug(format!(
+            "response decode failed: method={} status={http} content-type={content_type} body-length={}",
+            path.rsplit('/').next().unwrap_or("RPC"), bytes.len()
+        )).into()),
     };
+    if http == 200 && response["message"] == "OK" {
+        return Ok(response
+            .get("data")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null));
+    }
     let gateway = response["code"]
         .as_i64()
         .unwrap_or(if http == 200 { 99999 } else { 0 });
-    if http != 200 || gateway != 0 {
-        let code = if gateway == 10051 {
-            response["data"]["code"]
-                .as_i64()
-                .ok_or(Failure::Bug("missing TalkException code".into()))?
-        } else {
-            0
-        };
-        return Err(super::RpcError {
-            gateway,
-            method: path.rsplit('/').next().unwrap_or("RPC").into(),
-            http,
-            code,
-            status: response["data"]["statusCode"].as_i64().unwrap_or(0),
-        }
-        .into());
+    let code = if gateway == 10051 {
+        response["data"]["code"]
+            .as_i64()
+            .ok_or(Failure::Bug("missing TalkException code".into()))?
+    } else {
+        0
+    };
+    Err(super::RpcError {
+        gateway,
+        method: path.rsplit('/').next().unwrap_or("RPC").into(),
+        http,
+        code,
+        status: response["data"]["statusCode"].as_i64().unwrap_or(0),
     }
-    response
-        .get("data")
-        .cloned()
-        .ok_or_else(|| Failure::Bug("missing response data".into()).into())
+    .into())
 }
 
 #[cfg(test)]
@@ -345,14 +349,14 @@ mod tests {
         for (code, reason) in signed_out {
             let response = json!({"code": 10051, "data": {"code": code}}).to_string();
             assert_eq!(
-                classify(&decode_response("/api/test", 200, response.as_bytes()).unwrap_err()),
+                classify(&decode_response("/api/test", 200, "", response.as_bytes()).unwrap_err()),
                 Failure::SignedOut(reason)
             );
         }
         for code in [13, 14, 17, 43, 44, 119, 120, 503] {
             let response = json!({"code": 10051, "data": {"code": code}}).to_string();
             assert_eq!(
-                classify(&decode_response("/api/test", 200, response.as_bytes()).unwrap_err()),
+                classify(&decode_response("/api/test", 200, "", response.as_bytes()).unwrap_err()),
                 Failure::Refused(Refusal::Talk(code))
             );
         }
@@ -360,7 +364,7 @@ mod tests {
             let response = json!({"code":code});
             assert_eq!(
                 classify(
-                    &decode_response("/api/test", 200, response.to_string().as_bytes())
+                    &decode_response("/api/test", 200, "", response.to_string().as_bytes())
                         .unwrap_err()
                 ),
                 Failure::Refused(Refusal::Gateway(code))
@@ -370,25 +374,25 @@ mod tests {
             let response = json!({"code":10051,"data":{"code":115}});
             assert_eq!(
                 classify(
-                    &decode_response("/api/test", 200, response.to_string().as_bytes())
+                    &decode_response("/api/test", 200, "", response.to_string().as_bytes())
                         .unwrap_err()
                 ),
                 Failure::Refused(Refusal::Talk(115))
             );
         }
         assert_eq!(
-            classify(&decode_response("/api/test", 200, b"{}").unwrap_err()),
+            classify(&decode_response("/api/test", 200, "", b"{}").unwrap_err()),
             Failure::Refused(Refusal::Gateway(99999))
         );
         for status in [400, 401, 403, 408, 429, 500, 503] {
             assert_eq!(
                 classify(
-                    &decode_response("/api/test", status, b"gateway unavailable").unwrap_err()
+                    &decode_response("/api/test", status, "", b"gateway unavailable").unwrap_err()
                 ),
                 Failure::Refused(Refusal::Http(status))
             );
             assert_eq!(
-                classify(&decode_response("/api/test", status, b"{}").unwrap_err()),
+                classify(&decode_response("/api/test", status, "", b"{}").unwrap_err()),
                 Failure::Refused(Refusal::Http(status))
             );
         }
@@ -406,10 +410,10 @@ mod tests {
                 }
             );
         }
-        assert!(matches!(
-            classify(&decode_response("/api/test", 200, b"broken JSON").unwrap_err()),
-            Failure::Bug(_)
-        ));
+        assert_eq!(
+            classify(&decode_response("/api/test", 200, "text/html", b"private body").unwrap_err()),
+            Failure::Bug("response decode failed: method=test status=200 content-type=text/html body-length=12".into())
+        );
     }
 
     #[test]
@@ -444,7 +448,7 @@ mod tests {
                 ("/api/test", json!({"code":10051,"data":{"code":119}})),
                 (
                     "/api/auth/tokenRefresh",
-                    json!({"code":0,"data":{"accessToken":"renewed"}}),
+                    json!({"code":0,"message":"OK","data":{"accessToken":"renewed"}}),
                 ),
                 ("/api/test", json!({"code":10051,"data":{"code":119}})),
             ] {

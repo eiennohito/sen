@@ -128,7 +128,7 @@ fn persistent_stream_loss_shows_offline_and_success_clears_it() {
     });
     app.until(|state| state.connection == Connection::Offline);
     let response =
-        crate::client::error::decode_response("/api/test", 503, b"unavailable").unwrap_err();
+        crate::client::error::decode_response("/api/test", 503, "", b"unavailable").unwrap_err();
     app.worker.sender.0.live(StreamEvent::Retry {
         attempt: 2,
         error: classify(&response),
@@ -143,6 +143,7 @@ fn code_one_ends_the_session_and_cancels_queued_work_without_changing_the_reason
     app.worker.sender.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "in flight".into(),
+        reply: None,
     });
     entered.recv_timeout(Duration::from_secs(3)).unwrap();
     app.fake.fail_rpc(
@@ -153,6 +154,7 @@ fn code_one_ends_the_session_and_cancels_queued_work_without_changing_the_reason
     app.worker.sender.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "queued".into(),
+        reply: None,
     });
     app.retry(1);
     app.until(|state| {
@@ -204,7 +206,7 @@ fn refresh_503_backoff_does_not_hold_a_send() {
         .filter(|call| **call == FakeRpc::Messages(chat.clone()))
         .count();
     let error =
-        crate::client::error::decode_response("/api/test", 503, b"unavailable").unwrap_err();
+        crate::client::error::decode_response("/api/test", 503, "", b"unavailable").unwrap_err();
     app.fake
         .fail_rpc(FakeRpc::Messages(chat.clone()), classify(&error));
     app.worker.sender.send(Intent::Page {
@@ -231,6 +233,7 @@ fn refresh_503_backoff_does_not_hold_a_send() {
     app.worker.sender.send(Intent::Send {
         chat: chat.clone(),
         text: "during backoff".into(),
+        reply: None,
     });
     app.until(|state| {
         state

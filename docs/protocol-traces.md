@@ -168,3 +168,77 @@ with pencil, member search, Invite friends, collapsible "Members N" with remove
 ×, "Members join automatically" setting), invite picker (Recent chats and
 Friends N with checkboxes, selection pane, Invite). Profiles open in LINE's
 separate popup window; the main window keeps the chat.
+
+## Chat events (extension source, 2026-10-19)
+
+`main.js` defines `CHATEVENT = 18`. `contentMetadata.LOC_KEY` selects
+an event; `LOC_ARGS` splits on record separator U+001E into argument groups,
+then on unit separator U+001F into values. These are **not JSON arrays**.
+The renderer resolves user IDs in the arguments through contacts, rather
+than treating `text` as the event description. Unknown/empty keys render
+nothing (the extension also blanks keys when removing an event).
+
+| LOC_KEY | Argument groups | Meaning |
+| --- | --- | --- |
+| C_PN | actor MID; new name | Group renamed |
+| C_PI | actor MID | Group photo changed |
+| C_MJ / A_MJ | member MID | Member joined |
+| C_ML / A_ML | member MID | Member left |
+| C_GI / C_MI / A_MC / A_MI | actor MID; invitee MIDs | Invited/added members |
+| C_MR / A_MR | actor MID; member MID | Member removed |
+| C_IC / A_IC | actor MID; invitee MID | Invitation canceled |
+| C_SP / C_SN | actor MID | Joining via link/QR allowed / disabled (as mapped by extension) |
+| C_BG | none | Chat upgraded to group |
+| pseudo_leave_chat | literal display name | Locally synthesized departure |
+| BB | old album name; new album name | Album renamed (actor is message.from) |
+| BD / BO | album name | Album deleted / photos removed (actor is message.from) |
+| C_OL | actor; invitee MIDs | Invitees at chat limit |
+
+English resources in the English JS locale chunk use
+`groupchat.systemmsg.changegroupname` (“%1 changed the group's name to
+\"%2\".”), `userjoin` (“%1 joined the group.”), `userleave`, `inviteuser`,
+`kickoutuser`, `cancelinvite`, and `changegroupphoto`. Auto-group variants
+also offer a group-name update link. The app uses concise single-line
+sentences. Synthetic example:
+`{"contentType":18,"contentMetadata":{"LOC_KEY":"C_PN","LOC_ARGS":"aoi\u001eWeekend plans"}}`.
+
+Unread count is message-box metadata, independent of history projection.
+Recent/older decoding retains unsupported types as `Content::Unknown`.
+Read exposure previously required a fully visible rendered row, so an empty
+or omitted tail had no marker target even with a server newest-ID hint.
+At the loaded history bottom the app now covers that hint; unknown event
+rows remain stored and unsupported content gets an explicit bubble.
+The offline “Official hidden events” chat reproduces two unread events
+with no visible message rows.
+
+## Replies, checked markers, reactions, and profile status (2026-10-19)
+
+Source inspection: installed LINE Chrome 3.7.2 `static/js/main.js`, offline;
+these are extension call shapes, not a live capture.
+
+- `SD` posts positional arguments to `/api/talk/thrift/Talk/TalkService/<method>`.
+  The shared Axios success interceptor tests `response.data.message === "OK"`
+  and returns `response.data.data`. It does **not** require `code` or `data`.
+  A successful void result may therefore omit `data` entirely.
+- `sendChatChecked`: `[reqSeq, chatMid, messageId, 0]`. The read observer calls
+  `ne.mutate([HO(), e, r.id, 0])`; no result payload is consumed.
+- `react`: `[{reqSeq, messageId, reactionType: {predefinedReactionType}}]`;
+  `cancelReaction`: `[{reqSeq, messageId}]`. The reaction menu uses these
+  mutations for types 2–7; it consumes no success payload.
+- Our RPC decoder parses JSON, then accepts HTTP 200 with `message: "OK"`.
+  Absent data becomes Null. Every other envelope returns an RPC error with
+  its code (or zero when absent). Decode diagnostics contain method,
+  HTTP status, content type and byte length; never response content or ids.
+- Composer text and sticker enqueue calls pass a `relation` with
+  `relatedMessageId: replyTargetMessageId`, `messageRelationType: 3`
+  (`wU.REPLY`), `relatedMessageServiceCode: 1` (`yU.TALK`). The send queue
+  merges these fields onto the `sendMessage` message object, outside
+  `contentMetadata` and outside the encrypted text payload. They survive retries.
+  The attachment enqueue callback receives only the files and no relation;
+  attachments therefore follow the extension's behavior without a reply.
+- Contacts/profile status use `statusMessage` with
+  `statusMessageContentMetadata`. The extension passes both to `s1`, the same
+  rich text renderer used for messages. `REPLACE.sticon.resources` has the same
+  UTF-16 ranges and emoji resource fields as message content metadata. Without
+  this metadata, parenthesized codes remain literal text. Status metadata is
+  persisted with contacts and rendered through the existing emoji preview path.

@@ -79,6 +79,7 @@ fn m13_send_switch_return_with_stale_page() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "durable send".into(),
+        reply: None,
     });
     let key = app.body_key("durable send");
     app.until(|s| {
@@ -146,6 +147,7 @@ fn echo_and_send_result_keep_one_identity_in_both_orders() {
         app.send(Intent::Send {
             chat: ChatId("alice".into()),
             text: "echo".into(),
+            reply: None,
         });
         let key = app.body_key("echo");
         app.until(|s| s.messages[&key].delivery == Delivery::Sent);
@@ -218,6 +220,7 @@ fn failed_send_retry_discard_and_copy() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "retry text".into(),
+        reply: None,
     });
     let key = app.body_key("retry text");
     app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
@@ -229,6 +232,7 @@ fn failed_send_retry_discard_and_copy() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "discard text".into(),
+        reply: None,
     });
     let key = app.body_key("discard text");
     app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
@@ -470,12 +474,14 @@ fn first_identity_keeps_local_work_and_sends_pending() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "before identity".into(),
+        reply: None,
     });
     let key = app.body_key("before identity");
     assert_eq!(app.state.messages[&key].delivery, Delivery::Pending);
     app.send(Intent::Draft {
         chat: ChatId("alice".into()),
         draft: Draft {
+            reply: None,
             text: "keep draft".into(),
             cursor: 4,
             anchor: 2,
@@ -719,9 +725,15 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             self.wait();
             self.0.messages(c, k)
         }
-        fn send(&mut self, c: &ChatId, t: &str, s: u32) -> Result<MessageInput> {
+        fn send(
+            &mut self,
+            c: &ChatId,
+            t: &str,
+            s: u32,
+            reply: Option<&line::store::ReplyReference>,
+        ) -> Result<MessageInput> {
             self.wait();
-            self.0.send(c, t, s)
+            self.0.send(c, t, s, reply)
         }
         fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
             self.0.react(id, kind, seq)
@@ -734,8 +746,9 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
             chat: &ChatId,
             sticker: &line::store::Content,
             seq: u32,
+            reply: Option<&line::store::ReplyReference>,
         ) -> Result<MessageInput> {
-            self.0.send_sticker(chat, sticker, seq)
+            self.0.send_sticker(chat, sticker, seq, reply)
         }
         fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
             self.0.create_chat(name, targets, seq)
@@ -916,6 +929,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
     worker.sender.send(Intent::Draft {
         chat: chats[149].id.clone(),
         draft: Draft {
+            reply: None,
             text: "local draft".into(),
             cursor: 11,
             anchor: 11,
@@ -958,6 +972,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
             1,
             Content::text("guard"),
             1,
+            None,
         )
         .unwrap();
     assert!(store.retry(key, 2).is_err());
@@ -1029,14 +1044,20 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         fn messages(&mut self, c: &ChatId, k: &PageKind) -> Result<Page> {
             self.fake.messages(c, k)
         }
-        fn send(&mut self, c: &ChatId, t: &str, s: u32) -> Result<MessageInput> {
+        fn send(
+            &mut self,
+            c: &ChatId,
+            t: &str,
+            s: u32,
+            reply: Option<&line::store::ReplyReference>,
+        ) -> Result<MessageInput> {
             self.calls
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             if self.calls.load(std::sync::atomic::Ordering::Relaxed) > 1 {
                 self.entered.send(()).unwrap();
                 self.release.recv_timeout(Duration::from_secs(5)).unwrap();
             }
-            self.fake.send(c, t, s)
+            self.fake.send(c, t, s, reply)
         }
         fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
             self.fake.react(id, kind, seq)
@@ -1049,8 +1070,9 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
             chat: &ChatId,
             sticker: &line::store::Content,
             seq: u32,
+            reply: Option<&line::store::ReplyReference>,
         ) -> Result<MessageInput> {
-            self.fake.send_sticker(chat, sticker, seq)
+            self.fake.send_sticker(chat, sticker, seq, reply)
         }
         fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
             self.fake.create_chat(name, targets, seq)
@@ -1103,6 +1125,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "one retry".into(),
+        reply: None,
     });
     let key = app.body_key("one retry");
     app.until(|s| matches!(s.messages[&key].delivery, Delivery::Rejected { .. }));
@@ -1370,6 +1393,7 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
     app.send(Intent::SendSticker {
         chat: ChatId("alice".into()),
         sticker: Box::new(sticker.clone()),
+        reply: None,
     });
     app.until(|s| {
         s.messages
@@ -1389,6 +1413,7 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
     app.send(Intent::SendSticker {
         chat: ChatId("alice".into()),
         sticker: Box::new(other.clone()),
+        reply: None,
     });
     app.until(|s| {
         s.messages
@@ -1446,6 +1471,7 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
     app.send(Intent::Send {
         chat: ChatId("new-friend".into()),
         text: "First hello".into(),
+        reply: None,
     });
     let key = app.body_key("First hello");
     app.until(|s| {
@@ -1492,6 +1518,7 @@ fn signed_out_account_intents_never_reach_the_backend() {
         Intent::Send {
             chat: ChatId("unknown-chat-id".into()),
             text: "private text".into(),
+            reply: None,
         },
         Intent::SendAttachments {
             chat: ChatId("unknown-chat-id".into()),
@@ -1932,6 +1959,7 @@ fn text_send_completes_while_upload_is_blocked() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "text during upload".into(),
+        reply: None,
     });
     app.until(|s| {
         s.messages
@@ -2105,6 +2133,7 @@ fn not_written_send_retries_in_session_and_is_delivered_once() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "one delivery".into(),
+        reply: None,
     });
     let key = app.body_key("one delivery");
     app.until(|state| state.messages[&key].delivery == Delivery::Sent);
@@ -2137,6 +2166,7 @@ fn written_unanswered_send_never_resends_and_a_late_echo_confirms_it() {
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "unanswered".into(),
+        reply: None,
     });
     let key = app.body_key("unanswered");
     app.until(|state| {
@@ -2188,6 +2218,7 @@ fn restart_recovers_pending_row_without_sending() {
                 2,
                 Content::text("queued before restart"),
                 2,
+                None,
             )
             .unwrap();
         store
@@ -2219,4 +2250,118 @@ fn restart_recovers_pending_row_without_sending() {
     app.until(|state| state.messages[&queued].delivery == Delivery::Sent);
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
+    use line::store::{Draft, ReplyReference};
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    let key = app.body_key("Hello! 日本語も使えます。");
+    let target = ReplyReference {
+        message_id: app.state.messages[&key]
+            .server_id
+            .as_ref()
+            .unwrap()
+            .0
+            .clone(),
+        service_code: Some(1),
+    };
+    app.send(Intent::Draft {
+        chat: ChatId("alice".into()),
+        draft: Draft {
+            reply: Some(target.clone()),
+            text: "reply text".into(),
+            cursor: 10,
+            anchor: 10,
+            updated: 99,
+        },
+    });
+    app.select("weekend");
+    app.body_key("Shall we meet at the station?");
+    app.select("alice");
+    app.until(|s| s.composer_reply.is_some());
+    assert_eq!(app.state.composer_reply.as_ref(), Some(&target));
+    let intent = app.state.submit().unwrap();
+    app.send(intent);
+    let sent = app.body_key("reply text");
+    app.until(|s| s.messages[&sent].delivery == Delivery::Sent);
+    assert_eq!(app.state.messages[&sent].reply.as_deref(), Some(&target));
+    app.send(Intent::Draft {
+        chat: ChatId("alice".into()),
+        draft: Draft {
+            reply: Some(target.clone()),
+            text: String::new(),
+            cursor: 0,
+            anchor: 0,
+            updated: 100,
+        },
+    });
+    let sticker = FakeBackend::demo_sticker_packages()[0].stickers[0].clone();
+    app.send(Intent::SendSticker {
+        chat: ChatId("alice".into()),
+        sticker: Box::new(sticker),
+        reply: Some(target.clone()),
+    });
+    app.until(|s| {
+        s.messages.values().any(|m| {
+            matches!(m.body, line::store::Content::Sticker { .. }) && m.delivery == Delivery::Sent
+        })
+    });
+    let sent = app
+        .state
+        .messages
+        .values()
+        .find(|m| matches!(m.body, line::store::Content::Sticker { .. }))
+        .unwrap();
+    assert_eq!(sent.reply.as_deref(), Some(&target));
+    app.until(|s| s.composer_reply.is_none());
+    assert_eq!(
+        fake.page(&ChatId("alice".into()))
+            .last()
+            .unwrap()
+            .reply
+            .as_deref(),
+        Some(&target)
+    );
+}
+
+#[test]
+fn missing_reply_original_loads_from_the_server_and_opens_in_history() {
+    use line::store::{Anchor, PageKind, ReplyReference, ServerId};
+    let fake = FakeBackend::canned();
+    let original = FakeBackend::message("alice", 91001, "Original outside local history", false);
+    let mut reply = FakeBackend::message("alice", 91002, "Reply to an older message", false);
+    reply.reply = Some(Box::new(ReplyReference {
+        message_id: "91001".into(),
+        service_code: Some(1),
+    }));
+    fake.set_page(ChatId("alice".into()), vec![reply.clone()]);
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Reply to an older message");
+    assert!(
+        !app.state
+            .reply_targets
+            .contains_key(&ServerId("91001".into()))
+    );
+    fake.set_page(ChatId("alice".into()), vec![original, reply]);
+    app.send(Intent::Page {
+        chat: ChatId("alice".into()),
+        kind: PageKind::Around {
+            id: ServerId("91001".into()),
+        },
+    });
+    app.until(|s| s.reply_targets.contains_key(&ServerId("91001".into())));
+    let key = app.state.reply_targets[&ServerId("91001".into())].key;
+    let intent = app.state.subscribe_window(Anchor::Key(key), 80, 80);
+    app.send(intent);
+    app.until(|s| !s.window_loading && s.messages.contains_key(&key));
+    assert_eq!(
+        app.state.messages[&key].body.as_text(),
+        "Original outside local history"
+    );
 }

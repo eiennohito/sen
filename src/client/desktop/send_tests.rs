@@ -39,7 +39,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
             let public = public.clone();
             steps.push(("negotiateE2EEPublicKey", Box::new(move |args| {
                 assert_eq!(args, json!(["upeer"]));
-                (200, json!({"code":0,"data":{"allowedTypes":[0],"specVersion":1,"publicKey":{"keyId":id}}}))
+                (200, json!({"code":0,"message":"OK","data":{"allowedTypes":[0],"specVersion":1,"publicKey":{"keyId":id}}}))
             })));
             steps.push((
                 "getE2EEPublicKey",
@@ -47,26 +47,37 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
                     assert_eq!(args, json!(["upeer", 1, id]));
                     (
                         200,
-                        json!({"code":0,"data":{"keyId":id,"keyData":STANDARD.encode(public)}}),
+                        json!({"code":0,"message":"OK","data":{"keyId":id,"keyData":STANDARD.encode(public)}}),
                     )
                 }),
             ));
             let sent = sent.clone();
             steps.push(("sendMessage", Box::new(move |args| {
                 assert_eq!(args[0], 7);
+                assert_eq!(args[1]["relatedMessageId"], "original");
+                assert_eq!(args[1]["messageRelationType"], 3);
+                assert_eq!(args[1]["relatedMessageServiceCode"], 2);
                 assert_eq!(decode(args[1]["chunks"][4].as_str().unwrap()).unwrap(), (id as u32).to_be_bytes());
                 sent.lock().unwrap().push(args[1].clone());
                 if id == 42 {
                     (200, json!({"code":10051,"data":{"code":code}}))
                 } else {
-                    (200, json!({"code":0,"data":{"id":"sent","from":"uself","to":"upeer","contentType":0,"text":"hello"}}))
+                    (200, json!({"code":0,"message":"OK","data":{"id":"sent","from":"uself","to":"upeer","contentType":0,"text":"hello"}}))
                 }
             })));
         }
         let (mut transport, worker) = server_responses(steps);
         transport.client_version = crate::test_support::FIXTURE_VERSION.into();
         client.api.http = transport;
-        let result = client.send_text_with_request("upeer", "hello", 7);
+        let result = client.send_text_with_request(
+            "upeer",
+            "hello",
+            7,
+            Some(&crate::store::ReplyReference {
+                message_id: "original".into(),
+                service_code: Some(2),
+            }),
+        );
         if code == 83 {
             let error = result.err().expect("stale sender key accepted");
             assert!(matches!(
@@ -105,6 +116,38 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
 }
 
 #[test]
+fn rpc_success_uses_http_and_message_and_allows_absent_data() -> Result<()> {
+    let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
+    let api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
+    let (mut client, root) = client(api);
+    let (transport, server) = server_responses(vec![
+        ("getProfile", Box::new(|_| (200, json!({"message":"OK"})))),
+        (
+            "getProfile",
+            Box::new(|_| {
+                (
+                    200,
+                    json!({"message":"OK", "code":7, "data":{"displayName":"Name"}}),
+                )
+            }),
+        ),
+        ("getProfile", Box::new(|_| (200, json!({"code":0})))),
+        ("getProfile", Box::new(|_| (201, json!({"message":"OK"})))),
+    ]);
+    client.api.http = transport;
+    assert_eq!(client.api.profile()?, Value::Null);
+    assert_eq!(client.api.profile()?["displayName"], "Name");
+    for http in [200, 201] {
+        let error = client.api.profile().unwrap_err();
+        let error = error.downcast_ref::<RpcError>().unwrap();
+        assert_eq!((error.http, error.code), (http, 0));
+    }
+    server.join().unwrap();
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
 fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Result<()> {
     let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
     let api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
@@ -116,7 +159,7 @@ fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Res
     client.api.own_keys.insert(99, own);
     let encrypted = json!({"id":"101","from":"upeer","to":"uself","chunks":["", "", "", "AAAAKg==", "AAAAYw=="],"contentType":0});
     let valid = json!({"id":"102","from":"upeer","to":"uself","text":"still here","contentType":0});
-    let page = json!({"code":0,"data":[encrypted.clone(),valid]});
+    let page = json!({"code":0,"message":"OK","data":[encrypted.clone(),valid]});
     let (http, server) = server_responses(vec![
         ("getRecentMessagesV2", Box::new(move |_| (200, page))),
         (

@@ -26,10 +26,11 @@ fn emoji_message() -> account::MessageView {
 
 #[test]
 fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
+    let view = emoji_message();
     let mut message = message_row(emoji_message());
     links::decorate_message(&mut message, "葵");
     let mut row = ChatRow::default();
-    preview::set(&mut row, &message, 15);
+    preview::set(&mut row, &view, &HashMap::new(), 15);
     assert_eq!(row.preview, "日😀[笑] again [笑] end");
     assert!(row.outgoing_preview);
     assert!(message.accessible_label.ends_with(message.body.as_str()));
@@ -107,9 +108,10 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
             14 => "File",
             _ => unreachable!(),
         };
-        let mut message = message_row(m);
+        let mut images = HashMap::new();
+        let view = m;
         let mut row = ChatRow::default();
-        preview::set(&mut row, &message, 15);
+        preview::set(&mut row, &view, &images, 15);
         assert_eq!(row.preview, text);
         if kind == 14 {
             assert_eq!(row.preview_runs.row_count(), 0);
@@ -119,20 +121,20 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
         let measure = |s: &str| s.chars().count() as f32;
         let fallback = preview::layout(&row.preview_runs, "", 100., 1., measure);
         assert!(!fallback.iter().any(|run| run.thumbnail));
-        message.picture = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+        let picture = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
             &[0, 180, 100, 255],
             1,
             1,
         ));
-        message.has_picture = true;
-        preview::set(&mut row, &message, 15);
+        images.insert("media-key".into(), picture);
+        preview::set(&mut row, &view, &images, 15);
         assert!(
             preview::layout(&row.preview_runs, "", 100., 1., measure)
                 .iter()
                 .any(|r| r.thumbnail)
         );
-        message.image_failed = true;
-        preview::set(&mut row, &message, 15);
+        images.remove("media-key");
+        preview::set(&mut row, &view, &images, 15);
         assert_eq!(row.preview, text);
     }
 }

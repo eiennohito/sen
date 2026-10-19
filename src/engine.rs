@@ -130,6 +130,7 @@ pub enum Intent {
     Send {
         chat: ChatId,
         text: String,
+        reply: Option<ReplyReference>,
     },
     React {
         key: Key,
@@ -143,6 +144,7 @@ pub enum Intent {
     SendSticker {
         chat: ChatId,
         sticker: Box<Content>,
+        reply: Option<ReplyReference>,
     },
     CreateChat {
         name: String,
@@ -383,6 +385,7 @@ pub enum Refresh {
     ChatList,
     MoreChats,
     Receipts(ChatId),
+    Around(ChatId, ServerId),
     Older(ChatId, Cursor),
     Newer(ChatId, Cursor),
     Details(ChatId),
@@ -403,6 +406,7 @@ impl Refresh {
             Self::ChatList => ("chat-list", None),
             Self::MoreChats => ("more-chats", None),
             Self::Receipts(id) => ("receipts", Some(id.0.as_str())),
+            Self::Around(id, _) => ("around", Some(id.0.as_str())),
             Self::Older(id, _) => ("older", Some(id.0.as_str())),
             Self::Newer(id, _) => ("newer", Some(id.0.as_str())),
             Self::Details(id) => ("details", Some(id.0.as_str())),
@@ -1001,7 +1005,11 @@ impl Engine {
             Refresh::Read(chat) if Some(chat) == opened => 1,
             Refresh::Recent(chat) if Some(chat) == opened => 2,
             Refresh::ChatList | Refresh::MoreChats => 3,
-            Refresh::Read(_) | Refresh::Older(..) | Refresh::Newer(..) | Refresh::Receipts(_) => 4,
+            Refresh::Read(_)
+            | Refresh::Around(..)
+            | Refresh::Older(..)
+            | Refresh::Newer(..)
+            | Refresh::Receipts(_) => 4,
             Refresh::Stream
             | Refresh::Profile
             | Refresh::Friends
@@ -1898,12 +1906,17 @@ impl Engine {
                         seq,
                         item.content(),
                         now_ms(),
+                        None,
                     )?;
                     self.inbox.refresh(Refresh::Send(key));
                 }
                 self.publish()?;
             }
-            Intent::SendSticker { chat, sticker } => {
+            Intent::SendSticker {
+                chat,
+                sticker,
+                reply,
+            } => {
                 if !matches!(*sticker, Content::Sticker { .. })
                     || self.store.chat(&chat)?.is_some_and(|c| c.left)
                 {
@@ -1916,11 +1929,20 @@ impl Engine {
                     seq,
                     *sticker,
                     now_ms(),
+                    reply,
                 )?;
+                if let Some(mut draft) = self.store.load_draft(&chat)? {
+                    draft.reply = None;
+                    self.store.save_draft(&chat, &draft)?;
+                }
                 self.publish()?;
+                self.emit(Delta::Submitted {
+                    chat: chat.clone(),
+                    text: String::new(),
+                });
                 self.inbox.refresh(Refresh::Send(key));
             }
-            Intent::Send { chat, text } => {
+            Intent::Send { chat, text, reply } => {
                 if self.store.chat(&chat)?.is_some_and(|c| c.left) {
                     return Ok(());
                 }
@@ -1931,6 +1953,7 @@ impl Engine {
                     seq,
                     Content::text(&text),
                     now_ms(),
+                    reply,
                 )?;
                 self.store.clear_draft(&chat)?;
                 self.publish()?;
@@ -2165,9 +2188,19 @@ impl Engine {
             self.rpc(
                 move |backend| {
                     if matches!(message.body, Content::Sticker { .. }) {
-                        backend.send_sticker(&message.chat_id, &message.body, seq)
+                        backend.send_sticker(
+                            &message.chat_id,
+                            &message.body,
+                            seq,
+                            message.reply.as_deref(),
+                        )
                     } else {
-                        backend.send(&message.chat_id, message.body.as_text(), seq)
+                        backend.send(
+                            &message.chat_id,
+                            message.body.as_text(),
+                            seq,
+                            message.reply.as_deref(),
+                        )
                     }
                 },
                 move |engine, result, _| engine.sent(address, seq, result, generation),
@@ -2344,6 +2377,14 @@ impl Engine {
             .map(|c| c.id)
             .collect::<BTreeSet<_>>();
         for row in rows {
+            if let Some(event) = crate::system_events::parse(&row.body) {
+                for mid in event.mids() {
+                    let mid = mid.as_str();
+                    if !known.contains(mid) {
+                        self.inbox.refresh(Refresh::Contact(mid.into()));
+                    }
+                }
+            }
             if !row.outgoing && !row.sender_id.is_empty() && !known.contains(&row.sender_id) {
                 self.inbox.refresh(Refresh::Contact(row.sender_id.clone()));
             }
@@ -2402,6 +2443,7 @@ impl Engine {
     }
     fn page_refresh(chat: ChatId, kind: PageKind) -> Refresh {
         match kind {
+            PageKind::Around { id } => Refresh::Around(chat, id),
             PageKind::Recent => Refresh::Recent(chat),
             PageKind::Older { before } => Refresh::Older(chat, before),
             PageKind::Newer { after } => Refresh::Newer(chat, after),
@@ -2570,6 +2612,7 @@ impl Engine {
             }
             Refresh::ChatList => self.load_chats(false)?,
             Refresh::MoreChats => self.load_chats(true)?,
+            Refresh::Around(chat, id) => self.page(chat, PageKind::Around { id })?,
             Refresh::Older(chat, before) => self.page(chat, PageKind::Older { before })?,
             Refresh::Newer(chat, after) => self.page(chat, PageKind::Newer { after })?,
             Refresh::Receipts(chat) => {
@@ -3035,6 +3078,18 @@ impl Engine {
                 {
                     replies.push(target);
                 }
+            }
+            if let Some(reference) = self.store.load_draft(&w.chat)?.and_then(|d| d.reply)
+                && !replies.iter().any(|m| {
+                    m.server_id
+                        .as_ref()
+                        .is_some_and(|id| id.0 == reference.message_id)
+                })
+                && let Some(target) = self
+                    .store
+                    .message_by_server(&ServerId(reference.message_id))?
+            {
+                replies.push(target);
             }
             self.emit(Delta::Window {
                 unread_anchor: self.store.unread_anchor(&w.chat)?.map(|m| m.key),

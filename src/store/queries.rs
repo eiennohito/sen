@@ -292,7 +292,7 @@ impl Store {
              d.text,d.cursor,d.anchor,d.updated,
              (SELECT count(*) FROM message f WHERE f.chat_id=c.chat_id AND f.server_id IS NULL
               AND json_type(f.delivery,'$.Rejected') IS NOT NULL),
-             max(coalesce(c.last_activity,0),coalesce(m.sort_ts,0)) AS activity
+             max(coalesce(c.last_activity,0),coalesce(m.sort_ts,0)) AS activity,d.reply_json
              FROM chat c
              LEFT JOIN message m ON m.key=(SELECT key FROM message WHERE chat_id=c.chat_id
                  ORDER BY sort_ts DESC,sort_id DESC LIMIT 1)
@@ -322,6 +322,7 @@ impl Store {
                             .get::<_, Option<String>>(31)?
                             .map(|text| -> rusqlite::Result<Draft> {
                                 Ok(Draft {
+                                    reply: super::messages::parse(r, 37)?,
                                     text,
                                     cursor: r.get(32)?,
                                     anchor: r.get(33)?,
@@ -493,14 +494,15 @@ impl Store {
         self.mutate(|tx, c| {
             ensure_chat(tx, chat)?;
             tx.execute(
-                "INSERT INTO draft(chat_id,text,cursor,updated,anchor) VALUES(?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET text=excluded.text,
-                cursor=excluded.cursor, updated=excluded.updated, anchor=excluded.anchor",
+                "INSERT INTO draft(chat_id,text,cursor,updated,anchor,reply_json) VALUES(?,?,?,?,?,?) ON CONFLICT(chat_id) DO UPDATE SET text=excluded.text,
+                cursor=excluded.cursor, updated=excluded.updated, anchor=excluded.anchor,reply_json=excluded.reply_json",
                 params![
                     chat.0,
                     draft.text,
                     draft.cursor as i64,
                     draft.updated,
                     draft.anchor as i64,
+                    serde_json::to_string(&draft.reply)?,
                 ],
             )?;
             c.chats_changed.insert(chat.clone());
@@ -511,10 +513,11 @@ impl Store {
         Ok(self
             .conn
             .query_row(
-                "SELECT text,cursor,updated,anchor FROM draft WHERE chat_id=?",
+                "SELECT text,cursor,updated,anchor,reply_json FROM draft WHERE chat_id=?",
                 [&chat.0],
                 |r| {
                     Ok(Draft {
+                        reply: super::messages::parse(r, 4)?,
                         text: r.get(0)?,
                         cursor: r.get::<_, i64>(1)? as usize,
                         updated: r.get(2)?,
@@ -599,7 +602,7 @@ impl Store {
     }
 }
 
-const CONTACT_COLUMNS: &str = "mid,name,status,is_group,avatar,member_count,original_name,overridden_name,relation,account_type,favorite_time";
+const CONTACT_COLUMNS: &str = "mid,name,status,is_group,avatar,member_count,original_name,overridden_name,relation,account_type,favorite_time,status_metadata";
 fn decode_contact(r: &rusqlite::Row<'_>) -> rusqlite::Result<Friend> {
     Ok(Friend {
         id: r.get(0)?,
@@ -619,6 +622,7 @@ fn decode_contact(r: &rusqlite::Row<'_>) -> rusqlite::Result<Friend> {
             })?,
         member_count: r.get(5)?,
         profile: ContactProfile {
+            status_metadata: super::messages::parse(r, 11)?,
             original_name: r.get(6)?,
             overridden_name: r.get(7)?,
             relation: r.get(8)?,
@@ -631,7 +635,7 @@ fn decode_contact(r: &rusqlite::Row<'_>) -> rusqlite::Result<Friend> {
 fn save_contact(tx: &Connection, row: &Friend, replace: bool) -> Result<()> {
     tx.execute(
         &format!(
-            "INSERT {} INTO contact({CONTACT_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+            "INSERT {} INTO contact({CONTACT_COLUMNS}) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
             if replace { "OR REPLACE" } else { "OR IGNORE" }
         ),
         params![
@@ -645,7 +649,8 @@ fn save_contact(tx: &Connection, row: &Friend, replace: bool) -> Result<()> {
             row.profile.overridden_name,
             row.profile.relation,
             row.profile.account_type,
-            row.profile.favorite_time
+            row.profile.favorite_time,
+            serde_json::to_string(&row.profile.status_metadata)?
         ],
     )?;
     Ok(())
