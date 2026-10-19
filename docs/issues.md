@@ -9,7 +9,7 @@ merge. "Branch" means the work exists but is not merged yet.
 |---|---|---|---|
 | 1 | Read markers (`sendChatChecked`) and reactions (`react`) failed on the real server: "response decode failed" | user log | merged; success is now the extension's `message == "OK"` rule. Needs confirmation in the real app |
 | 4 | Unread count with no visible messages (LINE official account) | user | merged; the read marker covers hidden events. Needs confirmation in the real app (depends on #1) |
-| 51 | The app uses 100% CPU constantly (real account) | user | investigating: which thread (the user's `top -H`), demo reproduction, perf profile |
+| 51 | The app uses 100% CPU constantly (real account) | user | fixed on main (c0edde7): two `interval: 0ms` Slint timers (scrollpane `seek-settle`, chats `reveal-settle`) and the 1 s `hide` timer repeated forever (Timers start running and repeat by default); now one-shot. Demo main thread: ~15,000 wakeups/s → 0–5, CPU 7–10% → 0%. Needs confirmation in the real app. Follow-up: a UI check asserting idle wakeups stay low (main thread voluntary context switches < 50/s after a few idle seconds) |
 | 52 | Compilation times are abysmal | user | investigating: measure clean/incremental dev and release builds per crate and per stage (Slint codegen, rustc, link); options include the interpreter in dev (#16), crate split, linker |
 | 49 | Sticker picker: pack strip scrolling is awkward and its scrollbar overlaps the pack icons | user | next UI batch |
 | 50 | Selecting a sticker pack closes the sticker popup | user | next UI batch |
