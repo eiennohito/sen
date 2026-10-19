@@ -153,21 +153,42 @@ profile (U2).
 **History** (`bg`).
 
 - Incoming bubble: `surface-2`. Outgoing: `bubble-out`. No borders. Padding
-  8×12, radius 16, with consecutive bubbles from one sender 2 px apart and
-  12 px between senders.
-- Group sender: a 32 px avatar on the first bubble of a run, and the name in
-  small `text-secondary` above it.
-- The time and delivery slot sit beside the bubble's bottom edge in small
-  `text-secondary`. Delivery icons: clock (Pending), check (Sent),
-  check-double in `accent-strong` (Read), warning (Uncertain), error in
-  `danger` (Rejected). Each icon is named in the accessible label.
-- Date separators and system messages ("Message unsent", "Aoi joined the
-  group", "Beginning of conversation") are centred pills: `surface-2`, small
-  `text-secondary`, padding 4×12, with a leading 14 px icon where meaningful
-  (withdrawn, info). No glyphs.
-- Reply quote: inside the bubble, a 3 px `accent-strong` left bar, the sender
-  in small weight 600, and one line of text in `text-secondary`, on a 6 %
-  `text` tint.
+  8×12, radius 16.
+- Runs: consecutive messages from one sender within 5 minutes, with no date
+  separator or system line between them, form a run.
+  - Every bubble in a run keeps its own shape, sized to its own content;
+    bubbles never join into one outline, so different widths look normal.
+  - Spacing: 2 px between bubbles of a run, 12 px between runs.
+  - Corners: the side facing the sender (left for incoming, right for
+    outgoing) gets a 4 px radius where it touches another bubble of the run;
+    every other corner keeps 16. First bubble: small bottom corner on the
+    sender side. Middle: small top and bottom. Last: small top. A single
+    message keeps all 16.
+  - Cards, photos and stickers in a run follow the same spacing; photos and
+    stickers keep their own radius.
+  - Time and delivery appear once, beside the last bubble of the run.
+- Group sender: the name in small `text-secondary` above the first bubble of
+  a run, and a 32 px avatar beside the last bubble; the avatar column is
+  reserved for every bubble of the run so bubbles stay aligned.
+- Delivery icons: clock (Sending), check (Sent), check-double in
+  `accent-strong` (Read), error in `danger` (Not sent). Each icon is named in
+  the accessible label.
+- Date separators and system events ("Aoi renamed the group to “Weekend
+  plans”", "Message unsent", "Beginning of conversation") are centred,
+  single-line, small `text-secondary` on a `surface-2` pill, padding 4×12,
+  no icons.
+- Reply quote, inside the bubble above the text: a block with radius 8, a
+  6 % `text` tint, a 3 px left bar in the quoted sender's avatar tint, the
+  quoted sender in small weight 600 (same tint), and one elided line of the
+  quoted text in `text-secondary`. Media is named ("Photo", "Sticker",
+  "File: 資料.txt") with a 32 px thumbnail on the right for photos and
+  stickers. The block is as wide as the bubble's content, not wider than
+  the text below needs. Clicking it scrolls to the original and highlights
+  it briefly. A quoted message we don't have shows "Original message".
+- Replying: "Reply" in the message's context menu and as a hover action next
+  to React. The composer then shows a reply bar above the input: the same
+  quote block with "Replying to <name>" and a × button; Esc or × cancels;
+  the draft keeps the reply target. Sending attaches the reply.
 - Rich content cards replace the glyph rows. Each is a bubble containing a
   40 px rounded icon tile (`bg` at 60 % on the bubble colour, with the type
   icon), a title (file name, "Video", "Voice message", contact name,
