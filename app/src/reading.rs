@@ -106,7 +106,12 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
             })
             .filter(|m| !m.outgoing && matches!(m.delivery, Delivery::Sent | Delivery::Read))
             .filter_map(|m| m.server_id.clone())
-            .max_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)));
+            .max_by(|a, b| {
+                a.as_str()
+                    .len()
+                    .cmp(&b.as_str().len())
+                    .then(a.as_str().cmp(b.as_str()))
+            });
         let tail_visible = state
             .rows()
             .into_iter()
@@ -140,7 +145,12 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
                         })
                         .and_then(|m| m.server_id.clone()),
                 )
-                .max_by(|a, b| a.0.len().cmp(&b.0.len()).then(a.0.cmp(&b.0)))
+                .max_by(|a, b| {
+                    a.as_str()
+                        .len()
+                        .cmp(&b.as_str().len())
+                        .then(a.as_str().cmp(b.as_str()))
+                })
         } else {
             exposed
         };
@@ -250,8 +260,8 @@ mod tests {
             fake.add_chat(ChatInput {
                 id: chat.clone(),
                 title: "Official hidden events".into(),
-                unread_count: 1,
-                last_message_id: Some(ServerId("951".into())),
+                server_unread: 1,
+                last_message_id: Some(ServerId::new("951").unwrap()),
                 ..Default::default()
             });
             fake.set_page(chat.clone(), vec![hidden]);
@@ -294,7 +304,9 @@ mod tests {
                     ..Default::default()
                 },
             );
-            assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.0 == "951"));
+            assert!(
+                matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.as_str() == "951")
+            );
             for intent in intents {
                 worker.sender.send(intent);
             }
@@ -328,6 +340,7 @@ mod tests {
             ChatListItem {
                 chat: ChatInput {
                     id: chat.clone(),
+                    server_unread: 2,
                     unread_count: 2,
                     ..Default::default()
                 },
@@ -343,7 +356,7 @@ mod tests {
                 StoredMessage {
                     key,
                     chat_id: chat.clone(),
-                    server_id: Some(ServerId(id.into())),
+                    server_id: Some(ServerId::new(id).unwrap()),
                     local_id: None,
                     request_seq: None,
                     sort: Cursor {
@@ -355,7 +368,7 @@ mod tests {
                     body: Content::default(),
                     reactions: vec![],
                     reactions_rev: 0,
-                    body_reactions_rev: None,
+                    body_rev: None,
                     delivery: Delivery::Sent,
                     created_at_local: 0,
                     mentioned: false,
@@ -376,7 +389,7 @@ mod tests {
         assert!(exposure(&mut reading, &state, view).is_empty());
         view.active = true;
         let intents = exposure(&mut reading, &state, view);
-        assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.0 == "9"));
+        assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.as_str() == "9"));
         assert!(exposure(&mut reading, &state, view).is_empty());
         view.pill_height = 0.;
         state.messages.get_mut(&Key(2)).unwrap().outgoing = true;
@@ -389,7 +402,7 @@ mod tests {
         assert!(exposure(&mut reading, &state, view).is_empty());
         view.modal = false;
         let intents = exposure(&mut reading, &state, view);
-        assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.0 == "10"));
+        assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.as_str() == "10"));
         assert!(exposure(&mut reading, &state, view).is_empty());
     }
 }

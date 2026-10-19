@@ -37,7 +37,7 @@ CREATE TABLE message(
     body_json TEXT NOT NULL,
     reactions_json TEXT NOT NULL,
     reactions_rev INTEGER NOT NULL,
-    body_reactions_rev INTEGER,
+    body_rev INTEGER,
     delivery TEXT NOT NULL,
     created_at_local INTEGER NOT NULL,
     mentioned INTEGER NOT NULL DEFAULT 0,

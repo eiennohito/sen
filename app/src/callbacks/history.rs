@@ -12,22 +12,29 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         ui.invoke_focus_history();
     });
     global_callback!(ui, actions, on_jump_message, |ui, d, id| {
+        let Ok(server_id) = ServerId::new(id.to_string()) else {
+            return;
+        };
         let target = d
             .state
             .reply_targets
-            .get(&ServerId(id.to_string()))
+            .get(&server_id)
             .map(|m| m.key)
             .or_else(|| {
                 d.state
                     .messages
                     .values()
-                    .find(|m| m.server_id.as_ref().is_some_and(|s| s.0 == id.as_str()))
+                    .find(|m| {
+                        m.server_id
+                            .as_ref()
+                            .is_some_and(|s| s.as_str() == id.as_str())
+                    })
                     .map(|m| m.key)
             });
         if let Some(key) = target {
             d.jump_to_message(&ui, key);
         } else if let Some(chat) = d.state.selected.clone() {
-            let id = ServerId(id.to_string());
+            let id = server_id;
             d.history.jump_target = Some(id.clone());
             d.sender.send(Intent::Page {
                 chat,

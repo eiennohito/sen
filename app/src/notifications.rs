@@ -69,7 +69,7 @@ impl Notifications {
                 body: text.body,
                 sound: actions.sound,
                 avatar: None,
-                last_message: m.server_id.0.clone(),
+                last_message: m.server_id.as_str().to_owned(),
             });
         }
     }
@@ -89,10 +89,14 @@ impl Notifications {
                     let _ = ui.show();
                     ui.set_show_conversation(true);
                 }
-                attention::Event::MarkRead { chat, message } => sender.send(Intent::MarkRead {
-                    chat: ChatId(chat),
-                    id: ServerId(message),
-                }),
+                attention::Event::MarkRead { chat, message } => {
+                    if let Ok(id) = ServerId::new(message) {
+                        sender.send(Intent::MarkRead {
+                            chat: ChatId(chat),
+                            id,
+                        });
+                    }
+                }
                 attention::Event::Delivered(chat) if chat == "notification-test" => ui
                     .global::<State>()
                     .set_notification_status("Test notification sent".into()),

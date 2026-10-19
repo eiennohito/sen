@@ -694,7 +694,7 @@ impl Worker {
                                 window: None,
                                 chat_keys: BTreeSet::new(),
                                 message_keys: BTreeSet::new(),
-                                seq: 0,
+                                seq: initial_request_seq()?,
                                 stream: None,
                                 assets_stop: worker_cancel,
                                 list_sweep: vec![],
@@ -1030,7 +1030,6 @@ impl Engine {
                 .store
                 .prune_clipboard(&data.join("clipboard-attachments"), accounts);
         }
-        self.seq = self.store.prefs()?.request_seq;
         self.emit(Delta::Connection(Connection::Local));
         self.emit(Delta::Profile(self.store.account()?.profile));
         self.emit_friends()?;
@@ -1316,7 +1315,6 @@ impl Engine {
                             std::fs::write(root.join("last-mid.tmp"), &p.mid)?;
                             std::fs::rename(root.join("last-mid.tmp"), root.join("last-mid"))?;
                         }
-                        engine.seq = engine.store.prefs()?.request_seq;
                         engine.emit(Delta::Profile(p));
                         engine.account = AccountSession::Ready;
                         if engine.media.is_none() {
@@ -1343,14 +1341,7 @@ impl Engine {
         Ok(())
     }
     fn next_seq(&mut self) -> Result<u32> {
-        self.seq = self
-            .seq
-            .checked_add(1)
-            .filter(|seq| *seq <= 0x7fff_ffff)
-            .ok_or_else(|| StoreError::Invalid("request sequence exhausted".into()))?;
-        let mut prefs = self.store.prefs()?;
-        prefs.request_seq = self.seq;
-        self.store.set_prefs(&prefs)?;
+        self.seq = (self.seq + 1) & 0x7fff_ffff;
         Ok(self.seq)
     }
     fn send_reaction(
@@ -2035,7 +2026,6 @@ impl Engine {
             Intent::Prefs(mut prefs) => {
                 let stored = self.store.prefs()?;
                 prefs.last_chat = stored.last_chat;
-                prefs.request_seq = stored.request_seq;
                 self.store.set_prefs(&prefs)?;
                 self.emit(Delta::Prefs(prefs));
             }
@@ -2835,7 +2825,7 @@ impl Engine {
                     }
                     let clipboard = if let Op::Message(message) = &op.op
                         && message.outgoing
-                        && message.request_seq.is_some_and(|seq| seq > 0)
+                        && message.request_seq.is_some()
                     {
                         self.store
                             .all_pending()?
@@ -3073,7 +3063,7 @@ impl Engine {
             let mut replies = Vec::new();
             for row in &window.rows {
                 if let Some(id) = row.reply.as_ref().map(|r| r.message_id.as_str())
-                    && let Some(target) = self.store.message_by_server(&ServerId(id.into()))?
+                    && let Some(target) = self.store.message_by_server(&ServerId::new(id)?)?
                 {
                     replies.push(target);
                 }
@@ -3082,11 +3072,11 @@ impl Engine {
                 && !replies.iter().any(|m| {
                     m.server_id
                         .as_ref()
-                        .is_some_and(|id| id.0 == reference.message_id)
+                        .is_some_and(|id| id.as_str() == reference.message_id)
                 })
                 && let Some(target) = self
                     .store
-                    .message_by_server(&ServerId(reference.message_id))?
+                    .message_by_server(&ServerId::new(reference.message_id)?)?
             {
                 replies.push(target);
             }
@@ -3143,3 +3133,10 @@ impl Drop for Engine {
 
 #[cfg(test)]
 mod tests;
+
+fn initial_request_seq() -> std::io::Result<u32> {
+    use std::io::Read;
+    let mut bytes = [0; 4];
+    std::fs::File::open("/dev/urandom")?.read_exact(&mut bytes)?;
+    Ok(u32::from_ne_bytes(bytes) & 0x7fff_ffff)
+}

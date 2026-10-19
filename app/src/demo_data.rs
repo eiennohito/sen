@@ -315,7 +315,7 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
         RichContent {
             emoji: vec![span],
             reply: Some(ReplyReference {
-                message_id: target.server_id.0.clone(),
+                message_id: target.server_id.as_str().to_owned(),
                 service_code: None,
             }),
             ..Default::default()
@@ -497,7 +497,7 @@ pub fn hidden_events(fake: &FakeBackend) {
     fake.add_chat(ChatInput {
         id: ChatId("official-hidden".into()),
         title: "Official hidden events".into(),
-        unread_count: 2,
+        server_unread: 2,
         last_message_id: hidden.last().map(|m| m.server_id.clone()),
         last_message_ms: hidden.last().map(|m| m.created_ms),
         ..Default::default()

@@ -155,7 +155,7 @@ fn echo_and_send_result_keep_one_identity_in_both_orders() {
             let m = &app.state.messages[&key];
             let mut echo = FakeBackend::message(
                 "alice",
-                m.server_id.as_ref().unwrap().0.parse().unwrap(),
+                m.server_id.as_ref().unwrap().as_str().parse().unwrap(),
                 "echo",
                 true,
             );
@@ -291,8 +291,8 @@ fn opening_unread_chat_centers_the_window_on_the_divider() {
     fake.add_chat(ChatInput {
         id: ChatId("alice".into()),
         title: "葵".into(),
-        unread_count: 160,
-        last_message_id: Some(ServerId("1240".into())),
+        server_unread: 160,
+        last_message_id: Some(ServerId::new("1240").unwrap()),
         ..Default::default()
     });
     let mut app = App::new(fake, StoreLocation::Memory);
@@ -302,7 +302,7 @@ fn opening_unread_chat_centers_the_window_on_the_divider() {
     let divider = app.state.unread_divider.unwrap();
     assert_eq!(
         app.state.messages[&divider].server_id,
-        Some(ServerId("1081".into()))
+        Some(ServerId::new("1081").unwrap())
     );
     assert!(matches!(app.state.window_anchor, Anchor::Unread));
     assert!(!app.state.reaches_end); // The unread boundary lies outside the latest 80.
@@ -359,11 +359,11 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
     app.until(|s| {
         s.messages
             .values()
-            .any(|m| m.server_id == Some(ServerId("10".into())))
+            .any(|m| m.server_id == Some(ServerId::new("10").unwrap()))
     });
     app.send(Intent::MarkRead {
         chat: chat.clone(),
-        id: ServerId("10".into()),
+        id: ServerId::new("10").unwrap(),
     });
     app.until(|s| {
         assert!(!matches!(s.connection, Connection::Offline));
@@ -409,7 +409,7 @@ fn opened_chat_history_and_reads_run_before_missing_details_sweep() {
                 false,
             )
             .unwrap();
-        store.mark_read(&chat, ServerId("1".into())).unwrap();
+        store.mark_read(&chat, ServerId::new("1").unwrap()).unwrap();
         store
             .set_prefs(&Prefs {
                 last_chat: Some(ChatId("alice".into())),
@@ -594,7 +594,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
     app.select("alice");
     let key = app.body_key("own confirmed");
     fake.fail_rpc(
-        FakeRpc::Unsend(ServerId("11".into())),
+        FakeRpc::Unsend(ServerId::new("11").unwrap()),
         Failure::Refused(Refusal::Gateway(13)),
     );
     app.send(Intent::Unsend(key));
@@ -2221,12 +2221,6 @@ fn restart_recovers_pending_row_without_sending() {
                 None,
             )
             .unwrap();
-        store
-            .set_prefs(&Prefs {
-                request_seq: 2,
-                ..Default::default()
-            })
-            .unwrap();
         queued
     };
     let fake = FakeBackend::canned();
@@ -2265,8 +2259,8 @@ fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
             .server_id
             .as_ref()
             .unwrap()
-            .0
-            .clone(),
+            .as_str()
+            .to_owned(),
         service_code: Some(1),
     };
     app.send(Intent::Draft {
@@ -2346,17 +2340,20 @@ fn missing_reply_original_loads_from_the_server_and_opens_in_history() {
     assert!(
         !app.state
             .reply_targets
-            .contains_key(&ServerId("91001".into()))
+            .contains_key(&ServerId::new("91001").unwrap())
     );
     fake.set_page(ChatId("alice".into()), vec![original, reply]);
     app.send(Intent::Page {
         chat: ChatId("alice".into()),
         kind: PageKind::Around {
-            id: ServerId("91001".into()),
+            id: ServerId::new("91001").unwrap(),
         },
     });
-    app.until(|s| s.reply_targets.contains_key(&ServerId("91001".into())));
-    let key = app.state.reply_targets[&ServerId("91001".into())].key;
+    app.until(|s| {
+        s.reply_targets
+            .contains_key(&ServerId::new("91001").unwrap())
+    });
+    let key = app.state.reply_targets[&ServerId::new("91001").unwrap()].key;
     let intent = app.state.subscribe_window(Anchor::Key(key), 80, 80);
     app.send(intent);
     app.until(|s| !s.window_loading && s.messages.contains_key(&key));

@@ -205,7 +205,6 @@ pub struct Prefs {
     pub enter_sends: bool,
     pub desktop: DesktopPrefs,
     pub last_chat: Option<ChatId>,
-    pub request_seq: u32,
 }
 impl Default for Prefs {
     fn default() -> Self {
@@ -214,7 +213,6 @@ impl Default for Prefs {
             enter_sends: false,
             desktop: DesktopPrefs::default(),
             last_chat: None,
-            request_seq: 0,
         }
     }
 }
@@ -250,8 +248,15 @@ pub struct ChatId(pub String);
 pub struct Key(pub i64);
 /// Canonical decimal server identity: 1–20 digits, no leading zeros except zero.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct ServerId(pub String);
+#[serde(try_from = "String", into = "String")]
+pub struct ServerId(String);
 impl ServerId {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn into_string(self) -> String {
+        self.0
+    }
     pub fn new(value: impl Into<String>) -> Result<Self> {
         let value = value.into();
         if value.is_empty()
@@ -262,6 +267,27 @@ impl ServerId {
             return Err(StoreError::Invalid("noncanonical server id".into()));
         }
         Ok(Self(value))
+    }
+}
+impl TryFrom<String> for ServerId {
+    type Error = StoreError;
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(value)
+    }
+}
+impl From<ServerId> for String {
+    fn from(value: ServerId) -> Self {
+        value.into_string()
+    }
+}
+impl rusqlite::types::FromSql for ServerId {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        Self::new(value.as_str()?).map_err(|e| rusqlite::types::FromSqlError::Other(Box::new(e)))
+    }
+}
+impl rusqlite::ToSql for ServerId {
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        Ok(self.as_str().into())
     }
 }
 /// Caller-generated, globally unique local send identity.
@@ -297,7 +323,7 @@ pub struct MessageInput {
     pub request_seq: Option<u32>,
     pub body: Content,
     pub reactions: Vec<Reaction>,
-    pub reactions_rev: i64,
+    pub rev: i64,
 }
 /// Single total ordering used by pages, windows, previews and segments.
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
@@ -320,7 +346,7 @@ pub struct StoredMessage {
     pub reactions: Vec<Reaction>,
     pub reactions_rev: i64,
     /// Reaction revision accompanying the last body update; reaction-only ops do not advance it.
-    pub body_reactions_rev: Option<i64>,
+    pub body_rev: Option<i64>,
     pub delivery: Delivery,
     pub created_at_local: i64,
     pub mentioned: bool,
@@ -339,6 +365,8 @@ pub struct ChatInput {
     pub left: bool,
     pub last_message_id: Option<ServerId>,
     pub last_message_ms: Option<i64>,
+    /// Raw server count, independent of the computed unread_count.
+    pub server_unread: u32,
     pub unread_count: u32,
     pub unread_stale: bool,
     pub last_read_server_id: Option<ServerId>,

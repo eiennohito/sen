@@ -55,7 +55,7 @@ Tables (columns abbreviated):
 - `message(key INTEGER PK, chat_id, server_id UNIQUE NULL, local_id UNIQUE
   NULL, request_seq NULL, sort_ts, sort_id, sender_id, outgoing,
   body_json, reactions_json, reactions_rev, delivery,
-  created_at_local, body_reactions_rev, mentioned, skip_badge)`, with an index
+  created_at_local, body_rev, mentioned, skip_badge)`, with an index
   `(chat_id, sort_ts, sort_id)`.
 - `segment(chat_id, lo_ts, lo_id, hi_ts, hi_id, reaches_start)`. These are the
   contiguous ranges known to have no gaps (see "Gaps").
@@ -77,7 +77,12 @@ background settings, last chat and the persisted request sequence. Preferences
 cross the engine/controller boundary as a whole struct, never string-keyed values.
 
 `left` disables sending after leaving a group; `removed` hides chats missing from a complete list sweep.
-Unread uses the server count and monotonic local/acknowledged read IDs through one `unread` function; `unread_stale` independently records metadata freshness.
+Unread uses one pure `unread(&UnreadRow) -> u32` function over the raw server
+count, acknowledged/local read IDs, newest message ID and covered incoming row
+count. The list query loads these inputs together. `ChatInput.unread_count` is
+computed; `ChatInput.server_unread` holds the raw count. Reading through the newest
+message immediately clears the raw count, so a new message before the read ack
+shows one unread. `unread_stale` independently records metadata freshness.
 
 ### Content
 
@@ -109,13 +114,7 @@ inputs. Asset discovery, photo viewing and reply lookup use typed fields without
 re-parsing JSON. The store alone computes `unread_anchor`; the controller retains
 the supplied divider for the reading session and never guesses from its window.
 
-Migration `003.sql` advances schema 3 to 4 (the earlier `002.sql` is schema 3).
-Server messages, segments, receipts, withdrawal tombstones and identity/detail
-caches are discarded and fetched again. Local rows without a server ID retain
-their key, delivery state, request sequence and text, converted into `Text`.
-Drafts and preferences survive; the old pref rows become one typed preferences
-record. The account profile is retained as typed fields. There is no legacy
-content reader or compatibility representation in the schema.
+As a pre-release rule, a schema change discards the local store, including drafts, unsent messages, preferences and pending read acks.
 
 `key` is the row identity for the life of the row. It does not change when a
 pending send gets its server id. The UI keys every row by `key` and never by
@@ -136,7 +135,7 @@ There is one total order everywhere: `(sort_ts, sort_id)`.
 
 | Input | Rule |
 | --- | --- |
-| Server page (recent, older, newer) | Upsert by `server_id`. Content fields take the newer `reactions_rev`/edit; withdrawal is sticky; `delivery` only advances (Sent → Read). Never deletes rows. Extends or merges `segment`s. |
+| Server page (recent, older, newer) | Upsert by `server_id`. Content fields take the newer `rev`/edit; withdrawal is sticky; `delivery` only advances (Sent → Read). Never deletes rows. Extends or merges `segment`s. |
 | Live message op (25/26/43) | Upsert by `server_id`. Outgoing op 25 with a `request_seq` matching a pending row links to that row (sets `server_id`, `delivery=Sent`). Adjacent to the newest segment when the stream is continuous since the last applied revision; otherwise starts a new segment. |
 | Send result | Link the pending row by `request_seq` → `server_id`. If the echo already created a separate row, merge the two (keep the pending row's `key`, delete the duplicate, emit `Removed{key}`). |
 | Send failure | `delivery = Rejected{reason}` (Not sent). Retry keeps the row; a late echo or success turns it Sent. |
@@ -149,13 +148,14 @@ There is one total order everywhere: `(sort_ts, sort_id)`.
 Preview, activity, unread and history are all read from the same rows, so
 they cannot disagree.
 
-The store API accepts canonical decimal server ids (up to 20 digits, no
-leading zeros except `0`). Zero padding then exactly preserves the existing
-`(length, lexicographic)` comparison. `ServerId::new` validates IDs once at construction.
+`ServerId` has a private field; every construction uses `ServerId::new`, which
+rejects empty IDs and anything other than 1–20 ASCII decimal digits with no
+leading zeros except `0`. A rejected wire ID is a decode failure for that item.
+Zero padding preserves the `(length, lexicographic)` comparison.
 `MessageInput.created_ms <= 0` falls back to a positive `delivered_ms`, then zero.
 
-`reactions_rev` versions page/live content as well as reactions until a distinct
-edit revision exists in the transport. A nullable `message.body_reactions_rev` records the reaction revision accompanying body data and tracks
+`MessageInput.rev` versions page/live content as well as reactions until a distinct
+edit revision exists in the transport. A nullable `message.body_rev` records the reaction revision accompanying body data and tracks
 body-field updates separately, so reaction-only operations cannot suppress a
 later content update. Incoming rows enter as Sent; persisted receipt markers
 upgrade outgoing rows to Read, including rows loaded after the receipt.
@@ -196,6 +196,8 @@ JSON, never compared as a string). The submit flow is:
    only for the `Inserted` delta, not for the disk).
 2. Send it.
 3. Link it, or mark it failed.
+
+Request sequences start at a random 31-bit value per process and increment modulo 2^31; they are not preferences. Echo linking uses the sequence retained on each pending row.
 
 The actions on failed rows are Retry (same row, new `request_seq`), Discard
 (deletes the row) and Copy to composer. There is no

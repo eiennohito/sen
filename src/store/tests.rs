@@ -6,7 +6,7 @@ fn chat() -> ChatId {
     ChatId("chat".into())
 }
 fn id(n: u64) -> ServerId {
-    ServerId(n.to_string())
+    ServerId::new(n.to_string()).unwrap()
 }
 fn input(n: u64) -> MessageInput {
     MessageInput {
@@ -22,7 +22,7 @@ fn input(n: u64) -> MessageInput {
         request_seq: None,
         body: Content::text(n.to_string()),
         reactions: vec![],
-        reactions_rev: 0,
+        rev: 0,
     }
 }
 fn store() -> Store {
@@ -56,14 +56,16 @@ fn pending(s: &mut Store, seq: u32) -> Key {
 }
 
 #[test]
-fn stale_page_preserves_confirmed_pending_and_live_rows_and_newer_hint_requests_refresh() {
+fn stale_page_preserves_confirmed_pending_row() {
     let mut s = store();
     let key = pending(&mut s, 1);
     s.link_sent(1, id(101), 101).unwrap();
     page(&mut s, &[1, 2], false);
     assert_eq!(all(&s).len(), 3);
     assert_eq!(s.newest(&chat()).unwrap().unwrap().key, key);
-
+}
+#[test]
+fn newer_hint_requires_refresh_until_page_catches_up() {
     let mut s = store();
     s.apply_live(&chat(), &input(20), false).unwrap();
     page(&mut s, &[1, 2], false);
@@ -89,12 +91,12 @@ fn echo_and_result_orders_preserve_key_and_merge_duplicate() {
     for echo_first in [false, true] {
         for live_match in [false, true] {
             let mut s = store();
-            let key = pending(&mut s, 1);
+            let key = pending(&mut s, 0);
             let mut echo = input(101);
             echo.outgoing = true;
-            echo.request_seq = Some(1);
+            echo.request_seq = Some(0);
             if !echo_first {
-                s.link_sent(1, id(101), 101).unwrap();
+                s.link_sent(0, id(101), 101).unwrap();
             }
             if live_match {
                 s.apply_live(&chat(), &echo, true).unwrap();
@@ -103,7 +105,7 @@ fn echo_and_result_orders_preserve_key_and_merge_duplicate() {
                     .unwrap();
             }
             let duplicate = all(&s).into_iter().find(|r| r.key != key).map(|r| r.key);
-            let changes = s.link_sent(1, id(101), 999).unwrap();
+            let changes = s.link_sent(0, id(101), 999).unwrap();
             if let Some(duplicate) = duplicate {
                 assert!(changes.messages_removed.contains(&duplicate));
             }
@@ -112,7 +114,7 @@ fn echo_and_result_orders_preserve_key_and_merge_duplicate() {
             assert_eq!(rows[0].key, key);
             assert_eq!(rows[0].sort.sort_ts, 101);
             assert_eq!(rows[0].body, Content::text("101"));
-            assert_eq!(rows[0].local_id, Some(LocalId("local-1".into())));
+            assert_eq!(rows[0].local_id, Some(LocalId("local-0".into())));
         }
     }
 }
@@ -124,7 +126,7 @@ fn withdrawal_tombstone_and_sticky_body() {
     let original = all(&s)[0].clone();
     assert!(original.body.is_withdrawn());
     let mut updated = input(1);
-    updated.reactions_rev = 5;
+    updated.rev = 5;
     updated.body = Content::text("edited");
     s.apply_live(&chat(), &updated, true).unwrap();
     let row = &all(&s)[0];
@@ -133,17 +135,17 @@ fn withdrawal_tombstone_and_sticky_body() {
     assert_eq!(row.delivery, Delivery::Sent);
 }
 #[test]
-fn reaction_and_body_reactions_revisions_only_advance() {
+fn reaction_and_body_revisions_only_advance() {
     let mut s = store();
     let mut m = input(1);
-    m.reactions_rev = 2;
+    m.rev = 2;
     m.reactions = reaction("new");
     s.apply_live(&chat(), &m, false).unwrap();
     s.set_reactions(&id(1), reaction("old"), 1).unwrap();
     page(&mut s, &[1], true);
     assert_eq!(all(&s)[0].reactions, reaction("new"));
     assert_eq!(all(&s)[0].body, m.body);
-    m.reactions_rev = 3;
+    m.rev = 3;
     m.body = Content::text("edit");
     m.reactions = reaction("latest");
     s.apply_page(&chat(), PageKind::Recent, &[m], false)
@@ -217,39 +219,38 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
 }
 #[test]
 fn same_millisecond_order_is_path_independent_with_pending_last() {
-    {
-        let mut s = store();
-        let nums = [1, 9, 10, 100];
-        for n in nums {
-            let mut m = input(n);
-            m.created_ms = 100;
-            s.apply_live(&chat(), &m, false).unwrap();
-        }
-        let k = pending(&mut s, 1);
-        assert_eq!(all(&s).last().unwrap().key, k);
-        assert_eq!(
-            all(&s)
-                .iter()
-                .filter_map(|m| m.server_id.clone())
-                .collect::<Vec<_>>(),
-            vec![id(1), id(9), id(10), id(100)]
-        );
-        s.link_sent(1, id(20), 100).unwrap();
-        assert_eq!(
-            all(&s)
-                .iter()
-                .map(|m| m.server_id.clone().unwrap())
-                .collect::<Vec<_>>(),
-            vec![id(1), id(9), id(10), id(20), id(100)]
-        );
-        let mut m = input(1);
-        m.created_ms = 0;
-        m.delivered_ms = Some(100);
-        s.apply_page(&chat(), PageKind::Recent, &[m], false)
-            .unwrap();
-        assert_eq!(all(&s)[0].sort.sort_ts, 100);
+    let mut s = store();
+    let nums = [1, 9, 10, 100];
+    for n in nums {
+        let mut m = input(n);
+        m.created_ms = 100;
+        s.apply_live(&chat(), &m, false).unwrap();
     }
+    let k = pending(&mut s, 1);
+    assert_eq!(all(&s).last().unwrap().key, k);
+    assert_eq!(
+        all(&s)
+            .iter()
+            .filter_map(|m| m.server_id.clone())
+            .collect::<Vec<_>>(),
+        vec![id(1), id(9), id(10), id(100)]
+    );
+    s.link_sent(1, id(20), 100).unwrap();
+    assert_eq!(
+        all(&s)
+            .iter()
+            .map(|m| m.server_id.clone().unwrap())
+            .collect::<Vec<_>>(),
+        vec![id(1), id(9), id(10), id(20), id(100)]
+    );
+    let mut m = input(1);
+    m.created_ms = 0;
+    m.delivered_ms = Some(100);
+    s.apply_page(&chat(), PageKind::Recent, &[m], false)
+        .unwrap();
+    assert_eq!(all(&s)[0].sort.sort_ts, 100);
 }
+
 #[test]
 fn segments_gaps_overlap_and_cursor_adjacency() {
     let mut s = store();
@@ -377,13 +378,13 @@ fn chat_list_sweeps_metadata_and_activity_do_not_regress() {
     assert_eq!(s.chat_list(1, 1).unwrap().len(), 1);
 }
 #[test]
-fn unread_read_markers_drafts_preferences_and_account() {
+fn unread_read_markers_and_partial_acknowledgements() {
     let mut s = store();
     page(&mut s, &[1, 2, 3], true);
     s.upsert_chats(
         &[ChatInput {
             id: chat(),
-            unread_count: 9,
+            server_unread: 9,
             unread_stale: true,
             ..Default::default()
         }],
@@ -396,6 +397,19 @@ fn unread_read_markers_drafts_preferences_and_account() {
     let c = s.chat_list(1, 0).unwrap()[0].chat.clone();
     assert_eq!(c.unread_count, 8);
     assert!(!c.unread_stale);
+    s.upsert_details(&[ChatInput {
+        id: chat(),
+        server_unread: 99,
+        last_read_server_id: Some(id(999)),
+        last_message_id: Some(id(999)),
+        ..Default::default()
+    }])
+    .unwrap();
+    let details = s.chat(&chat()).unwrap().unwrap();
+    assert_eq!(details.server_unread, 10);
+    assert_eq!(details.unread_count, 8);
+    assert_eq!(details.last_read_server_id, Some(id(2)));
+    assert!(s.pending_reads().unwrap().contains(&chat()));
     s.mark_read(&chat(), id(1)).unwrap();
     assert_eq!(
         s.chat_list(1, 0).unwrap()[0].chat.last_read_server_id,
@@ -403,18 +417,22 @@ fn unread_read_markers_drafts_preferences_and_account() {
     );
     let mut server = ChatInput {
         id: chat(),
-        unread_count: 10,
+        server_unread: 10,
         last_message_id: Some(id(100)),
         ..Default::default()
     };
     s.upsert_chats(&[server.clone()], false).unwrap();
     assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 8);
     s.confirm_read(&chat(), &id(2)).unwrap();
-    server.unread_count = 8;
+    server.server_unread = 8;
     s.upsert_chats(&[server], false).unwrap();
     assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 8);
     s.mark_read(&chat(), id(3)).unwrap();
     assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 7);
+}
+#[test]
+fn drafts_preferences_and_account() {
+    let mut s = store();
     let d = Draft {
         reply: Some(ReplyReference {
             message_id: "42".into(),
@@ -509,7 +527,7 @@ fn disk_reopen_preserves_state_and_permissions() {
         s.upsert_chats(
             &[ChatInput {
                 id: chat(),
-                unread_count: 3,
+                server_unread: 3,
                 unread_stale: true,
                 ..Default::default()
             }],
@@ -548,32 +566,40 @@ fn disk_reopen_preserves_state_and_permissions() {
     );
 }
 #[test]
-fn different_schema_recreates_cache_and_drafts() {
-    for version in [7, 9] {
-        let dir = TempDir::new();
-        {
-            let mut s = Store::open(&dir.0).unwrap();
-            pending(&mut s, 1);
-            page(&mut s, &[1], true);
-            s.save_draft(
-                &chat(),
-                &Draft {
-                    text: "draft".into(),
-                    reply: None,
-                    cursor: 5,
-                    anchor: 5,
-                    updated: 1,
-                },
-            )
-            .unwrap();
-            s.conn.pragma_update(None, "user_version", version).unwrap();
-        }
-        let s = Store::open(&dir.0).unwrap();
-        assert!(s.all_pending().unwrap().is_empty());
-        assert!(s.chat(&chat()).unwrap().is_none());
-        assert!(s.load_draft(&chat()).unwrap().is_none());
-        assert_eq!(s.sync_revision().unwrap(), 0);
+fn different_schema_discards_local_store() {
+    let version = SCHEMA_VERSION + 1;
+    let dir = TempDir::new();
+    {
+        let mut s = Store::open(&dir.0).unwrap();
+        pending(&mut s, 1);
+        page(&mut s, &[1], true);
+        s.save_draft(
+            &chat(),
+            &Draft {
+                text: "draft".into(),
+                reply: None,
+                cursor: 5,
+                anchor: 5,
+                updated: 1,
+            },
+        )
+        .unwrap();
+        s.mark_read(&chat(), id(1)).unwrap();
+        s.set_prefs(&Prefs {
+            enter_sends: true,
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(!s.pending_reads().unwrap().is_empty());
+        s.conn.pragma_update(None, "user_version", version).unwrap();
     }
+    let s = Store::open(&dir.0).unwrap();
+    assert!(s.all_pending().unwrap().is_empty());
+    assert!(s.chat(&chat()).unwrap().is_none());
+    assert!(s.load_draft(&chat()).unwrap().is_none());
+    assert_eq!(s.sync_revision().unwrap(), 0);
+    assert_eq!(s.prefs().unwrap(), Prefs::default());
+    assert!(s.pending_reads().unwrap().is_empty());
 }
 
 #[test]
@@ -743,4 +769,47 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
     assert!(!orphan.exists());
     drop(current);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn new_message_before_read_ack_counts_from_zero() {
+    let mut s = store();
+    page(&mut s, &[10, 20], true);
+    s.upsert_chats(
+        &[ChatInput {
+            id: chat(),
+            server_unread: 9,
+            last_message_id: Some(id(20)),
+            ..Default::default()
+        }],
+        false,
+    )
+    .unwrap();
+    s.mark_read(&chat(), id(20)).unwrap();
+    assert_eq!(s.chat(&chat()).unwrap().unwrap().server_unread, 0);
+    s.apply_operation(
+        &LiveOperation {
+            revision: 1,
+            replay: false,
+            op: Operation::Message(Box::new(input(30))),
+        },
+        true,
+    )
+    .unwrap();
+    let c = s.chat_list(1, 0).unwrap().remove(0).chat;
+    assert_eq!(c.server_unread, 1);
+    assert_eq!(c.unread_count, 1);
+    s.confirm_read(&chat(), &id(20)).unwrap();
+    assert_eq!(s.chat(&chat()).unwrap().unwrap().unread_count, 1);
+}
+
+#[test]
+fn server_ids_validate_construction_and_deserialization() {
+    for value in ["", "01", "-1", "1a", " 1", "123456789012345678901"] {
+        assert!(ServerId::new(value).is_err());
+        assert!(serde_json::from_value::<ServerId>(serde_json::json!(value)).is_err());
+    }
+    for value in ["0", "1", "99999999999999999999"] {
+        assert_eq!(ServerId::new(value).unwrap().as_str(), value);
+    }
 }

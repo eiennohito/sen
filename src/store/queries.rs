@@ -6,9 +6,58 @@ fn sql_limit(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
-const CHAT_SELECT: &str =
-    "SELECT chat_id,is_group,title,avatar,member_count,muted,left,last_message_id,
-    last_activity,server_unread,unread_stale,last_read_server_id,list_rank FROM chat";
+const CHAT_SELECT: &str = "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,
+    c.muted,c.left,c.last_message_id,c.last_activity,c.server_unread,c.unread_stale,
+    c.last_read_server_id,c.list_rank";
+const UNREAD_COLUMNS: &str = "c.read_acked_server_id,
+    (SELECT server_id FROM message WHERE chat_id=c.chat_id AND server_id IS NOT NULL
+     ORDER BY sort_id DESC LIMIT 1),
+    (SELECT count(*) FROM (SELECT sort_id,row_number() OVER (ORDER BY sort_id DESC) AS unread_rank
+     FROM message WHERE chat_id=c.chat_id AND outgoing=0 AND server_id IS NOT NULL)
+     WHERE unread_rank<=c.server_unread
+     AND sort_id>coalesce(substr('00000000000000000000'||c.read_acked_server_id,-20),'')
+     AND sort_id<=substr('00000000000000000000'||c.last_read_server_id,-20))";
+
+struct UnreadRow {
+    server_unread: u32,
+    acknowledged: Option<ServerId>,
+    local_read: Option<ServerId>,
+    newest: Option<ServerId>,
+    covered: u32,
+}
+fn unread(row: &UnreadRow) -> u32 {
+    let Some(local) = &row.local_read else {
+        return row.server_unread;
+    };
+    if row
+        .acknowledged
+        .as_ref()
+        .is_some_and(|ack| server_sort(local) <= server_sort(ack))
+    {
+        return row.server_unread;
+    }
+    if row
+        .newest
+        .as_ref()
+        .is_some_and(|newest| server_sort(local) >= server_sort(newest))
+    {
+        return 0;
+    }
+    row.server_unread.saturating_sub(row.covered)
+}
+fn decode_unread(
+    r: &rusqlite::Row<'_>,
+    chat: &ChatInput,
+    offset: usize,
+) -> rusqlite::Result<UnreadRow> {
+    Ok(UnreadRow {
+        server_unread: chat.server_unread,
+        acknowledged: r.get(offset)?,
+        local_read: chat.last_read_server_id.clone(),
+        newest: numeric_max(chat.last_message_id.clone(), r.get(offset + 1)?),
+        covered: r.get(offset + 2)?,
+    })
+}
 fn decode_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatInput> {
     Ok(ChatInput {
         id: ChatId(r.get(0)?),
@@ -28,66 +77,34 @@ fn decode_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatInput> {
         member_count: r.get(4)?,
         muted: r.get(5)?,
         left: r.get(6)?,
-        last_message_id: r.get::<_, Option<String>>(7)?.map(ServerId),
+        last_message_id: r.get(7)?,
         last_message_ms: r.get(8)?,
-        unread_count: r.get(9)?,
+        server_unread: r.get(9)?,
+        unread_count: 0,
         unread_stale: r.get(10)?,
-        last_read_server_id: r.get::<_, Option<String>>(11)?.map(ServerId),
+        last_read_server_id: r.get(11)?,
         list_rank: r.get(12)?,
     })
 }
+fn decode_chat_with_unread(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatInput> {
+    let mut chat = decode_chat(r)?;
+    chat.unread_count = unread(&decode_unread(r, &chat, 13)?);
+    Ok(chat)
+}
 fn chats(conn: &Connection) -> Result<Vec<ChatInput>> {
-    let mut stmt = conn.prepare(CHAT_SELECT)?;
+    let mut stmt = conn.prepare(&format!("{CHAT_SELECT}, {UNREAD_COLUMNS} FROM chat c"))?;
     Ok(stmt
-        .query_map([], decode_chat)?
+        .query_map([], decode_chat_with_unread)?
         .collect::<std::result::Result<Vec<_>, _>>()?)
 }
 fn chat_record(conn: &Connection, id: &ChatId) -> Result<Option<ChatInput>> {
-    let mut chat = conn
+    Ok(conn
         .query_row(
-            &format!("{CHAT_SELECT} WHERE chat_id=?"),
+            &format!("{CHAT_SELECT}, {UNREAD_COLUMNS} FROM chat c WHERE c.chat_id=?"),
             [&id.0],
-            decode_chat,
+            decode_chat_with_unread,
         )
-        .optional()?;
-    if let Some(chat) = &mut chat {
-        chat.unread_count = unread(conn, chat)?;
-    }
-    Ok(chat)
-}
-
-fn unread(conn: &Connection, input: &ChatInput) -> Result<u32> {
-    let Some(read) = &input.last_read_server_id else {
-        return Ok(input.unread_count);
-    };
-    let local = server_sort(read);
-    let ack: Option<String> = conn.query_row(
-        "SELECT read_acked_server_id FROM chat WHERE chat_id=?",
-        [&input.id.0],
-        |r| r.get(0),
-    )?;
-    let server = ack
-        .map(ServerId)
-        .as_ref()
-        .map(server_sort)
-        .unwrap_or_default();
-    if local <= server {
-        return Ok(input.unread_count);
-    }
-    let newest: Option<String> = conn.query_row("SELECT server_id FROM message WHERE chat_id=? AND server_id IS NOT NULL ORDER BY sort_id DESC LIMIT 1", [&input.id.0], |r| r.get(0)).optional()?;
-    if input.last_message_id.as_ref().is_some_and(|hint| {
-        let last = numeric_max(Some(hint.clone()), newest.map(ServerId)).unwrap();
-        local >= server_sort(&last)
-    }) {
-        return Ok(0);
-    }
-    let covered: u32 = conn.query_row(
-        "SELECT count(*) FROM (SELECT sort_id FROM message WHERE chat_id=?1 AND outgoing=0
-        AND server_id IS NOT NULL ORDER BY sort_id DESC LIMIT ?2) WHERE sort_id>?3 AND sort_id<=?4",
-        params![input.id.0, input.unread_count, server, local],
-        |r| r.get(0),
-    )?;
-    Ok(input.unread_count.saturating_sub(covered))
+        .optional()?)
 }
 
 impl Store {
@@ -97,7 +114,7 @@ impl Store {
     pub fn contains_server(&self, id: &ServerId) -> Result<bool> {
         Ok(self.conn.query_row(
             "SELECT EXISTS(SELECT 1 FROM message WHERE server_id=?)",
-            [&id.0],
+            [id.as_str()],
             |r| r.get(0),
         )?)
     }
@@ -278,16 +295,16 @@ impl Store {
         id: Option<&ChatId>,
         query: &str,
     ) -> Result<Vec<ChatListItem>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,c.muted,c.left,c.last_message_id,
              c.last_activity,c.server_unread,c.unread_stale,c.last_read_server_id,c.list_rank,
              m.key,m.chat_id,m.server_id,m.local_id,m.request_seq,m.sort_ts,m.sort_id,
              m.sender_id,m.outgoing,m.body_json,m.reactions_json,m.reactions_rev,
-             m.delivery,m.created_at_local,m.body_reactions_rev,m.mentioned,m.skip_badge,m.reply_json,
+             m.delivery,m.created_at_local,m.body_rev,m.mentioned,m.skip_badge,m.reply_json,
              d.text,d.cursor,d.anchor,d.updated,
              (SELECT count(*) FROM message f WHERE f.chat_id=c.chat_id AND f.server_id IS NULL
               AND json_type(f.delivery,'$.Rejected') IS NOT NULL),
-             max(coalesce(c.last_activity,0),coalesce(m.sort_ts,0)) AS activity,d.reply_json
+             max(coalesce(c.last_activity,0),coalesce(m.sort_ts,0)) AS activity,d.reply_json, {UNREAD_COLUMNS}
              FROM chat c
              LEFT JOIN message m ON m.key=(SELECT key FROM message WHERE chat_id=c.chat_id
                  ORDER BY sort_ts DESC,sort_id DESC LIMIT 1)
@@ -295,8 +312,8 @@ impl Store {
              WHERE c.removed=0 AND (?3 IS NULL OR c.chat_id=?3)
              AND (?4='' OR c.title LIKE ?5 OR json_extract(m.body_json,'$.Text.text') LIKE ?5)
              ORDER BY activity DESC,c.list_rank,c.chat_id LIMIT ?1 OFFSET ?2",
-        )?;
-        let mut rows = stmt
+        ))?;
+        let rows = stmt
             .query_map(
                 params![
                     sql_limit(limit),
@@ -306,8 +323,10 @@ impl Store {
                     format!("%{query}%")
                 ],
                 |r| {
+                    let mut chat = decode_chat(r)?;
+                    chat.unread_count = unread(&decode_unread(r, &chat, 38)?);
                     Ok(ChatListItem {
-                        chat: decode_chat(r)?,
+                        chat,
                         preview: if r.get::<_, Option<i64>>(13)?.is_some() {
                             Some(super::messages::decode_at(r, 13)?)
                         } else {
@@ -331,9 +350,6 @@ impl Store {
                 },
             )?
             .collect::<std::result::Result<Vec<_>, _>>()?;
-        for row in &mut rows {
-            row.chat.unread_count = unread(&self.conn, &row.chat)?;
-        }
         Ok(rows)
     }
 
@@ -372,18 +388,24 @@ impl Store {
                         input.member_count,
                         input.muted,
                         input.left,
-                        last_id.map(|id| id.0),
+                        last_id,
                         last_time,
-                        input.unread_count,
+                        input.server_unread,
                         input.unread_stale,
-                        read.map(|id| id.0),
+                        read,
                         input.list_rank,
                     ],
                 )?;
                 if let Some(marker) = &input.last_read_server_id {
-                    let old: Option<String> = tx.query_row("SELECT read_acked_server_id FROM chat WHERE chat_id=?", [&input.id.0], |r| r.get(0))?;
-                    let ack = numeric_max(old.map(ServerId), Some(marker.clone())).unwrap();
-                    tx.execute("UPDATE chat SET read_acked_server_id=? WHERE chat_id=?", params![ack.0,input.id.0])?;
+                    let old: Option<ServerId> = tx.query_row(
+                        "SELECT read_acked_server_id FROM chat WHERE chat_id=?",
+                        [&input.id.0], |r| r.get(0),
+                    )?;
+                    let ack = numeric_max(old, Some(marker.clone())).unwrap();
+                    tx.execute(
+                        "UPDATE chat SET read_acked_server_id=? WHERE chat_id=?",
+                        params![ack, input.id.0],
+                    )?;
                 }
                 c.chats_changed.insert(input.id.clone());
             }
@@ -420,11 +442,24 @@ impl Store {
                     [&chat.0],
                     |r| r.get::<_, Option<String>>(0),
                 )?
-                .map(ServerId);
+                .map(ServerId::new)
+                .transpose()?;
             let marker = numeric_max(old.clone(), Some(up_to)).expect("marker supplied");
+            let record = chat_record(tx, chat)?.expect("chat exists");
+            let newest: Option<ServerId> = tx
+                .query_row(
+                    "SELECT server_id FROM message WHERE chat_id=? AND server_id IS NOT NULL
+                 ORDER BY sort_id DESC LIMIT 1",
+                    [&chat.0],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            let reached_newest = numeric_max(record.last_message_id, newest)
+                .is_some_and(|newest| server_sort(&marker) >= server_sort(&newest));
             tx.execute(
-                "UPDATE chat SET last_read_server_id=?,unread_stale=0 WHERE chat_id=?",
-                params![marker.0, chat.0],
+                "UPDATE chat SET last_read_server_id=?1,unread_stale=0,
+                 server_unread=CASE WHEN ?2 THEN 0 ELSE server_unread END WHERE chat_id=?3",
+                params![marker, reached_newest, chat.0],
             )?;
             c.chats_changed.insert(chat.clone());
             Ok(())
@@ -670,28 +705,30 @@ impl Store {
 
 impl Store {
     pub fn upsert_details(&mut self, list: &[ChatInput]) -> Result<Changes> {
-        let mut list = list.to_vec();
-        for c in &mut list {
-            if let Some(old) = chat_record(&self.conn, &c.id)? {
-                c.unread_count = self.conn.query_row(
-                    "SELECT server_unread FROM chat WHERE chat_id=?",
-                    [&c.id.0],
-                    |r| r.get(0),
+        self.mutate(|tx, changes| {
+            for input in list {
+                ensure_chat(tx, &input.id)?;
+                tx.execute(
+                    "UPDATE chat SET is_group=?2,title=?3,avatar=?4,member_count=?5,
+                     muted=?6,left=?7,removed=0 WHERE chat_id=?1",
+                    params![
+                        input.id.0,
+                        input.is_group,
+                        input.title,
+                        input
+                            .avatar
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()?,
+                        input.member_count,
+                        input.muted,
+                        input.left
+                    ],
                 )?;
-                c.unread_stale = old.unread_stale;
-                c.last_read_server_id = self
-                    .conn
-                    .query_row(
-                        "SELECT read_acked_server_id FROM chat WHERE chat_id=?",
-                        [&c.id.0],
-                        |r| r.get::<_, Option<String>>(0),
-                    )?
-                    .map(ServerId);
-                c.last_message_id = old.last_message_id;
-                c.last_message_ms = old.last_message_ms;
+                changes.chats_changed.insert(input.id.clone());
             }
-        }
-        self.upsert_chats(&list, false)
+            Ok(())
+        })
     }
 }
 
@@ -704,39 +741,51 @@ impl Store {
                 [&chat.0],
                 |r| r.get(0),
             )?;
-            let marker = numeric_max(old.map(ServerId), Some(id.clone())).unwrap();
-            let mut raw = tx.query_row(
-                &format!("{CHAT_SELECT} WHERE chat_id=?"),
-                [&chat.0],
-                decode_chat,
+            let marker = numeric_max(
+                old.clone().map(ServerId::new).transpose()?,
+                Some(id.clone()),
+            )
+            .unwrap();
+            let record = chat_record(tx, chat)?.expect("chat exists");
+            let previous: Option<ServerId> = old.map(ServerId::new).transpose()?;
+            let covered: u32 = tx.query_row(
+                "SELECT count(*) FROM (SELECT sort_id FROM message WHERE chat_id=?1
+                 AND outgoing=0 AND server_id IS NOT NULL ORDER BY sort_id DESC LIMIT ?2)
+                 WHERE sort_id>?3 AND sort_id<=?4",
+                params![
+                    chat.0,
+                    record.server_unread,
+                    previous.as_ref().map(server_sort).unwrap_or_default(),
+                    server_sort(&marker)
+                ],
+                |r| r.get(0),
             )?;
-            // Retain the count beyond the acknowledged marker, including partial acknowledgements.
-            raw.last_read_server_id = Some(marker.clone());
-            raw.unread_count = unread(tx, &raw)?;
             tx.execute(
                 "UPDATE chat SET read_acked_server_id=?,server_unread=? WHERE chat_id=?",
-                params![marker.0, raw.unread_count, chat.0],
+                params![marker, record.server_unread.saturating_sub(covered), chat.0],
             )?;
             Ok(())
         })
     }
     pub fn pending_reads(&self) -> Result<Vec<ChatId>> {
-        let mut stmt = self.conn.prepare("SELECT chat_id,last_read_server_id,read_acked_server_id FROM chat WHERE last_read_server_id IS NOT NULL")?;
+        let mut stmt = self.conn.prepare(
+            "SELECT chat_id,last_read_server_id,read_acked_server_id FROM chat
+             WHERE last_read_server_id IS NOT NULL",
+        )?;
         let rows = stmt
             .query_map([], |r| {
                 Ok((
                     r.get::<_, String>(0)?,
-                    r.get::<_, String>(1)?,
-                    r.get::<_, Option<String>>(2)?,
+                    r.get::<_, ServerId>(1)?,
+                    r.get::<_, Option<ServerId>>(2)?,
                 ))
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows
             .into_iter()
             .filter(|(_, local, ack)| {
-                ack.as_ref().is_none_or(|ack| {
-                    server_sort(&ServerId(local.clone())) > server_sort(&ServerId(ack.clone()))
-                })
+                ack.as_ref()
+                    .is_none_or(|ack| server_sort(local) > server_sort(ack))
             })
             .map(|(chat, _, _)| ChatId(chat))
             .collect())
@@ -792,7 +841,14 @@ impl Store {
             .unwrap_or(Value::Null))
     }
     pub fn save_full_chat(&mut self, chat: &ChatId, raw: Value) -> Result<Changes> {
-        self.mutate(|tx,_| { tx.execute("INSERT INTO chat_detail VALUES(?,?) ON CONFLICT(chat_id) DO UPDATE SET wire_json=excluded.wire_json",params![chat.0,raw.to_string()])?; Ok(()) })
+        self.mutate(|tx, _| {
+            tx.execute(
+                "INSERT INTO chat_detail VALUES(?,?) ON CONFLICT(chat_id)
+                 DO UPDATE SET wire_json=excluded.wire_json",
+                params![chat.0, raw.to_string()],
+            )?;
+            Ok(())
+        })
     }
 }
 

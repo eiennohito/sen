@@ -10,7 +10,7 @@ use std::path::Path;
 use types::Result;
 pub use types::*;
 
-const SCHEMA_VERSION: i64 = 8;
+const SCHEMA_VERSION: i64 = 9;
 
 /// Sole-writer account store. Every mutation commits atomically before returning deltas.
 pub struct Store {
@@ -211,7 +211,7 @@ fn ensure_chat(tx: &Connection, chat: &ChatId) -> Result<()> {
     Ok(())
 }
 fn server_sort(id: &ServerId) -> String {
-    format!("{:0>20}", id.0)
+    format!("{:0>20}", id.as_str())
 }
 fn numeric_max(a: Option<ServerId>, b: Option<ServerId>) -> Option<ServerId> {
     match (a, b) {
@@ -284,7 +284,10 @@ impl Store {
                     [&m.chat_id.0],
                     |r| r.get(0),
                 )?;
-                let marker = marker.map(|id| server_sort(&ServerId(id)));
+                let marker = marker
+                    .map(ServerId::new)
+                    .transpose()?
+                    .map(|id| server_sort(&id));
                 let incoming = server_sort(&m.server_id);
                 if marker.is_none_or(|id| incoming > id) {
                     let c = self.increment_unread(&m.chat_id)?;

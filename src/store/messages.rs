@@ -2,7 +2,7 @@ use super::*;
 
 const SELECT: &str = "SELECT key,chat_id,server_id,local_id,request_seq,sort_ts,sort_id,
     sender_id,outgoing,body_json,reactions_json,reactions_rev,
-    delivery,created_at_local,body_reactions_rev,mentioned,skip_badge,reply_json FROM message";
+    delivery,created_at_local,body_rev,mentioned,skip_badge,reply_json FROM message";
 
 fn decode(r: &rusqlite::Row<'_>) -> rusqlite::Result<StoredMessage> {
     decode_at(r, 0)
@@ -11,7 +11,7 @@ pub(super) fn decode_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Resul
     Ok(StoredMessage {
         key: Key(r.get(offset)?),
         chat_id: ChatId(r.get(offset + 1)?),
-        server_id: r.get::<_, Option<String>>(offset + 2)?.map(ServerId),
+        server_id: r.get(offset + 2)?,
         local_id: r.get::<_, Option<String>>(offset + 3)?.map(LocalId),
         request_seq: r.get(offset + 4)?,
         sort: Cursor {
@@ -25,7 +25,7 @@ pub(super) fn decode_at(r: &rusqlite::Row<'_>, offset: usize) -> rusqlite::Resul
         reactions_rev: r.get(offset + 11)?,
         delivery: parse(r, offset + 12)?,
         created_at_local: r.get(offset + 13)?,
-        body_reactions_rev: r.get(offset + 14)?,
+        body_rev: r.get(offset + 14)?,
         mentioned: r.get(offset + 15)?,
         reply: parse(r, offset + 17)?,
         skip_badge: r.get(offset + 16)?,
@@ -56,9 +56,11 @@ pub(super) fn by_key(conn: &Connection, key: Key) -> Result<StoredMessage> {
 
 pub(super) fn by_server(conn: &Connection, id: &ServerId) -> Result<Option<StoredMessage>> {
     let key = conn
-        .query_row("SELECT key FROM message WHERE server_id=?", [&id.0], |r| {
-            r.get::<_, i64>(0)
-        })
+        .query_row(
+            "SELECT key FROM message WHERE server_id=?",
+            [id.as_str()],
+            |r| r.get::<_, i64>(0),
+        )
         .optional()?;
     key.map(|k| by_key(conn, Key(k))).transpose()
 }
@@ -76,11 +78,11 @@ pub(super) fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
     conn.execute(
         "UPDATE message SET server_id=?2,local_id=?3,request_seq=?4,sort_ts=?5,sort_id=?6,
         sender_id=?7,outgoing=?8,body_json=?9,reactions_json=?10,reactions_rev=?11,
-        delivery=?12,created_at_local=?13,body_reactions_rev=?14,mentioned=?15,skip_badge=?16,reply_json=?17 WHERE key=?1",
+        delivery=?12,created_at_local=?13,body_rev=?14,mentioned=?15,skip_badge=?16,reply_json=?17 WHERE key=?1",
         params![
             m.key.0,
-            m.server_id.as_ref().map(|s| &s.0),
-            m.local_id.as_ref().map(|s| &s.0),
+            m.server_id.as_ref().map(|s| s.as_str()),
+            m.local_id.as_ref().map(|s| s.0.as_str()),
             m.request_seq,
             m.sort.sort_ts,
             m.sort.sort_id,
@@ -91,7 +93,7 @@ pub(super) fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
             m.reactions_rev,
             serde_json::to_string(&m.delivery)?,
             m.created_at_local,
-            m.body_reactions_rev, m.mentioned, m.skip_badge, serde_json::to_string(&m.reply)?,
+            m.body_rev, m.mentioned, m.skip_badge, serde_json::to_string(&m.reply)?,
         ],
     )?;
     Ok(())
@@ -101,12 +103,12 @@ fn insert(conn: &Connection, row: &mut StoredMessage) -> Result<()> {
     conn.execute(
         "INSERT INTO message(chat_id,server_id,local_id,request_seq,sort_ts,sort_id,sender_id,
         outgoing,body_json,reactions_json,reactions_rev,delivery,created_at_local,
-        body_reactions_rev,mentioned,skip_badge,reply_json)
+        body_rev,mentioned,skip_badge,reply_json)
         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
         params![
             row.chat_id.0,
-            row.server_id.as_ref().map(|id| &id.0),
-            row.local_id.as_ref().map(|id| &id.0),
+            row.server_id.as_ref().map(|id| id.as_str()),
+            row.local_id.as_ref().map(|id| id.0.as_str()),
             row.request_seq,
             row.sort.sort_ts,
             row.sort.sort_id,
@@ -117,7 +119,7 @@ fn insert(conn: &Connection, row: &mut StoredMessage) -> Result<()> {
             row.reactions_rev,
             serde_json::to_string(&row.delivery)?,
             row.created_at_local,
-            row.body_reactions_rev,
+            row.body_rev,
             row.mentioned,
             row.skip_badge,
             serde_json::to_string(&row.reply)?
@@ -142,7 +144,7 @@ fn new_row(chat: &ChatId, ts: i64) -> StoredMessage {
         body: Content::default(),
         reactions: vec![],
         reactions_rev: 0,
-        body_reactions_rev: None,
+        body_rev: None,
         delivery: Delivery::Pending,
         created_at_local: ts,
         mentioned: false,
@@ -160,28 +162,24 @@ fn receipt(conn: &Connection, m: &mut StoredMessage) -> Result<()> {
             |r| r.get(0),
         )?;
         if let Some(marker) = marker
-            && server_sort(id) <= server_sort(&ServerId(marker))
+            && server_sort(id) <= server_sort(&ServerId::new(marker)?)
         {
             m.delivery = Delivery::Read;
         }
     }
     Ok(())
 }
-fn merge_server_row(
+fn server_row(
     conn: &Connection,
     changes: &mut Changes,
     chat: &ChatId,
     id: &ServerId,
     ts: i64,
     pending: Option<Key>,
-    input: Option<&MessageInput>,
 ) -> Result<StoredMessage> {
-    if input.is_some_and(|input| &input.chat_id != chat) {
-        return Err(StoreError::Invalid("message chat mismatch".into()));
-    }
     ensure_chat(conn, chat)?;
     let existing = by_server(conn, id)?;
-    let mut row = if let Some(key) = pending {
+    let row = if let Some(key) = pending {
         let mut target = by_key(conn, key)?;
         if target.chat_id != *chat {
             return Err(StoreError::Invalid(
@@ -219,40 +217,55 @@ fn merge_server_row(
     } else {
         new_row(chat, ts)
     };
+    Ok(row)
+}
+fn merge_server_row(
+    conn: &Connection,
+    changes: &mut Changes,
+    input: &MessageInput,
+    pending: Option<Key>,
+) -> Result<StoredMessage> {
+    let id = &input.server_id;
+    let ts = server_time(input);
+    let mut row = server_row(conn, changes, &input.chat_id, id, ts, pending)?;
     let was_withdrawn = row.body.is_withdrawn();
-    if let Some(input) = input {
-        let first_content = row.body_reactions_rev.is_none();
-        if row
-            .body_reactions_rev
-            .is_none_or(|rev| input.reactions_rev > rev)
-        {
-            row.body = input.body.clone();
-            row.mentioned = input.mentioned;
-            row.reply = input.reply.clone();
-            row.skip_badge = input.skip_badge;
-            row.sender_id = input.sender_id.clone();
-            row.outgoing = input.outgoing;
-            row.body_reactions_rev = Some(input.reactions_rev);
-        }
-        if row.reactions_rev < input.reactions_rev || (first_content && row.reactions_rev == 0) {
-            row.reactions = input.reactions.clone();
-            row.reactions_rev = input.reactions_rev;
-        }
-        row.request_seq = row.request_seq.or(input.request_seq);
-        row.sort.sort_ts = ts;
+    let first_content = row.body_rev.is_none();
+    if row.body_rev.is_none_or(|rev| input.rev > rev) {
+        row.body = input.body.clone();
+        row.mentioned = input.mentioned;
+        row.reply = input.reply.clone();
+        row.skip_badge = input.skip_badge;
+        row.sender_id = input.sender_id.clone();
+        row.outgoing = input.outgoing;
+        row.body_rev = Some(input.rev);
     }
+    if row.reactions_rev < input.rev || (first_content && row.reactions_rev == 0) {
+        row.reactions = input.reactions.clone();
+        row.reactions_rev = input.rev;
+    }
+    row.request_seq = row.request_seq.or(input.request_seq);
+    row.sort.sort_ts = ts;
+    if was_withdrawn {
+        row.body = Content::Withdrawn;
+    }
+    save_server_row(conn, changes, row, id)
+}
+fn save_server_row(
+    conn: &Connection,
+    changes: &mut Changes,
+    mut row: StoredMessage,
+    id: &ServerId,
+) -> Result<StoredMessage> {
     row.server_id = Some(id.clone());
     row.sort.sort_id = server_sort(id);
     if row.delivery != Delivery::Read {
         row.delivery = Delivery::Sent;
     }
-    if was_withdrawn
-        || conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM withdrawal WHERE server_id=?)",
-            [&id.0],
-            |r| r.get::<_, bool>(0),
-        )?
-    {
+    if conn.query_row(
+        "SELECT EXISTS(SELECT 1 FROM withdrawal WHERE server_id=?)",
+        [id.as_str()],
+        |r| r.get::<_, bool>(0),
+    )? {
         row.body = Content::Withdrawn;
     }
     receipt(conn, &mut row)?;
@@ -261,9 +274,12 @@ fn merge_server_row(
     } else {
         save(conn, &row)?;
     }
-    conn.execute("UPDATE chat SET removed=0 WHERE chat_id=?", [&chat.0])?;
+    conn.execute(
+        "UPDATE chat SET removed=0 WHERE chat_id=?",
+        [&row.chat_id.0],
+    )?;
     changes.messages_upserted.insert(row.key);
-    changes.chats_changed.insert(chat.clone());
+    changes.chats_changed.insert(row.chat_id.clone());
     Ok(row)
 }
 fn server_time(input: &MessageInput) -> i64 {
@@ -349,18 +365,7 @@ impl Store {
             ensure_chat(tx, chat)?;
             let mut cursors = Vec::new();
             for input in messages {
-                cursors.push(
-                    merge_server_row(
-                        tx,
-                        c,
-                        chat,
-                        &input.server_id,
-                        server_time(input),
-                        None,
-                        Some(input),
-                    )?
-                    .sort,
-                );
+                cursors.push(merge_server_row(tx, c, input, None)?.sort);
             }
             match &kind {
                 PageKind::Older { before } | PageKind::Newer { after: before } => {
@@ -409,15 +414,7 @@ impl Store {
             } else {
                 None
             };
-            let row = merge_server_row(
-                tx,
-                c,
-                chat,
-                &message.server_id,
-                server_time(message),
-                pending,
-                Some(message),
-            )?;
+            let row = merge_server_row(tx, c, message, pending)?;
             let lo = if continuous {
                 segments(tx, chat)?
                     .last()
@@ -477,15 +474,8 @@ impl Store {
                 } else {
                     None
                 };
-                merge_server_row(
-                    tx,
-                    c,
-                    &before.chat_id,
-                    &server_id,
-                    created_ms,
-                    Some(key),
-                    None,
-                )?;
+                let row = server_row(tx, c, &before.chat_id, &server_id, created_ms, Some(key))?;
+                save_server_row(tx, c, row, &server_id)?;
                 if let Some(head) = head {
                     let row = by_server(tx, &server_id)?.unwrap();
                     add_segment(
@@ -571,7 +561,7 @@ impl Store {
     }
     pub fn withdraw(&mut self, id: &ServerId) -> Result<Changes> {
         self.mutate(|tx, c| {
-            tx.execute("INSERT OR IGNORE INTO withdrawal VALUES(?)", [&id.0])?;
+            tx.execute("INSERT OR IGNORE INTO withdrawal VALUES(?)", [id.as_str()])?;
             if let Some(mut row) = by_server(tx, id)?
                 && !row.body.is_withdrawn()
             {
@@ -611,11 +601,12 @@ impl Store {
                     [&chat.0],
                     |r| r.get::<_, Option<String>>(0),
                 )?
-                .map(ServerId);
+                .map(ServerId::new)
+                .transpose()?;
             let marker = numeric_max(old, Some(up_to)).expect("marker supplied");
             tx.execute(
                 "UPDATE chat SET receipt_server_id=?2 WHERE chat_id=?1",
-                params![chat.0, marker.0,],
+                params![chat.0, marker,],
             )?;
             let mut stmt = tx.prepare(
                 "UPDATE message SET delivery=?3
