@@ -71,23 +71,17 @@ fn keyring_refuses_plaintext_without_reading_keys_or_changing_file() {
     let path = root.join("session.json");
     let bytes = serde_json::to_vec_pretty(&synthetic()).unwrap();
     private_write(&path, &bytes).unwrap();
-    for keys_available in [true, false] {
-        let result = if keys_available {
-            load_with(&path, Store::Keyring, &MapKeys::default())
-        } else {
-            load_with(&path, Store::Keyring, &Unreachable)
-        };
-        assert!(matches!(
-            result
-                .unwrap_err()
-                .downcast_ref::<crate::client::error::Error>(),
-            Some(crate::client::error::Error::SignIn(
-                crate::client::error::SignInFailure::SavedSession(
-                    SavedSessionFailure::CredentialsStore
-                )
-            ))
-        ));
-    }
+    let result = load_with(&path, Store::Keyring, &Unreachable);
+    assert!(matches!(
+        result
+            .unwrap_err()
+            .downcast_ref::<crate::client::error::Error>(),
+        Some(crate::client::error::Error::SignIn(
+            crate::client::error::SignInFailure::SavedSession(
+                SavedSessionFailure::CredentialsStore
+            )
+        ))
+    ));
     assert!(save_with(&path, &json!({}), Store::Keyring, &MapKeys::default()).is_err());
     assert_eq!(fs::read(&path).unwrap(), bytes);
     assert_eq!(

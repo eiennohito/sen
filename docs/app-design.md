@@ -37,8 +37,7 @@ behavior and toolkit deviations, is recorded in ux-acceptance.md.
 ## Rendering and input decision
 
 Pin Slint and slint-build to 1.18.1. Disable default features and enable `std`,
-`compat-1-18`, `backend-winit`, `renderer-software`, and `accessibility`.
-Slint 1.18.1 requires `compat-1-18` with a compile-time error if omitted.
+`backend-winit`, `renderer-software`, and `accessibility`.
 Normal launches select `winit` + `software` programmatically and fail if unavailable. Slint
 documents CPU rendering through this backend/renderer combination, and separate
 Wayland/X11 feature flags if a smaller platform-specific build is needed.
@@ -130,10 +129,10 @@ a thin frontend over the same transport, session, and WASM implementation.
 
 The crypto module source is the installed LINE Chrome extension, ID
 `ophjlpahpchlmihnnnihgmmeilfjmjjc`. Startup searches
-`~/.config/google-chrome*/*/Extensions/<id>/<ver>/` and
-`~/.config/chromium/*/Extensions/<id>/<ver>/`, selecting the newest numeric
-manifest version across all profiles. The extension's asset manifest locates
-the WASM (with `static/js/ltsm.wasm` as its loader fallback). There is no app
+Chrome and Chromium profiles under `$XDG_CONFIG_HOME` (default
+`$HOME/.config`), selecting the newest numeric
+manifest version across all profiles. The module is
+`static/js/ltsm.wasm` under that extension root. There is no app
 module copy or install script. The manifest's `version` is passed into signing,
 headers and receive URLs. `--wasm` and `--client-version` are developer overrides;
 only explicit test/oracle fixtures pin repository artifacts.
@@ -143,16 +142,14 @@ constructors, methods and functions. Missing interfaces produce a typed
 “LINE for Chrome <ver> changed its crypto module (missing <name>); this app
 doesn't support it yet” error on both sign-in and the strip, and in the log.
 No extension produces “Install LINE for Chrome — this app uses its crypto
-module” with searched paths. Sessions are independent of module builds; the
-module version is diagnostic only. Failed key restore follows SessionUnusable
-with its reason. LINE could refuse an old client: shows as refused sign-in/session.
+module” with the Chrome and Chromium search locations. Sessions are independent
+of module builds. Failed key restore follows SessionUnusable with its reason. LINE could refuse an old client: shows as refused sign-in/session.
 
-The GUI thread owns Slint models and text editing. The account worker owns its
-single process WASM runtime, tokens, key caches and RPC requests. Signing and
-key-bound channel operations share that worker-owned runtime through its queue;
+The GUI thread owns Slint models and text editing. The account net worker owns
+one runtime, tokens, key caches and RPC requests. Live decode, history and
+signing call that runtime directly;
 the stream thread borrows authorization and requests token refresh from the
-worker, never instantiating WASM. Runtime recovery drops the old instance before
-creating its replacement. Media file crypto stays native, and the optional
+worker, never instantiating WASM. Runtime recovery builds a new instance, then assigns it, propagating any failure. Media file crypto stays native, and the optional
 `native-crypto` trial feature is unchanged. Three blocking asset threads
 share one asset HTTP agent and the thumbnail cache; they own media downloads,
 decryption and decoding. Three slots allow visible images to overlap while

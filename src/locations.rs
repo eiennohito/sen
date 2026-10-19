@@ -1,13 +1,23 @@
-//! XDG locations for credentials and cache; an empty WASM path requests extension discovery.
+//! XDG locations for credentials and cache.
 use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub struct Locations {
     pub session: PathBuf,
     pub cache: PathBuf,
-    pub wasm: PathBuf,
 }
 impl Locations {
+    pub fn config_home() -> anyhow::Result<PathBuf> {
+        let home = std::env::var_os("HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .ok_or_else(|| anyhow::anyhow!("HOME must be an absolute path"))?;
+        Ok(std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .filter(|p| p.is_absolute())
+            .unwrap_or_else(|| home.join(".config")))
+    }
+
     pub fn from_environment() -> Result<Self, String> {
         Self::resolve(|key| std::env::var_os(key).map(PathBuf::from))
     }
@@ -23,7 +33,6 @@ impl Locations {
         let data = base("XDG_DATA_HOME", ".local/share").join("line-desktop");
         Ok(Self {
             session: data.join("session.json"),
-            wasm: PathBuf::new(),
             cache: base("XDG_CACHE_HOME", ".cache").join("line-desktop"),
         })
     }
@@ -43,7 +52,6 @@ mod tests {
         })
         .unwrap();
         assert_eq!(paths.session, Path::new("/data/line-desktop/session.json"));
-        assert_eq!(paths.wasm, Path::new(""));
         assert_eq!(paths.cache, Path::new("/cache/line-desktop"));
         for invalid in [None, Some(""), Some("relative")] {
             let paths = Locations::resolve(|key| {
@@ -58,7 +66,6 @@ mod tests {
                 paths.session,
                 Path::new("/home/synthetic/.local/share/line-desktop/session.json")
             );
-            assert_eq!(paths.wasm, Path::new(""));
             assert_eq!(
                 paths.cache,
                 Path::new("/home/synthetic/.cache/line-desktop")
@@ -92,6 +99,5 @@ mod tests {
             paths.session,
             Path::new("/home/test/.local/share/line-desktop/session.json")
         );
-        assert_eq!(paths.wasm, Path::new(""));
     }
 }

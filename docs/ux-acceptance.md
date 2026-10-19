@@ -223,7 +223,7 @@ the cached image or original export. No custom font or phase 6b profile layout i
 | OS3 | Notifications via `org.freedesktop.Notifications` with desktop-entry hint and actions | yes (desktop-entry hint, actions and activation tokens) | S (private notification daemon); host desktop P— |
 | OS4 | Badge via LauncherEntry | yes (coalesced D-Bus worker) | S P— |
 | OS5 | Window activation from a notification works on Wayland, or falls back to the attention hint | yes (token activation with attention fallback) | S (contract and dispatch); physical Wayland activation P— |
-| OS6 | State, data, and cache in XDG directories; nothing under the repository by default | yes (explicit legacy-file choice retained) | S |
+| OS6 | State, data, and cache in XDG directories; nothing under the repository by default | yes (XDG defaults; explicit developer path overrides) | S |
 | OS7 | Background mode and autostart are off by default and explicit preferences | yes (explicit opt-in preferences, verified tray host, managed autostart) | S (private tray host/lifecycle/autostart); physical tray P— |
 | OS8 | System theme, accent, font, and per-monitor scale are followed | yes (Palette roles, default font and toolkit scale) | S M; physical per-monitor checks P— |
 | OS9 | Links open through the default handler after activation | yes ([T8 resolved at 05cd26d](ux-sessions.md#resolved)) | S M (demo stub); P— |

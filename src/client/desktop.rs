@@ -105,50 +105,36 @@ pub struct Client {
 impl Client {
     pub fn open_local(
         state_path: &Path,
-        wasm_path: &Path,
+        module: crate::crypto_module::CryptoModule,
         cache_root: &Path,
-        client_version: &str,
     ) -> Result<Self> {
-        let module = crate::crypto_module::CryptoModule {
-            wasm: wasm_path.into(),
-            version: client_version.into(),
-        };
         let wasm = module.read()?;
-        let mut api = Api::new(&wasm, client_version)?;
-        let has_session = state_path.exists();
-        let mut state = if has_session {
-            crate::credentials::load(state_path)?
-        } else {
-            json!({})
-        };
-        if has_session {
-            validate_keys(&mut api.rt, &state)
-                .context(super::error::SavedSessionFailure::Keys.error())?;
-            access(&state).context(super::error::SavedSessionFailure::Corrupt.error())?;
-        }
-        state["module_version"] = json!(client_version);
-        if let Some(object) = state.as_object_mut() {
-            object.remove("wasm_sha256");
-        }
+        let api = Api::new(&wasm, &module.version)?;
+        Self::from_api(state_path, cache_root, wasm, api)
+    }
+    pub(crate) fn from_api(
+        state_path: &Path,
+        cache_root: &Path,
+        wasm: Vec<u8>,
+        mut api: Api,
+    ) -> Result<Self> {
+        let state = crate::credentials::load(state_path)?;
+        validate_keys(&mut api, &state).context(super::error::SavedSessionFailure::Keys.error())?;
+        access(&state).context(super::error::SavedSessionFailure::Corrupt.error())?;
         let my_mid = state["profile"]["mid"]
             .as_str()
-            .or_else(|| state["mid"].as_str())
-            .unwrap_or_default()
+            .filter(|mid| !mid.is_empty())
+            .context(super::error::SavedSessionFailure::Corrupt.error())?
             .to_owned();
-        let cache = ImageCache::new(
-            cache_root,
-            if my_mid.is_empty() { "local" } else { &my_mid },
-        )
-        .context(super::error::SavedSessionFailure::ImageCache.error())?;
+        let cache = ImageCache::new(cache_root, &my_mid)
+            .context(super::error::SavedSessionFailure::ImageCache.error())?;
         let sequence = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         Ok(Self {
             api,
             session_path: state_path.into(),
             cache_root: cache_root.into(),
             wasm,
-            stream_access: Arc::new(std::sync::RwLock::new(
-                access(&state).unwrap_or_default().into(),
-            )),
+            stream_access: Arc::new(std::sync::RwLock::new(access(&state)?.into())),
             state,
             my_mid: my_mid.clone(),
             obs_access: None,
@@ -165,19 +151,6 @@ impl Client {
         chat::talk(&mut self.api, access(&self.state)?, method, args)
     }
 
-    pub fn open(
-        state_path: &Path,
-        wasm_path: &Path,
-        cache_root: &Path,
-        client_version: &str,
-    ) -> Result<Self> {
-        let mut client = Self::open_local(state_path, wasm_path, cache_root, client_version)?;
-        client.online_profile()?;
-        Ok(client)
-    }
-    pub fn has_session(&self) -> bool {
-        access(&self.state).is_ok_and(|token| !token.is_empty())
-    }
     pub fn local_mid(&self) -> &str {
         &self.my_mid
     }
@@ -231,23 +204,23 @@ impl Client {
             .filter(|range| range.reader != self.my_mid)
             .collect())
     }
-    pub fn operation(&mut self, operation: &Value) -> Option<(String, Message)> {
+    pub fn operation(&mut self, operation: &Value) -> Result<Option<(String, Message)>> {
         if !matches!(operation["type"].as_u64(), Some(25 | 26 | 43)) {
-            return None;
+            return Ok(None);
         }
         let raw = &operation["message"];
-        let from = raw["from"].as_str()?;
-        let to = raw["to"].as_str()?;
+        let from = required(raw, "from")?;
+        let to = required(raw, "to")?;
         let chat = if is_user(to) && from != self.my_mid {
             from
         } else {
             to
         }
         .to_owned();
-        Some((chat, self.message(raw)))
+        Ok(Some((chat, self.message(raw)?)))
     }
     pub fn client_version(&self) -> &str {
-        &self.api.client_version
+        &self.api.http.client_version
     }
     pub fn stream_access(&self) -> Arc<std::sync::RwLock<String>> {
         self.stream_access.clone()
@@ -267,13 +240,7 @@ impl Client {
 
     /// Reset only the poisoned WASM store, preserving validated public-key data.
     fn reset_runtime(&mut self) -> Result<()> {
-        let keys = std::mem::take(&mut self.api.key_cache);
-        self.api.channels.clear();
-        self.api
-            .rt
-            .reinitialize(&self.wasm, &self.api.client_version)?;
-        self.api.key_cache = keys;
-        Ok(())
+        self.api.reinitialize(&self.wasm)
     }
 
     pub fn chats(&mut self, cursor: Option<&str>) -> Result<(Vec<Chat>, bool, Option<String>)> {
@@ -349,7 +316,7 @@ impl Client {
             });
             let timestamp_ms = last.map(message_timestamp).unwrap_or(0);
             let member_count = info.and_then(|chat| rich::group_member_count(chat, &self.my_mid));
-            let preview_message = last.map(|m| self.message(m));
+            let preview_message = last.map(|m| self.message(m)).transpose()?;
             chats.push(Chat {
                 group: !is_user(&id),
                 member_count,
@@ -547,19 +514,27 @@ impl Client {
         },0]))?;
         let raw = data.as_array().context("missing older messages")?;
         let reached_beginning = raw.len() < 50;
-        let messages: Vec<_> = raw.iter().take(50).map(|m| self.message(m)).collect();
+        let messages: Vec<_> = raw
+            .iter()
+            .take(50)
+            .map(|m| self.message(m))
+            .collect::<Result<_>>()?;
         let messages = normalize_older(before, messages);
         Ok((messages, reached_beginning))
     }
     pub fn refresh_messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
         let data = self.talk("getRecentMessagesV2", json!([chat_mid, 50]))?;
         let messages = data.as_array().context("missing recent messages")?;
-        let mut messages: Vec<_> = messages.iter().take(50).map(|m| self.message(m)).collect();
+        let mut messages: Vec<_> = messages
+            .iter()
+            .take(50)
+            .map(|m| self.message(m))
+            .collect::<Result<_>>()?;
         sort_messages(&mut messages);
         Ok(messages)
     }
 
-    fn message(&mut self, raw: &Value) -> Message {
+    fn message(&mut self, raw: &Value) -> Result<Message> {
         let fingerprint = format!("{:x}", Sha256::digest(raw.to_string()));
         let mut data = raw.clone();
         let encrypted = raw["chunks"].as_array().is_some_and(|c| !c.is_empty());
@@ -577,7 +552,7 @@ impl Client {
                 Ok(body) => merge_decrypted(&mut data, &body),
                 Err(_) => {
                     failed = true;
-                    let _ = self.reset_runtime();
+                    self.reset_runtime()?;
                 }
             }
         }
@@ -641,7 +616,7 @@ impl Client {
                 },
             }
         };
-        Message {
+        Ok(Message {
             id: data["id"]
                 .as_str()
                 .filter(|id| !id.is_empty())
@@ -667,7 +642,7 @@ impl Client {
             mentioned: mentioned(meta, &self.my_mid),
             reply: details.reply,
             skip_badge: meta["SKIP_BADGE_COUNT"].as_str() == Some("true"),
-        }
+        })
     }
 
     pub fn image(&mut self, asset: &Asset) -> Result<Arc<assets::Pixels>> {
@@ -777,7 +752,7 @@ impl Client {
             .duration_since(std::time::UNIX_EPOCH)?
             .as_millis() as i64;
         let result = self.talk("sendMessage", json!([seq, {"from":self.my_mid,"to":to,"toType":if is_user(to){0}else if to.starts_with(['C','c']){2}else{1},"id":format!("{now:015}"),"createdTime":now,"sessionId":0,"contentType":7,"contentMetadata":{"STKPKGID":pkg,"STKID":id,"STKVER":ver.as_deref().unwrap_or("1")},"hasContent":true}]))?;
-        Ok(self.message(&result))
+        self.message(&result)
     }
     pub fn create_chat(
         &mut self,
@@ -871,21 +846,48 @@ impl Client {
         if text.trim().is_empty() || text.len() > 10_000 {
             return Err(SendFailure::Rejected.into());
         }
-        let result = self.encrypted_text(to, text);
-        let message = match result {
-            Ok(message) => message,
-            Err(error) => {
-                let _ = self.reset_runtime();
-                return Err(error);
-            }
-        };
-        // Never automatically retry this RPC: a timeout can mean it was sent.
-        let result = self.talk("sendMessage", json!([request_seq, message]))?;
-        Ok(self.message(&result))
+        self.send_encrypted(to, 0, &json!({"text":text}), &json!({}), request_seq)
     }
-
-    fn encrypted_text(&mut self, to: &str, text: &str) -> Result<Value> {
-        self.encrypted_payload(to, 0, &json!({"text":text}))
+    fn send_encrypted(
+        &mut self,
+        to: &str,
+        content_type: u64,
+        payload: &Value,
+        metadata: &Value,
+        seq: u32,
+    ) -> Result<Message> {
+        for attempt in 0..2 {
+            let mut message = match self.encrypted_payload(to, content_type, payload) {
+                Ok(message) => message,
+                Err(error) => {
+                    self.reset_runtime()?;
+                    return Err(error);
+                }
+            };
+            if content_type != 0 {
+                ensure!(
+                    message["contentMetadata"]["e2eeVersion"] == "2",
+                    "media requires E2EE V2"
+                );
+            }
+            for (key, value) in metadata.as_object().context("message metadata")? {
+                message["contentMetadata"][key] = value.clone();
+            }
+            match self.talk("sendMessage", json!([seq, message])) {
+                Ok(result) => return self.message(&result),
+                // LINE E2EE_RETRY_ENCRYPT / E2EE_UPDATE_RECEIVER_KEY explicitly reject the key.
+                Err(error)
+                    if attempt == 0
+                        && error
+                            .downcast_ref::<RpcError>()
+                            .is_some_and(|e| matches!(e.code, 82 | 84)) =>
+                {
+                    self.api.refresh_chat_keys(to)?;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        unreachable!("bounded key refresh")
     }
 
     fn encrypted_payload(&mut self, to: &str, content_type: u64, payload: &Value) -> Result<Value> {
@@ -897,8 +899,7 @@ impl Client {
             .context("missing own key")?
             .clone();
         let sender_id = key["id"].as_u64().context("missing own key ID")?;
-        let own = chat::own_key(&mut self.api.rt, &self.state, sender_id)?;
-        let (receiver_id, version, ch) = if is_user(to) {
+        let (receiver_id, version) = if is_user(to) {
             let negotiation = self.talk("negotiateE2EEPublicKey", json!([to]))?;
             ensure!(
                 negotiation["allowedTypes"]
@@ -908,48 +909,39 @@ impl Client {
             );
             let public = &negotiation["publicKey"];
             let id = public["keyId"].as_u64().context("missing peer key ID")?;
-            let bytes = decode(required(public, "keyData")?)?;
-            let ch = chat::channel(&mut self.api.rt, own, &bytes)?;
-            (id, negotiation["specVersion"].as_u64().unwrap_or(2), ch)
+            self.api.key_cache.insert(
+                format!("getE2EEPublicKey:{}", json!([to, 1, id])),
+                public.clone(),
+            );
+            (id, negotiation["specVersion"].as_u64().unwrap_or(2))
         } else {
-            // Existing shared keys only; never register/rekey a group silently.
             let shared = self.talk("getLastE2EEGroupSharedKey", json!([1, to]))?;
             let id = shared["groupKeyId"]
                 .as_u64()
                 .context("missing group key ID")?;
-            let private_id = shared["receiverKeyId"]
-                .as_u64()
-                .context("missing group receiver key")?;
-            let creator_id = shared["creatorKeyId"]
-                .as_u64()
-                .context("missing group creator key")?;
-            let public = chat::public_key(
-                &mut self.api,
-                access(&self.state)?,
-                required(&shared, "creator")?,
-                creator_id,
-            )?;
-            let transfer_key = chat::own_key(&mut self.api.rt, &self.state, private_id)?;
-            let transfer = chat::channel(&mut self.api.rt, transfer_key, &public)?;
-            let h = self
-                .api
-                .rt
-                .bytes(&decode(required(&shared, "encryptedSharedKey")?)?);
-            let group_key =
-                self.api
-                    .rt
-                    .method("E2EEChannel", "unwrapGroupSharedKey", transfer, &[h])?;
-            self.api.rt.release(h)?;
-            let public = decode(required(&key, "public_key")?)?;
-            let ch = chat::channel(&mut self.api.rt, group_key, &public)?;
-            self.api.rt.destroy("E2EEKey", group_key)?;
-            self.api.rt.destroy("E2EEChannel", transfer)?;
-            self.api.rt.destroy("E2EEKey", transfer_key)?;
-            (id, shared["specVersion"].as_u64().unwrap_or(2), ch)
+            let version = shared["specVersion"].as_u64().unwrap_or(2);
+            self.api.key_cache.insert(
+                format!("getE2EEGroupSharedKey:{}", json!([1, to, id])),
+                shared,
+            );
+            (id, version)
         };
+        let ch = chat::message_channel(
+            &mut self.api,
+            &self.state,
+            &self.my_mid,
+            &chat::Channel {
+                mid: to,
+                own: sender_id,
+                peer: receiver_id,
+                group: (!is_user(to)).then_some(receiver_id),
+                sender: &self.my_mid,
+                sender_key: sender_id,
+            },
+        )?;
         let h = self.api.rt.bytes(&serde_json::to_vec(payload)?);
         let encrypted = if version == 1 {
-            bytes_method(&mut self.api.rt, "E2EEChannel", "encryptV1", ch, &[h])?
+            bytes_method(&mut self.api.rt, Call::E2EEChannelEncryptV1, ch, &[h])?
         } else {
             ensure!(version == 2, "unsupported encryption version");
             let dest = self.api.rt.string(to)?;
@@ -957,8 +949,7 @@ impl Client {
             self.sequence = self.sequence.checked_add(1).context("sequence exhausted")?;
             let bytes = bytes_method(
                 &mut self.api.rt,
-                "E2EEChannel",
-                "encryptV2",
+                Call::E2EEChannelEncryptV2,
                 ch,
                 &[
                     dest,
@@ -975,8 +966,6 @@ impl Client {
             bytes
         };
         self.api.rt.release(h)?;
-        self.api.rt.destroy("E2EEChannel", ch)?;
-        self.api.rt.destroy("E2EEKey", own)?;
         let chunks = pack_chunks(&encrypted, version, sender_id, receiver_id)?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)?

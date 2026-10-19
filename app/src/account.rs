@@ -4,7 +4,7 @@ pub struct ReactionView {
     pub image_key: String,
 }
 pub struct EmojiView {
-    pub span: line_client::store::InlineEmoji,
+    pub span: line::store::InlineEmoji,
     pub image_key: String,
 }
 #[derive(Default)]
@@ -21,7 +21,7 @@ pub struct MessageView {
     pub outgoing: bool,
     pub image_key: String,
     pub reactions: Vec<ReactionView>,
-    pub rich: line_client::client::desktop::rich::RichContent,
+    pub rich: line::client::desktop::rich::RichContent,
     pub decryption_failed: bool,
     pub emoji: Vec<EmojiView>,
     pub skip_badge: bool,

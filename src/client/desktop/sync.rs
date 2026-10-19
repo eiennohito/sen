@@ -109,7 +109,7 @@ pub fn receive_with_auth(
     mut deliver: impl FnMut(Event) -> bool,
 ) -> Result<()> {
     set_request_cancel(stop.clone());
-    let transport = http::Transport::new()?;
+    let transport = http::Transport::new(client_version)?;
     let mut revisions = Revisions { local: revision };
     let mut refreshed_once = false;
     let mut attempt = 0;
@@ -232,6 +232,7 @@ pub(super) fn refresh(
         return Ok(());
     }
     save_state(state_path, state)?;
+    api.prepare_signing_key(access(state)?)?;
     Ok(())
 }
 

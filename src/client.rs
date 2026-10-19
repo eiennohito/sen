@@ -1,7 +1,11 @@
 //! Debug QR pairing against the same endpoints as LINE Chrome.
 //! Rust owns protocol/state/WASM, all HTTPS (RPC, SSE, media) and QR encoding.
 pub mod error;
-use crate::{locations::Locations, runtime::Runtime, sign};
+use crate::{
+    locations::Locations,
+    runtime::{Call, Runtime},
+    sign,
+};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{
     Engine,
@@ -31,8 +35,8 @@ use qr::png as qr_png;
 
 struct Options {
     command: String,
-    client_version: String,
-    wasm: PathBuf,
+    wasm_override: Option<PathBuf>,
+    version_override: Option<String>,
     state: PathBuf,
     qr_file: Option<PathBuf>,
     display: String,
@@ -50,7 +54,7 @@ impl Options {
     ) -> Result<Self> {
         let command = args.next().unwrap_or_else(|| "help".into());
         let mut wasm = None;
-        let mut client_version = String::new();
+        let mut client_version = None;
         let mut state = None;
         let mut qr_file = None;
         let mut display = String::from(if terminal { "ascii" } else { "none" });
@@ -59,7 +63,7 @@ impl Options {
                 .next()
                 .with_context(|| format!("missing value for {arg}"))?;
             match arg.as_str() {
-                "--client-version" => client_version = value,
+                "--client-version" => client_version = Some(value),
                 "--wasm" => wasm = Some(PathBuf::from(value)),
                 "--state" => state = Some(PathBuf::from(value)),
                 "--qr-file" => qr_file = Some(value.into()),
@@ -71,17 +75,14 @@ impl Options {
             ["ascii", "none"].contains(&display.as_str()),
             "display must be ascii or none"
         );
-        if ["login", "status", "chat-check"].contains(&command.as_str())
-            && (state.is_none() || wasm.is_none())
-        {
+        if ["login", "status", "chat-check"].contains(&command.as_str()) && state.is_none() {
             let locations = resolve_locations()?;
             state.get_or_insert(locations.session);
-            wasm.get_or_insert(locations.wasm);
         }
         Ok(Self {
             command,
-            client_version,
-            wasm: wasm.unwrap_or_default(),
+            version_override: client_version,
+            wasm_override: wasm,
             state: state.unwrap_or_default(),
             qr_file,
             display,
@@ -162,24 +163,71 @@ fn set_request_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
 }
 
-struct Api {
+pub(crate) struct Api {
     #[cfg(test)]
     synthetic_signature: bool,
     rt: Runtime,
-    client_version: String,
     http: http::Transport,
     key_cache: std::collections::HashMap<String, Value>,
     channels: std::collections::HashMap<String, (u32, u64)>,
     channel_tick: u64,
+    signing_key: Option<(String, u32)>,
+    own_keys: std::collections::HashMap<u64, u32>,
 }
 impl Api {
+    fn prepare_signing_key(&mut self, access: &str) -> Result<u32> {
+        if self
+            .signing_key
+            .as_ref()
+            .is_none_or(|(token, _)| token != access)
+        {
+            let key = crate::signing_key(&mut self.rt, access, &self.http.client_version)?;
+            if let Some((_, old)) = self.signing_key.replace((access.into(), key)) {
+                self.rt.destroy("Hmac", old)?;
+            }
+        }
+        Ok(self.signing_key.as_ref().context("signing key")?.1)
+    }
+    fn signature(&mut self, path: &str, body: &str, access: &str) -> Result<String> {
+        let key = self.prepare_signing_key(access)?;
+        sign(&mut self.rt, key, path, body)
+    }
+    fn refresh_chat_keys(&mut self, mid: &str) -> Result<()> {
+        self.key_cache
+            .retain(|key, _| !key.contains(&format!("\"{mid}\"")));
+        let prefix = if mid.starts_with(['U', 'u']) {
+            format!("user:{mid}:")
+        } else {
+            format!("group:{mid}:")
+        };
+        let stale: Vec<_> = self
+            .channels
+            .keys()
+            .filter(|key| key.starts_with(&prefix))
+            .cloned()
+            .collect();
+        for key in stale {
+            let (pointer, _) = self.channels.remove(&key).context("cached channel")?;
+            self.rt.destroy("E2EEChannel", pointer)?;
+        }
+        Ok(())
+    }
+    fn reinitialize(&mut self, wasm: &[u8]) -> Result<()> {
+        self.rt.reinitialize(wasm, &self.http.client_version)?;
+        self.channels.clear();
+        self.own_keys.clear();
+        self.signing_key = None;
+        Ok(())
+    }
+
     fn new(wasm: &[u8], client_version: &str) -> Result<Self> {
         Ok(Self {
             #[cfg(test)]
             synthetic_signature: false,
-            rt: Runtime::for_version(wasm, client_version)?,
-            client_version: client_version.into(),
-            http: http::Transport::new()?.with_client_version(client_version),
+            rt: Runtime::new(wasm, client_version)?,
+            http: http::Transport::new(client_version)?,
+            signing_key: None,
+            own_keys: Default::default(),
             key_cache: Default::default(),
             channels: Default::default(),
             channel_tick: 0,
@@ -220,14 +268,14 @@ impl Api {
         let signature = if self.synthetic_signature {
             "synthetic".into()
         } else {
-            sign(&mut self.rt, path, &body, access, &self.client_version)?
+            self.signature(path, &body, access)?
         };
         #[cfg(not(test))]
-        let signature = sign(&mut self.rt, path, &body, access, &self.client_version)?;
+        let signature = self.signature(path, &body, access)?;
         let mut headers = vec![
             ("Content-Type", "application/json"),
             ("User-Agent", UA),
-            ("x-line-chrome-version", self.client_version.as_str()),
+            ("x-line-chrome-version", self.http.client_version.as_str()),
             ("x-lal", "en_US"),
             ("x-hmac", signature.as_str()),
         ];
@@ -304,16 +352,10 @@ impl Api {
         )
     }
 }
-fn bytes_method(
-    rt: &mut Runtime,
-    class: &str,
-    name: &str,
-    ptr: u32,
-    args: &[u64],
-) -> Result<Vec<u8>> {
+fn bytes_method(rt: &mut Runtime, call: Call, ptr: u32, args: &[u64]) -> Result<Vec<u8>> {
     let h = rt
-        .method(class, name, ptr, args)
-        .with_context(|| format!("{class}.{name}"))?;
+        .method(call, ptr, args)
+        .with_context(|| format!("{call:?}"))?;
     rt.output(h)
 }
 fn decode(value: &str) -> Result<Vec<u8>> {
@@ -368,7 +410,7 @@ fn save_state(path: &Path, state: &Value) -> Result<()> {
 fn login_key(rt: &mut Runtime, state: &Value) -> Result<u32> {
     let h = rt.bytes(&decode(required(state, "login_key")?)?);
     let key = rt
-        .static_call("Curve25519Key", "loadKey", &[h])
+        .static_call(Call::Curve25519KeyLoadKey, &[h])
         .context("restore pairing key")?;
     rt.release(h)?;
     Ok(key)
@@ -382,38 +424,38 @@ fn unwrap_keys(rt: &mut Runtime, key: u32, meta: &Value) -> Result<Vec<Value>> {
     ensure!(peer.len() == 32, "phone public-key size");
     let h = rt.bytes(&peer);
     let channel = rt
-        .method("Curve25519Key", "createChannel", key, &[h])
+        .method(Call::Curve25519KeyCreateChannel, key, &[h])
         .context("create phone key-transfer channel")?;
     rt.release(h)?;
     let h = rt.bytes(&decode(required(meta, "encryptedKeyChain")?)?);
     let chain = rt
-        .method("E2EEChannel", "unwrapE2EEKeyChain", channel, &[h])
+        .method(Call::E2EEChannelUnwrapE2EEKeyChain, channel, &[h])
         .context("unwrap phone keychain")?;
     rt.release(h)?;
     let size = rt
-        .method("E2EEKeychain", "size", chain, &[])
+        .method(Call::E2EEKeychainSize, chain, &[])
         .context("keychain size")?;
     ensure!((1..=64).contains(&size), "unexpected keychain size {size}");
     let mut keys = Vec::new();
     for i in 0..size {
         let h = rt
-            .method("E2EEKeychain", "get", chain, &[i as u64])
+            .method(Call::E2EEKeychainGet, chain, &[i as u64])
             .context("keychain entry")?;
         let ptr = rt.object(h)?;
         let id = rt
-            .method("E2EEKey", "getKeyId", ptr, &[])
+            .method(Call::E2EEKeyGetKeyId, ptr, &[])
             .context("key ID")?;
         let version = rt
-            .method("E2EEKey", "getVersion", ptr, &[])
+            .method(Call::E2EEKeyGetVersion, ptr, &[])
             .context("key version")?;
-        let public = bytes_method(rt, "E2EEKey", "getPublicKey", ptr, &[])?;
-        let exported = bytes_method(rt, "E2EEKey", "exportKey", ptr, &[])?;
+        let public = bytes_method(rt, Call::E2EEKeyGetPublicKey, ptr, &[])?;
+        let exported = bytes_method(rt, Call::E2EEKeyExportKey, ptr, &[])?;
         let h = rt.bytes(&exported);
         let loaded = rt
-            .static_call("E2EEKey", "loadKey", &[h])
+            .static_call(Call::E2EEKeyLoadKey, &[h])
             .context("reload transferred key")?;
         rt.release(h)?;
-        let reloaded = bytes_method(rt, "E2EEKey", "getPublicKey", loaded, &[])?;
+        let reloaded = bytes_method(rt, Call::E2EEKeyGetPublicKey, loaded, &[])?;
         ensure!(
             public.len() == 32 && public == reloaded,
             "E2EE export/import public-key mismatch"
@@ -426,33 +468,35 @@ fn unwrap_keys(rt: &mut Runtime, key: u32, meta: &Value) -> Result<Vec<Value>> {
     Ok(keys)
 }
 fn access(state: &Value) -> Result<&str> {
-    required(&state["token_v3_issue_result"], "accessToken")
+    let token = required(&state["token_v3_issue_result"], "accessToken")?;
+    ensure!(
+        !token.is_empty(),
+        error::SavedSessionFailure::Corrupt.error()
+    );
+    Ok(token)
 }
-fn validate_keys(rt: &mut Runtime, state: &Value) -> Result<usize> {
+fn validate_keys(api: &mut Api, state: &Value) -> Result<usize> {
     let keys = state["e2ee_keys"]
         .as_array()
         .context("missing saved E2EE keys")?;
     ensure!(!keys.is_empty(), "no saved E2EE keys");
     for key in keys {
-        let h = rt.bytes(&decode(required(key, "exported_key")?)?);
-        let ptr = rt.static_call("E2EEKey", "loadKey", &[h])?;
-        rt.release(h)?;
-        let public = bytes_method(rt, "E2EEKey", "getPublicKey", ptr, &[])?;
+        let ptr = chat::own_key(
+            api,
+            state,
+            key["id"].as_u64().context("missing own key ID")?,
+        )?;
+        let public = bytes_method(&mut api.rt, Call::E2EEKeyGetPublicKey, ptr, &[])?;
         ensure!(
             public == decode(required(key, "public_key")?)?,
             "restored key mismatch"
         );
-        rt.destroy("E2EEKey", ptr)?;
     }
     Ok(keys.len())
 }
-fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
+fn status(opts: &Options, wasm: &[u8], version: &str, progress: &impl LoginUi) -> Result<()> {
     let mut state = crate::credentials::load(&opts.state)?;
-    state["module_version"] = json!(opts.client_version);
-    if let Some(object) = state.as_object_mut() {
-        object.remove("wasm_sha256");
-    }
-    let mut api = Api::new(wasm, &opts.client_version)?;
+    let mut api = Api::new(wasm, version)?;
     if state["e2ee_keys"].as_array().is_none_or(|k| k.is_empty()) {
         progress.set(pairing::Stage::RecoveringKeys)?;
         let key = login_key(&mut api.rt, &state)?;
@@ -461,13 +505,14 @@ fn status(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
         save_state(&opts.state, &state)?;
     }
     let count =
-        validate_keys(&mut api.rt, &state).context(error::SavedSessionFailure::Keys.error())?;
+        validate_keys(&mut api, &state).context(error::SavedSessionFailure::Keys.error())?;
     progress.set(pairing::Stage::RestoredKeys(count))?;
     let profile = api.profile(access(&state)?)?;
     ensure!(
         profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
         "profile did not contain a user ID"
     );
+    state["profile"] = profile;
     state["validated"] = json!(true);
     save_state(&opts.state, &state)?;
     progress.set(pairing::Stage::Authenticated)
@@ -528,10 +573,11 @@ impl LoginUi for CliLogin<'_> {
         Ok(())
     }
 }
-fn login(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
-    login_with(opts, wasm, &CliLogin { opts, progress })
+fn login(opts: &Options, wasm: &[u8], version: &str, progress: &Progress) -> Result<()> {
+    let mut api = Api::new(wasm, version)?;
+    login_with(opts, &mut api, &CliLogin { opts, progress })
 }
-fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()> {
+fn login_with(opts: &Options, api: &mut Api, progress: &impl LoginUi) -> Result<()> {
     progress.check()?;
     ensure!(
         !opts.state.exists(),
@@ -547,14 +593,13 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     if new_directory {
         fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
     }
-    let mut api = Api::new(wasm, &opts.client_version)?;
     progress.set(pairing::Stage::CreatingSession)?;
     let created = api.qr("createSession", json!({}), "", 0)?;
     let session = required(&created, "authSessionId")?.to_owned();
     let qr = api.qr("createQrCode", json!({"authSessionId":session}), "", 0)?;
-    let key = api.rt.static_call("Curve25519Key", "generate", &[1])?;
-    let public = bytes_method(&mut api.rt, "Curve25519Key", "getPublicKey", key, &[])?;
-    let wrapped = bytes_method(&mut api.rt, "Curve25519Key", "exportKey", key, &[])?;
+    let key = api.rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
+    let public = bytes_method(&mut api.rt, Call::Curve25519KeyGetPublicKey, key, &[])?;
+    let wrapped = bytes_method(&mut api.rt, Call::Curve25519KeyExportKey, key, &[])?;
     let link = callback(required(&qr, "callbackUrl")?, &public)?;
     let png = qr_png(&link)?;
     progress.qr(&link, &png)?;
@@ -633,7 +678,7 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
     if token["accessToken"].as_str().is_none_or(|s| s.is_empty()) {
         token = json!({"accessToken":required(&result,"authToken")?});
     }
-    let mut state = json!({"format":1,"module_version":opts.client_version,"token_v3_issue_result":token,"certificate":result["certificate"],"login_key":STANDARD.encode(wrapped),"login_metadata":result["metaData"],"e2ee_keys":[],"validated":false});
+    let mut state = json!({"format":1,"token_v3_issue_result":token,"certificate":result["certificate"],"login_key":STANDARD.encode(wrapped),"login_metadata":result["metaData"],"e2ee_keys":[],"validated":false});
     // Preserve the successful session and wrapped login key before any new
     // keychain operation, so a failure can be diagnosed/recovered with status.
     save_state(&opts.state, &state)?;
@@ -648,17 +693,18 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
         profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
         "authenticated profile missing"
     );
+    state["profile"] = profile;
     state["validated"] = json!(true);
     save_state(&opts.state, &state)?;
-    progress.set(pairing::Stage::CheckingRecovery)?;
-    drop(api);
-    status(opts, wasm, progress)
+    progress.set(pairing::Stage::CheckingKeys)?;
+    validate_keys(api, &state)?;
+    progress.set(pairing::Stage::Authenticated)
 }
 fn run() -> Result<()> {
     let mut opts = Options::parse()?;
     if ["help", "--help", "-h"].contains(&opts.command.as_str()) {
         println!(
-            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--client-version VERSION] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: newest installed LINE for Chrome extension (Chrome/Chromium profiles under ~/.config).\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are sealed in a mode-0600 file whose key is kept in the desktop keyring (Secret Service).\nLINE_DESKTOP_CREDENTIALS=plaintext-file keeps an unsealed file instead (debug and agent instances without a keyring).\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
+            "Usage: line-auth login|status|chat-check|render-test [--wasm FILE] [--client-version VERSION] [--state FILE] [--qr-file FILE] [--display ascii|none]\n\nDefault session: $XDG_DATA_HOME/line-desktop/session.json (fallback $HOME/.local/share/line-desktop/session.json).\nDefault WASM: newest installed LINE for Chrome extension (Chrome/Chromium profiles under $XDG_CONFIG_HOME, default $HOME/.config).\n--display defaults to ascii on a TTY, none otherwise; --qr-file writes a PNG.\nSession credentials and wrapped keys are sealed in a mode-0600 file whose key is kept in the desktop keyring (Secret Service).\nLINE_DESKTOP_CREDENTIALS=plaintext-file keeps an unsealed file instead (debug and agent instances without a keyring).\nProgress contains stage names only; tokens, QR URLs and key material are never logged.\nlogin pairs via your phone; status reimports keys and fetches your profile without logging in again.\nchat-check reads up to 10 recent chat previews (5 messages each), stops after one verified decryption, and logs counts only."
         );
         return Ok(());
     }
@@ -675,18 +721,14 @@ fn run() -> Result<()> {
         ["login", "status", "chat-check"].contains(&opts.command.as_str()),
         "unknown command"
     );
-    let module = crate::crypto_module::resolve(
-        &opts.wasm,
-        (!opts.client_version.is_empty()).then_some(opts.client_version.as_str()),
-    )?;
-    opts.wasm = module.wasm.clone();
-    opts.client_version = module.version.clone();
+    let module =
+        crate::crypto_module::resolve(opts.wasm_override.take(), opts.version_override.take())?;
     let wasm = module.read()?;
     let progress = Progress::new(&opts.state)?;
     let result = match opts.command.as_str() {
-        "login" => login(&opts, &wasm, &progress),
-        "chat-check" => chat::run(&opts, &wasm, &progress),
-        _ => status(&opts, &wasm, &progress),
+        "login" => login(&opts, &wasm, &module.version, &progress),
+        "chat-check" => chat::run(&opts, &wasm, &module.version, &progress),
+        _ => status(&opts, &wasm, &module.version, &progress),
     };
     if result.is_err() {
         progress.set(
@@ -711,7 +753,6 @@ mod tests {
         fs::create_dir_all(&root)?;
         let locations = Locations {
             session: root.join("data/session.json"),
-            wasm: root.join("data/ltsm.wasm"),
             cache: root.join("cache"),
         };
         let parse = |args: &[&str], terminal| {
@@ -722,7 +763,7 @@ mod tests {
         for terminal in [true, false] {
             let opts = parse(&["status"], terminal)?;
             assert_eq!(opts.state, locations.session);
-            assert_eq!(opts.wasm, locations.wasm);
+            assert!(opts.wasm_override.is_none());
             assert_eq!(opts.display, if terminal { "ascii" } else { "none" });
         }
         let opts = parse(
@@ -740,7 +781,10 @@ mod tests {
             true,
         )?;
         assert_eq!(opts.state, Path::new("custom.json"));
-        assert_eq!(opts.wasm, Path::new("custom.wasm"));
+        assert_eq!(
+            opts.wasm_override.as_deref(),
+            Some(Path::new("custom.wasm"))
+        );
         assert_eq!(opts.qr_file.as_deref(), Some(Path::new("custom.png")));
         assert_eq!(opts.display, "none");
         assert_eq!(
@@ -756,12 +800,15 @@ mod tests {
         };
         let opts = parse(&["status"])?;
         assert_eq!(opts.state, locations.session);
-        assert_eq!(opts.wasm, locations.wasm);
+        assert!(opts.wasm_override.is_none());
         let opts = parse(&["status", "--state", "custom.json"])?;
         assert_eq!(opts.state, Path::new("custom.json"));
-        assert_eq!(opts.wasm, locations.wasm);
+        assert!(opts.wasm_override.is_none());
         let opts = parse(&["status", "--wasm", "custom.wasm"])?;
-        assert_eq!(opts.wasm, Path::new("custom.wasm"));
+        assert_eq!(
+            opts.wasm_override.as_deref(),
+            Some(Path::new("custom.wasm"))
+        );
         assert_eq!(opts.state, locations.session);
         fs::remove_dir_all(root)?;
         Ok(())
@@ -794,12 +841,11 @@ mod tests {
             let opts = result?;
             assert!(!called);
             assert_eq!(opts.state, Path::new("custom.json"));
-            assert_eq!(opts.wasm, Path::new("custom.wasm"));
-            for args in [
-                vec![command],
-                vec![command, "--state", "custom.json"],
-                vec![command, "--wasm", "custom.wasm"],
-            ] {
+            assert_eq!(
+                opts.wasm_override.as_deref(),
+                Some(Path::new("custom.wasm"))
+            );
+            for args in [vec![command], vec![command, "--wasm", "custom.wasm"]] {
                 let (result, called) = parse(&args);
                 assert!(called);
                 assert_eq!(

@@ -7,7 +7,7 @@ fn emoji_message() -> account::MessageView {
     m.emoji = body
         .match_indices("[笑]")
         .map(|(start, text)| account::EmojiView {
-            span: line_client::store::InlineEmoji {
+            span: line::store::InlineEmoji {
                 start_utf16: body[..start].encode_utf16().count(),
                 end_utf16: body[..start + text.len()].encode_utf16().count(),
                 start_byte: start,

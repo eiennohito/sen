@@ -1,5 +1,5 @@
 //! Reading decisions use logical content coordinates, independent of Slint.
-use line_client::{
+use line::{
     controller::AppState,
     engine::{Connection, Intent},
     store::*,

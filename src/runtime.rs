@@ -50,9 +50,10 @@ struct Host {
     free_handles: Vec<u32>,
     urandom_fd: u32,
     globals: BTreeMap<String, Binding>,
+    version: String,
 }
-impl Default for Host {
-    fn default() -> Self {
+impl Host {
+    fn new(version: &str) -> Self {
         Self {
             types: BTreeMap::new(),
             classes: BTreeMap::new(),
@@ -82,10 +83,9 @@ impl Default for Host {
             free_handles: Vec::new(),
             urandom_fd: 42,
             globals: BTreeMap::new(),
+            version: version.into(),
         }
     }
-}
-impl Host {
     fn put(&mut self, value: Value) -> u32 {
         let h = Handle { value, refs: 1 };
         if let Some(i) = self.free_handles.pop() {
@@ -441,7 +441,7 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
                     let n = u32_at(&c, p[2] + 4)?;
                     write(&mut c, ptr, &random_bytes(n as usize)?)?;
                 }
-                _ => bail!("unsupported EM_JS callback"),
+                _ => return Err(crypto_changed(&c.data().version, "EM_JS callback")),
             }
         }
         "p" => result = malloc(&mut c, p[0] as usize)?,
@@ -494,7 +494,12 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             let b = read(&c, p[1], p[2] as usize)?;
             write(&mut c, p[0], &b)?;
         }
-        other => bail!("unsupported import {other}"),
+        other => {
+            return Err(crypto_changed(
+                &c.data().version,
+                &format!("import {other}"),
+            ));
+        }
     }
     if let Some(out) = output.first_mut() {
         *out = Val::I32(result as i32);
@@ -502,68 +507,132 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
     Ok(())
 }
 
-#[derive(Debug, thiserror::Error)]
-#[error("missing crypto interface {0}")]
-struct MissingInterface(String);
-
-struct RuntimeInstance {
+/// Owned and called directly by the account net worker for live decode, history and signing.
+pub struct Runtime {
     store: Store<Host>,
     instance: Instance,
     poisoned: bool,
 }
-impl RuntimeInstance {
-    #[cfg(test)]
-    pub(crate) fn stub() -> Result<Self> {
+impl Runtime {
+    pub fn new(bytes: &[u8], version: &str) -> Result<Self> {
         let engine = Engine::default();
-        let module = Module::new(&engine, b"\0asm\x01\0\0\0".as_slice())?;
-        let mut store = Store::new(&engine, Host::default());
-        let instance = Linker::new(&engine)
-            .instantiate(&mut store, &module)?
-            .start(&mut store)?;
-        Ok(Self {
-            store,
-            instance,
-            poisoned: false,
-        })
-    }
-
-    pub fn new(bytes: &[u8]) -> Result<Self> {
-        let engine = Engine::default();
-        let module = Module::new(&engine, bytes)?;
+        let module =
+            Module::new(&engine, bytes).map_err(|_| crypto_changed(version, "WASM module"))?;
         let mut linker = Linker::new(&engine);
         for import in module.imports() {
-            ensure!(import.module() == "a", "unexpected import namespace");
+            if import.module() != "a" {
+                return Err(crypto_changed(version, "import namespace a"));
+            }
             let ExternType::Func(ty) = import.ty() else {
-                bail!("unexpected non-function import")
+                return Err(crypto_changed(version, import.name()));
             };
             let name = import.name().to_owned();
             let dispatch = name.clone();
             linker.func_new("a", &name, ty.clone(), move |c, args, out| {
-                host_call(&dispatch, c, args, out)
-                    .map_err(|e| wasmi::Error::new(format!("import {dispatch}: {e:#}")))
+                host_call(&dispatch, c, args, out).map_err(|e| {
+                    match e.downcast::<crate::client::Error>() {
+                        Ok(e) => wasmi::Error::host(e),
+                        Err(e) => wasmi::Error::new(format!("import {dispatch}: {e:#}")),
+                    }
+                })
             })?;
         }
-        let mut store = Store::new(&engine, Host::default());
-        let instance = linker.instantiate(&mut store, &module)?.start(&mut store)?;
+        let mut store = Store::new(&engine, Host::new(version));
+        let instance = linker
+            .instantiate(&mut store, &module)?
+            .start(&mut store)
+            .map_err(runtime_error)?;
         let mut rt = Self {
             store,
             instance,
             poisoned: false,
         };
-        for name in ["P", "T", "V", "R"] {
-            if rt.instance.get_func(&rt.store, name).is_none() {
-                return Err(MissingInterface(name.into()).into());
+        use wasmi::core::ValType::I32;
+        for (name, params, results) in [
+            ("P", &[][..], &[][..]),
+            ("T", &[][..], &[][..]),
+            ("V", &[I32][..], &[I32][..]),
+            ("R", &[I32][..], &[][..]),
+        ] {
+            let valid = rt.instance.get_func(&rt.store, name).is_some_and(|f| {
+                let ty = f.ty(&rt.store);
+                ty.params() == params && ty.results() == results
+            });
+            if !valid {
+                return Err(crypto_changed(version, name));
             }
         }
         if rt.instance.get_memory(&rt.store, "O").is_none() {
-            return Err(MissingInterface("O".into()).into());
+            return Err(crypto_changed(version, "O"));
         }
         if rt.instance.get_table(&rt.store, "Q").is_none() {
-            return Err(MissingInterface("Q".into()).into());
+            return Err(crypto_changed(version, "Q"));
         }
         rt.export("P", &[])?; // C++ constructors
         rt.export("T", &[])?; // embind type and class registrations
+        rt.validate_interface()?;
+        let available = rt
+            .store
+            .data()
+            .globals
+            .get("isAvailable")
+            .cloned()
+            .filter(|b| b.args == 0)
+            .ok_or_else(|| crypto_changed(version, "isAvailable/0"))?;
+        if rt.invoke(available, &[])? == 0 {
+            return Err(crypto_changed(version, "isAvailable"));
+        }
         Ok(rt)
+    }
+    pub fn reinitialize(&mut self, bytes: &[u8], version: &str) -> Result<()> {
+        *self = Self::new(bytes, version)?;
+        Ok(())
+    }
+    fn interface_binding(&self, call: Call) -> Option<Binding> {
+        let (class, name, arity, kind) = call.binding();
+        let mut c = self.class(class).ok()?;
+        loop {
+            let binding = match kind {
+                BindingKind::Static => c.statics.get(name),
+                BindingKind::Method => c.methods.get(name),
+                BindingKind::Constructor => c.constructors.iter().find(|b| b.args == arity),
+            };
+            if let Some(b) = binding {
+                return Some(b.clone());
+            }
+            if kind != BindingKind::Method {
+                return None;
+            }
+            c = self.store.data().classes.get(&c.base)?.clone();
+        }
+    }
+    fn validate_interface(&self) -> Result<()> {
+        for &call in INTERFACE {
+            let (class, name, arity, _) = call.binding();
+            if !self
+                .interface_binding(call)
+                .is_some_and(|b| b.args == arity)
+            {
+                return Err(crypto_changed(
+                    &self.store.data().version,
+                    &format!("{class}.{name}/{arity}"),
+                ));
+            }
+        }
+        Ok(())
+    }
+    fn call_binding(
+        &self,
+        call: Call,
+        arity: usize,
+        kind: BindingKind,
+    ) -> Result<(&'static str, &'static str)> {
+        let (class, name, expected_arity, expected_kind) = call.binding();
+        ensure!(
+            arity == expected_arity && kind == expected_kind,
+            "invalid call {call:?}/{arity}"
+        );
+        Ok((class, name))
     }
     fn export(&mut self, name: &str, args: &[Val]) -> Result<Vec<Val>> {
         let f = self
@@ -585,7 +654,7 @@ impl RuntimeInstance {
             .collect();
         if let Err(e) = f.call(&mut self.store, args, &mut results) {
             self.poisoned = true;
-            return Err(e.into());
+            return Err(runtime_error(e));
         }
         Ok(results)
     }
@@ -653,17 +722,24 @@ impl RuntimeInstance {
             })
             .collect()
     }
-    pub fn static_call(&mut self, class: &str, name: &str, args: &[u64]) -> Result<u32> {
+    pub fn static_call(&mut self, call: Call, args: &[u64]) -> Result<u32> {
+        let (class, name) = self.call_binding(call, args.len(), BindingKind::Static)?;
         let b = self
             .class(class)?
             .statics
             .get(name)
             .cloned()
             .with_context(|| format!("static {class}.{name}"))?;
-        self.invoke(b, args)
-            .map_err(|error| error.context(crate::client::Error::Crypto))
+        self.invoke(b, args).map_err(|error| {
+            if error.downcast_ref::<crate::client::Error>().is_some() {
+                error
+            } else {
+                error.context(crate::client::Error::Crypto)
+            }
+        })
     }
-    pub fn construct(&mut self, class: &str, args: &[u64]) -> Result<u32> {
+    pub fn construct(&mut self, call: Call, args: &[u64]) -> Result<u32> {
+        let (class, _) = self.call_binding(call, args.len(), BindingKind::Constructor)?;
         let b = self
             .class(class)?
             .constructors
@@ -671,10 +747,16 @@ impl RuntimeInstance {
             .find(|b| b.args == args.len())
             .cloned()
             .context("matching constructor")?;
-        self.invoke(b, args)
-            .map_err(|error| error.context(crate::client::Error::Crypto))
+        self.invoke(b, args).map_err(|error| {
+            if error.downcast_ref::<crate::client::Error>().is_some() {
+                error
+            } else {
+                error.context(crate::client::Error::Crypto)
+            }
+        })
     }
-    pub fn method(&mut self, class: &str, name: &str, this: u32, args: &[u64]) -> Result<u32> {
+    pub fn method(&mut self, call: Call, this: u32, args: &[u64]) -> Result<u32> {
+        let (class, name) = self.call_binding(call, args.len() + 1, BindingKind::Method)?;
         let mut c = self.class(class)?;
         let mut this = this;
         let b = loop {
@@ -693,8 +775,13 @@ impl RuntimeInstance {
         };
         let mut a = vec![this as u64];
         a.extend_from_slice(args);
-        self.invoke(b, &a)
-            .map_err(|error| error.context(crate::client::Error::Crypto))
+        self.invoke(b, &a).map_err(|error| {
+            if error.downcast_ref::<crate::client::Error>().is_some() {
+                error
+            } else {
+                error.context(crate::client::Error::Crypto)
+            }
+        })
     }
     fn invoke(&mut self, b: Binding, args: &[u64]) -> Result<u32> {
         ensure!(args.len() == b.args, "binding argument count");
@@ -788,271 +875,70 @@ impl RuntimeInstance {
     }
 }
 
-/// Owned by the account worker. Stream and asset workers request key-bound
-/// operations from that owner; the UI never locks or executes the runtime.
-pub struct Runtime {
-    inner: Option<RuntimeInstance>,
+fn crypto_changed(version: &str, missing: &str) -> anyhow::Error {
+    crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged {
+        version: version.into(),
+        missing: missing.into(),
+    })
+    .into()
 }
-impl Runtime {
-    pub fn new(bytes: &[u8]) -> Result<Self> {
-        Ok(Self {
-            inner: Some(RuntimeInstance::new(bytes)?),
-        })
-    }
-    pub fn for_version(bytes: &[u8], version: &str) -> Result<Self> {
-        let rt = Self::new(bytes).map_err(|error| {
-            if let Some(missing) = error.downcast_ref::<MissingInterface>() {
-                crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged {
-                    version: version.into(),
-                    missing: missing.0.clone(),
-                })
-                .into()
-            } else {
-                error
-            }
-        })?;
-        rt.validate_interface(version)?;
-        let mut rt = rt;
-        let inner = rt.inner.as_mut().context("crypto runtime unavailable")?;
-        let binding = inner.store.data().globals["isAvailable"].clone();
-        ensure!(
-            inner.invoke(binding, &[])? != 0,
-            "LTSM not available for this origin"
-        );
-        Ok(rt)
-    }
-    pub fn reinitialize(&mut self, bytes: &[u8], version: &str) -> Result<()> {
-        // No second live instance, even while recovering from an exception.
-        self.inner = None;
-        *self = Self::for_version(bytes, version)?;
-        Ok(())
-    }
-    #[cfg(test)]
-    pub(crate) fn stub() -> Result<Self> {
-        Ok(Self {
-            inner: Some(RuntimeInstance::stub()?),
-        })
-    }
-    pub fn validate_interface(&self, version: &str) -> Result<()> {
-        let host = self
-            .inner
-            .as_ref()
-            .context("crypto runtime unavailable")?
-            .store
-            .data();
-        let missing = |name: String| {
-            crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged {
-                version: version.into(),
-                missing: name,
-            })
-        };
-        if !host.globals.contains_key("isAvailable") {
-            return Err(missing("isAvailable".into()).into());
-        }
-        for (name, methods, statics, constructor) in [
-            ("SecureKey", &["deriveKey"][..], &["loadToken"][..], false),
-            ("Hmac", &["digest"][..], &[][..], true),
-            (
-                "Curve25519Key",
-                &["createChannel", "getPublicKey", "exportKey"][..],
-                &["loadKey", "generate"][..],
-                false,
-            ),
-            (
-                "E2EEKey",
-                &[
-                    "createChannel",
-                    "getPublicKey",
-                    "exportKey",
-                    "getKeyId",
-                    "getVersion",
-                ][..],
-                &["loadKey"][..],
-                false,
-            ),
-            (
-                "E2EEChannel",
-                &[
-                    "unwrapE2EEKeyChain",
-                    "unwrapGroupSharedKey",
-                    "encryptV1",
-                    "encryptV2",
-                    "decryptV1",
-                    "decryptV2",
-                ][..],
-                &[][..],
-                false,
-            ),
-            ("E2EEKeychain", &["size", "get"][..], &[][..], false),
-        ] {
-            let class = host
-                .classes
-                .values()
-                .find(|c| c.name == name)
-                .ok_or_else(|| missing(name.into()))?;
-            if constructor && !class.constructors.iter().any(|b| b.args == 1) {
-                return Err(missing(format!("{name}.constructor")).into());
-            }
-            for method in methods {
-                let mut current = class;
-                loop {
-                    if current.methods.contains_key(*method) {
-                        break;
-                    }
-                    match host.classes.get(&current.base) {
-                        Some(base) => current = base,
-                        None => return Err(missing(format!("{name}.{method}")).into()),
-                    }
-                }
-            }
-            for method in statics {
-                if !class.statics.contains_key(*method) {
-                    return Err(missing(format!("{name}.{method}")).into());
-                }
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum BindingKind {
+    Method,
+    Static,
+    Constructor,
+}
+use BindingKind::{Constructor, Method, Static};
+// The protocol interface is defined once: validation and calls use these IDs.
+macro_rules! interface {
+    ($($id:ident => ($class:literal, $method:literal, $arity:literal, $kind:ident)),* $(,)?) => {
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        pub enum Call { $($id),* }
+        impl Call {
+            fn binding(self) -> (&'static str, &'static str, usize, BindingKind) {
+                match self { $(Self::$id => ($class, $method, $arity, $kind)),* }
             }
         }
-        Ok(())
-    }
-    pub fn bindings(&self) -> Vec<(String, Vec<String>)> {
-        self.inner
-            .as_ref()
-            .map(|inner| inner.bindings())
-            .unwrap_or_default()
-    }
-    pub fn static_call(&mut self, class: &str, name: &str, args: &[u64]) -> Result<u32> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .static_call(class, name, args)
-    }
-    pub fn construct(&mut self, class: &str, args: &[u64]) -> Result<u32> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .construct(class, args)
-    }
-    pub fn method(&mut self, class: &str, name: &str, this: u32, args: &[u64]) -> Result<u32> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .method(class, name, this, args)
-    }
-    pub fn destroy(&mut self, class: &str, ptr: u32) -> Result<()> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .destroy(class, ptr)
-    }
-    pub fn read_memory(&self, address: usize, len: usize) -> Result<Vec<u8>> {
-        self.inner
-            .as_ref()
-            .context(crate::client::Error::Crypto)?
-            .read_memory(address, len)
-    }
-    pub fn bytes(&mut self, bytes: &[u8]) -> u64 {
-        self.inner
-            .as_mut()
-            .map(|inner| inner.bytes(bytes))
-            .unwrap_or(0)
-    }
-    pub fn release(&mut self, handle: u64) -> Result<()> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .release(handle)
-    }
-    pub fn object(&mut self, handle: u32) -> Result<u32> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .object(handle)
-    }
-    pub fn output(&mut self, handle: u32) -> Result<Vec<u8>> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .output(handle)
-    }
-    pub fn string(&mut self, s: &str) -> Result<u64> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .string(s)
-    }
-    pub fn free_string(&mut self, p: u64) -> Result<()> {
-        self.inner
-            .as_mut()
-            .context(crate::client::Error::Crypto)?
-            .free_string(p)
-    }
+        const INTERFACE: &[Call] = &[$(Call::$id),*];
+    };
+}
+interface! {
+    SecureKeyLoadToken => ("SecureKey", "loadToken", 1, Static),
+    SecureKeyLoadKey => ("SecureKey", "loadKey", 1, Static),
+    SecureKeyDeriveKey => ("SecureKey", "deriveKey", 3, Method),
+    SecureKeyExportKey => ("SecureKey", "exportKey", 1, Method),
+    HmacNew => ("Hmac", "constructor", 1, Constructor),
+    HmacDigest => ("Hmac", "digest", 2, Method),
+    Curve25519KeyNew => ("Curve25519Key", "constructor", 1, Constructor),
+    Curve25519KeyLoadKey => ("Curve25519Key", "loadKey", 1, Static),
+    Curve25519KeyGenerate => ("Curve25519Key", "generate", 1, Static),
+    Curve25519KeyCreateChannel => ("Curve25519Key", "createChannel", 2, Method),
+    Curve25519KeyGetPublicKey => ("Curve25519Key", "getPublicKey", 1, Method),
+    Curve25519KeyExportKey => ("Curve25519Key", "exportKey", 1, Method),
+    E2EEKeyLoadKey => ("E2EEKey", "loadKey", 1, Static),
+    E2EEKeyCreateChannel => ("E2EEKey", "createChannel", 2, Method),
+    E2EEKeyGetPublicKey => ("E2EEKey", "getPublicKey", 1, Method),
+    E2EEKeyExportKey => ("E2EEKey", "exportKey", 1, Method),
+    E2EEKeyGetKeyId => ("E2EEKey", "getKeyId", 1, Method),
+    E2EEKeyGetVersion => ("E2EEKey", "getVersion", 1, Method),
+    E2EEChannelNew => ("E2EEChannel", "constructor", 1, Constructor),
+    E2EEChannelUnwrapE2EEKeyChain => ("E2EEChannel", "unwrapE2EEKeyChain", 2, Method),
+    E2EEChannelUnwrapGroupSharedKey => ("E2EEChannel", "unwrapGroupSharedKey", 2, Method),
+    E2EEChannelEncryptV1 => ("E2EEChannel", "encryptV1", 2, Method),
+    E2EEChannelDecryptV1 => ("E2EEChannel", "decryptV1", 2, Method),
+    E2EEChannelEncryptV2 => ("E2EEChannel", "encryptV2", 8, Method),
+    E2EEChannelDecryptV2 => ("E2EEChannel", "decryptV2", 7, Method),
+    E2EEKeychainSize => ("E2EEKeychain", "size", 1, Method),
+    E2EEKeychainGet => ("E2EEKeychain", "get", 2, Method),
+    AesKeyNew => ("AesKey", "constructor", 1, Constructor),
+    AesKeyGenerate => ("AesKey", "generate", 2, Static),
+    AesKeyEncrypt => ("AesKey", "encrypt", 2, Method),
+    AesKeyDecrypt => ("AesKey", "decrypt", 2, Method),
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn missing_interface_has_a_typed_versioned_error() -> Result<()> {
-        let error = Runtime::for_version(b"\0asm\x01\0\0\0", "9.8.7")
-            .err()
-            .context("expected missing export")?;
-        assert!(error.to_string().contains("missing P"));
-        let mut rt = Runtime::stub()?;
-        let error = rt.validate_interface("9.8.7").unwrap_err();
-        assert!(
-            matches!(error.downcast_ref::<crate::client::Error>(), Some(crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged { version, missing })) if version == "9.8.7" && missing == "isAvailable")
-        );
-        assert_eq!(
-            error.to_string(),
-            "sign-in failed: LINE for Chrome 9.8.7 changed its crypto module (missing isAvailable); this app doesn't support it yet"
-        );
-        rt.inner.as_mut().unwrap().store.data_mut().globals.insert(
-            "isAvailable".into(),
-            Binding {
-                invoker: 0,
-                context: 0,
-                args: 0,
-                types: vec![],
-            },
-        );
-        assert!(
-            rt.validate_interface("9.8.7")
-                .unwrap_err()
-                .to_string()
-                .contains("missing SecureKey")
-        );
-        rt.inner.as_mut().unwrap().store.data_mut().classes.insert(
-            1,
-            Class {
-                name: "SecureKey".into(),
-                ..Default::default()
-            },
-        );
-        assert!(
-            rt.validate_interface("9.8.7")
-                .unwrap_err()
-                .to_string()
-                .contains("missing SecureKey.deriveKey")
-        );
-        Ok(())
-    }
-    #[test]
-    #[ignore = "reads only the installed extension's public files; no credentials or network"]
-    fn installed_extension_interface_and_versioned_signing() -> Result<()> {
-        let module = crate::crypto_module::resolve(std::path::Path::new(""), None)?;
-        let mut rt = Runtime::for_version(&module.read()?, &module.version)?;
-        let a = crate::sign(&mut rt, "/synthetic", "{}", "synthetic", &module.version)?;
-        let b = crate::sign(
-            &mut rt,
-            "/synthetic",
-            "{}",
-            "synthetic",
-            "synthetic-other-version",
-        )?;
-        assert_ne!(a, b);
-        let key = rt.static_call("Curve25519Key", "generate", &[1])?;
-        let public = rt.method("Curve25519Key", "getPublicKey", key, &[])?;
-        assert_eq!(rt.output(public)?.len(), 32);
-        rt.destroy("Curve25519Key", key)?;
-        Ok(())
+fn runtime_error(error: wasmi::Error) -> anyhow::Error {
+    match error.downcast_ref::<crate::client::Error>() {
+        Some(error) => error.clone().into(),
+        None => error.into(),
     }
 }

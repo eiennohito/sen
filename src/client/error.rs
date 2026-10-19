@@ -5,7 +5,7 @@ pub enum NetCause {
 }
 #[derive(Clone, Debug, thiserror::Error)]
 pub enum Error {
-    #[error("sign-in failed: {0}")]
+    #[error("sign-in failed: {0:?}")]
     SignIn(SignInFailure),
     #[error("internal network worker error")]
     Internal,
@@ -80,7 +80,7 @@ pub(crate) fn classify(error: &anyhow::Error) -> Error {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignInFailure {
     CryptoModule(std::path::PathBuf),
-    ExtensionMissing(Vec<std::path::PathBuf>),
+    ExtensionMissing,
     CryptoChanged { version: String, missing: String },
     StateDirectory(std::path::PathBuf),
     Keyring,
@@ -95,9 +95,15 @@ pub enum SignInFailure {
 }
 
 impl SignInFailure {
+    pub fn is_prerequisite(&self) -> bool {
+        matches!(
+            self,
+            Self::CryptoModule(_) | Self::ExtensionMissing | Self::CryptoChanged { .. }
+        )
+    }
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::CryptoModule(_) | Self::ExtensionMissing(_) | Self::CryptoChanged { .. } => {
+            Self::CryptoModule(_) | Self::ExtensionMissing | Self::CryptoChanged { .. } => {
                 "crypto-module"
             }
             Self::StateDirectory(_) => "state-directory",
@@ -117,17 +123,17 @@ impl SignInFailure {
 /// Local saved-session failures, independent of LINE authentication.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SavedSessionFailure {
-    #[error("Letter Sealing keys are missing or do not match")]
+    #[error("saved-session: {self:?}")]
     Keys,
-    #[error("the saved data is corrupt")]
+    #[error("saved-session: {self:?}")]
     Corrupt,
-    #[error("the credentials store does not match")]
+    #[error("saved-session: {self:?}")]
     CredentialsStore,
-    #[error("the keyring is locked or unavailable, or its key is missing")]
+    #[error("saved-session: {self:?}")]
     Keyring,
-    #[error("the saved session could not be read or written")]
+    #[error("saved-session: {self:?}")]
     Io,
-    #[error("the image cache could not be opened")]
+    #[error("saved-session: {self:?}")]
     ImageCache,
 }
 impl SavedSessionFailure {
@@ -136,23 +142,4 @@ impl SavedSessionFailure {
     }
 }
 
-impl std::fmt::Display for SignInFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::CryptoChanged { version, missing } => write!(
-                f,
-                "LINE for Chrome {version} changed its crypto module (missing {missing}); this app doesn't support it yet"
-            ),
-            Self::ExtensionMissing(paths) => write!(
-                f,
-                "Install LINE for Chrome — this app uses its crypto module\nLooked in:\n{}",
-                paths
-                    .iter()
-                    .map(|p| p.display().to_string())
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            ),
-            _ => write!(f, "{self:?}"),
-        }
-    }
-}
+impl wasmi::core::HostError for Error {}

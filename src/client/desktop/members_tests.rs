@@ -34,17 +34,24 @@ fn server(steps: Vec<(&'static str, Reply)>) -> (http::Transport, std::thread::J
     })
 }
 
-fn client(transport: http::Transport) -> (Client, PathBuf) {
+fn client(steps: Vec<(&'static str, Reply)>) -> (Client, PathBuf, std::thread::JoinHandle<()>) {
+    let rt = Runtime::new(
+        &crate::test_support::read_fixture(&crate::test_support::fixture_path()).unwrap(),
+        crate::test_support::FIXTURE_VERSION,
+    )
+    .unwrap();
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
         "target/p5-member-tests/{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
+    let (transport, worker) = server(steps);
     let client = Client {
         api: Api {
-            rt: Runtime::stub().unwrap(),
-            client_version: "9.8.7".into(),
+            rt,
+            signing_key: None,
+            own_keys: HashMap::new(),
             http: transport,
             synthetic_signature: true,
             key_cache: HashMap::new(),
@@ -63,7 +70,7 @@ fn client(transport: http::Transport) -> (Client, PathBuf) {
         session_path: root.join("session.json"),
         cache_root: root.clone(),
     };
-    (client, root)
+    (client, root, worker)
 }
 
 fn chats(ids: Vec<String>) -> (&'static str, Reply) {
@@ -106,13 +113,12 @@ fn contacts(count: usize, absent: &'static str) -> (&'static str, Reply) {
 
 #[test]
 fn batches_members_at_100() {
-    let (transport, worker) = server(vec![
+    let (mut client, root, worker) = client(vec![
         chats((0..201).map(|i| format!("u{i:04}")).collect()),
         contacts(100, ""),
         contacts(100, ""),
         contacts(2, ""),
     ]);
-    let (mut client, root) = client(transport);
     let (members, failed) = client.members("group").unwrap();
     assert!(!failed);
     assert_eq!(members.len(), 202);
@@ -130,7 +136,7 @@ fn batches_members_at_100() {
 #[test]
 fn failed_member_lookup_can_be_retried_without_hiding_members() {
     let ids = vec!["uknown".into(), "uabsent".into(), "ufailed".into()];
-    let (transport, worker) = server(vec![
+    let (mut client, root, worker) = client(vec![
         chats(ids.clone()),
         (
             "getContactsV2",
@@ -139,7 +145,6 @@ fn failed_member_lookup_can_be_retried_without_hiding_members() {
         chats(ids),
         contacts(4, "uabsent"),
     ]);
-    let (mut client, root) = client(transport);
     let (members, failed) = client.members("group").unwrap();
     assert!(failed);
     assert_eq!(members.len(), 4);

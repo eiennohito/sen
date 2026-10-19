@@ -3,7 +3,13 @@ use super::*;
 
 pub(super) fn talk(api: &mut Api, token: &str, method: &str, args: Value) -> Result<Value> {
     let cache_key = format!("{method}:{args}");
-    let cacheable = matches!(method, "getE2EEPublicKey" | "getE2EEGroupSharedKey");
+    let cacheable = matches!(
+        method,
+        "getE2EEPublicKey"
+            | "getE2EEGroupSharedKey"
+            | "negotiateE2EEPublicKey"
+            | "getLastE2EEGroupSharedKey"
+    );
     if cacheable && let Some(value) = api.key_cache.get(&cache_key) {
         return Ok(value.clone());
     }
@@ -60,7 +66,11 @@ impl Envelope {
     }
 }
 
-pub(super) fn own_key(rt: &mut Runtime, state: &Value, id: u64) -> Result<u32> {
+pub(super) fn own_key(api: &mut Api, state: &Value, id: u64) -> Result<u32> {
+    if let Some(key) = api.own_keys.get(&id) {
+        return Ok(*key);
+    }
+    let rt = &mut api.rt;
     let key = state["e2ee_keys"]
         .as_array()
         .context("missing saved E2EE keys")?
@@ -68,8 +78,9 @@ pub(super) fn own_key(rt: &mut Runtime, state: &Value, id: u64) -> Result<u32> {
         .find(|key| key["id"].as_u64() == Some(id))
         .context("matching own key unavailable")?;
     let h = rt.bytes(&decode(required(key, "exported_key")?)?);
-    let ptr = rt.static_call("E2EEKey", "loadKey", &[h])?;
+    let ptr = rt.static_call(Call::E2EEKeyLoadKey, &[h])?;
     rt.release(h)?;
+    api.own_keys.insert(id, ptr);
     Ok(ptr)
 }
 
@@ -83,9 +94,82 @@ pub(super) fn public_key(api: &mut Api, token: &str, mid: &str, id: u64) -> Resu
 
 pub(super) fn channel(rt: &mut Runtime, key: u32, public: &[u8]) -> Result<u32> {
     let h = rt.bytes(public);
-    let ptr = rt.method("E2EEKey", "createChannel", key, &[h])?;
+    let ptr = rt.method(Call::E2EEKeyCreateChannel, key, &[h])?;
     rt.release(h)?;
     Ok(ptr)
+}
+
+/// Channel identity is shared by incoming messages, outgoing echoes and sends.
+pub(super) struct Channel<'a> {
+    pub mid: &'a str,
+    pub own: u64,
+    pub peer: u64,
+    pub group: Option<u64>,
+    pub sender: &'a str,
+    pub sender_key: u64,
+}
+pub(super) fn message_channel(
+    api: &mut Api,
+    state: &Value,
+    my_mid: &str,
+    id: &Channel<'_>,
+) -> Result<u32> {
+    let token = access(state)?;
+    let cache_key = match id.group {
+        None => format!("user:{}:{}:{}", id.mid, id.own, id.peer),
+        Some(group) => format!("group:{}:{group}:{}:{}", id.mid, id.sender, id.sender_key),
+    };
+    if let Some(channel) = api.cached_channel(&cache_key) {
+        return Ok(channel);
+    }
+    let ch = if let Some(group) = id.group {
+        let shared = talk(
+            api,
+            token,
+            "getE2EEGroupSharedKey",
+            json!([1, id.mid, group]),
+        )?;
+        ensure!(
+            shared["groupKeyId"].as_u64() == Some(group),
+            "group key ID mismatch"
+        );
+        ensure!(
+            required(&shared, "receiver")? == my_mid,
+            "group key receiver mismatch"
+        );
+        let private_id = shared["receiverKeyId"]
+            .as_u64()
+            .context("missing receiver key ID")?;
+        let creator_id = shared["creatorKeyId"]
+            .as_u64()
+            .context("missing creator key ID")?;
+        let public = public_key(api, token, required(&shared, "creator")?, creator_id)?;
+        let key = own_key(api, state, private_id)?;
+        let transfer = channel(&mut api.rt, key, &public)?;
+        let h = api
+            .rt
+            .bytes(&decode(required(&shared, "encryptedSharedKey")?)?);
+        let group_key = api
+            .rt
+            .method(Call::E2EEChannelUnwrapGroupSharedKey, transfer, &[h])?;
+        api.rt.release(h)?;
+        let public = if id.sender == my_mid {
+            let own = own_key(api, state, id.sender_key)?;
+            bytes_method(&mut api.rt, Call::E2EEKeyGetPublicKey, own, &[])?
+        } else {
+            public_key(api, token, id.sender, id.sender_key)?
+        };
+        let ch = channel(&mut api.rt, group_key, &public)?;
+        api.rt.destroy("E2EEKey", group_key)?;
+        api.rt.destroy("E2EEChannel", transfer)?;
+        ch
+    } else {
+        let key = own_key(api, state, id.own)?;
+        let public = public_key(api, token, id.mid, id.peer)?;
+        channel(&mut api.rt, key, &public)?
+    };
+    api.cache_channel(cache_key, ch)?;
+    Ok(ch)
 }
 
 pub(super) fn decrypt(
@@ -95,7 +179,6 @@ pub(super) fn decrypt(
     message: &Value,
     envelope: &Envelope,
 ) -> Result<Vec<u8>> {
-    let token = access(state)?;
     let to = required(message, "to")?;
     let from = required(message, "from")?;
     let outgoing = from == my_mid;
@@ -113,67 +196,22 @@ pub(super) fn decrypt(
     } else {
         (envelope.receiver, envelope.sender)
     };
-    let cache_key = if direct {
-        format!("user:{chat_mid}:{private_id}:{public_id}")
-    } else {
-        format!(
-            "group:{chat_mid}:{}:{from}:{}",
-            envelope.receiver, envelope.sender
-        )
-    };
-    let ch = if let Some(channel) = api.cached_channel(&cache_key) {
-        channel
-    } else {
-        let channel = if direct {
-            let key = own_key(&mut api.rt, state, private_id)?;
-            let public = public_key(api, token, chat_mid, public_id)?;
-            let ch = channel(&mut api.rt, key, &public)?;
-            api.rt.destroy("E2EEKey", key)?;
-            ch
-        } else {
-            let shared = talk(
-                api,
-                token,
-                "getE2EEGroupSharedKey",
-                json!([1, chat_mid, envelope.receiver]),
-            )?;
-            ensure!(
-                shared["groupKeyId"].as_u64() == Some(envelope.receiver),
-                "group key ID mismatch"
-            );
-            ensure!(
-                required(&shared, "receiver")? == my_mid,
-                "group key receiver mismatch"
-            );
-            let private_id = shared["receiverKeyId"]
-                .as_u64()
-                .context("missing receiver key ID")?;
-            let creator_id = shared["creatorKeyId"]
-                .as_u64()
-                .context("missing creator key ID")?;
-            let public = public_key(api, token, required(&shared, "creator")?, creator_id)?;
-            let key = own_key(&mut api.rt, state, private_id)?;
-            let transfer = channel(&mut api.rt, key, &public)?;
-            let h = api
-                .rt
-                .bytes(&decode(required(&shared, "encryptedSharedKey")?)?);
-            let group_key = api
-                .rt
-                .method("E2EEChannel", "unwrapGroupSharedKey", transfer, &[h])?;
-            api.rt.release(h)?;
-            let public = public_key(api, token, from, envelope.sender)?;
-            let ch = channel(&mut api.rt, group_key, &public)?;
-            api.rt.destroy("E2EEKey", group_key)?;
-            api.rt.destroy("E2EEChannel", transfer)?;
-            api.rt.destroy("E2EEKey", key)?;
-            ch
-        };
-        api.cache_channel(cache_key, channel)?;
-        channel
-    };
+    let ch = message_channel(
+        api,
+        state,
+        my_mid,
+        &Channel {
+            mid: chat_mid,
+            own: private_id,
+            peer: public_id,
+            group: (!direct).then_some(envelope.receiver),
+            sender: from,
+            sender_key: envelope.sender,
+        },
+    )?;
     let h = api.rt.bytes(&envelope.ciphertext);
     let plaintext = if envelope.version == 1 {
-        bytes_method(&mut api.rt, "E2EEChannel", "decryptV1", ch, &[h])?
+        bytes_method(&mut api.rt, Call::E2EEChannelDecryptV1, ch, &[h])?
     } else {
         let to = api.rt.string(to)?;
         let from = api.rt.string(from)?;
@@ -182,8 +220,7 @@ pub(super) fn decrypt(
             .context("missing content type")?;
         let bytes = bytes_method(
             &mut api.rt,
-            "E2EEChannel",
-            "decryptV2",
+            Call::E2EEChannelDecryptV2,
             ch,
             &[to, from, envelope.sender, envelope.receiver, content, h],
         )?;
@@ -195,10 +232,10 @@ pub(super) fn decrypt(
     Ok(plaintext)
 }
 
-pub(super) fn run(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()> {
+pub(super) fn run(opts: &Options, wasm: &[u8], version: &str, progress: &Progress) -> Result<()> {
     let state = crate::credentials::load(&opts.state)?;
-    let mut api = Api::new(wasm, &opts.client_version)?;
-    validate_keys(&mut api.rt, &state).context(error::SavedSessionFailure::Keys.error())?;
+    let mut api = Api::new(wasm, version)?;
+    validate_keys(&mut api, &state).context(error::SavedSessionFailure::Keys.error())?;
     let profile = api.profile(access(&state)?)?;
     let my_mid = required(&profile, "mid")?;
     progress.set("Fetching bounded recent chat previews for decryption check")?;
@@ -263,8 +300,7 @@ pub(super) fn run(opts: &Options, wasm: &[u8], progress: &Progress) -> Result<()
                     // Only application-defined errors reach here; no server body
                     // or message contents are included in RPC/runtime diagnostics.
                     println!("Encrypted preview attempt {failed} failed: {error:#}");
-                    api.channels.clear();
-                    api.rt.reinitialize(wasm, &opts.client_version)?;
+                    api.reinitialize(wasm)?;
                 }
             }
             if failed >= 5 {
@@ -290,18 +326,16 @@ mod tests {
         let fixture: Value =
             serde_json::from_str(include_str!("../../fixtures/letter-sealing-v2.json"))?;
         let mut api = Api::new(
-            &fs::read(
-                Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/line-3.7.2/ltsm.wasm"),
-            )?,
-            "3.7.2",
+            &crate::test_support::read_fixture(&crate::test_support::fixture_path())?,
+            crate::test_support::FIXTURE_VERSION,
         )?;
         let h = api.rt.bytes(&decode(required(&fixture, "exported_key")?)?);
-        let key = api.rt.static_call("Curve25519Key", "loadKey", &[h])?;
+        let key = api.rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
         api.rt.release(h)?;
         let h = api
             .rt
             .bytes(&decode(required(&fixture, "peer_public_key")?)?);
-        let channel = api.rt.method("Curve25519Key", "createChannel", key, &[h])?;
+        let channel = api.rt.method(Call::Curve25519KeyCreateChannel, key, &[h])?;
         api.rt.release(h)?;
         api.rt.destroy("Curve25519Key", key)?;
         let from = required(&fixture, "from")?;

@@ -640,12 +640,9 @@ pub(super) struct Transport {
 }
 
 impl Transport {
-    pub(super) fn with_client_version(mut self, version: &str) -> Self {
-        self.client_version = version.into();
-        self
-    }
-    pub(super) fn new() -> Result<Self> {
+    pub(super) fn new(client_version: &str) -> Result<Self> {
         Ok(Self::with_parts(
+            client_version,
             environment_proxy()?,
             PollResolver::default(),
         ))
@@ -666,10 +663,19 @@ impl Transport {
         }
     }
 
-    fn with_parts(proxy: Option<ureq::Proxy>, resolver: impl Resolver) -> Self {
-        Self::configured(proxy, resolver, Config::default())
+    fn with_parts(
+        client_version: &str,
+        proxy: Option<ureq::Proxy>,
+        resolver: impl Resolver,
+    ) -> Self {
+        Self::configured(client_version, proxy, resolver, Config::default())
     }
-    fn configured(proxy: Option<ureq::Proxy>, resolver: impl Resolver, timing: Config) -> Self {
+    fn configured(
+        client_version: &str,
+        proxy: Option<ureq::Proxy>,
+        resolver: impl Resolver,
+        timing: Config,
+    ) -> Self {
         let config = Agent::config_builder()
             .https_only(!cfg!(test))
             .proxy(proxy)
@@ -679,7 +685,7 @@ impl Transport {
             .max_idle_age(timing.pool_idle)
             .build();
         Self {
-            client_version: String::new(),
+            client_version: client_version.into(),
             config: timing,
             agent: Agent::with_parts(config, PollConnector::default(), resolver),
             #[cfg(test)]
@@ -969,8 +975,8 @@ impl Transport {
     }
 
     #[cfg(test)]
-    pub(in crate::client) fn local(base: String) -> Self {
-        let mut transport = Self::with_parts(None, PollResolver::default());
+    pub(in crate::client) fn local(client_version: &str, base: String) -> Self {
+        let mut transport = Self::with_parts(client_version, None, PollResolver::default());
         transport.base = base;
         transport
     }
@@ -1099,7 +1105,8 @@ pub(in crate::client) mod tests {
     ) -> (Transport, thread::JoinHandle<T>) {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let mut transport = Transport::configured(None, PollResolver::default(), Config::testing());
+        let mut transport =
+            Transport::configured("9.8.7", None, PollResolver::default(), Config::testing());
         transport.base = format!("http://{}", listener.local_addr().unwrap());
         (transport, thread::spawn(move || serve(listener)))
     }
@@ -1274,7 +1281,8 @@ pub(in crate::client) mod tests {
 
     #[test]
     fn rejects_invalid_paths_and_headers_without_requests() {
-        let mut transport = Transport::configured(None, PollResolver::default(), Config::testing());
+        let mut transport =
+            Transport::configured("9.8.7", None, PollResolver::default(), Config::testing());
         transport.base = "http://127.0.0.1:0".into();
         for path in [
             "//other.test/api/",
@@ -1363,7 +1371,8 @@ pub(in crate::client) mod tests {
 
     #[test]
     fn precancelled_request_does_not_connect() {
-        let mut transport = Transport::configured(None, PollResolver::default(), Config::testing());
+        let mut transport =
+            Transport::configured("9.8.7", None, PollResolver::default(), Config::testing());
         transport.base = "http://127.0.0.1:0".into();
         let cancel = Arc::new(AtomicBool::new(true));
         super::super::set_request_cancel(cancel);

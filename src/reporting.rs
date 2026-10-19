@@ -34,7 +34,7 @@ fn chain(error: &(dyn Error + 'static)) -> String {
             match e {
                 crate::client::error::Error::SignIn(
                     reason @ crate::client::error::SignInFailure::CryptoChanged { .. },
-                ) => reason.to_string(),
+                ) => format!("{reason:?}"),
                 crate::client::error::Error::SignIn(reason) => format!("sign-in:{}", reason.kind()),
                 _ => e.to_string(), // These variants contain only typed categories and numeric codes.
             }

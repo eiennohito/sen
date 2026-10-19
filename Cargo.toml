@@ -1,5 +1,5 @@
 [package]
-name = "line-client"
+name = "line"
 version = "0.1.0"
 edition = "2024"
 description = "Rust host and client adapter for the unmodified LINE Chrome crypto WASM"

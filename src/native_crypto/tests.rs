@@ -1,13 +1,13 @@
 use super::*;
-use crate::runtime::Runtime;
-const FIXTURE_SHA256: &str = "58bb4e189ab9bbd7d72ed415258da36afd50e306cb019bab75329d4f5f1b65b3";
+use crate::runtime::{Call, Runtime};
+use crate::test_support::{FIXTURE_VERSION, fixture_path, read_fixture};
 use anyhow::Context;
 use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
 use serde_json::Value;
-use std::{fs, path::Path, time::Instant};
+use std::{path::Path, time::Instant};
 
 const CASES: usize = 320;
 const TO: &str = "u8ae764e8e69e6bd4ecdd9b6ea0c40fce";
@@ -24,19 +24,12 @@ fn decode(value: &Value) -> Vec<u8> {
 fn wasm(test_name: &str) -> Result<Vec<u8>> {
     let path = std::env::var_os("LINE_CRYPTO_ORACLE_PATH")
         .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("artifacts/line-3.7.2/ltsm.wasm")
-        });
+        .unwrap_or_else(fixture_path);
     wasm_at(&path).with_context(|| format!("SKIP native crypto oracle: {test_name}: fixture missing or invalid; set LINE_CRYPTO_ORACLE_PATH"))
 }
 
 fn wasm_at(path: &Path) -> Result<Vec<u8>> {
-    let bytes = fs::read(path)?;
-    ensure!(
-        format!("{:x}", Sha256::digest(&bytes)) == FIXTURE_SHA256,
-        "oracle hash"
-    );
-    Ok(bytes)
+    read_fixture(path)
 }
 
 struct Inputs(u64);
@@ -77,25 +70,25 @@ struct Oracle {
 impl Oracle {
     fn new(wasm: &[u8]) -> Result<Self> {
         let f = fixture();
-        let mut rt = Runtime::new(wasm)?;
+        let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
         let h = rt.bytes(&decode(&f["exported_key"]));
-        let key = rt.static_call("Curve25519Key", "loadKey", &[h])?;
+        let key = rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
         rt.release(h)?;
         let h = rt.bytes(&decode(&f["peer_public_key"]));
-        let channel = rt.method("Curve25519Key", "createChannel", key, &[h])?;
+        let channel = rt.method(Call::Curve25519KeyCreateChannel, key, &[h])?;
         rt.release(h)?;
         rt.destroy("Curve25519Key", key)?;
         let wrapped = rt.read_memory(7376, 193)?;
         let h = rt.bytes(&wrapped);
-        let mid_key = rt.static_call("SecureKey", "loadKey", &[h])?;
+        let mid_key = rt.static_call(Call::SecureKeyLoadKey, &[h])?;
         rt.release(h)?;
-        let aes = rt.construct("AesKey", &[mid_key as u64])?;
+        let aes = rt.construct(Call::AesKeyNew, &[mid_key as u64])?;
         let mut mid = |mid: &str| -> Result<String> {
             let raw = (1..33)
                 .step_by(2)
                 .map(|i| u8::from_str_radix(&mid[i..i + 2], 16))
                 .collect::<std::result::Result<Vec<_>, _>>()?;
-            let mut ct = Self::bytes(&mut rt, "AesKey", "encrypt", aes, &raw)?;
+            let mut ct = Self::bytes(&mut rt, Call::AesKeyEncrypt, aes, &raw)?;
             ensure!(ct.len() == 44, "opaque MID length");
             ct.truncate(32);
             Ok(format!(
@@ -116,15 +109,15 @@ impl Oracle {
         })
     }
 
-    fn bytes(rt: &mut Runtime, class: &str, name: &str, ptr: u32, data: &[u8]) -> Result<Vec<u8>> {
+    fn bytes(rt: &mut Runtime, call: Call, ptr: u32, data: &[u8]) -> Result<Vec<u8>> {
         let h = rt.bytes(data);
-        let out = rt.method(class, name, ptr, &[h])?;
+        let out = rt.method(call, ptr, &[h])?;
         rt.release(h)?;
         rt.output(out)
     }
 
-    fn crypt(&mut self, name: &str, data: &[u8]) -> Result<Vec<u8>> {
-        Self::bytes(&mut self.rt, "E2EEChannel", name, self.channel, data)
+    fn crypt(&mut self, call: Call, data: &[u8]) -> Result<Vec<u8>> {
+        Self::bytes(&mut self.rt, call, self.channel, data)
     }
 
     fn derive(&mut self, prefix: &[u8], suffix: &[u8]) -> Result<u32> {
@@ -132,15 +125,15 @@ impl Oracle {
         let s = self.rt.bytes(suffix);
         let key = self
             .rt
-            .method("SecureKey", "deriveKey", self.channel, &[p, s])?;
+            .method(Call::SecureKeyDeriveKey, self.channel, &[p, s])?;
         self.rt.release(p)?;
         self.rt.release(s)?;
         Ok(key)
     }
 
     fn hmac(&mut self, key: u32, data: &[u8]) -> Result<Vec<u8>> {
-        let hmac = self.rt.construct("Hmac", &[key as u64])?;
-        let out = Self::bytes(&mut self.rt, "Hmac", "digest", hmac, data)?;
+        let hmac = self.rt.construct(Call::HmacNew, &[key as u64])?;
+        let out = Self::bytes(&mut self.rt, Call::HmacDigest, hmac, data)?;
         self.rt.destroy("Hmac", hmac)?;
         Ok(out)
     }
@@ -171,12 +164,12 @@ impl Oracle {
         ];
         let method = if let Some(n) = sequence {
             args.push(n);
-            "encryptV2"
+            Call::E2EEChannelEncryptV2
         } else {
-            "decryptV2"
+            Call::E2EEChannelDecryptV2
         };
         args.push(h);
-        let out = self.rt.method("E2EEChannel", method, self.channel, &args)?;
+        let out = self.rt.method(method, self.channel, &args)?;
         self.rt.free_string(to)?;
         self.rt.free_string(from)?;
         self.rt.release(h)?;
@@ -254,19 +247,18 @@ fn fixed_vectors_match_oracle() -> Result<()> {
         oracle.hmac(key, b"probe")?,
         decode(&f["primitives"]["hmac"])
     );
-    let aes = oracle.rt.construct("AesKey", &[key as u64])?;
+    let aes = oracle.rt.construct(Call::AesKeyNew, &[key as u64])?;
     assert_eq!(
         Oracle::bytes(
             &mut oracle.rt,
-            "AesKey",
-            "decrypt",
+            Call::AesKeyDecrypt,
             aes,
             &decode(&f["primitives"]["aes_ciphertext"])
         )?,
         b"probe"
     );
     assert_eq!(
-        oracle.crypt("decryptV1", &decode(&f["ciphertext_v1"]))?,
+        oracle.crypt(Call::E2EEChannelDecryptV1, &decode(&f["ciphertext_v1"]))?,
         f["plaintext"].as_str().unwrap().as_bytes()
     );
     assert_eq!(
@@ -306,8 +298,8 @@ fn derive_and_hmac_match_oracle() -> Result<()> {
             "case {case}"
         );
         // A second use with AES independently checks all 32 derived key bytes.
-        let aes = oracle.rt.construct("AesKey", &[key as u64])?;
-        let ct = Oracle::bytes(&mut oracle.rt, "AesKey", "encrypt", aes, b"derived")?;
+        let aes = oracle.rt.construct(Call::AesKeyNew, &[key as u64])?;
+        let ct = Oracle::bytes(&mut oracle.rt, Call::AesKeyEncrypt, aes, b"derived")?;
         assert_eq!(aes_decrypt(&native, &ct)?, b"derived");
         oracle.rt.destroy("AesKey", aes)?;
         oracle.rt.destroy("SecureKey", key)?;
@@ -326,9 +318,9 @@ fn aes_matches_oracle() -> Result<()> {
         let prefix = inputs.bytes(32);
         let key = oracle.derive(&prefix, b"aes")?;
         let native = derive_key(&shared(), &prefix, b"aes")?;
-        let aes = oracle.rt.construct("AesKey", &[key as u64])?;
+        let aes = oracle.rt.construct(Call::AesKeyNew, &[key as u64])?;
         let data = inputs.message(case);
-        let ct = Oracle::bytes(&mut oracle.rt, "AesKey", "encrypt", aes, &data)?;
+        let ct = Oracle::bytes(&mut oracle.rt, Call::AesKeyEncrypt, aes, &data)?;
         assert_eq!(
             aes_encrypt(&native, ct[..12].try_into()?, &data),
             ct,
@@ -338,12 +330,12 @@ fn aes_matches_oracle() -> Result<()> {
         let ct = aes_encrypt(&native, &nonce, &data);
         if data.is_empty() {
             assert!(aes_decrypt(&native, &ct).is_err());
-            assert!(Oracle::bytes(&mut oracle.rt, "AesKey", "decrypt", aes, &ct).is_err());
+            assert!(Oracle::bytes(&mut oracle.rt, Call::AesKeyDecrypt, aes, &ct).is_err());
             oracle = Oracle::new(wasm)?;
         } else {
             assert_eq!(aes_decrypt(&native, &ct)?, data);
             assert_eq!(
-                Oracle::bytes(&mut oracle.rt, "AesKey", "decrypt", aes, &ct)?,
+                Oracle::bytes(&mut oracle.rt, Call::AesKeyDecrypt, aes, &ct)?,
                 data
             );
             oracle.rt.destroy("AesKey", aes)?;
@@ -365,10 +357,10 @@ fn letter_sealing_matches_oracle() -> Result<()> {
         oracle.channel = root;
         let prefix = inputs.bytes(32);
         let key = oracle.derive(&prefix, b"channel")?;
-        oracle.channel = oracle.rt.construct("E2EEChannel", &[key as u64])?;
+        oracle.channel = oracle.rt.construct(Call::E2EEChannelNew, &[key as u64])?;
         let native = Channel::new(derive_key(&shared(), &prefix, b"channel")?);
         let data = inputs.message(case);
-        let v1 = oracle.crypt("encryptV1", &data)?;
+        let v1 = oracle.crypt(Call::E2EEChannelEncryptV1, &data)?;
         assert_eq!(
             native.encrypt_v1(v1[..8].try_into()?, &data),
             v1,
@@ -377,7 +369,7 @@ fn letter_sealing_matches_oracle() -> Result<()> {
         assert_eq!(native.decrypt_v1(&v1)?, data);
         let salt: [u8; 8] = inputs.bytes(8).try_into().unwrap();
         assert_eq!(
-            oracle.crypt("decryptV1", &native.encrypt_v1(&salt, &data))?,
+            oracle.crypt(Call::E2EEChannelDecryptV1, &native.encrypt_v1(&salt, &data))?,
             data
         );
         let ctx = MessageContext {
@@ -430,49 +422,57 @@ fn tampering_is_rejected_by_both() -> Result<()> {
     let v1 = native.encrypt_v1(&[8; 8], text);
     let v2 = native.encrypt_v2(&context(), &[9; 16], 0x1_0000_0001, &[10; 4], text);
     for (method, frame, ciphertext_offset) in [
-        ("decrypt", aes, 12),
-        ("decryptV1", v1, 8),
-        ("decryptV2", v2, 28),
+        (Call::AesKeyDecrypt, aes, 12),
+        (Call::E2EEChannelDecryptV1, v1, 8),
+        (Call::E2EEChannelDecryptV2, v2, 28),
     ] {
         let mut positions = vec![0, ciphertext_offset, frame.len() - 1];
-        if method == "decryptV2" {
+        if method == Call::E2EEChannelDecryptV2 {
             positions.extend([16, 24]);
         }
         for position in positions {
             let mut oracle = Oracle::new(wasm)?;
-            let aes_key = if method == "decrypt" {
-                Some(oracle.rt.construct("AesKey", &[oracle.channel as u64])?)
+            let aes_key = if method == Call::AesKeyDecrypt {
+                Some(
+                    oracle
+                        .rt
+                        .construct(Call::AesKeyNew, &[oracle.channel as u64])?,
+                )
             } else {
                 None
             };
             let accepted = match aes_key {
-                Some(key) => Oracle::bytes(&mut oracle.rt, "AesKey", "decrypt", key, &frame)?,
-                None if method == "decryptV2" => oracle.v2(&context(), &frame, None)?,
+                Some(key) => Oracle::bytes(&mut oracle.rt, Call::AesKeyDecrypt, key, &frame)?,
+                None if method == Call::E2EEChannelDecryptV2 => {
+                    oracle.v2(&context(), &frame, None)?
+                }
                 None => oracle.crypt(method, &frame)?,
             };
             assert_eq!(
                 accepted, text,
-                "oracle baseline for {method} bit at {position}"
+                "oracle baseline for {method:?} bit at {position}"
             );
             let mut corrupt = frame.clone();
             corrupt[position] ^= 1;
             let rejected = match method {
-                "decrypt" => aes_decrypt(&shared(), &corrupt),
-                "decryptV1" => native.decrypt_v1(&corrupt),
+                Call::AesKeyDecrypt => aes_decrypt(&shared(), &corrupt),
+                Call::E2EEChannelDecryptV1 => native.decrypt_v1(&corrupt),
                 _ => native.decrypt_v2(&context(), &corrupt),
             };
             assert!(
                 rejected.is_err(),
-                "native accepted {method} bit at {position}"
+                "native accepted {method:?} bit at {position}"
             );
             let result = match aes_key {
-                Some(key) => Oracle::bytes(&mut oracle.rt, "AesKey", "decrypt", key, &corrupt),
-                None if method == "decryptV2" => oracle.v2(&context(), &corrupt, None),
+                Some(key) => Oracle::bytes(&mut oracle.rt, Call::AesKeyDecrypt, key, &corrupt),
+                None if method == Call::E2EEChannelDecryptV2 => {
+                    oracle.v2(&context(), &corrupt, None)
+                }
                 None => oracle.crypt(method, &corrupt),
             };
             assert!(
                 result.is_err(),
-                "oracle accepted {method} bit at {position}"
+                "oracle accepted {method:?} bit at {position}"
             );
         }
     }
@@ -504,10 +504,10 @@ fn secure_key_boundary() -> Result<()> {
     let wasm = wasm("secure_key_boundary")?;
     let wasm = wasm.as_slice();
     for len in [0, 16, 32, 48, 64, 193] {
-        let mut rt = Runtime::new(wasm)?;
+        let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
         let h = rt.bytes(&vec![0x42; len]);
         let error = rt
-            .static_call("SecureKey", "loadKey", &[h])
+            .static_call(Call::SecureKeyLoadKey, &[h])
             .expect_err("raw key import");
         let expected = if len < 32 {
             "invalid parameters"
@@ -521,39 +521,39 @@ fn secure_key_boundary() -> Result<()> {
             "length {len}: {error:#}"
         );
     }
-    let mut rt = Runtime::new(wasm)?;
+    let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
     let token = rt.string(crate::TOKEN)?;
-    let key = rt.static_call("SecureKey", "loadToken", &[token])?;
+    let key = rt.static_call(Call::SecureKeyLoadToken, &[token])?;
     rt.free_string(token)?;
-    let p = rt.bytes(&Sha256::digest("3.7.2"));
+    let p = rt.bytes(&Sha256::digest(FIXTURE_VERSION.as_bytes()));
     let s = rt.bytes(&Sha256::digest(b"synthetic access token"));
-    let derived = rt.method("SecureKey", "deriveKey", key, &[p, s])?;
-    let hmac = rt.construct("Hmac", &[derived as u64])?;
+    let derived = rt.method(Call::SecureKeyDeriveKey, key, &[p, s])?;
+    let hmac = rt.construct(Call::HmacNew, &[derived as u64])?;
     assert_eq!(
-        Oracle::bytes(&mut rt, "Hmac", "digest", hmac, b"synthetic request")?.len(),
+        Oracle::bytes(&mut rt, Call::HmacDigest, hmac, b"synthetic request")?.len(),
         32
     );
     let error = rt
-        .method("SecureKey", "exportKey", key, &[])
+        .method(Call::SecureKeyExportKey, key, &[])
         .expect_err("token export");
     assert!(
         format!("{error:#}").contains("illegal operation"),
         "{error:#}"
     );
-    let mut rt = Runtime::new(wasm)?;
+    let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
     let h = rt.bytes(&decode(&fixture()["exported_key"]));
-    let key = rt.static_call("Curve25519Key", "loadKey", &[h])?;
+    let key = rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
     rt.release(h)?;
-    let out = rt.method("Curve25519Key", "getPublicKey", key, &[])?;
+    let out = rt.method(Call::Curve25519KeyGetPublicKey, key, &[])?;
     let public = rt.output(out)?;
     assert_eq!(public, decode(&fixture()["public_key"]));
     let mut basepoint = [0; 32];
     basepoint[0] = 9;
     let h = rt.bytes(&basepoint);
-    let channel = rt.method("Curve25519Key", "createChannel", key, &[h])?;
-    let hmac = rt.construct("Hmac", &[channel as u64])?;
+    let channel = rt.method(Call::Curve25519KeyCreateChannel, key, &[h])?;
+    let hmac = rt.construct(Call::HmacNew, &[channel as u64])?;
     assert_eq!(
-        Oracle::bytes(&mut rt, "Hmac", "digest", hmac, b"base point")?,
+        Oracle::bytes(&mut rt, Call::HmacDigest, hmac, b"base point")?,
         hmac_sha256(&public, b"base point")
     );
     for curve_wrapper in [false, true] {
@@ -561,34 +561,34 @@ fn secure_key_boundary() -> Result<()> {
         let key = oracle.derive(b"salt", b"info")?;
         let (class, key) = if curve_wrapper {
             (
-                "Curve25519Key",
-                oracle.rt.construct("Curve25519Key", &[key as u64])?,
+                Call::Curve25519KeyExportKey,
+                oracle.rt.construct(Call::Curve25519KeyNew, &[key as u64])?,
             )
         } else {
-            ("SecureKey", key)
+            (Call::SecureKeyExportKey, key)
         };
         let error = oracle
             .rt
-            .method(class, "exportKey", key, &[])
+            .method(class, key, &[])
             .expect_err("derived key export");
         assert!(
             format!("{error:#}").contains("illegal operation"),
-            "{class}: {error:#}"
+            "{class:?}: {error:#}"
         );
     }
-    let mut rt = Runtime::new(wasm)?;
-    let key = rt.static_call("Curve25519Key", "generate", &[1])?;
-    let out = rt.method("Curve25519Key", "getPublicKey", key, &[])?;
+    let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
+    let key = rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
+    let out = rt.method(Call::Curve25519KeyGetPublicKey, key, &[])?;
     let public = rt.output(out)?;
-    let out = rt.method("Curve25519Key", "exportKey", key, &[])?;
+    let out = rt.method(Call::Curve25519KeyExportKey, key, &[])?;
     let wrapped = rt.output(out)?;
     assert_eq!(wrapped.len(), 193);
     rt.destroy("Curve25519Key", key)?;
     // A fresh runtime proves persistence independently of the original engine cache.
-    let mut rt = Runtime::new(wasm)?;
+    let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
     let h = rt.bytes(&wrapped);
-    let restored = rt.static_call("Curve25519Key", "loadKey", &[h])?;
-    let out = rt.method("Curve25519Key", "getPublicKey", restored, &[])?;
+    let restored = rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
+    let out = rt.method(Call::Curve25519KeyGetPublicKey, restored, &[])?;
     assert_eq!(rt.output(out)?, public);
     Ok(())
 }
@@ -700,8 +700,10 @@ fn authenticated_invalid_v1_padding() -> Result<()> {
     let valid = v1_padded_frame(&[16; 16]);
     for (label, frame) in invalid_padding_frames() {
         let mut oracle = Oracle::new(wasm)?;
-        assert_eq!(oracle.crypt("decryptV1", &valid)?, b"");
-        let error = oracle.crypt("decryptV1", &frame).expect_err(label);
+        assert_eq!(oracle.crypt(Call::E2EEChannelDecryptV1, &valid)?, b"");
+        let error = oracle
+            .crypt(Call::E2EEChannelDecryptV1, &frame)
+            .expect_err(label);
         assert!(
             format!("{error:#}").contains("Failed to unpad the data: invalid format"),
             "{label}: {error:#}"
@@ -761,10 +763,10 @@ fn x25519_matches_oracle() -> Result<()> {
         let prefix = inputs.bytes(32);
         let scalar = derive_key(&shared(), &prefix, b"curve")?;
         let key = oracle.derive(&prefix, b"curve")?;
-        let curve = oracle.rt.construct("Curve25519Key", &[key as u64])?;
+        let curve = oracle.rt.construct(Call::Curve25519KeyNew, &[key as u64])?;
         let h = oracle
             .rt
-            .method("Curve25519Key", "getPublicKey", curve, &[])?;
+            .method(Call::Curve25519KeyGetPublicKey, curve, &[])?;
         let public = oracle.rt.output(h)?;
         assert_eq!(public, x25519_public_key(&scalar), "public key {case}");
         // RFC scalars and seeded raw scalars on the peer side; the oracle's
@@ -782,7 +784,7 @@ fn x25519_matches_oracle() -> Result<()> {
         let h = oracle.rt.bytes(&point);
         let channel = oracle
             .rt
-            .method("Curve25519Key", "createChannel", curve, &[h])?;
+            .method(Call::Curve25519KeyCreateChannel, curve, &[h])?;
         oracle.rt.release(h)?;
         let probe = inputs.message(case);
         assert_eq!(
@@ -792,7 +794,7 @@ fn x25519_matches_oracle() -> Result<()> {
         );
         let frame = native.encrypt_v1(&[0x63; 8], &probe);
         assert_eq!(
-            Oracle::bytes(&mut oracle.rt, "E2EEChannel", "decryptV1", channel, &frame)?,
+            Oracle::bytes(&mut oracle.rt, Call::E2EEChannelDecryptV1, channel, &frame)?,
             probe
         );
         oracle.rt.destroy("E2EEChannel", channel)?;
@@ -821,7 +823,7 @@ fn low_order_points_match_oracle() -> Result<()> {
         let mut oracle = Oracle::new(wasm)?;
         let scalar = derive_key(&shared(), b"salt", b"info")?;
         let key = oracle.derive(b"salt", b"info")?;
-        let curve = oracle.rt.construct("Curve25519Key", &[key as u64])?;
+        let curve = oracle.rt.construct(Call::Curve25519KeyNew, &[key as u64])?;
         let point = hex32(point);
         assert_eq!(x25519(&scalar, &point), [0; 32]);
         let native = Channel::from_x25519(&scalar, &point);
@@ -832,14 +834,14 @@ fn low_order_points_match_oracle() -> Result<()> {
         let h = oracle.rt.bytes(&point);
         let channel = oracle
             .rt
-            .method("Curve25519Key", "createChannel", curve, &[h])?;
+            .method(Call::Curve25519KeyCreateChannel, curve, &[h])?;
         assert_eq!(
             oracle.hmac(channel, b"low order accepted")?,
             hmac_sha256(&native.shared, b"low order accepted")
         );
         let frame = native.encrypt_v1(&[0x64; 8], b"low order accepted");
         assert_eq!(
-            Oracle::bytes(&mut oracle.rt, "E2EEChannel", "decryptV1", channel, &frame)?,
+            Oracle::bytes(&mut oracle.rt, Call::E2EEChannelDecryptV1, channel, &frame)?,
             b"low order accepted"
         );
     }
@@ -854,7 +856,7 @@ fn arbitrary_point_boundary() -> Result<()> {
     let mut oracle = Oracle::new(wasm)?;
     let scalar = derive_key(&shared(), b"salt", b"info")?;
     let key = oracle.derive(b"salt", b"info")?;
-    let curve = oracle.rt.construct("Curve25519Key", &[key as u64])?;
+    let curve = oracle.rt.construct(Call::Curve25519KeyNew, &[key as u64])?;
     let mut inputs = Inputs::new();
     let mut matches = 0;
     let mut divergent = 0;
@@ -863,7 +865,7 @@ fn arbitrary_point_boundary() -> Result<()> {
         let h = oracle.rt.bytes(&point);
         let channel = oracle
             .rt
-            .method("Curve25519Key", "createChannel", curve, &[h])?;
+            .method(Call::Curve25519KeyCreateChannel, curve, &[h])?;
         oracle.rt.release(h)?;
         let actual = oracle.hmac(channel, b"arbitrary point")?;
         let expected = hmac_sha256(&x25519(&scalar, &point), b"arbitrary point");

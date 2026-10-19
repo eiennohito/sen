@@ -2687,7 +2687,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "line-client"
+name = "line"
 version = "0.1.0"
 dependencies = [
  "aes",
@@ -2724,7 +2724,7 @@ dependencies = [
  "chrono",
  "i-slint-backend-selector",
  "image",
- "line-client",
+ "line",
  "line-desktop-ui",
  "serde",
  "serde_json",

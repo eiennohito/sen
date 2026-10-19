@@ -1,6 +1,6 @@
 //! Selection and local preparation. Only the dialog's Send callback enqueues uploads.
 use crate::*;
-use line_client::attachments::{Attachment, FILE_LIMIT};
+use line::attachments::{Attachment, FILE_LIMIT};
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},
@@ -337,7 +337,7 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
     });
 }
 fn clipboard_root() -> Result<PathBuf, String> {
-    Ok(line_client::locations::Locations::from_environment()?
+    Ok(line::locations::Locations::from_environment()?
         .session
         .parent()
         .ok_or("Missing app data directory")?

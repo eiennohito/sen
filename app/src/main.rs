@@ -1,4 +1,4 @@
-use line_client::{
+use line::{
     backend::{FakeBackend, LineBackend, ProfileAction},
     controller::{ActionQueue, AppState, DetailPage, Panel},
     engine::{Connection, Delta, Intent, Sender, StoreLocation, Worker},
@@ -53,7 +53,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut snapshot_profile = false;
     let mut background = false;
     let mut client_version = None;
-    let mut locations = line_client::locations::Locations::from_environment()?;
+    let mut wasm_override = None;
+    let mut locations = line::locations::Locations::from_environment()?;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -101,7 +102,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 client_version = Some(args.next().ok_or("missing client version")?)
             }
             "--wasm" => {
-                locations.wasm = args.next().ok_or("missing wasm")?.into();
+                wasm_override = Some(args.next().ok_or("missing wasm")?.into());
             }
             "--cache-dir" => locations.cache = args.next().ok_or("missing cache directory")?.into(),
             "--demo-signed-out" | "--demo-rich" | "--demo-photos" | "--demo-groups"
@@ -124,6 +125,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         background,
         locations,
         client_version,
+        wasm_override,
     })
 }
 
