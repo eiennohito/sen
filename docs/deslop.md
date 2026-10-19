@@ -14,6 +14,22 @@ someone trips over it.
   callers changed in the same commit (see "No compatibility code" in
   [app-design.md](app-design.md)).
 
+## Review stance
+
+Assume the session produced something that only looks like a program.
+
+- A session's own report ("fmt, clippy, tests, checks passed") proves
+  nothing about the design. The coordinator re-runs checks; the review judges
+  the code.
+- Every new type, flag, layer, fallback, option, test and comment must
+  justify itself: why does it exist, what breaks if it is deleted?
+- Compare against what a competent engineer would have written, not against
+  the session's intent. Far from it means rewrite, not polish.
+- Hunt for imitation of work: tests asserting the implementation, unneeded
+  validation and logging, single-use generic abstractions, robustness for
+  impossible states, docs describing intent instead of code.
+- Verdicts are blunt: "delete", "rewrite as X", "wrong model".
+
 ## Patterns seen in this codebase
 
 | Pattern | Example that was found |
