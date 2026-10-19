@@ -30,6 +30,29 @@ Assume the session produced something that only looks like a program.
   impossible states, docs describing intent instead of code.
 - Verdicts are blunt: "delete", "rewrite as X", "wrong model".
 
+## Tests are code under review
+
+Passing tests show only that tests and code agree. Tests are audited like
+product code, and every deslop pass covers them.
+
+Keep a test only if it pins something a user or the protocol would notice:
+a user-visible flow, a protocol or crypto fact (fixtures, byte-exact
+vectors), a data-loss or double-send regression, a past real bug.
+
+Delete, don't fix:
+- tests that restate the implementation (same formula, same branches, the
+  mock returning what the assertion expects);
+- tests of private helpers already covered by a flow test;
+- tests for impossible states, and corner cases nobody hits;
+- several tests for one behaviour where one would do;
+- sleep- or timing-based tests (wait on events);
+- UI checks that assert layout numbers or element counts instead of what the
+  user can see and do;
+- fake backends growing knobs only one test uses.
+
+A whole-suite audit runs with the next deslop pass. Suite runtime is part
+of the budget: slow tests cost development speed.
+
 ## Patterns seen in this codebase
 
 | Pattern | Example that was found |
