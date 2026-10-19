@@ -124,7 +124,7 @@ pub(crate) fn sign_in_validated<T>(
     let ui = NativeLogin { emit, cancel };
     ui.check()?;
     let wasm = module.read()?;
-    let mut api = Api::new(&wasm, &module.version)?;
+    let mut api = Api::with_runtime(module.runtime(&wasm)?, &module.version)?;
     ui.set(Stage::WaitingKeyring)?;
     let probe_state = state.to_owned();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
@@ -177,15 +177,7 @@ pub(crate) fn sign_in_validated<T>(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
-    let opts = Options {
-        command: "login".into(),
-        state: staged.clone(),
-        wasm_override: None,
-        version_override: None,
-        qr_file: None,
-        display: "none".into(),
-    };
-    login_with(&opts, &mut api, &ui)?;
+    login_with(&staged, &mut api, &ui)?;
     let validated = validate(&staged, api, wasm)?;
     ui.check()?;
     install_session(state, &staged, Some(cancel)).context(super::error::Error::SignIn(
@@ -286,14 +278,7 @@ mod tests {
             .unwrap_err();
             assert_eq!(
                 failure(&error, false),
-                if exists {
-                    SignInFailure::CryptoChanged {
-                        version: "9.8.7".into(),
-                        missing: "WASM module".into(),
-                    }
-                } else {
-                    SignInFailure::CryptoModule(wasm.clone())
-                }
+                SignInFailure::CryptoModule(wasm.clone())
             );
             assert!(!state.exists());
         }

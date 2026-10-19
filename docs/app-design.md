@@ -149,7 +149,7 @@ The GUI thread owns Slint models and text editing. The account net worker owns
 one runtime, tokens, key caches and RPC requests. Live decode, history and
 signing call that runtime directly;
 the stream thread borrows authorization and requests token refresh from the
-worker, never instantiating WASM. Runtime recovery builds a new instance, then assigns it, propagating any failure. Media file crypto stays native, and the optional
+worker, never instantiating WASM. Runtime recovery runs only when a WASM exception poisons the store. It builds a new instance, then assigns it, propagating any failure. Missing device keys, RPC errors and parse errors fail only their item and preserve runtime caches. Latest peer and group keys are fetched per send; key-ID data and channels are cached. Media file crypto stays native, and the optional
 `native-crypto` trial feature is unchanged. Three blocking asset threads
 share one asset HTTP agent and the thumbnail cache; they own media downloads,
 decryption and decoding. Three slots allow visible images to overlap while

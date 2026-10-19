@@ -12,20 +12,34 @@ pub struct CryptoModule {
     pub wasm: PathBuf,
     pub version: String,
 }
-fn version(root: &Path) -> Result<String> {
-    let manifest: serde_json::Value =
-        serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
-    let version = manifest["version"]
-        .as_str()
-        .context("extension manifest version missing")?;
-    anyhow::ensure!(
-        !version.is_empty() && version.split('.').all(|n| n.parse::<u32>().is_ok()),
-        "invalid extension version"
-    );
-    Ok(version.into())
+fn version(root: &Path) -> Result<(String, Vec<u32>)> {
+    let path = root.join("manifest.json");
+    let load = || -> Result<(String, Vec<u32>)> {
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
+        let version = manifest["version"]
+            .as_str()
+            .context("extension manifest version missing")?;
+        let numbers = version
+            .split('.')
+            .map(str::parse)
+            .collect::<std::result::Result<Vec<u32>, _>>()?;
+        Ok((version.into(), numbers))
+    };
+    load().context(Error::SignIn(SignInFailure::CryptoModule(path)))
 }
 pub fn discover_in(config: &Path) -> Result<CryptoModule> {
+    discover_candidates(config).map_err(|error| {
+        if error.downcast_ref::<Error>().is_some() {
+            error
+        } else {
+            error.context(Error::SignIn(SignInFailure::CryptoModule(config.into())))
+        }
+    })
+}
+fn discover_candidates(config: &Path) -> Result<CryptoModule> {
     let mut candidates = Vec::new();
+    let mut invalid = None;
     for browser in fs::read_dir(config)? {
         let browser = browser?;
         let name = browser.file_name();
@@ -50,19 +64,20 @@ pub fn discover_in(config: &Path) -> Result<CryptoModule> {
                 if !entry.file_type()?.is_dir() {
                     continue;
                 }
-                let ver = version(&entry.path())?;
-                let numbers: Vec<u32> = ver
-                    .split('.')
-                    .map(str::parse)
-                    .collect::<std::result::Result<_, _>>()?;
+                let (ver, numbers) = match version(&entry.path()) {
+                    Ok(version) => version,
+                    Err(error) => {
+                        invalid = Some(error);
+                        continue;
+                    }
+                };
                 candidates.push((numbers, entry.path(), ver));
             }
         }
     }
-    let (_, root, version) = candidates
-        .into_iter()
-        .max()
-        .ok_or(Error::SignIn(SignInFailure::ExtensionMissing))?;
+    let (_, root, version) = candidates.into_iter().max().ok_or_else(|| {
+        invalid.unwrap_or_else(|| Error::SignIn(SignInFailure::ExtensionMissing).into())
+    })?;
     let wasm = root.join("static/js/ltsm.wasm");
     if !wasm.is_file() {
         return Err(Error::SignIn(SignInFailure::CryptoChanged {
@@ -78,22 +93,37 @@ pub fn resolve(
     version_override: Option<String>,
 ) -> Result<CryptoModule> {
     if let Some(wasm) = wasm_override {
-        let root = wasm
-            .ancestors()
-            .skip(1)
-            .find(|p| p.join("manifest.json").is_file());
-        let version = if let Some(root) = root {
-            version(root)?
-        } else {
-            version_override
-                .filter(|v| !v.is_empty())
-                .context("--wasm outside an extension requires --client-version")?
+        let version = match version_override {
+            Some(version) => version,
+            None => {
+                let root = wasm
+                    .parent()
+                    .and_then(Path::parent)
+                    .and_then(Path::parent)
+                    .context("--wasm outside an extension requires --client-version")?;
+                version(root)?.0
+            }
         };
         return Ok(CryptoModule { wasm, version });
     }
-    discover_in(&crate::locations::Locations::config_home()?)
+    let mut module = discover_in(&crate::locations::Locations::config_home()?)?;
+    if let Some(version) = version_override {
+        module.version = version;
+    }
+    Ok(module)
 }
 impl CryptoModule {
+    pub(crate) fn runtime(&self, bytes: &[u8]) -> Result<crate::runtime::Runtime> {
+        crate::runtime::Runtime::new(bytes, &self.version).map_err(|error| {
+            if error.downcast_ref::<Error>().is_some() {
+                error
+            } else {
+                error.context(Error::SignIn(SignInFailure::CryptoModule(
+                    self.wasm.clone(),
+                )))
+            }
+        })
+    }
     pub fn read(&self) -> Result<Vec<u8>> {
         fs::read(&self.wasm).context(Error::SignIn(SignInFailure::CryptoModule(
             self.wasm.clone(),
@@ -146,6 +176,46 @@ mod tests {
         }
     }
 
+    #[test]
+    fn broken_sibling_manifests_do_not_hide_valid_versions() {
+        let f = Fixture::new();
+        let broken = f.extension("google-chrome", "Default", "old", "3.7.2");
+        fs::write(broken.join("manifest.json"), b"broken").unwrap();
+        let valid = f.extension("chromium", "Profile 1", "new", "3.10.0");
+        assert_eq!(
+            discover_in(&f.0).unwrap().wasm,
+            valid.join("static/js/ltsm.wasm")
+        );
+    }
+    #[test]
+    fn override_uses_only_version_directory_and_explicit_version_wins() {
+        let f = Fixture::new();
+        let root = f.extension("chromium", "Default", "version", "3.7.2");
+        let wasm = root.join("static/js/ltsm.wasm");
+        assert_eq!(resolve(Some(wasm.clone()), None).unwrap().version, "3.7.2");
+        assert_eq!(
+            resolve(Some(wasm.clone()), Some("".into()))
+                .unwrap()
+                .version,
+            ""
+        );
+        assert_eq!(
+            resolve(Some(wasm), Some("9.0".into())).unwrap().version,
+            "9.0"
+        );
+        fs::write(f.0.join("manifest.json"), br#"{"version":"99"}"#).unwrap();
+        let outside = f.0.join("nested/static/js/ltsm.wasm");
+        assert!(resolve(Some(outside), None).is_err());
+    }
+    #[test]
+    fn read_failures_have_module_category() {
+        let f = Fixture::new();
+        let missing = f.0.join("missing");
+        let error = discover_in(&missing).unwrap_err();
+        assert!(
+            matches!(error.downcast_ref::<Error>(), Some(Error::SignIn(SignInFailure::CryptoModule(path))) if path == &missing)
+        );
+    }
     #[test]
     fn newest_manifest_version_across_browsers_and_profiles_wins() {
         let f = Fixture::new();

@@ -175,7 +175,7 @@ if args.signed_out:
     click("Close demo scenarios")
     if args.missing_module:
         click("Sign in")
-        message = "Cannot read the LINE crypto module at /demo/crypto.wasm. Check LINE for Chrome or the developer override."
+        message = "Can't load the LINE crypto module at /demo/crypto.wasm. Check LINE for Chrome or the developer override."
         element(message, "Text")
         element("Sign-in needs a supported LINE for Chrome installation.", "Text")
         for _ in range(2):

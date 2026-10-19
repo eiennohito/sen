@@ -3,19 +3,15 @@ use std::path::PathBuf;
 
 #[derive(Clone, Debug)]
 pub struct Locations {
+    pub config_home: PathBuf,
     pub session: PathBuf,
     pub cache: PathBuf,
 }
 impl Locations {
     pub fn config_home() -> anyhow::Result<PathBuf> {
-        let home = std::env::var_os("HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .ok_or_else(|| anyhow::anyhow!("HOME must be an absolute path"))?;
-        Ok(std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
-            .unwrap_or_else(|| home.join(".config")))
+        Self::resolve(|key| std::env::var_os(key).map(PathBuf::from))
+            .map(|locations| locations.config_home)
+            .map_err(anyhow::Error::msg)
     }
 
     pub fn from_environment() -> Result<Self, String> {
@@ -32,6 +28,7 @@ impl Locations {
         };
         let data = base("XDG_DATA_HOME", ".local/share").join("line-desktop");
         Ok(Self {
+            config_home: base("XDG_CONFIG_HOME", ".config"),
             session: data.join("session.json"),
             cache: base("XDG_CACHE_HOME", ".cache").join("line-desktop"),
         })

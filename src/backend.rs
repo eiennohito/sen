@@ -1193,10 +1193,7 @@ impl LineBackend {
             if state.try_exists()? {
                 crate::client::desktop::Client::open_local(state, module, cache).map(Some)
             } else {
-                drop(crate::runtime::Runtime::new(
-                    &module.read()?,
-                    &module.version,
-                )?);
+                drop(module.runtime(&module.read()?)?);
                 Ok(None)
             }
         };
@@ -1206,7 +1203,9 @@ impl LineBackend {
                 crate::reporting::log("saved-session", "open", error.as_ref());
                 let reason = match crate::client::error::classify(&error) {
                     Error::SignIn(reason) => reason,
-                    _ => crate::client::error::SignInFailure::Internal,
+                    _ => crate::client::error::SignInFailure::SavedSession(
+                        crate::client::error::SavedSessionFailure::Corrupt,
+                    ),
                 };
                 (None, Some(reason))
             }

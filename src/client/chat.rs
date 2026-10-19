@@ -3,13 +3,7 @@ use super::*;
 
 pub(super) fn talk(api: &mut Api, token: &str, method: &str, args: Value) -> Result<Value> {
     let cache_key = format!("{method}:{args}");
-    let cacheable = matches!(
-        method,
-        "getE2EEPublicKey"
-            | "getE2EEGroupSharedKey"
-            | "negotiateE2EEPublicKey"
-            | "getLastE2EEGroupSharedKey"
-    );
+    let cacheable = matches!(method, "getE2EEPublicKey" | "getE2EEGroupSharedKey");
     if cacheable && let Some(value) = api.key_cache.get(&cache_key) {
         return Ok(value.clone());
     }
@@ -100,75 +94,84 @@ pub(super) fn channel(rt: &mut Runtime, key: u32, public: &[u8]) -> Result<u32> 
 }
 
 /// Channel identity is shared by incoming messages, outgoing echoes and sends.
-pub(super) struct Channel<'a> {
-    pub mid: &'a str,
-    pub own: u64,
-    pub peer: u64,
-    pub group: Option<u64>,
-    pub sender: &'a str,
-    pub sender_key: u64,
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(super) enum Channel {
+    Direct {
+        mid: String,
+        own_key_id: u64,
+        peer_key_id: u64,
+    },
+    Group {
+        mid: String,
+        group_key_id: u64,
+        sender: String,
+        sender_key_id: u64,
+    },
 }
 pub(super) fn message_channel(
     api: &mut Api,
     state: &Value,
     my_mid: &str,
-    id: &Channel<'_>,
+    id: &Channel,
 ) -> Result<u32> {
     let token = access(state)?;
-    let cache_key = match id.group {
-        None => format!("user:{}:{}:{}", id.mid, id.own, id.peer),
-        Some(group) => format!("group:{}:{group}:{}:{}", id.mid, id.sender, id.sender_key),
-    };
-    if let Some(channel) = api.cached_channel(&cache_key) {
+    if let Some(channel) = api.cached_channel(id) {
         return Ok(channel);
     }
-    let ch = if let Some(group) = id.group {
-        let shared = talk(
-            api,
-            token,
-            "getE2EEGroupSharedKey",
-            json!([1, id.mid, group]),
-        )?;
-        ensure!(
-            shared["groupKeyId"].as_u64() == Some(group),
-            "group key ID mismatch"
-        );
-        ensure!(
-            required(&shared, "receiver")? == my_mid,
-            "group key receiver mismatch"
-        );
-        let private_id = shared["receiverKeyId"]
-            .as_u64()
-            .context("missing receiver key ID")?;
-        let creator_id = shared["creatorKeyId"]
-            .as_u64()
-            .context("missing creator key ID")?;
-        let public = public_key(api, token, required(&shared, "creator")?, creator_id)?;
-        let key = own_key(api, state, private_id)?;
-        let transfer = channel(&mut api.rt, key, &public)?;
-        let h = api
-            .rt
-            .bytes(&decode(required(&shared, "encryptedSharedKey")?)?);
-        let group_key = api
-            .rt
-            .method(Call::E2EEChannelUnwrapGroupSharedKey, transfer, &[h])?;
-        api.rt.release(h)?;
-        let public = if id.sender == my_mid {
-            let own = own_key(api, state, id.sender_key)?;
-            bytes_method(&mut api.rt, Call::E2EEKeyGetPublicKey, own, &[])?
-        } else {
-            public_key(api, token, id.sender, id.sender_key)?
-        };
-        let ch = channel(&mut api.rt, group_key, &public)?;
-        api.rt.destroy("E2EEKey", group_key)?;
-        api.rt.destroy("E2EEChannel", transfer)?;
-        ch
-    } else {
-        let key = own_key(api, state, id.own)?;
-        let public = public_key(api, token, id.mid, id.peer)?;
-        channel(&mut api.rt, key, &public)?
+    let ch = match id {
+        Channel::Group {
+            mid,
+            group_key_id: group,
+            sender,
+            sender_key_id,
+        } => {
+            let shared = talk(api, token, "getE2EEGroupSharedKey", json!([1, mid, group]))?;
+            ensure!(
+                shared["groupKeyId"].as_u64() == Some(*group),
+                "group key ID mismatch"
+            );
+            ensure!(
+                required(&shared, "receiver")? == my_mid,
+                "group key receiver mismatch"
+            );
+            let private_id = shared["receiverKeyId"]
+                .as_u64()
+                .context("missing receiver key ID")?;
+            let creator_id = shared["creatorKeyId"]
+                .as_u64()
+                .context("missing creator key ID")?;
+            let public = public_key(api, token, required(&shared, "creator")?, creator_id)?;
+            let key = own_key(api, state, private_id)?;
+            let transfer = channel(&mut api.rt, key, &public)?;
+            let h = api
+                .rt
+                .bytes(&decode(required(&shared, "encryptedSharedKey")?)?);
+            let group_key = api
+                .rt
+                .method(Call::E2EEChannelUnwrapGroupSharedKey, transfer, &[h])?;
+            api.rt.release(h)?;
+            let public = if sender == my_mid {
+                let own = own_key(api, state, *sender_key_id)?;
+                bytes_method(&mut api.rt, Call::E2EEKeyGetPublicKey, own, &[])?
+            } else {
+                public_key(api, token, sender, *sender_key_id)?
+            };
+            let ch = channel(&mut api.rt, group_key, &public)?;
+            api.rt.destroy("E2EEKey", group_key)?;
+            api.rt.destroy("E2EEChannel", transfer)?;
+            ch
+        }
+        Channel::Direct {
+            mid,
+            own_key_id,
+            peer_key_id,
+        } => {
+            let key = own_key(api, state, *own_key_id)?;
+            let public = public_key(api, token, mid, *peer_key_id)?;
+            channel(&mut api.rt, key, &public)?
+        }
     };
-    api.cache_channel(cache_key, ch)?;
+    api.cache_channel(id.clone(), ch)?;
     Ok(ch)
 }
 
@@ -200,13 +203,19 @@ pub(super) fn decrypt(
         api,
         state,
         my_mid,
-        &Channel {
-            mid: chat_mid,
-            own: private_id,
-            peer: public_id,
-            group: (!direct).then_some(envelope.receiver),
-            sender: from,
-            sender_key: envelope.sender,
+        &if direct {
+            Channel::Direct {
+                mid: chat_mid.into(),
+                own_key_id: private_id,
+                peer_key_id: public_id,
+            }
+        } else {
+            Channel::Group {
+                mid: chat_mid.into(),
+                group_key_id: envelope.receiver,
+                sender: from.into(),
+                sender_key_id: envelope.sender,
+            }
         },
     )?;
     let h = api.rt.bytes(&envelope.ciphertext);
@@ -232,9 +241,78 @@ pub(super) fn decrypt(
     Ok(plaintext)
 }
 
-pub(super) fn run(opts: &Options, wasm: &[u8], version: &str, progress: &Progress) -> Result<()> {
-    let state = crate::credentials::load(&opts.state)?;
+pub(super) fn decrypt_body(
+    api: &mut Api,
+    state: &Value,
+    my_mid: &str,
+    raw: &Value,
+) -> Result<Value> {
+    let envelope = Envelope::parse(raw)?;
+    let bytes = decrypt(api, state, my_mid, raw, &envelope)?;
+    let body: Value = serde_json::from_slice(&bytes)?;
+    ensure!(body.is_object(), "invalid decrypted message");
+    Ok(body)
+}
+
+#[cfg(feature = "harness")]
+pub fn benchmark_history(
+    wasm: &[u8],
+    version: &str,
+    fixture: &Value,
+    to: &str,
+    from: &str,
+) -> Result<f64> {
     let mut api = Api::new(wasm, version)?;
+    let started = Instant::now();
+    let h = api.rt.bytes(&decode(required(fixture, "exported_key")?)?);
+    let key = api.rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
+    api.rt.release(h)?;
+    let ch = channel(
+        &mut api.rt,
+        key,
+        &decode(required(fixture, "peer_public_key")?)?,
+    )?;
+    api.cache_channel(
+        Channel::Direct {
+            mid: from.into(),
+            own_key_id: 99,
+            peer_key_id: 42,
+        },
+        ch,
+    )?;
+    let state = json!({"token_v3_issue_result":{"accessToken":"synthetic"},"e2ee_keys":[]});
+    let ct = decode(required(fixture, "ciphertext")?)?;
+    let mut failed = 0;
+    for index in 0..50 {
+        let receiver = if index % 10 == 0 { 1000u32 } else { 99 };
+        let raw = json!({"to":to,"from":from,"contentType":0,"contentMetadata":{"e2eeVersion":"2"},"chunks":[
+            STANDARD.encode(&ct[..16]), STANDARD.encode(&ct[ct.len()-16..]),
+            STANDARD.encode(&ct[16..ct.len()-16]), STANDARD.encode(42u32.to_be_bytes()), STANDARD.encode(receiver.to_be_bytes())]});
+        match decrypt_body(&mut api, &state, to, &raw) {
+            Ok(body) => ensure!(body["text"].is_string(), "missing fixture text"),
+            Err(_) => {
+                failed += 1;
+                if api.rt.is_poisoned() {
+                    api.reinitialize(wasm)?;
+                }
+            }
+        }
+    }
+    ensure!(
+        failed == 5 && api.channels.len() == 1,
+        "item failures dropped cached channels"
+    );
+    Ok(started.elapsed().as_secs_f64() * 1000.)
+}
+
+pub(super) fn run(
+    opts: &Options,
+    wasm: &[u8],
+    module: &crate::crypto_module::CryptoModule,
+    progress: &Progress,
+) -> Result<()> {
+    let state = crate::credentials::load(&opts.state)?;
+    let mut api = Api::with_runtime(module.runtime(wasm)?, &module.version)?;
     validate_keys(&mut api, &state).context(error::SavedSessionFailure::Keys.error())?;
     let profile = api.profile(access(&state)?)?;
     let my_mid = required(&profile, "mid")?;
@@ -300,7 +378,9 @@ pub(super) fn run(opts: &Options, wasm: &[u8], version: &str, progress: &Progres
                     // Only application-defined errors reach here; no server body
                     // or message contents are included in RPC/runtime diagnostics.
                     println!("Encrypted preview attempt {failed} failed: {error:#}");
-                    api.reinitialize(wasm)?;
+                    if api.rt.is_poisoned() {
+                        api.reinitialize(wasm)?;
+                    }
                 }
             }
             if failed >= 5 {
@@ -340,7 +420,14 @@ mod tests {
         api.rt.destroy("Curve25519Key", key)?;
         let from = required(&fixture, "from")?;
         let to = required(&fixture, "to")?;
-        api.cache_channel(format!("user:{from}:99:42"), channel)?;
+        api.cache_channel(
+            Channel::Direct {
+                mid: from.into(),
+                own_key_id: 99,
+                peer_key_id: 42,
+            },
+            channel,
+        )?;
         let ciphertext = decode(required(&fixture, "ciphertext_v1")?)?;
         let chunks = vec![
             STANDARD.encode(&ciphertext[..8]),

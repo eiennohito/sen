@@ -86,9 +86,9 @@ These paths have synthetic coverage; live compatibility and native read markers
 remain unverified while Chrome owns the account slot. Unknown mute state is not
 shown as a known server preference.
 
-Install LINE for Chrome, then launch `line-desktop` and choose **Sign in** to pair with your phone. At startup the app uses the newest installed extension (`ophjlpahpchlmihnnnihgmmeilfjmjjc`) across Chrome and Chromium profiles under `$XDG_CONFIG_HOME` (default `$HOME/.config`). It reads `static/js/ltsm.wasm` from the extension root and uses `manifest.json`'s version for requests and signing. No module copy or installation script is needed. Required crypto interfaces are checked before sign-in; unsupported changes appear on the sign-in screen and status strip and are logged. If the extension is missing, the app lists the searched locations.
+Install LINE for Chrome, then launch `line-desktop` and choose **Sign in** to pair with your phone. At startup the app uses the newest installed extension (`ophjlpahpchlmihnnnihgmmeilfjmjjc`) across Chrome and Chromium profiles under `$XDG_CONFIG_HOME` (default `$HOME/.config`). It reads `static/js/ltsm.wasm` from the extension root and uses `manifest.json`'s version for requests and signing. No module copy or installation script is needed. Required crypto interfaces are checked before sign-in; unsupported changes appear on the sign-in screen and status strip and are logged. If the extension is missing, the app describes the Chrome and Chromium search locations.
 
-Session credentials use `$XDG_DATA_HOME/line-desktop/` (default `~/.local/share/line-desktop/`); cache uses `$XDG_CACHE_HOME/line-desktop/` (default `~/.cache/line-desktop/`). The desktop keyring seals saved sign-in credentials. Sessions survive extension updates. If the updated module cannot restore saved keys, the app explains that the saved session is unusable. LINE could refuse an old client; this appears as refused sign-in/session. `line-auth` shares these defaults. `--state FILE`, `--wasm FILE`, `--client-version VERSION` and the app's `--cache-dir DIR` are developer overrides. A WASM override outside an extension requires `--client-version`. Tests and crypto oracle fixtures may explicitly pin a module copy; the app never defaults to one. One account net worker owns and directly calls the runtime for live decode, history and signing. Send and receive share its channel and key caches; signing retains the derived HMAC key until the access token changes. Media file crypto runs natively on background workers; the optional native-crypto trial remains experimental.
+Session credentials use `$XDG_DATA_HOME/line-desktop/` (default `~/.local/share/line-desktop/`); cache uses `$XDG_CACHE_HOME/line-desktop/` (default `~/.cache/line-desktop/`). The desktop keyring seals saved sign-in credentials. Sessions survive extension updates. If the updated module cannot restore saved keys, the app explains that the saved session is unusable. LINE could refuse an old client; this appears as refused sign-in/session. `line-auth` shares these defaults. `--state FILE`, `--wasm FILE`, `--client-version VERSION` and the app's `--cache-dir DIR` are developer overrides. A WASM override outside an extension requires `--client-version`. Tests and crypto oracle fixtures may explicitly pin a module copy; the app never defaults to one. One account net worker owns and directly calls the runtime for live decode, history and signing. Send and receive share its channel and key caches; signing retains the HMAC and its derived key together until the access token changes. Latest peer and group keys are fetched for every send; caches retain only keys and channels identified by key ID. Media file crypto runs natively on background workers; the optional native-crypto trial remains experimental.
 
 Private desktop state uses `$XDG_STATE_HOME/line-desktop` (normally under
 `~/.local/state`). Empty or relative XDG directories fall back to `$HOME`.
@@ -182,10 +182,10 @@ and live under the account cache's `messages-v1` directory. A 512-message /
 Ciphertext/reaction changes invalidate entries; corrupt pages are discarded.
 Clear the account cache to remove both message pages and image previews.
 
-Crypto channels are reused with a 64-entry bound and reset with the WASM runtime.
-An offline synthetic benchmark measured 140.15 ms/message rebuilding a channel
-versus 4.54 ms reusing one; this is a crypto-stage measurement, not a measured
-full-app speedup. Run `cargo run --release --example crypto-harness -- --bench`.
+Crypto channels are reused with a 64-entry bound. Only a poisoned WASM runtime is rebuilt; a missing device key, RPC error or parse error fails that item and preserves caches.
+An offline synthetic benchmark measured 147.68 ms/message rebuilding a channel
+versus 4.78 ms reusing one; this is a crypto-stage measurement, not a measured
+full-app speedup. A 50-item decrypt batch with five unavailable device keys took 475.58 ms; cached signing took 10.57 ms/request (87.00 ms with derivation per request). Run `cargo run --offline --release --features harness --example crypto-harness -- --bench`.
 
 The [Chromium UI map](docs/chromium-ui-map.md) records the live reference,
 missing features, rich-message decoding gaps, history protocol, and reconstruction
@@ -253,7 +253,7 @@ cargo build --release --bins
 # Session directory fallback: $HOME/.local/share/line-desktop/.
 target/release/line-auth status
 target/release/line-auth chat-check
-cargo run --release --example crypto-harness
+cargo run --offline --release --features harness --example crypto-harness
 ```
 
 `login` performs QR pairing when needed; preserve an existing session. `status`

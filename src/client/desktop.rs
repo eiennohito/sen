@@ -109,17 +109,18 @@ impl Client {
         cache_root: &Path,
     ) -> Result<Self> {
         let wasm = module.read()?;
-        let api = Api::new(&wasm, &module.version)?;
+        let mut api = Api::with_runtime(module.runtime(&wasm)?, &module.version)?;
+        let state = crate::credentials::load(state_path)?;
+        validate_keys(&mut api, &state).context(super::error::SavedSessionFailure::Keys.error())?;
         Self::from_api(state_path, cache_root, wasm, api)
     }
     pub(crate) fn from_api(
         state_path: &Path,
         cache_root: &Path,
         wasm: Vec<u8>,
-        mut api: Api,
+        api: Api,
     ) -> Result<Self> {
         let state = crate::credentials::load(state_path)?;
-        validate_keys(&mut api, &state).context(super::error::SavedSessionFailure::Keys.error())?;
         access(&state).context(super::error::SavedSessionFailure::Corrupt.error())?;
         let my_mid = state["profile"]["mid"]
             .as_str()
@@ -236,11 +237,6 @@ impl Client {
         *self.stream_access.write().unwrap() = access(&self.state)?.into();
         self.obs_access = None;
         Ok(())
-    }
-
-    /// Reset only the poisoned WASM store, preserving validated public-key data.
-    fn reset_runtime(&mut self) -> Result<()> {
-        self.api.reinitialize(&self.wasm)
     }
 
     pub fn chats(&mut self, cursor: Option<&str>) -> Result<(Vec<Chat>, bool, Option<String>)> {
@@ -540,19 +536,14 @@ impl Client {
         let encrypted = raw["chunks"].as_array().is_some_and(|c| !c.is_empty());
         let mut failed = false;
         if encrypted {
-            let result = (|| -> Result<Value> {
-                let envelope = chat::Envelope::parse(raw)?;
-                let bytes =
-                    chat::decrypt(&mut self.api, &self.state, &self.my_mid, raw, &envelope)?;
-                let body: Value = serde_json::from_slice(&bytes)?;
-                ensure!(body.is_object(), "invalid decrypted message");
-                Ok(body)
-            })();
+            let result = chat::decrypt_body(&mut self.api, &self.state, &self.my_mid, raw);
             match result {
                 Ok(body) => merge_decrypted(&mut data, &body),
                 Err(_) => {
                     failed = true;
-                    self.reset_runtime()?;
+                    if self.api.rt.is_poisoned() {
+                        self.api.reinitialize(&self.wasm)?;
+                    }
                 }
             }
         }
@@ -856,11 +847,13 @@ impl Client {
         metadata: &Value,
         seq: u32,
     ) -> Result<Message> {
-        for attempt in 0..2 {
-            let mut message = match self.encrypted_payload(to, content_type, payload) {
+        let send = |client: &mut Self| -> Result<Value> {
+            let mut message = match client.encrypted_payload(to, content_type, payload) {
                 Ok(message) => message,
                 Err(error) => {
-                    self.reset_runtime()?;
+                    if client.api.rt.is_poisoned() {
+                        client.api.reinitialize(&client.wasm)?;
+                    }
                     return Err(error);
                 }
             };
@@ -873,21 +866,19 @@ impl Client {
             for (key, value) in metadata.as_object().context("message metadata")? {
                 message["contentMetadata"][key] = value.clone();
             }
-            match self.talk("sendMessage", json!([seq, message])) {
-                Ok(result) => return self.message(&result),
-                // LINE E2EE_RETRY_ENCRYPT / E2EE_UPDATE_RECEIVER_KEY explicitly reject the key.
-                Err(error)
-                    if attempt == 0
-                        && error
-                            .downcast_ref::<RpcError>()
-                            .is_some_and(|e| matches!(e.code, 82 | 84)) =>
-                {
-                    self.api.refresh_chat_keys(to)?;
-                }
-                Err(error) => return Err(error),
+            client.talk("sendMessage", json!([seq, message]))
+        };
+        let result = match send(self) {
+            Err(error)
+                if error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|e| matches!(e.code, 82..=84)) =>
+            {
+                send(self)?
             }
-        }
-        unreachable!("bounded key refresh")
+            result => result?,
+        };
+        self.message(&result)
     }
 
     fn encrypted_payload(&mut self, to: &str, content_type: u64, payload: &Value) -> Result<Value> {
@@ -909,10 +900,6 @@ impl Client {
             );
             let public = &negotiation["publicKey"];
             let id = public["keyId"].as_u64().context("missing peer key ID")?;
-            self.api.key_cache.insert(
-                format!("getE2EEPublicKey:{}", json!([to, 1, id])),
-                public.clone(),
-            );
             (id, negotiation["specVersion"].as_u64().unwrap_or(2))
         } else {
             let shared = self.talk("getLastE2EEGroupSharedKey", json!([1, to]))?;
@@ -920,23 +907,25 @@ impl Client {
                 .as_u64()
                 .context("missing group key ID")?;
             let version = shared["specVersion"].as_u64().unwrap_or(2);
-            self.api.key_cache.insert(
-                format!("getE2EEGroupSharedKey:{}", json!([1, to, id])),
-                shared,
-            );
             (id, version)
         };
         let ch = chat::message_channel(
             &mut self.api,
             &self.state,
             &self.my_mid,
-            &chat::Channel {
-                mid: to,
-                own: sender_id,
-                peer: receiver_id,
-                group: (!is_user(to)).then_some(receiver_id),
-                sender: &self.my_mid,
-                sender_key: sender_id,
+            &if is_user(to) {
+                chat::Channel::Direct {
+                    mid: to.into(),
+                    own_key_id: sender_id,
+                    peer_key_id: receiver_id,
+                }
+            } else {
+                chat::Channel::Group {
+                    mid: to.into(),
+                    group_key_id: receiver_id,
+                    sender: self.my_mid.clone(),
+                    sender_key_id: sender_id,
+                }
             },
         )?;
         let h = self.api.rt.bytes(&serde_json::to_vec(payload)?);
@@ -1215,3 +1204,8 @@ mod decrypted_metadata_tests {
 }
 
 mod upload;
+
+#[cfg(test)]
+mod send_tests;
+#[cfg(test)]
+mod test_client;

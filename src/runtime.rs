@@ -29,7 +29,7 @@ struct Binding {
     args: usize,
     types: Vec<u32>,
 }
-#[derive(Clone, Debug, Default)]
+#[derive(Debug, Default)]
 struct Class {
     name: String,
     base: u32,
@@ -162,6 +162,11 @@ fn call_export(c: &mut Caller<'_, Host>, name: &str, args: &[Val]) -> Result<Vec
         .get_export(name)
         .and_then(|e| e.into_func())
         .context("missing export")?;
+    assert_eq!(
+        f.ty(&*c).params().len(),
+        args.len(),
+        "host export argument count"
+    );
     let mut out: Vec<_> = f
         .ty(&*c)
         .results()
@@ -209,34 +214,38 @@ fn take_value(c: &Caller<'_, Host>, t: u32, p: u32) -> Result<Value> {
     })
 }
 fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
-    let p: Vec<u32> = input
-        .iter()
-        .map(|v| v.i32().map(|x| x as u32).unwrap_or(0))
-        .collect();
+    let p = |index: usize| -> Result<u32> {
+        input
+            .get(index)
+            .context("missing host argument")?
+            .i32()
+            .map(|v| v as u32)
+            .context("host argument must be i32")
+    };
     let mut result = 0;
     match name {
-        "a" => c.data_mut().dec(p[0])?,
+        "a" => c.data_mut().dec(p(0)?)?,
         "j" => {
-            if p[0] >= 5 {
+            if p(0)? >= 5 {
                 c.data_mut()
                     .handles
-                    .get_mut(p[0] as usize)
+                    .get_mut(p(0)? as usize)
                     .context("invalid incref")?
                     .refs += 1;
             }
         }
         "b" | "g" => {
-            let method = cstr(&c, p[1])?;
-            let types = (1..p[2])
-                .map(|i| u32_at(&c, p[3] + i * 4))
+            let method = cstr(&c, p(1)?)?;
+            let types = (1..p(2)?)
+                .map(|i| u32_at(&c, p(3)? + i * 4))
                 .collect::<Result<Vec<_>>>()?;
             let binding = Binding {
-                invoker: p[5],
-                context: p[6],
-                args: p[2] as usize - 1,
+                invoker: p(5)?,
+                context: p(6)?,
+                args: p(2)? as usize - 1,
                 types,
             };
-            let class = c.data_mut().classes.entry(p[0]).or_default();
+            let class = c.data_mut().classes.entry(p(0)?).or_default();
             if name == "b" {
                 class.methods.insert(method, binding);
             } else {
@@ -245,16 +254,17 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
         }
         "i" => {
             let class = Class {
-                name: cstr(&c, p[10])?,
-                base: p[3],
-                upcast: p[7],
-                destructor: p[12],
-                ..c.data_mut().classes.remove(&p[0]).unwrap_or_default()
+                name: cstr(&c, p(10)?)?,
+                base: p(3)?,
+                upcast: p(7)?,
+                destructor: p(12)?,
+                ..c.data_mut().classes.remove(&p(0)?).unwrap_or_default()
             };
-            c.data_mut().classes.insert(p[0], class);
-            for id in &p[..3] {
+            c.data_mut().classes.insert(p(0)?, class);
+            for index in 0..3 {
+                let id = p(index)?;
                 c.data_mut().types.insert(
-                    *id,
+                    id,
                     Type {
                         kind: "class",
                         size: 4,
@@ -263,18 +273,18 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             }
         }
         "k" => {
-            let types = (1..p[1])
-                .map(|i| u32_at(&c, p[2] + i * 4))
+            let types = (1..p(1)?)
+                .map(|i| u32_at(&c, p(2)? + i * 4))
                 .collect::<Result<Vec<_>>>()?;
             let binding = Binding {
-                invoker: p[4],
-                context: p[5],
-                args: p[1] as usize - 1,
+                invoker: p(4)?,
+                context: p(5)?,
+                args: p(1)? as usize - 1,
                 types,
             };
             c.data_mut()
                 .classes
-                .entry(p[0])
+                .entry(p(0)?)
                 .or_default()
                 .constructors
                 .push(binding);
@@ -282,50 +292,50 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
         "d" | "h" | "n" | "t" | "u" | "v" | "I" | "J" | "K" => {
             let (kind, size) = match name {
                 "d" => ("memory_view", 0),
-                "h" => ("int", p[2]),
-                "n" => ("wstring", p[1]),
+                "h" => ("int", p(2)?),
+                "n" => ("wstring", p(1)?),
                 "t" => ("string", 4),
-                "u" => ("float", p[2]),
-                "v" => ("bigint", p[2]),
+                "u" => ("float", p(2)?),
+                "v" => ("bigint", p(2)?),
                 "I" => ("emval", 4),
-                "J" => ("bool", p[2]),
+                "J" => ("bool", p(2)?),
                 "K" => ("void", 0),
                 _ => unreachable!(),
             };
-            c.data_mut().types.insert(p[0], Type { kind, size });
+            c.data_mut().types.insert(p(0)?, Type { kind, size });
         }
         "c" => {} // Numeric configuration constants are not used by this host.
         "N" => {
-            let name = cstr(&c, p[0])?;
-            let types = (1..p[1])
-                .map(|i| u32_at(&c, p[2] + i * 4))
+            let name = cstr(&c, p(0)?)?;
+            let types = (1..p(1)?)
+                .map(|i| u32_at(&c, p(2)? + i * 4))
                 .collect::<Result<Vec<_>>>()?;
             c.data_mut().globals.insert(
                 name,
                 Binding {
-                    invoker: p[4],
-                    context: p[5],
-                    args: p[1] as usize - 1,
+                    invoker: p(4)?,
+                    context: p(5)?,
+                    args: p(1)? as usize - 1,
                     types,
                 },
             );
         }
         "f" | "M" => {
-            let s = cstr(&c, p[0])?;
+            let s = cstr(&c, p(0)?)?;
             result = c.data_mut().put(Value::String(s));
         }
         "l" => {
-            let v = take_value(&c, p[0], p[1])?;
+            let v = take_value(&c, p(0)?, p(1)?)?;
             result = c.data_mut().put(v);
         }
         "e" => {
-            let constructor = c.data().get(p[0])?;
+            let constructor = c.data().get(p(0)?)?;
             ensure!(
                 matches!(&constructor, Value::String(s) if s == "Uint8Array" || s == "Int8Array"),
                 "unsupported emval constructor {constructor:?}"
             );
-            ensure!(p[1] == 1, "unsupported typed array arity");
-            let v = take_value(&c, u32_at(&c, p[2])?, p[3])?;
+            ensure!(p(1)? == 1, "unsupported typed array arity");
+            let v = take_value(&c, u32_at(&c, p(2)?)?, p(3)?)?;
             let bytes = match v {
                 Value::Bytes(b) => b,
                 Value::Number(n) => vec![0; usize::try_from(n)?],
@@ -335,8 +345,8 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
         }
         "x" => result = c.data_mut().put(Value::Bytes(Vec::new())),
         "A" => {
-            let obj = c.data().get(p[0])?;
-            let key = c.data().get(p[1])?;
+            let obj = c.data().get(p(0)?)?;
+            let key = c.data().get(p(1)?)?;
             let val = match (obj, key) {
                 (Value::Bytes(b), Value::String(s)) if s == "length" || s == "byteLength" => {
                     Value::Number(b.len() as u64)
@@ -349,13 +359,13 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             result = c.data_mut().put(val);
         }
         "L" => {
-            let key = c.data().get(p[1])?;
-            let value = c.data().get(p[2])?;
+            let key = c.data().get(p(1)?)?;
+            let value = c.data().get(p(2)?)?;
             if let (Value::Number(i), Value::Number(v)) = (key, value) {
                 let h = c
                     .data_mut()
                     .handles
-                    .get_mut(p[0] as usize)
+                    .get_mut(p(0)? as usize)
                     .context("array handle")?;
                 let Value::Bytes(b) = &mut h.value else {
                     bail!("set_property requires byte array")
@@ -371,11 +381,11 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             }
         }
         "z" => {
-            let val = c.data().get(p[0])?;
+            let val = c.data().get(p(0)?)?;
             let ty = c
                 .data()
                 .types
-                .get(&p[1])
+                .get(&p(1)?)
                 .context("unregistered conversion type")?
                 .clone();
             let mut destructors = Vec::new();
@@ -401,23 +411,23 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
                 }
                 ("int" | "bigint" | "float", Value::Number(n)) => n as f64,
                 ("int" | "bigint", Value::Bytes(b)) => b.len() as f64,
-                ("emval", _) => p[0] as f64,
+                ("emval", _) => p(0)? as f64,
                 other => bail!("unsupported emval conversion {other:?}"),
             };
             let h = c.data_mut().put(Value::Destructors(destructors));
-            write(&mut c, p[2], &h.to_le_bytes())?;
+            write(&mut c, p(2)?, &h.to_le_bytes())?;
             output[0] = Val::F64(value.into());
             return Ok(());
         }
         "y" => {
-            let v = c.data().get(p[0])?;
+            let v = c.data().get(p(0)?)?;
             let Value::Destructors(ptrs) = v else {
                 bail!("invalid destructor list")
             };
             for ptr in ptrs {
                 free(&mut c, ptr)?;
             }
-            c.data_mut().dec(p[0])?;
+            c.data_mut().dec(p(0)?)?;
         }
         "w" => {
             let origin = b"chrome-extension://ophjlpahpchlmihnnnihgmmeilfjmjjc\0";
@@ -428,30 +438,30 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             // Identify known embedded callback source at the supplied pointer,
             // so data relocation across extension builds needs no fixed offsets.
             // No JavaScript is executed; these callbacks are implemented in Rust.
-            let source = cstr(&c, p[0])?;
+            let source = cstr(&c, p(0)?)?;
             match source.as_str() {
                 CALLBACK_THROW => bail!(
                     "LTSM {}: {}",
-                    cstr(&c, u32_at(&c, p[2])?)?,
-                    cstr(&c, u32_at(&c, p[2] + 4)?)?
+                    cstr(&c, u32_at(&c, p(2)?)?)?,
+                    cstr(&c, u32_at(&c, p(2)? + 4)?)?
                 ),
                 CALLBACK_RANDOM_INIT => {}
                 CALLBACK_RANDOM_FILL => {
-                    let ptr = u32_at(&c, p[2])?;
-                    let n = u32_at(&c, p[2] + 4)?;
+                    let ptr = u32_at(&c, p(2)?)?;
+                    let n = u32_at(&c, p(2)? + 4)?;
                     write(&mut c, ptr, &random_bytes(n as usize)?)?;
                 }
                 _ => return Err(crypto_changed(&c.data().version, "EM_JS callback")),
             }
         }
-        "p" => result = malloc(&mut c, p[0] as usize)?,
-        "B" => bail!("LTSM C++ exception (type={}, ptr={})", p[1], p[0]),
+        "p" => result = malloc(&mut c, p(0)? as usize)?,
+        "B" => bail!("LTSM C++ exception (type={}, ptr={})", p(1)?, p(0)?),
         "m" => bail!("LTSM abort"),
         "C" => {
             // emscripten_resize_heap
             let mem = memory(&c)?;
             let current = mem.data(&c).len();
-            let wanted = p[0] as usize;
+            let wanted = p(0)? as usize;
             if wanted > current {
                 let pages = (wanted - current).div_ceil(65536) as u64;
                 result = u32::from(mem.grow(&mut c, pages).is_ok());
@@ -460,7 +470,7 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             }
         }
         "G" => {
-            let path = cstr(&c, p[1])?;
+            let path = cstr(&c, p(1)?)?;
             ensure!(
                 path == "/dev/urandom" || path == "/dev/random",
                 "unsupported open path {path}"
@@ -468,31 +478,31 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
             result = c.data().urandom_fd;
         }
         "E" => {
-            ensure!(p[0] == c.data().urandom_fd, "unsupported fd_read");
+            ensure!(p(0)? == c.data().urandom_fd, "unsupported fd_read");
             let mut total = 0;
-            for i in 0..p[2] {
-                let ptr = u32_at(&c, p[1] + i * 8)?;
-                let n = u32_at(&c, p[1] + i * 8 + 4)?;
+            for i in 0..p(2)? {
+                let ptr = u32_at(&c, p(1)? + i * 8)?;
+                let n = u32_at(&c, p(1)? + i * 8 + 4)?;
                 write(&mut c, ptr, &random_bytes(n as usize)?)?;
                 total += n;
             }
-            write(&mut c, p[3], &total.to_le_bytes())?;
+            write(&mut c, p(3)?, &total.to_le_bytes())?;
         }
         "r" => {
             let mut total: u32 = 0;
-            for i in 0..p[2] {
-                total += u32_at(&c, p[1] + i * 8 + 4)?;
+            for i in 0..p(2)? {
+                total += u32_at(&c, p(1)? + i * 8 + 4)?;
             }
-            write(&mut c, p[3], &total.to_le_bytes())?;
+            write(&mut c, p(3)?, &total.to_le_bytes())?;
         }
         "q" => {
-            ensure!(p[0] == c.data().urandom_fd, "unsupported fd_close");
+            ensure!(p(0)? == c.data().urandom_fd, "unsupported fd_close");
         }
         "s" | "F" => result = 0, // fcntl/ioctl metadata; no host file access.
         "D" => bail!("fd_seek not supported"),
         "H" => {
-            let b = read(&c, p[1], p[2] as usize)?;
-            write(&mut c, p[0], &b)?;
+            let b = read(&c, p(1)?, p(2)? as usize)?;
+            write(&mut c, p(0)?, &b)?;
         }
         other => {
             return Err(crypto_changed(
@@ -507,6 +517,87 @@ fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [V
     Ok(())
 }
 
+type Handler = fn(Caller<'_, Host>, &[Val], &mut [Val]) -> Result<()>;
+struct Function {
+    name: &'static str,
+    params: &'static [wasmi::core::ValType],
+    results: &'static [wasmi::core::ValType],
+    handler: Option<Handler>,
+}
+use wasmi::core::ValType::{F64, I32, I64};
+macro_rules! host_function {
+    ($name:literal, $params:expr, $results:expr) => {
+        Function {
+            name: $name,
+            params: $params,
+            results: $results,
+            handler: Some(|c, p, r| host_call($name, c, p, r)),
+        }
+    };
+}
+macro_rules! export_function {
+    ($name:literal, $params:expr, $results:expr) => {
+        Function {
+            name: $name,
+            params: $params,
+            results: $results,
+            handler: None,
+        }
+    };
+}
+const FUNCTIONS: &[Function] = &[
+    host_function!("a", &[I32], &[]),
+    host_function!("b", &[I32, I32, I32, I32, I32, I32, I32, I32], &[]),
+    host_function!("c", &[I32, I32, F64], &[]),
+    host_function!("d", &[I32, I32, I32], &[]),
+    host_function!("e", &[I32, I32, I32, I32], &[I32]),
+    host_function!("f", &[I32], &[I32]),
+    host_function!("g", &[I32, I32, I32, I32, I32, I32, I32], &[]),
+    host_function!("h", &[I32, I32, I32, I32, I32], &[]),
+    host_function!(
+        "i",
+        &[
+            I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32,
+        ],
+        &[]
+    ),
+    host_function!("j", &[I32], &[]),
+    host_function!("k", &[I32, I32, I32, I32, I32, I32], &[]),
+    host_function!("l", &[I32, I32], &[I32]),
+    host_function!("m", &[], &[]),
+    host_function!("n", &[I32, I32, I32], &[]),
+    host_function!("o", &[I32, I32, I32], &[I32]),
+    host_function!("p", &[I32], &[I32]),
+    host_function!("q", &[I32], &[I32]),
+    host_function!("r", &[I32, I32, I32, I32], &[I32]),
+    host_function!("s", &[I32, I32, I32], &[I32]),
+    host_function!("t", &[I32, I32], &[]),
+    host_function!("u", &[I32, I32, I32], &[]),
+    host_function!("v", &[I32, I32, I32, I64, I64], &[]),
+    host_function!("w", &[], &[I32]),
+    host_function!("x", &[], &[I32]),
+    host_function!("y", &[I32], &[]),
+    host_function!("z", &[I32, I32, I32], &[F64]),
+    host_function!("A", &[I32, I32], &[I32]),
+    host_function!("B", &[I32, I32, I32], &[]),
+    host_function!("C", &[I32], &[I32]),
+    host_function!("D", &[I32, I64, I32, I32], &[I32]),
+    host_function!("E", &[I32, I32, I32, I32], &[I32]),
+    host_function!("F", &[I32, I32, I32], &[I32]),
+    host_function!("G", &[I32, I32, I32, I32], &[I32]),
+    host_function!("H", &[I32, I32, I32], &[]),
+    host_function!("I", &[I32, I32], &[]),
+    host_function!("J", &[I32, I32, I32, I32, I32], &[]),
+    host_function!("K", &[I32, I32], &[]),
+    host_function!("L", &[I32, I32, I32], &[]),
+    host_function!("M", &[I32], &[I32]),
+    host_function!("N", &[I32, I32, I32, I32, I32, I32], &[]),
+    export_function!("P", &[], &[]),
+    export_function!("T", &[], &[]),
+    export_function!("V", &[I32], &[I32]),
+    export_function!("R", &[I32], &[]),
+];
+
 /// Owned and called directly by the account net worker for live decode, history and signing.
 pub struct Runtime {
     store: Store<Host>,
@@ -516,26 +607,50 @@ pub struct Runtime {
 impl Runtime {
     pub fn new(bytes: &[u8], version: &str) -> Result<Self> {
         let engine = Engine::default();
-        let module =
-            Module::new(&engine, bytes).map_err(|_| crypto_changed(version, "WASM module"))?;
+        let module = Module::new(&engine, bytes)?;
         let mut linker = Linker::new(&engine);
         for import in module.imports() {
-            if import.module() != "a" {
-                return Err(crypto_changed(version, "import namespace a"));
-            }
+            let spec = FUNCTIONS
+                .iter()
+                .find(|s| s.name == import.name() && s.handler.is_some())
+                .filter(|_| import.module() == "a")
+                .ok_or_else(|| crypto_changed(version, import.name()))?;
             let ExternType::Func(ty) = import.ty() else {
                 return Err(crypto_changed(version, import.name()));
             };
-            let name = import.name().to_owned();
-            let dispatch = name.clone();
-            linker.func_new("a", &name, ty.clone(), move |c, args, out| {
-                host_call(&dispatch, c, args, out).map_err(|e| {
-                    match e.downcast::<crate::client::Error>() {
-                        Ok(e) => wasmi::Error::host(e),
-                        Err(e) => wasmi::Error::new(format!("import {dispatch}: {e:#}")),
-                    }
+            if ty.params() != spec.params || ty.results() != spec.results {
+                return Err(crypto_changed(version, import.name()));
+            }
+            let handler = spec.handler.expect("host handler");
+            linker.func_new("a", spec.name, ty.clone(), move |c, args, out| {
+                handler(c, args, out).map_err(|e| match e.downcast::<crate::client::Error>() {
+                    Ok(e) => wasmi::Error::host(e),
+                    Err(e) => wasmi::Error::new(format!("import {}: {e:#}", spec.name)),
                 })
             })?;
+        }
+        for spec in FUNCTIONS.iter().filter(|s| s.handler.is_none()) {
+            let valid = module.exports().find(|e| e.name() == spec.name).is_some_and(|e| {
+                matches!(e.ty(), ExternType::Func(ty) if ty.params() == spec.params && ty.results() == spec.results)
+            });
+            if !valid {
+                return Err(crypto_changed(version, spec.name));
+            }
+        }
+        for (name, memory) in [("O", true), ("Q", false)] {
+            let valid = module
+                .exports()
+                .find(|e| e.name() == name)
+                .is_some_and(|e| match (e.ty(), memory) {
+                    (ExternType::Memory(ty), true) => !ty.is_64(),
+                    (ExternType::Table(ty), false) => {
+                        !ty.is_64() && ty.element() == wasmi::core::ValType::FuncRef
+                    }
+                    _ => false,
+                });
+            if !valid {
+                return Err(crypto_changed(version, name));
+            }
         }
         let mut store = Store::new(&engine, Host::new(version));
         let instance = linker
@@ -547,27 +662,6 @@ impl Runtime {
             instance,
             poisoned: false,
         };
-        use wasmi::core::ValType::I32;
-        for (name, params, results) in [
-            ("P", &[][..], &[][..]),
-            ("T", &[][..], &[][..]),
-            ("V", &[I32][..], &[I32][..]),
-            ("R", &[I32][..], &[][..]),
-        ] {
-            let valid = rt.instance.get_func(&rt.store, name).is_some_and(|f| {
-                let ty = f.ty(&rt.store);
-                ty.params() == params && ty.results() == results
-            });
-            if !valid {
-                return Err(crypto_changed(version, name));
-            }
-        }
-        if rt.instance.get_memory(&rt.store, "O").is_none() {
-            return Err(crypto_changed(version, "O"));
-        }
-        if rt.instance.get_table(&rt.store, "Q").is_none() {
-            return Err(crypto_changed(version, "Q"));
-        }
         rt.export("P", &[])?; // C++ constructors
         rt.export("T", &[])?; // embind type and class registrations
         rt.validate_interface()?;
@@ -588,9 +682,16 @@ impl Runtime {
         *self = Self::new(bytes, version)?;
         Ok(())
     }
-    fn interface_binding(&self, call: Call) -> Option<Binding> {
+    fn binding(&self, call: Call) -> Result<(Binding, Vec<u32>)> {
         let (class, name, arity, kind) = call.binding();
-        let mut c = self.class(class).ok()?;
+        let missing = || {
+            crypto_changed(
+                &self.store.data().version,
+                &format!("{class}.{name}/{arity}"),
+            )
+        };
+        let mut c = self.class(class).map_err(|_| missing())?;
+        let mut upcasts = Vec::new();
         loop {
             let binding = match kind {
                 BindingKind::Static => c.statics.get(name),
@@ -598,41 +699,26 @@ impl Runtime {
                 BindingKind::Constructor => c.constructors.iter().find(|b| b.args == arity),
             };
             if let Some(b) = binding {
-                return Some(b.clone());
+                if b.args != arity {
+                    return Err(missing());
+                }
+                return Ok((b.clone(), upcasts));
             }
             if kind != BindingKind::Method {
-                return None;
+                return Err(missing());
             }
-            c = self.store.data().classes.get(&c.base)?.clone();
+            upcasts.push(c.upcast);
+            c = self.store.data().classes.get(&c.base).ok_or_else(missing)?;
         }
+    }
+    pub fn is_poisoned(&self) -> bool {
+        self.poisoned
     }
     fn validate_interface(&self) -> Result<()> {
         for &call in INTERFACE {
-            let (class, name, arity, _) = call.binding();
-            if !self
-                .interface_binding(call)
-                .is_some_and(|b| b.args == arity)
-            {
-                return Err(crypto_changed(
-                    &self.store.data().version,
-                    &format!("{class}.{name}/{arity}"),
-                ));
-            }
+            self.binding(call)?;
         }
         Ok(())
-    }
-    fn call_binding(
-        &self,
-        call: Call,
-        arity: usize,
-        kind: BindingKind,
-    ) -> Result<(&'static str, &'static str)> {
-        let (class, name, expected_arity, expected_kind) = call.binding();
-        ensure!(
-            arity == expected_arity && kind == expected_kind,
-            "invalid call {call:?}/{arity}"
-        );
-        Ok((class, name))
     }
     fn export(&mut self, name: &str, args: &[Val]) -> Result<Vec<Val>> {
         let f = self
@@ -645,6 +731,11 @@ impl Runtime {
         ensure!(
             !self.poisoned,
             "runtime must be discarded after an exception"
+        );
+        assert_eq!(
+            f.ty(&self.store).params().len(),
+            args.len(),
+            "export argument count"
         );
         let mut results: Vec<_> = f
             .ty(&self.store)
@@ -671,12 +762,7 @@ impl Runtime {
             .and_then(|r| r.func())
             .context("null function pointer")?;
         let ty = f.ty(&self.store);
-        ensure!(
-            ty.params().len() == args.len(),
-            "invoker argument count: expected {}, got {}",
-            ty.params().len(),
-            args.len()
-        );
+        assert_eq!(ty.params().len(), args.len(), "invoker argument count");
         let values: Result<Vec<Val>> = ty
             .params()
             .iter()
@@ -700,15 +786,15 @@ impl Runtime {
             })
             .unwrap_or(0))
     }
-    fn class(&self, name: &str) -> Result<Class> {
+    fn class(&self, name: &str) -> Result<&Class> {
         self.store
             .data()
             .classes
             .values()
             .find(|c| c.name == name)
-            .cloned()
             .with_context(|| format!("class {name}"))
     }
+    #[cfg(any(test, feature = "harness"))]
     pub fn bindings(&self) -> Vec<(String, Vec<String>)> {
         self.store
             .data()
@@ -723,59 +809,47 @@ impl Runtime {
             .collect()
     }
     pub fn static_call(&mut self, call: Call, args: &[u64]) -> Result<u32> {
-        let (class, name) = self.call_binding(call, args.len(), BindingKind::Static)?;
-        let b = self
-            .class(class)?
-            .statics
-            .get(name)
-            .cloned()
-            .with_context(|| format!("static {class}.{name}"))?;
-        self.invoke(b, args).map_err(|error| {
-            if error.downcast_ref::<crate::client::Error>().is_some() {
-                error
-            } else {
-                error.context(crate::client::Error::Crypto)
-            }
-        })
+        assert!(
+            call.binding().3 == BindingKind::Static,
+            "static call kind {call:?}"
+        );
+        self.bound_call(call, None, args)
     }
     pub fn construct(&mut self, call: Call, args: &[u64]) -> Result<u32> {
-        let (class, _) = self.call_binding(call, args.len(), BindingKind::Constructor)?;
-        let b = self
-            .class(class)?
-            .constructors
-            .iter()
-            .find(|b| b.args == args.len())
-            .cloned()
-            .context("matching constructor")?;
-        self.invoke(b, args).map_err(|error| {
-            if error.downcast_ref::<crate::client::Error>().is_some() {
-                error
-            } else {
-                error.context(crate::client::Error::Crypto)
-            }
-        })
+        assert!(
+            call.binding().3 == BindingKind::Constructor,
+            "constructor call kind {call:?}"
+        );
+        self.bound_call(call, None, args)
     }
     pub fn method(&mut self, call: Call, this: u32, args: &[u64]) -> Result<u32> {
-        let (class, name) = self.call_binding(call, args.len() + 1, BindingKind::Method)?;
-        let mut c = self.class(class)?;
-        let mut this = this;
-        let b = loop {
-            if let Some(b) = c.methods.get(name) {
-                break b.clone();
+        self.bound_call(call, Some(this), args)
+    }
+    fn bound_call(&mut self, call: Call, this: Option<u32>, args: &[u64]) -> Result<u32> {
+        let (_, _, arity, kind) = call.binding();
+        assert_eq!(
+            this.is_some(),
+            kind == BindingKind::Method,
+            "call kind {call:?}"
+        );
+        assert_eq!(
+            args.len() + usize::from(this.is_some()),
+            arity,
+            "call arity {call:?}"
+        );
+        (|| {
+            let (binding, upcasts) = self.binding(call)?;
+            let mut values = Vec::with_capacity(arity);
+            if let Some(mut ptr) = this {
+                for upcast in upcasts {
+                    ptr = self.indirect(upcast, &[ptr as u64])? as u32;
+                }
+                values.push(ptr as u64);
             }
-            ensure!(c.base != 0, "method {class}.{name}");
-            this = self.indirect(c.upcast, &[this as u64])? as u32;
-            c = self
-                .store
-                .data()
-                .classes
-                .get(&c.base)
-                .cloned()
-                .with_context(|| format!("method {class}.{name}"))?;
-        };
-        let mut a = vec![this as u64];
-        a.extend_from_slice(args);
-        self.invoke(b, &a).map_err(|error| {
+            values.extend_from_slice(args);
+            self.invoke(binding, &values)
+        })()
+        .map_err(|error| {
             if error.downcast_ref::<crate::client::Error>().is_some() {
                 error
             } else {
@@ -784,7 +858,7 @@ impl Runtime {
         })
     }
     fn invoke(&mut self, b: Binding, args: &[u64]) -> Result<u32> {
-        ensure!(args.len() == b.args, "binding argument count");
+        assert_eq!(args.len(), b.args, "binding argument count");
         // emval arguments transfer one reference to the C++ val wrapper.
         // Retain our caller-owned reference until release() is called.
         for (t, a) in b.types.iter().zip(args) {
@@ -816,6 +890,7 @@ impl Runtime {
         Ok(())
     }
     /// Read immutable module data for the synthetic opaque-ID test helper.
+    #[cfg(any(test, feature = "harness"))]
     pub fn read_memory(&self, address: usize, len: usize) -> Result<Vec<u8>> {
         let mem = self
             .instance
@@ -940,5 +1015,49 @@ fn runtime_error(error: wasmi::Error) -> anyhow::Error {
     match error.downcast_ref::<crate::client::Error>() {
         Some(error) => error.clone().into(),
         None => error.into(),
+    }
+}
+
+#[cfg(test)]
+mod contract_tests {
+    use super::*;
+    fn imported(name: u8, params: &[u8]) -> Vec<u8> {
+        // A minimal module with one function import, no code or account data.
+        let mut wasm = b"\0asm\x01\0\0\0".to_vec();
+        let mut types = vec![1, 0x60, params.len() as u8];
+        types.extend_from_slice(params);
+        types.push(0);
+        wasm.extend([1, types.len() as u8]);
+        wasm.extend(types);
+        wasm.extend([2, 7, 1, 1, b'a', 1, name, 0, 0]);
+        wasm
+    }
+    #[test]
+    fn wrong_export_signature_is_a_crypto_change() {
+        let wasm = b"\0asm\x01\0\0\0\x01\x05\x01\x60\x01\x7f\0\x03\x02\x01\0\x07\x05\x01\x01P\0\0\x0a\x04\x01\x02\0\x0b";
+        let error = Runtime::new(wasm, "synthetic")
+            .err()
+            .expect("bad export accepted");
+        assert!(
+            matches!(error.downcast_ref::<crate::client::Error>(), Some(crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged { missing, .. })) if missing == "P")
+        );
+    }
+    #[test]
+    fn unknown_imports_and_wrong_signatures_fail_before_linking() {
+        for (name, params) in [
+            (b'?', &[][..]),
+            (b'a', &[][..]),
+            (b'c', &[0x7f, 0x7f, 0x7f][..]),
+        ] {
+            let error = Runtime::new(&imported(name, params), "synthetic")
+                .err()
+                .expect("invalid interface accepted");
+            assert!(matches!(
+                error.downcast_ref::<crate::client::Error>(),
+                Some(crate::client::Error::SignIn(
+                    crate::client::error::SignInFailure::CryptoChanged { .. }
+                ))
+            ));
+        }
     }
 }

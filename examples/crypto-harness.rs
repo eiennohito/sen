@@ -3,12 +3,11 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
+use line::test_support;
 use line::{
     runtime::{Call, Runtime},
     sign, signing_key,
 };
-#[path = "../src/test_support.rs"]
-mod test_support;
 use sha2::{Digest, Sha256};
 use std::{env, fs, path::Path};
 use test_support::{FIXTURE_VERSION, fixture_path, read_fixture};
@@ -49,8 +48,8 @@ fn replay_har(rt: &mut Runtime, path: &Path) -> Result<usize> {
         // At startup Chrome signs with an empty token argument even while the
         // browser sends a session cookie. Do not substitute the cookie here.
         let key = signing_key(rt, get("x-line-access").unwrap_or(""), FIXTURE_VERSION)?;
-        let actual = sign(rt, key, &path, body)?;
-        rt.destroy("Hmac", key)?;
+        let actual = sign(rt, &key, &path, body)?;
+        key.destroy(rt)?;
         ensure!(actual == expected, "signature mismatch for {path}");
         checked += 1;
     }
@@ -334,7 +333,6 @@ fn benchmark(wasm: &[u8]) -> Result<()> {
     let mut rt = Runtime::new(wasm, FIXTURE_VERSION)?;
     let mids = Mids::synthetic(&mut rt)?;
     let fixture = fixture()?;
-    let ciphertext = fixture_bytes(&fixture, "ciphertext")?;
     let plaintext = fixture["plaintext"]
         .as_str()
         .context("fixture text")?
@@ -380,61 +378,38 @@ fn benchmark(wasm: &[u8]) -> Result<()> {
         )?;
     }
     let send_after = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT);
-    // History already retained channels. Both passes include the first channel
-    // import, followed by 50 messages on it, as in the product's history path.
-    let mut history = Vec::new();
-    for _ in 0..2 {
-        let started = Instant::now();
-        let (history_key, history_ch) = load_channel(&mut rt)?;
-        for _ in 0..50 {
-            let decoded = channel_crypt(
-                &mut rt,
-                Call::E2EEChannelDecryptV2,
-                history_ch,
-                &mids,
-                &ciphertext,
-                None,
-                42,
-            )?;
-            ensure!(decoded == plaintext, "history plaintext mismatch");
-        }
-        rt.destroy("E2EEChannel", history_ch)?;
-        rt.destroy("Curve25519Key", history_key)?;
-        history.push(started.elapsed().as_secs_f64() * 1000.);
-    }
+    let history =
+        line::client::benchmark_history(wasm, FIXTURE_VERSION, &fixture, &mids.to, &mids.from)?;
     let started = Instant::now();
     let expected_key = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
-    let expected = sign(&mut rt, expected_key, "/synthetic", "{}")?;
-    rt.destroy("Hmac", expected_key)?;
+    let expected = sign(&mut rt, &expected_key, "/synthetic", "{}")?;
+    expected_key.destroy(&mut rt)?;
     for _ in 0..COUNT {
         let hmac = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
         ensure!(
-            sign(&mut rt, hmac, "/synthetic", "{}")? == expected,
+            sign(&mut rt, &hmac, "/synthetic", "{}")? == expected,
             "signature mismatch"
         );
-        rt.destroy("Hmac", hmac)?;
+        hmac.destroy(&mut rt)?;
     }
     let signing_before = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT + 1);
     let hmac = signing_key(&mut rt, "synthetic-access", FIXTURE_VERSION)?;
     let started = Instant::now();
     for _ in 0..COUNT {
         ensure!(
-            sign(&mut rt, hmac, "/synthetic", "{}")? == expected,
+            sign(&mut rt, &hmac, "/synthetic", "{}")? == expected,
             "cached signature mismatch"
         );
     }
     let signing_after = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT);
-    rt.destroy("Hmac", hmac)?;
+    hmac.destroy(&mut rt)?;
     rt.destroy("E2EEChannel", ch)?;
     rt.destroy("Curve25519Key", key)?;
     println!("send_encrypt_ms={send_before:.2} -> {send_after:.2}");
-    println!(
-        "history_50_decrypt_ms={:.2} -> {:.2}",
-        history[0], history[1]
-    );
+    println!("history_50_decrypt_including_5_undecryptable_ms={history:.2}");
     println!("request_sign_ms={signing_before:.2} -> {signing_after:.2}");
     println!(
-        "Offline fixture, release build; previous/current object lifetimes, no RPC time. History retains channels in both passes."
+        "Offline fixture, release build; previous/current object lifetimes, no RPC time. History includes five missing device keys and retains its channel."
     );
     Ok(())
 }

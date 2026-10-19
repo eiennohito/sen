@@ -232,7 +232,6 @@ pub(super) fn refresh(
         return Ok(());
     }
     save_state(state_path, state)?;
-    api.prepare_signing_key(access(state)?)?;
     Ok(())
 }
 

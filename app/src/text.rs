@@ -99,7 +99,7 @@ pub fn storage_failure(reason: line::engine::StorageFailure) -> &'static str {
 pub fn sign_in_failure(reason: &line::client::error::SignInFailure) -> String {
     use line::client::error::SignInFailure::*;
     match reason {
-        CryptoModule(path) => format!("Cannot read the LINE crypto module at {}. Check LINE for Chrome or the developer override.", path.display()),
+        CryptoModule(path) => format!("Can't load the LINE crypto module at {}. Check LINE for Chrome or the developer override.", path.display()),
         ExtensionMissing => "Install LINE for Chrome — this app uses its crypto module. Searched Chrome and Chromium profiles under $XDG_CONFIG_HOME (default $HOME/.config).".into(),
         CryptoChanged { version, missing } => format!("LINE for Chrome {version} changed its crypto module (missing {missing}); this app doesn't support it yet"),
         StateDirectory(path) => format!("State directory is not writable: {}. Grant write permission and try again.", path.display()),

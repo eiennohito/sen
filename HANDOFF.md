@@ -80,8 +80,8 @@ a prototype, not a daily-use or live-compatibility claim.
 Do not run the default app, `line-auth status`, `--check-live`, pairing, sends,
 read markers, or server preference changes without a new device-slot assignment.
 Preserve `artifacts/auth/session.json` and all encrypted local state. CLI
-defaults use `$XDG_DATA_HOME/line-desktop/session.json` and `ltsm.wasm`
-(fallback `$HOME/.local/share/line-desktop/`). Historical
+defaults use `$XDG_DATA_HOME/line-desktop/session.json`
+(fallback `$HOME/.local/share/line-desktop/session.json`). Crypto comes from the newest installed LINE extension under `$XDG_CONFIG_HOME` (default `$HOME/.config`), at its version directory’s `static/js/ltsm.wasm`. Historical
 live results below do not prove current authorization.
 
 Safe build and verification commands (synthetic data only):
@@ -176,7 +176,7 @@ agent configs are ignored. Preserve the official blob and state on disk.
 - Chrome extension version fetched for this prototype: **3.7.2**. Its unmodified WASM is
   `artifacts/line-3.7.2/ltsm.wasm`, 2,254,973 bytes, SHA-256
   `58bb4e189ab9bbd7d72ed415258da36afd50e306cb019bab75329d4f5f1b65b3`.
-  The runtime intentionally rejects other hashes. This is the version obtained
+  The synthetic oracle fixture rejects other hashes; the app validates the installed module’s interfaces. This is the version obtained
   during this work, not a claim that it will remain the newest available.
 - Rust + Wasmi instantiate it without JavaScript. The host implements the needed
   Emscripten/embind/emval imports and callbacks.
@@ -226,7 +226,7 @@ artifacts/line-3.7.2/ltsm.wasm` reads at most ten chat previews with five
 messages each, tries at most five supported candidates, and stops on the first
 verified JSON payload. It reads credentials without rewriting them and does not
 send messages, mark them read, register keys, or persist chat data. Each candidate
-uses a fresh runtime, so a WASM exception cannot poison the next attempt.
+rebuilds the runtime only after a WASM exception poisons it; item-level key, RPC and parse failures preserve its caches.
 
 The desktop now extends this into real message retrieval, text display, and
 media decryption. Successful samples do not cover every direction, chat type,
@@ -277,7 +277,7 @@ Normal build/check commands when network access works:
 cargo build --release --bins
 cargo test --release --workspace
 cargo clippy --release --workspace --all-targets -- -D warnings
-cargo run --release --example crypto-harness
+cargo run --offline --release --features harness --example crypto-harness
 ```
 
 Current test totals and exact verified builds are recorded in the acceptance

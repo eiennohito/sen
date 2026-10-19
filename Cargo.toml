@@ -12,6 +12,11 @@ resolver = "3"
 [features]
 default = []
 native-crypto = []
+harness = []
+
+[[example]]
+name = "crypto-harness"
+required-features = ["harness"]
 
 [dependencies]
 anyhow = "1"

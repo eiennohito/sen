@@ -143,3 +143,22 @@ impl SavedSessionFailure {
 }
 
 impl wasmi::core::HostError for Error {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn media_rejections_keep_their_wording_through_classification() {
+        for (reason, text) in [
+            (RejectReason::UploadStalled, "Upload stalled"),
+            (RejectReason::UploadRefused, "Server refused the file"),
+            (RejectReason::UploadFailed, "Upload failed"),
+        ] {
+            let error = anyhow::Error::new(Error::Rejected(reason)).context("upload worker");
+            let Error::Rejected(reason) = classify(&error) else {
+                panic!("lost upload reason")
+            };
+            assert_eq!(reason.to_string(), text);
+        }
+    }
+}

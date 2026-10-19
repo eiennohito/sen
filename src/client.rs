@@ -26,6 +26,8 @@ use std::{
 const BASE: &str = "https://line-chrome-gw.line-apps.com";
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
 
+#[cfg(feature = "harness")]
+pub use chat::benchmark_history;
 mod chat;
 pub mod desktop;
 mod http;
@@ -163,19 +165,42 @@ fn set_request_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
 }
 
+#[cfg(not(test))]
+type RuntimeSlot = Runtime;
+#[cfg(test)]
+struct RuntimeSlot(Option<Runtime>);
+#[cfg(test)]
+impl From<Runtime> for RuntimeSlot {
+    fn from(rt: Runtime) -> Self {
+        Self(Some(rt))
+    }
+}
+#[cfg(test)]
+impl std::ops::Deref for RuntimeSlot {
+    type Target = Runtime;
+    fn deref(&self) -> &Runtime {
+        self.0.as_ref().expect("test requested crypto")
+    }
+}
+#[cfg(test)]
+impl std::ops::DerefMut for RuntimeSlot {
+    fn deref_mut(&mut self) -> &mut Runtime {
+        self.0.as_mut().expect("test requested crypto")
+    }
+}
 pub(crate) struct Api {
     #[cfg(test)]
     synthetic_signature: bool,
-    rt: Runtime,
+    rt: RuntimeSlot,
     http: http::Transport,
     key_cache: std::collections::HashMap<String, Value>,
-    channels: std::collections::HashMap<String, (u32, u64)>,
+    channels: std::collections::HashMap<chat::Channel, (u32, u64)>,
     channel_tick: u64,
-    signing_key: Option<(String, u32)>,
+    signing_key: Option<(String, crate::SigningKey)>,
     own_keys: std::collections::HashMap<u64, u32>,
 }
 impl Api {
-    fn prepare_signing_key(&mut self, access: &str) -> Result<u32> {
+    fn signature(&mut self, path: &str, body: &str, access: &str) -> Result<String> {
         if self
             .signing_key
             .as_ref()
@@ -183,34 +208,15 @@ impl Api {
         {
             let key = crate::signing_key(&mut self.rt, access, &self.http.client_version)?;
             if let Some((_, old)) = self.signing_key.replace((access.into(), key)) {
-                self.rt.destroy("Hmac", old)?;
+                old.destroy(&mut self.rt)?;
             }
         }
-        Ok(self.signing_key.as_ref().context("signing key")?.1)
-    }
-    fn signature(&mut self, path: &str, body: &str, access: &str) -> Result<String> {
-        let key = self.prepare_signing_key(access)?;
-        sign(&mut self.rt, key, path, body)
-    }
-    fn refresh_chat_keys(&mut self, mid: &str) -> Result<()> {
-        self.key_cache
-            .retain(|key, _| !key.contains(&format!("\"{mid}\"")));
-        let prefix = if mid.starts_with(['U', 'u']) {
-            format!("user:{mid}:")
-        } else {
-            format!("group:{mid}:")
-        };
-        let stale: Vec<_> = self
-            .channels
-            .keys()
-            .filter(|key| key.starts_with(&prefix))
-            .cloned()
-            .collect();
-        for key in stale {
-            let (pointer, _) = self.channels.remove(&key).context("cached channel")?;
-            self.rt.destroy("E2EEChannel", pointer)?;
-        }
-        Ok(())
+        sign(
+            &mut self.rt,
+            &self.signing_key.as_ref().expect("prepared signing key").1,
+            path,
+            body,
+        )
     }
     fn reinitialize(&mut self, wasm: &[u8]) -> Result<()> {
         self.rt.reinitialize(wasm, &self.http.client_version)?;
@@ -220,11 +226,18 @@ impl Api {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "harness"))]
     fn new(wasm: &[u8], client_version: &str) -> Result<Self> {
+        Self::with_runtime(Runtime::new(wasm, client_version)?, client_version)
+    }
+    fn with_runtime(rt: Runtime, client_version: &str) -> Result<Self> {
         Ok(Self {
             #[cfg(test)]
             synthetic_signature: false,
-            rt: Runtime::new(wasm, client_version)?,
+            #[cfg(test)]
+            rt: rt.into(),
+            #[cfg(not(test))]
+            rt,
             http: http::Transport::new(client_version)?,
             signing_key: None,
             own_keys: Default::default(),
@@ -233,13 +246,13 @@ impl Api {
             channel_tick: 0,
         })
     }
-    fn cached_channel(&mut self, key: &str) -> Option<u32> {
+    fn cached_channel(&mut self, key: &chat::Channel) -> Option<u32> {
         self.channel_tick += 1;
         let entry = self.channels.get_mut(key)?;
         entry.1 = self.channel_tick;
         Some(entry.0)
     }
-    fn cache_channel(&mut self, key: String, channel: u32) -> Result<()> {
+    fn cache_channel(&mut self, key: chat::Channel, channel: u32) -> Result<()> {
         const MAX_CHANNELS: usize = 64;
         if self.channels.len() >= MAX_CHANNELS {
             let oldest = self
@@ -494,9 +507,14 @@ fn validate_keys(api: &mut Api, state: &Value) -> Result<usize> {
     }
     Ok(keys.len())
 }
-fn status(opts: &Options, wasm: &[u8], version: &str, progress: &impl LoginUi) -> Result<()> {
+fn status(
+    opts: &Options,
+    wasm: &[u8],
+    module: &crate::crypto_module::CryptoModule,
+    progress: &impl LoginUi,
+) -> Result<()> {
     let mut state = crate::credentials::load(&opts.state)?;
-    let mut api = Api::new(wasm, version)?;
+    let mut api = Api::with_runtime(module.runtime(wasm)?, &module.version)?;
     if state["e2ee_keys"].as_array().is_none_or(|k| k.is_empty()) {
         progress.set(pairing::Stage::RecoveringKeys)?;
         let key = login_key(&mut api.rt, &state)?;
@@ -538,18 +556,16 @@ impl LoginUi for Progress {
     }
 }
 struct CliLogin<'a> {
-    opts: &'a Options,
+    state: &'a Path,
+    qr_file: Option<&'a Path>,
+    display: &'a str,
     progress: &'a Progress,
 }
 impl CliLogin<'_> {
     fn qr_path(&self) -> PathBuf {
-        self.opts.qr_file.clone().unwrap_or_else(|| {
-            self.opts
-                .state
-                .parent()
-                .unwrap_or(Path::new("."))
-                .join("qr.png")
-        })
+        self.qr_file
+            .map(Path::to_owned)
+            .unwrap_or_else(|| self.state.parent().unwrap_or(Path::new(".")).join("qr.png"))
     }
 }
 impl LoginUi for CliLogin<'_> {
@@ -561,7 +577,7 @@ impl LoginUi for CliLogin<'_> {
         println!(
             "Scan with LINE on your phone and approve the login. This uses the Chrome secondary-device slot."
         );
-        show_qr(link, &self.opts.display)
+        show_qr(link, self.display)
     }
     fn scanned(&self) -> Result<()> {
         let _ = fs::remove_file(self.qr_path());
@@ -573,18 +589,31 @@ impl LoginUi for CliLogin<'_> {
         Ok(())
     }
 }
-fn login(opts: &Options, wasm: &[u8], version: &str, progress: &Progress) -> Result<()> {
-    let mut api = Api::new(wasm, version)?;
-    login_with(opts, &mut api, &CliLogin { opts, progress })
+fn login(
+    opts: &Options,
+    wasm: &[u8],
+    module: &crate::crypto_module::CryptoModule,
+    progress: &Progress,
+) -> Result<()> {
+    let mut api = Api::with_runtime(module.runtime(wasm)?, &module.version)?;
+    login_with(
+        &opts.state,
+        &mut api,
+        &CliLogin {
+            state: &opts.state,
+            qr_file: opts.qr_file.as_deref(),
+            display: &opts.display,
+            progress,
+        },
+    )
 }
-fn login_with(opts: &Options, api: &mut Api, progress: &impl LoginUi) -> Result<()> {
+fn login_with(state_path: &Path, api: &mut Api, progress: &impl LoginUi) -> Result<()> {
     progress.check()?;
     ensure!(
-        !opts.state.exists(),
+        !state_path.exists(),
         "session file already exists; use status or choose a new --state path"
     );
-    let parent = opts
-        .state
+    let parent = state_path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
@@ -681,11 +710,11 @@ fn login_with(opts: &Options, api: &mut Api, progress: &impl LoginUi) -> Result<
     let mut state = json!({"format":1,"token_v3_issue_result":token,"certificate":result["certificate"],"login_key":STANDARD.encode(wrapped),"login_metadata":result["metaData"],"e2ee_keys":[],"validated":false});
     // Preserve the successful session and wrapped login key before any new
     // keychain operation, so a failure can be diagnosed/recovered with status.
-    save_state(&opts.state, &state)?;
+    save_state(state_path, &state)?;
     progress.set(pairing::Stage::UnwrappingKeys)?;
     let keys = unwrap_keys(&mut api.rt, key, &state["login_metadata"])?;
     state["e2ee_keys"] = json!(keys);
-    save_state(&opts.state, &state)?;
+    save_state(state_path, &state)?;
     progress.set(pairing::Stage::KeysVerified)?;
     api.rt.destroy("Curve25519Key", key)?;
     let profile = api.profile(access(&state)?)?;
@@ -695,7 +724,7 @@ fn login_with(opts: &Options, api: &mut Api, progress: &impl LoginUi) -> Result<
     );
     state["profile"] = profile;
     state["validated"] = json!(true);
-    save_state(&opts.state, &state)?;
+    save_state(state_path, &state)?;
     progress.set(pairing::Stage::CheckingKeys)?;
     validate_keys(api, &state)?;
     progress.set(pairing::Stage::Authenticated)
@@ -726,9 +755,9 @@ fn run() -> Result<()> {
     let wasm = module.read()?;
     let progress = Progress::new(&opts.state)?;
     let result = match opts.command.as_str() {
-        "login" => login(&opts, &wasm, &module.version, &progress),
-        "chat-check" => chat::run(&opts, &wasm, &module.version, &progress),
-        _ => status(&opts, &wasm, &module.version, &progress),
+        "login" => login(&opts, &wasm, &module, &progress),
+        "chat-check" => chat::run(&opts, &wasm, &module, &progress),
+        _ => status(&opts, &wasm, &module, &progress),
     };
     if result.is_err() {
         progress.set(
@@ -752,6 +781,7 @@ mod tests {
         let root = env::temp_dir().join(format!("line-cli-paths-{}", std::process::id()));
         fs::create_dir_all(&root)?;
         let locations = Locations {
+            config_home: "/config".into(),
             session: root.join("data/session.json"),
             cache: root.join("cache"),
         };

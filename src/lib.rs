@@ -10,8 +10,8 @@ pub mod locations;
 pub mod native_crypto;
 pub mod runtime;
 pub mod store;
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "harness"))]
+pub mod test_support;
 use anyhow::Result;
 use base64::{Engine, engine::general_purpose::STANDARD};
 use runtime::{Call, Runtime};
@@ -20,7 +20,17 @@ use sha2::{Digest, Sha256};
 pub const TOKEN: &str = "wODdrvWqmdP4Zliay-iF3cz3KZcK0ekrial868apg06TXeCo7A1hIQO0ESElHg6D";
 
 /// Derive and retain the HMAC object for one version/access-token pair.
-pub fn signing_key(rt: &mut Runtime, access: &str, client_version: &str) -> Result<u32> {
+pub struct SigningKey {
+    hmac: u32,
+    derived: u32,
+}
+impl SigningKey {
+    pub fn destroy(self, rt: &mut Runtime) -> Result<()> {
+        rt.destroy("Hmac", self.hmac)?;
+        rt.destroy("SecureKey", self.derived)
+    }
+}
+pub fn signing_key(rt: &mut Runtime, access: &str, client_version: &str) -> Result<SigningKey> {
     let token = rt.string(TOKEN)?;
     let sk = rt.static_call(Call::SecureKeyLoadToken, &[token])?;
     rt.free_string(token)?;
@@ -30,13 +40,12 @@ pub fn signing_key(rt: &mut Runtime, access: &str, client_version: &str) -> Resu
     rt.release(cv)?;
     rt.release(at)?;
     let hmac = rt.construct(Call::HmacNew, &[dk as u64])?;
-    rt.destroy("SecureKey", dk)?;
     rt.destroy("SecureKey", sk)?;
-    Ok(hmac)
+    Ok(SigningKey { hmac, derived: dk })
 }
-pub fn sign(rt: &mut Runtime, hmac: u32, path: &str, body: &str) -> Result<String> {
+pub fn sign(rt: &mut Runtime, key: &SigningKey, path: &str, body: &str) -> Result<String> {
     let msg = rt.bytes(format!("{path}{body}").as_bytes());
-    let out = rt.method(Call::HmacDigest, hmac, &[msg])?;
+    let out = rt.method(Call::HmacDigest, key.hmac, &[msg])?;
     rt.release(msg)?;
     Ok(STANDARD.encode(rt.output(out)?))
 }
