@@ -165,33 +165,9 @@ fn set_request_cancel(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
 }
 
-#[cfg(not(test))]
-type RuntimeSlot = Runtime;
-#[cfg(test)]
-struct RuntimeSlot(Option<Runtime>);
-#[cfg(test)]
-impl From<Runtime> for RuntimeSlot {
-    fn from(rt: Runtime) -> Self {
-        Self(Some(rt))
-    }
-}
-#[cfg(test)]
-impl std::ops::Deref for RuntimeSlot {
-    type Target = Runtime;
-    fn deref(&self) -> &Runtime {
-        self.0.as_ref().expect("test requested crypto")
-    }
-}
-#[cfg(test)]
-impl std::ops::DerefMut for RuntimeSlot {
-    fn deref_mut(&mut self) -> &mut Runtime {
-        self.0.as_mut().expect("test requested crypto")
-    }
-}
 pub(crate) struct Api {
-    #[cfg(test)]
-    synthetic_signature: bool,
-    rt: RuntimeSlot,
+    rt: Runtime,
+    wasm: Vec<u8>,
     http: http::Transport,
     key_cache: std::collections::HashMap<String, Value>,
     channels: std::collections::HashMap<chat::Channel, (u32, u64)>,
@@ -201,6 +177,7 @@ pub(crate) struct Api {
 }
 impl Api {
     fn signature(&mut self, path: &str, body: &str, access: &str) -> Result<String> {
+        self.prepare_runtime()?;
         if self
             .signing_key
             .as_ref()
@@ -218,26 +195,25 @@ impl Api {
             body,
         )
     }
-    fn reinitialize(&mut self, wasm: &[u8]) -> Result<()> {
-        self.rt.reinitialize(wasm, &self.http.client_version)?;
-        self.channels.clear();
-        self.own_keys.clear();
-        self.signing_key = None;
+    fn prepare_runtime(&mut self) -> Result<()> {
+        if self.rt.is_poisoned() {
+            self.rt
+                .reinitialize(&self.wasm, &self.http.client_version)?;
+            self.channels.clear();
+            self.own_keys.clear();
+            self.signing_key = None;
+        }
         Ok(())
     }
 
     #[cfg(any(test, feature = "harness"))]
     fn new(wasm: &[u8], client_version: &str) -> Result<Self> {
-        Self::with_runtime(Runtime::new(wasm, client_version)?, client_version)
+        Self::with_runtime(Runtime::new(wasm, client_version)?, wasm, client_version)
     }
-    fn with_runtime(rt: Runtime, client_version: &str) -> Result<Self> {
+    fn with_runtime(rt: Runtime, wasm: &[u8], client_version: &str) -> Result<Self> {
         Ok(Self {
-            #[cfg(test)]
-            synthetic_signature: false,
-            #[cfg(test)]
-            rt: rt.into(),
-            #[cfg(not(test))]
             rt,
+            wasm: wasm.to_vec(),
             http: http::Transport::new(client_version)?,
             signing_key: None,
             own_keys: Default::default(),
@@ -277,13 +253,6 @@ impl Api {
         poll_seconds: u64,
     ) -> Result<Value> {
         let body = serde_json::to_string(args)?;
-        #[cfg(test)]
-        let signature = if self.synthetic_signature {
-            "synthetic".into()
-        } else {
-            self.signature(path, &body, access)?
-        };
-        #[cfg(not(test))]
         let signature = self.signature(path, &body, access)?;
         let mut headers = vec![
             ("Content-Type", "application/json"),
@@ -514,7 +483,7 @@ fn status(
     progress: &impl LoginUi,
 ) -> Result<()> {
     let mut state = crate::credentials::load(&opts.state)?;
-    let mut api = Api::with_runtime(module.runtime(wasm)?, &module.version)?;
+    let mut api = Api::with_runtime(module.runtime(wasm)?, wasm, &module.version)?;
     if state["e2ee_keys"].as_array().is_none_or(|k| k.is_empty()) {
         progress.set(pairing::Stage::RecoveringKeys)?;
         let key = login_key(&mut api.rt, &state)?;
@@ -595,7 +564,7 @@ fn login(
     module: &crate::crypto_module::CryptoModule,
     progress: &Progress,
 ) -> Result<()> {
-    let mut api = Api::with_runtime(module.runtime(wasm)?, &module.version)?;
+    let mut api = Api::with_runtime(module.runtime(wasm)?, wasm, &module.version)?;
     login_with(
         &opts.state,
         &mut api,

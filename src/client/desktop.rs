@@ -61,7 +61,7 @@ pub struct Message {
 
 #[derive(Debug)]
 pub enum SendFailure {
-    Rejected,
+    Refused,
     Uncertain,
 }
 impl std::fmt::Display for SendFailure {
@@ -73,12 +73,12 @@ impl std::error::Error for SendFailure {}
 pub fn send_failure(error: &anyhow::Error) -> SendFailure {
     if error
         .downcast_ref::<SendFailure>()
-        .is_some_and(|v| matches!(v, SendFailure::Rejected))
+        .is_some_and(|v| matches!(v, SendFailure::Refused))
         || error
             .downcast_ref::<RpcError>()
             .is_some_and(|e| (400..500).contains(&e.http) || e.code != 0)
     {
-        SendFailure::Rejected
+        SendFailure::Refused
     } else {
         SendFailure::Uncertain
     }
@@ -93,7 +93,6 @@ pub struct Client {
     api: Api,
     session_path: PathBuf,
     cache_root: PathBuf,
-    wasm: Vec<u8>,
     state: Value,
     stream_access: Arc<std::sync::RwLock<String>>,
     my_mid: String,
@@ -109,18 +108,17 @@ impl Client {
         cache_root: &Path,
     ) -> Result<Self> {
         let wasm = module.read()?;
-        let mut api = Api::with_runtime(module.runtime(&wasm)?, &module.version)?;
+        let mut api = Api::with_runtime(module.runtime(&wasm)?, &wasm, &module.version)?;
         let state = crate::credentials::load(state_path)?;
         validate_keys(&mut api, &state).context(super::error::SavedSessionFailure::Keys.error())?;
-        Self::from_api(state_path, cache_root, wasm, api)
+        Self::from_api(state_path, cache_root, state, api)
     }
     pub(crate) fn from_api(
         state_path: &Path,
         cache_root: &Path,
-        wasm: Vec<u8>,
+        state: Value,
         api: Api,
     ) -> Result<Self> {
-        let state = crate::credentials::load(state_path)?;
         access(&state).context(super::error::SavedSessionFailure::Corrupt.error())?;
         let my_mid = state["profile"]["mid"]
             .as_str()
@@ -134,7 +132,6 @@ impl Client {
             api,
             session_path: state_path.into(),
             cache_root: cache_root.into(),
-            wasm,
             stream_access: Arc::new(std::sync::RwLock::new(access(&state)?.into())),
             state,
             my_mid: my_mid.clone(),
@@ -450,45 +447,8 @@ impl Client {
     }
 
     pub fn members(&mut self, chat: &str) -> Result<(Vec<Member>, bool)> {
-        ensure!(!is_user(chat), "not a group or room");
-        let full = self.full_chat(chat)?;
-        let mut ids = rich::member_mids(&full, &self.my_mid).context("missing members")?;
-        let invited: Vec<String> = full
-            .pointer("/extra/groupExtra/inviteeMids")
-            .and_then(Value::as_object)
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
-        for id in &invited {
-            if !ids.contains(id) {
-                ids.push(id.clone());
-            }
-        }
-        let mut contacts = HashMap::new();
-        let mut failed = false;
-        for chunk in ids.chunks(100) {
-            match self.talk(
-                "getContactsV2",
-                json!([{"targetUserMids":chunk,"neededContactCalendarEvents":[]},0]),
-            ) {
-                Ok(response) if response["contacts"].is_object() => {
-                    for id in chunk {
-                        contacts.insert(id.clone(), response["contacts"][id]["contact"].clone());
-                    }
-                }
-                _ => failed = true,
-            }
-        }
-        Ok((
-            ids.iter()
-                .map(|id| {
-                    let mut member =
-                        member_identity(id, contacts.get(id).unwrap_or(&Value::Null), &self.my_mid);
-                    member.contact.profile.invited = invited.contains(id);
-                    member
-                })
-                .collect(),
-            failed,
-        ))
+        let my_mid = self.my_mid.clone();
+        load_members(chat, &my_mid, |method, args| self.talk(method, args))
     }
 
     pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
@@ -541,9 +501,6 @@ impl Client {
                 Ok(body) => merge_decrypted(&mut data, &body),
                 Err(_) => {
                     failed = true;
-                    if self.api.rt.is_poisoned() {
-                        self.api.reinitialize(&self.wasm)?;
-                    }
                 }
             }
         }
@@ -737,7 +694,7 @@ impl Client {
     }
     pub fn send_sticker(&mut self, to: &str, sticker: &Content, seq: u32) -> Result<Message> {
         let Content::Sticker { pkg, id, ver, .. } = sticker else {
-            return Err(SendFailure::Rejected.into());
+            return Err(SendFailure::Refused.into());
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -835,7 +792,7 @@ impl Client {
             "invalid persisted send sequence"
         );
         if text.trim().is_empty() || text.len() > 10_000 {
-            return Err(SendFailure::Rejected.into());
+            return Err(SendFailure::Refused.into());
         }
         self.send_encrypted(to, 0, &json!({"text":text}), &json!({}), request_seq)
     }
@@ -848,15 +805,7 @@ impl Client {
         seq: u32,
     ) -> Result<Message> {
         let send = |client: &mut Self| -> Result<Value> {
-            let mut message = match client.encrypted_payload(to, content_type, payload) {
-                Ok(message) => message,
-                Err(error) => {
-                    if client.api.rt.is_poisoned() {
-                        client.api.reinitialize(&client.wasm)?;
-                    }
-                    return Err(error);
-                }
-            };
+            let mut message = client.encrypted_payload(to, content_type, payload)?;
             if content_type != 0 {
                 ensure!(
                     message["contentMetadata"]["e2eeVersion"] == "2",
@@ -872,16 +821,27 @@ impl Client {
             Err(error)
                 if error
                     .downcast_ref::<RpcError>()
-                    .is_some_and(|e| matches!(e.code, 82..=84)) =>
+                    .is_some_and(|e| matches!(e.code, 82 | 84)) =>
             {
-                send(self)?
+                send(self)
             }
-            result => result?,
-        };
+            result => result,
+        }
+        .map_err(|error| {
+            if error
+                .downcast_ref::<RpcError>()
+                .is_some_and(|e| e.code == 83)
+            {
+                SendFailure::Refused.into()
+            } else {
+                error
+            }
+        })?;
         self.message(&result)
     }
 
     fn encrypted_payload(&mut self, to: &str, content_type: u64, payload: &Value) -> Result<Value> {
+        self.api.prepare_runtime()?;
         let key = self.state["e2ee_keys"]
             .as_array()
             .context("missing own keys")?
@@ -1122,15 +1082,15 @@ mod protocol_tests {
                 code,
                 status: 0,
             });
-            assert!(matches!(send_failure(&error), SendFailure::Rejected));
+            assert!(matches!(send_failure(&error), SendFailure::Refused));
         }
         assert!(matches!(
             send_failure(&anyhow::anyhow!("transport timeout")),
             SendFailure::Uncertain
         ));
         assert!(matches!(
-            send_failure(&anyhow::Error::new(SendFailure::Rejected)),
-            SendFailure::Rejected
+            send_failure(&anyhow::Error::new(SendFailure::Refused)),
+            SendFailure::Refused
         ));
     }
 }
@@ -1209,3 +1169,56 @@ mod upload;
 mod send_tests;
 #[cfg(test)]
 mod test_client;
+
+fn load_members(
+    chat: &str,
+    my_mid: &str,
+    mut talk: impl FnMut(&str, Value) -> Result<Value>,
+) -> Result<(Vec<Member>, bool)> {
+    ensure!(!is_user(chat), "not a group or room");
+    let response = talk(
+        "getChats",
+        json!([{"chatMids":[chat],"withMembers":true,"withInvitees":true},1]),
+    )?;
+    let full = response["chats"]
+        .as_array()
+        .and_then(|c| c.first())
+        .context("missing chat")?;
+    let mut ids = rich::member_mids(full, my_mid).context("missing members")?;
+    let invited: Vec<String> = full
+        .pointer("/extra/groupExtra/inviteeMids")
+        .and_then(Value::as_object)
+        .map(|m| m.keys().cloned().collect())
+        .unwrap_or_default();
+    for id in &invited {
+        if !ids.contains(id) {
+            ids.push(id.clone());
+        }
+    }
+    let mut contacts = HashMap::new();
+    let mut failed = false;
+    for chunk in ids.chunks(100) {
+        match talk(
+            "getContactsV2",
+            json!([{"targetUserMids":chunk,"neededContactCalendarEvents":[]},0]),
+        ) {
+            Ok(response) if response["contacts"].is_object() => {
+                for id in chunk {
+                    contacts.insert(id.clone(), response["contacts"][id]["contact"].clone());
+                }
+            }
+            _ => failed = true,
+        }
+    }
+    Ok((
+        ids.iter()
+            .map(|id| {
+                let mut member =
+                    member_identity(id, contacts.get(id).unwrap_or(&Value::Null), my_mid);
+                member.contact.profile.invited = invited.contains(id);
+                member
+            })
+            .collect(),
+        failed,
+    ))
+}

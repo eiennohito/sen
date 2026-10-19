@@ -183,9 +183,7 @@ Ciphertext/reaction changes invalidate entries; corrupt pages are discarded.
 Clear the account cache to remove both message pages and image previews.
 
 Crypto channels are reused with a 64-entry bound. Only a poisoned WASM runtime is rebuilt; a missing device key, RPC error or parse error fails that item and preserves caches.
-An offline synthetic benchmark measured 147.68 ms/message rebuilding a channel
-versus 4.78 ms reusing one; this is a crypto-stage measurement, not a measured
-full-app speedup. A 50-item decrypt batch with five unavailable device keys took 475.58 ms; cached signing took 10.57 ms/request (87.00 ms with derivation per request). Run `cargo run --offline --release --features harness --example crypto-harness -- --bench`.
+Run the offline synthetic crypto benchmark with `cargo run --offline --release --features harness --example crypto-harness -- --bench`.
 
 The [Chromium UI map](docs/chromium-ui-map.md) records the live reference,
 missing features, rich-message decoding gaps, history protocol, and reconstruction

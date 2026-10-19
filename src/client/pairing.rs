@@ -111,7 +111,7 @@ pub fn sign_in(
         return Err(super::error::Error::SignIn(super::error::SignInFailure::Cancelled).into());
     }
     let module = crate::crypto_module::resolve(wasm_override, version_override)?;
-    sign_in_validated(state, module, cancel, emit, |_, _, _| Ok(()))
+    sign_in_validated(state, module, cancel, emit, |_, _| Ok(()))
 }
 
 pub(crate) fn sign_in_validated<T>(
@@ -119,12 +119,12 @@ pub(crate) fn sign_in_validated<T>(
     module: crate::crypto_module::CryptoModule,
     cancel: &AtomicBool,
     emit: impl Fn(Event),
-    validate: impl FnOnce(&Path, Api, Vec<u8>) -> Result<T>,
+    validate: impl FnOnce(&Path, Api) -> Result<T>,
 ) -> Result<T> {
     let ui = NativeLogin { emit, cancel };
     ui.check()?;
     let wasm = module.read()?;
-    let mut api = Api::with_runtime(module.runtime(&wasm)?, &module.version)?;
+    let mut api = Api::with_runtime(module.runtime(&wasm)?, &wasm, &module.version)?;
     ui.set(Stage::WaitingKeyring)?;
     let probe_state = state.to_owned();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
@@ -178,7 +178,7 @@ pub(crate) fn sign_in_validated<T>(
         .unwrap_or(Path::new("."));
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
     login_with(&staged, &mut api, &ui)?;
-    let validated = validate(&staged, api, wasm)?;
+    let validated = validate(&staged, api)?;
     ui.check()?;
     install_session(state, &staged, Some(cancel)).context(super::error::Error::SignIn(
         super::error::SignInFailure::StateDirectory(parent.into()),
@@ -273,7 +273,7 @@ mod tests {
                         "prerequisite failure requested a QR"
                     );
                 },
-                |_, _, _| Ok(()),
+                |_, _| Ok(()),
             )
             .unwrap_err();
             assert_eq!(

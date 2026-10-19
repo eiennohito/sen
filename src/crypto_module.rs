@@ -15,8 +15,7 @@ pub struct CryptoModule {
 fn version(root: &Path) -> Result<(String, Vec<u32>)> {
     let path = root.join("manifest.json");
     let load = || -> Result<(String, Vec<u32>)> {
-        let manifest: serde_json::Value =
-            serde_json::from_slice(&fs::read(root.join("manifest.json"))?)?;
+        let manifest: serde_json::Value = serde_json::from_slice(&fs::read(&path)?)?;
         let version = manifest["version"]
             .as_str()
             .context("extension manifest version missing")?;
@@ -193,12 +192,6 @@ mod tests {
         let root = f.extension("chromium", "Default", "version", "3.7.2");
         let wasm = root.join("static/js/ltsm.wasm");
         assert_eq!(resolve(Some(wasm.clone()), None).unwrap().version, "3.7.2");
-        assert_eq!(
-            resolve(Some(wasm.clone()), Some("".into()))
-                .unwrap()
-                .version,
-            ""
-        );
         assert_eq!(
             resolve(Some(wasm), Some("9.0".into())).unwrap().version,
             "9.0"

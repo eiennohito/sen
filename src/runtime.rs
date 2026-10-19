@@ -25,6 +25,7 @@ struct Type {
 #[derive(Clone, Debug)]
 struct Binding {
     invoker: u32,
+    return_type: u32,
     context: u32,
     args: usize,
     types: Vec<u32>,
@@ -35,9 +36,11 @@ struct Class {
     base: u32,
     upcast: u32,
     destructor: u32,
+    destructor_signature: String,
+    upcast_signature: String,
     methods: BTreeMap<String, Binding>,
     statics: BTreeMap<String, Binding>,
-    constructors: Vec<Binding>,
+    constructors: BTreeMap<usize, Binding>,
 }
 struct Handle {
     value: Value,
@@ -162,11 +165,6 @@ fn call_export(c: &mut Caller<'_, Host>, name: &str, args: &[Val]) -> Result<Vec
         .get_export(name)
         .and_then(|e| e.into_func())
         .context("missing export")?;
-    assert_eq!(
-        f.ty(&*c).params().len(),
-        args.len(),
-        "host export argument count"
-    );
     let mut out: Vec<_> = f
         .ty(&*c)
         .results()
@@ -213,307 +211,396 @@ fn take_value(c: &Caller<'_, Host>, t: u32, p: u32) -> Result<Value> {
         other => bail!("unsupported take_value type {other}"),
     })
 }
-fn host_call(name: &str, mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
-    let p = |index: usize| -> Result<u32> {
-        input
-            .get(index)
-            .context("missing host argument")?
-            .i32()
-            .map(|v| v as u32)
-            .context("host argument must be i32")
+fn emval_decref(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    c.data_mut().dec(p(0))?;
+    Ok(())
+}
+
+fn emval_incref(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    if p(0) >= 5 {
+        c.data_mut()
+            .handles
+            .get_mut(p(0) as usize)
+            .context("invalid incref")?
+            .refs += 1;
+    }
+    Ok(())
+}
+
+fn register_method(
+    kind: BindingKind,
+    mut c: Caller<'_, Host>,
+    input: &[Val],
+    _output: &mut [Val],
+) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let method = cstr(&c, p(1))?;
+    let types = (1..p(2))
+        .map(|i| u32_at(&c, p(3) + i * 4))
+        .collect::<Result<Vec<_>>>()?;
+    let binding = Binding {
+        invoker: p(5),
+        return_type: u32_at(&c, p(3))?,
+        context: p(6),
+        args: p(2) as usize - 1,
+        types,
     };
-    let mut result = 0;
-    match name {
-        "a" => c.data_mut().dec(p(0)?)?,
-        "j" => {
-            if p(0)? >= 5 {
-                c.data_mut()
-                    .handles
-                    .get_mut(p(0)? as usize)
-                    .context("invalid incref")?
-                    .refs += 1;
-            }
-        }
-        "b" | "g" => {
-            let method = cstr(&c, p(1)?)?;
-            let types = (1..p(2)?)
-                .map(|i| u32_at(&c, p(3)? + i * 4))
-                .collect::<Result<Vec<_>>>()?;
-            let binding = Binding {
-                invoker: p(5)?,
-                context: p(6)?,
-                args: p(2)? as usize - 1,
-                types,
-            };
-            let class = c.data_mut().classes.entry(p(0)?).or_default();
-            if name == "b" {
-                class.methods.insert(method, binding);
-            } else {
-                class.statics.insert(method, binding);
-            }
-        }
-        "i" => {
-            let class = Class {
-                name: cstr(&c, p(10)?)?,
-                base: p(3)?,
-                upcast: p(7)?,
-                destructor: p(12)?,
-                ..c.data_mut().classes.remove(&p(0)?).unwrap_or_default()
-            };
-            c.data_mut().classes.insert(p(0)?, class);
-            for index in 0..3 {
-                let id = p(index)?;
-                c.data_mut().types.insert(
-                    id,
-                    Type {
-                        kind: "class",
-                        size: 4,
-                    },
-                );
-            }
-        }
-        "k" => {
-            let types = (1..p(1)?)
-                .map(|i| u32_at(&c, p(2)? + i * 4))
-                .collect::<Result<Vec<_>>>()?;
-            let binding = Binding {
-                invoker: p(4)?,
-                context: p(5)?,
-                args: p(1)? as usize - 1,
-                types,
-            };
-            c.data_mut()
-                .classes
-                .entry(p(0)?)
-                .or_default()
-                .constructors
-                .push(binding);
-        }
-        "d" | "h" | "n" | "t" | "u" | "v" | "I" | "J" | "K" => {
-            let (kind, size) = match name {
-                "d" => ("memory_view", 0),
-                "h" => ("int", p(2)?),
-                "n" => ("wstring", p(1)?),
-                "t" => ("string", 4),
-                "u" => ("float", p(2)?),
-                "v" => ("bigint", p(2)?),
-                "I" => ("emval", 4),
-                "J" => ("bool", p(2)?),
-                "K" => ("void", 0),
-                _ => unreachable!(),
-            };
-            c.data_mut().types.insert(p(0)?, Type { kind, size });
-        }
-        "c" => {} // Numeric configuration constants are not used by this host.
-        "N" => {
-            let name = cstr(&c, p(0)?)?;
-            let types = (1..p(1)?)
-                .map(|i| u32_at(&c, p(2)? + i * 4))
-                .collect::<Result<Vec<_>>>()?;
-            c.data_mut().globals.insert(
-                name,
-                Binding {
-                    invoker: p(4)?,
-                    context: p(5)?,
-                    args: p(1)? as usize - 1,
-                    types,
-                },
-            );
-        }
-        "f" | "M" => {
-            let s = cstr(&c, p(0)?)?;
-            result = c.data_mut().put(Value::String(s));
-        }
-        "l" => {
-            let v = take_value(&c, p(0)?, p(1)?)?;
-            result = c.data_mut().put(v);
-        }
-        "e" => {
-            let constructor = c.data().get(p(0)?)?;
-            ensure!(
-                matches!(&constructor, Value::String(s) if s == "Uint8Array" || s == "Int8Array"),
-                "unsupported emval constructor {constructor:?}"
-            );
-            ensure!(p(1)? == 1, "unsupported typed array arity");
-            let v = take_value(&c, u32_at(&c, p(2)?)?, p(3)?)?;
-            let bytes = match v {
-                Value::Bytes(b) => b,
-                Value::Number(n) => vec![0; usize::try_from(n)?],
-                _ => bail!("typed array argument"),
-            };
-            result = c.data_mut().put(Value::Bytes(bytes));
-        }
-        "x" => result = c.data_mut().put(Value::Bytes(Vec::new())),
-        "A" => {
-            let obj = c.data().get(p(0)?)?;
-            let key = c.data().get(p(1)?)?;
-            let val = match (obj, key) {
-                (Value::Bytes(b), Value::String(s)) if s == "length" || s == "byteLength" => {
-                    Value::Number(b.len() as u64)
-                }
-                (Value::Bytes(b), Value::Number(i)) => {
-                    Value::Number(*b.get(i as usize).context("array index")? as u64)
-                }
-                other => bail!("unsupported emval get_property {other:?}"),
-            };
-            result = c.data_mut().put(val);
-        }
-        "L" => {
-            let key = c.data().get(p(1)?)?;
-            let value = c.data().get(p(2)?)?;
-            if let (Value::Number(i), Value::Number(v)) = (key, value) {
-                let h = c
-                    .data_mut()
-                    .handles
-                    .get_mut(p(0)? as usize)
-                    .context("array handle")?;
-                let Value::Bytes(b) = &mut h.value else {
-                    bail!("set_property requires byte array")
-                };
-                let i = usize::try_from(i)?;
-                ensure!(i < 16 * 1024 * 1024, "array too large");
-                if i >= b.len() {
-                    b.resize(i + 1, 0);
-                }
-                b[i] = v as u8;
-            } else {
-                bail!("unsupported emval set_property")
-            }
-        }
-        "z" => {
-            let val = c.data().get(p(0)?)?;
-            let ty = c
-                .data()
-                .types
-                .get(&p(1)?)
-                .context("unregistered conversion type")?
-                .clone();
-            let mut destructors = Vec::new();
-            let value = match (ty.kind, val) {
-                ("string", Value::Bytes(b)) => {
-                    let ptr = std_string(&mut c, &b)?;
-                    destructors.push(ptr);
-                    ptr as f64
-                }
-                ("string", Value::String(s)) => {
-                    let ptr = std_string(&mut c, s.as_bytes())?;
-                    destructors.push(ptr);
-                    ptr as f64
-                }
-                ("memory_view", Value::Bytes(b)) => {
-                    let ptr = malloc(&mut c, b.len().max(1))?;
-                    write(&mut c, ptr, &b)?;
-                    let desc = malloc(&mut c, 8)?;
-                    write(&mut c, desc, &(b.len() as u32).to_le_bytes())?;
-                    write(&mut c, desc + 4, &ptr.to_le_bytes())?;
-                    destructors.extend([ptr, desc]);
-                    desc as f64
-                }
-                ("int" | "bigint" | "float", Value::Number(n)) => n as f64,
-                ("int" | "bigint", Value::Bytes(b)) => b.len() as f64,
-                ("emval", _) => p(0)? as f64,
-                other => bail!("unsupported emval conversion {other:?}"),
-            };
-            let h = c.data_mut().put(Value::Destructors(destructors));
-            write(&mut c, p(2)?, &h.to_le_bytes())?;
-            output[0] = Val::F64(value.into());
-            return Ok(());
-        }
-        "y" => {
-            let v = c.data().get(p(0)?)?;
-            let Value::Destructors(ptrs) = v else {
-                bail!("invalid destructor list")
-            };
-            for ptr in ptrs {
-                free(&mut c, ptr)?;
-            }
-            c.data_mut().dec(p(0)?)?;
-        }
-        "w" => {
-            let origin = b"chrome-extension://ophjlpahpchlmihnnnihgmmeilfjmjjc\0";
-            result = malloc(&mut c, origin.len())?;
-            write(&mut c, result, origin)?;
-        }
-        "o" => {
-            // Identify known embedded callback source at the supplied pointer,
-            // so data relocation across extension builds needs no fixed offsets.
-            // No JavaScript is executed; these callbacks are implemented in Rust.
-            let source = cstr(&c, p(0)?)?;
-            match source.as_str() {
-                CALLBACK_THROW => bail!(
-                    "LTSM {}: {}",
-                    cstr(&c, u32_at(&c, p(2)?)?)?,
-                    cstr(&c, u32_at(&c, p(2)? + 4)?)?
-                ),
-                CALLBACK_RANDOM_INIT => {}
-                CALLBACK_RANDOM_FILL => {
-                    let ptr = u32_at(&c, p(2)?)?;
-                    let n = u32_at(&c, p(2)? + 4)?;
-                    write(&mut c, ptr, &random_bytes(n as usize)?)?;
-                }
-                _ => return Err(crypto_changed(&c.data().version, "EM_JS callback")),
-            }
-        }
-        "p" => result = malloc(&mut c, p(0)? as usize)?,
-        "B" => bail!("LTSM C++ exception (type={}, ptr={})", p(1)?, p(0)?),
-        "m" => bail!("LTSM abort"),
-        "C" => {
-            // emscripten_resize_heap
-            let mem = memory(&c)?;
-            let current = mem.data(&c).len();
-            let wanted = p(0)? as usize;
-            if wanted > current {
-                let pages = (wanted - current).div_ceil(65536) as u64;
-                result = u32::from(mem.grow(&mut c, pages).is_ok());
-            } else {
-                result = 1;
-            }
-        }
-        "G" => {
-            let path = cstr(&c, p(1)?)?;
-            ensure!(
-                path == "/dev/urandom" || path == "/dev/random",
-                "unsupported open path {path}"
-            );
-            result = c.data().urandom_fd;
-        }
-        "E" => {
-            ensure!(p(0)? == c.data().urandom_fd, "unsupported fd_read");
-            let mut total = 0;
-            for i in 0..p(2)? {
-                let ptr = u32_at(&c, p(1)? + i * 8)?;
-                let n = u32_at(&c, p(1)? + i * 8 + 4)?;
-                write(&mut c, ptr, &random_bytes(n as usize)?)?;
-                total += n;
-            }
-            write(&mut c, p(3)?, &total.to_le_bytes())?;
-        }
-        "r" => {
-            let mut total: u32 = 0;
-            for i in 0..p(2)? {
-                total += u32_at(&c, p(1)? + i * 8 + 4)?;
-            }
-            write(&mut c, p(3)?, &total.to_le_bytes())?;
-        }
-        "q" => {
-            ensure!(p(0)? == c.data().urandom_fd, "unsupported fd_close");
-        }
-        "s" | "F" => result = 0, // fcntl/ioctl metadata; no host file access.
-        "D" => bail!("fd_seek not supported"),
-        "H" => {
-            let b = read(&c, p(1)?, p(2)? as usize)?;
-            write(&mut c, p(0)?, &b)?;
-        }
-        other => {
-            return Err(crypto_changed(
-                &c.data().version,
-                &format!("import {other}"),
-            ));
-        }
+    let class = c.data_mut().classes.entry(p(0)).or_default();
+    if kind == BindingKind::Method {
+        class.methods.insert(method, binding);
+    } else {
+        class.statics.insert(method, binding);
     }
-    if let Some(out) = output.first_mut() {
-        *out = Val::I32(result as i32);
+    Ok(())
+}
+
+fn register_class(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let class = Class {
+        name: cstr(&c, p(10))?,
+        base: p(3),
+        upcast: p(7),
+        destructor: p(12),
+        destructor_signature: cstr(&c, p(11))?,
+        upcast_signature: if p(7) != 0 {
+            cstr(&c, p(6))?
+        } else {
+            String::new()
+        },
+        ..c.data_mut().classes.remove(&p(0)).unwrap_or_default()
+    };
+    c.data_mut().classes.insert(p(0), class);
+    for index in 0..3 {
+        let id = p(index);
+        c.data_mut().types.insert(
+            id,
+            Type {
+                kind: "class",
+                size: 4,
+            },
+        );
     }
+    Ok(())
+}
+
+fn register_constructor(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let types = (1..p(1))
+        .map(|i| u32_at(&c, p(2) + i * 4))
+        .collect::<Result<Vec<_>>>()?;
+    let binding = Binding {
+        invoker: p(4),
+        return_type: u32_at(&c, p(2))?,
+        context: p(5),
+        args: p(1) as usize - 1,
+        types,
+    };
+    c.data_mut()
+        .classes
+        .entry(p(0))
+        .or_default()
+        .constructors
+        .insert(binding.args, binding);
+    Ok(())
+}
+
+fn register_type(mut c: Caller<'_, Host>, id: u32, kind: &'static str, size: u32) -> Result<()> {
+    c.data_mut().types.insert(id, Type { kind, size });
+    Ok(())
+}
+
+fn register_constant(_c: Caller<'_, Host>, _input: &[Val], _output: &mut [Val]) -> Result<()> {
+    // Numeric configuration constants are not used by this host.
+    Ok(())
+}
+
+fn register_function(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let name = cstr(&c, p(0))?;
+    let types = (1..p(1))
+        .map(|i| u32_at(&c, p(2) + i * 4))
+        .collect::<Result<Vec<_>>>()?;
+    let return_type = u32_at(&c, p(2))?;
+    c.data_mut().globals.insert(
+        name,
+        Binding {
+            invoker: p(4),
+            return_type,
+            context: p(5),
+            args: p(1) as usize - 1,
+            types,
+        },
+    );
+    Ok(())
+}
+
+fn emval_string(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let s = cstr(&c, p(0))?;
+    let result = c.data_mut().put(Value::String(s));
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn emval_take_value(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let v = take_value(&c, p(0), p(1))?;
+    let result = c.data_mut().put(v);
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn emval_new(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let constructor = c.data().get(p(0))?;
+    ensure!(
+        matches!(&constructor, Value::String(s) if s == "Uint8Array" || s == "Int8Array"),
+        "unsupported emval constructor {constructor:?}"
+    );
+    ensure!(p(1) == 1, "unsupported typed array arity");
+    let v = take_value(&c, u32_at(&c, p(2))?, p(3))?;
+    let bytes = match v {
+        Value::Bytes(b) => b,
+        Value::Number(n) => vec![0; usize::try_from(n)?],
+        _ => bail!("typed array argument"),
+    };
+    let result = c.data_mut().put(Value::Bytes(bytes));
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn emval_array(mut c: Caller<'_, Host>, _input: &[Val], output: &mut [Val]) -> Result<()> {
+    let result = c.data_mut().put(Value::Bytes(Vec::new()));
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn emval_get_property(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let obj = c.data().get(p(0))?;
+    let key = c.data().get(p(1))?;
+    let val = match (obj, key) {
+        (Value::Bytes(b), Value::String(s)) if s == "length" || s == "byteLength" => {
+            Value::Number(b.len() as u64)
+        }
+        (Value::Bytes(b), Value::Number(i)) => {
+            Value::Number(*b.get(i as usize).context("array index")? as u64)
+        }
+        other => bail!("unsupported emval get_property {other:?}"),
+    };
+    let result = c.data_mut().put(val);
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn emval_set_property(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let key = c.data().get(p(1))?;
+    let value = c.data().get(p(2))?;
+    if let (Value::Number(i), Value::Number(v)) = (key, value) {
+        let h = c
+            .data_mut()
+            .handles
+            .get_mut(p(0) as usize)
+            .context("array handle")?;
+        let Value::Bytes(b) = &mut h.value else {
+            bail!("set_property requires byte array")
+        };
+        let i = usize::try_from(i)?;
+        ensure!(i < 16 * 1024 * 1024, "array too large");
+        if i >= b.len() {
+            b.resize(i + 1, 0);
+        }
+        b[i] = v as u8;
+    } else {
+        bail!("unsupported emval set_property")
+    }
+    Ok(())
+}
+
+fn emval_as(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let val = c.data().get(p(0))?;
+    let ty = c
+        .data()
+        .types
+        .get(&p(1))
+        .context("unregistered conversion type")?
+        .clone();
+    let mut destructors = Vec::new();
+    let value = match (ty.kind, val) {
+        ("string", Value::Bytes(b)) => {
+            let ptr = std_string(&mut c, &b)?;
+            destructors.push(ptr);
+            ptr as f64
+        }
+        ("string", Value::String(s)) => {
+            let ptr = std_string(&mut c, s.as_bytes())?;
+            destructors.push(ptr);
+            ptr as f64
+        }
+        ("memory_view", Value::Bytes(b)) => {
+            let ptr = malloc(&mut c, b.len().max(1))?;
+            write(&mut c, ptr, &b)?;
+            let desc = malloc(&mut c, 8)?;
+            write(&mut c, desc, &(b.len() as u32).to_le_bytes())?;
+            write(&mut c, desc + 4, &ptr.to_le_bytes())?;
+            destructors.extend([ptr, desc]);
+            desc as f64
+        }
+        ("int" | "bigint" | "float", Value::Number(n)) => n as f64,
+        ("int" | "bigint", Value::Bytes(b)) => b.len() as f64,
+        ("emval", _) => p(0) as f64,
+        other => bail!("unsupported emval conversion {other:?}"),
+    };
+    let h = c.data_mut().put(Value::Destructors(destructors));
+    write(&mut c, p(2), &h.to_le_bytes())?;
+    output[0] = Val::F64(value.into());
+    Ok(())
+}
+
+fn emval_run_destructors(
+    mut c: Caller<'_, Host>,
+    input: &[Val],
+    _output: &mut [Val],
+) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let v = c.data().get(p(0))?;
+    let Value::Destructors(ptrs) = v else {
+        bail!("invalid destructor list")
+    };
+    for ptr in ptrs {
+        free(&mut c, ptr)?;
+    }
+    c.data_mut().dec(p(0))?;
+    Ok(())
+}
+
+fn origin(mut c: Caller<'_, Host>, _input: &[Val], output: &mut [Val]) -> Result<()> {
+    let origin = b"chrome-extension://ophjlpahpchlmihnnnihgmmeilfjmjjc\0";
+    let result = malloc(&mut c, origin.len())?;
+    write(&mut c, result, origin)?;
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn embedded_callback(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    // Identify known embedded callback source at the supplied pointer,
+    // so data relocation across extension builds needs no fixed offsets.
+    // No JavaScript is executed; these callbacks are implemented in Rust.
+    let source = cstr(&c, p(0))?;
+    match source.as_str() {
+        CALLBACK_THROW => bail!(
+            "LTSM {}: {}",
+            cstr(&c, u32_at(&c, p(2))?)?,
+            cstr(&c, u32_at(&c, p(2) + 4)?)?
+        ),
+        CALLBACK_RANDOM_INIT => {}
+        CALLBACK_RANDOM_FILL => {
+            let ptr = u32_at(&c, p(2))?;
+            let n = u32_at(&c, p(2) + 4)?;
+            write(&mut c, ptr, &random_bytes(n as usize)?)?;
+        }
+        _ => return Err(crypto_changed(&c.data().version, "EM_JS callback")),
+    }
+    output[0] = Val::I32(0);
+    Ok(())
+}
+
+fn allocate(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let result = malloc(&mut c, p(0) as usize)?;
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn throw_exception(_c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    bail!("LTSM C++ exception (type={}, ptr={})", p(1), p(0))
+}
+
+fn abort(_c: Caller<'_, Host>, _input: &[Val], _output: &mut [Val]) -> Result<()> {
+    bail!("LTSM abort")
+}
+
+fn resize_heap(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    // emscripten_resize_heap
+    let mem = memory(&c)?;
+    let current = mem.data(&c).len();
+    let wanted = p(0) as usize;
+    let result = if wanted > current {
+        let pages = (wanted - current).div_ceil(65536) as u64;
+        u32::from(mem.grow(&mut c, pages).is_ok())
+    } else {
+        1
+    };
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn open_random(c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let path = cstr(&c, p(1))?;
+    ensure!(
+        path == "/dev/urandom" || path == "/dev/random",
+        "unsupported open path {path}"
+    );
+    let result = c.data().urandom_fd;
+    output[0] = Val::I32(result as i32);
+    Ok(())
+}
+
+fn fd_read(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    ensure!(p(0) == c.data().urandom_fd, "unsupported fd_read");
+    let mut total = 0;
+    for i in 0..p(2) {
+        let ptr = u32_at(&c, p(1) + i * 8)?;
+        let n = u32_at(&c, p(1) + i * 8 + 4)?;
+        write(&mut c, ptr, &random_bytes(n as usize)?)?;
+        total += n;
+    }
+    write(&mut c, p(3), &total.to_le_bytes())?;
+    output[0] = Val::I32(0);
+    Ok(())
+}
+
+fn fd_write(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let mut total: u32 = 0;
+    for i in 0..p(2) {
+        total += u32_at(&c, p(1) + i * 8 + 4)?;
+    }
+    write(&mut c, p(3), &total.to_le_bytes())?;
+    output[0] = Val::I32(0);
+    Ok(())
+}
+
+fn fd_close(c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    ensure!(p(0) == c.data().urandom_fd, "unsupported fd_close");
+    output[0] = Val::I32(0);
+    Ok(())
+}
+
+fn fd_metadata(_c: Caller<'_, Host>, _input: &[Val], output: &mut [Val]) -> Result<()> {
+    // fcntl/ioctl metadata; no host file access.
+    output[0] = Val::I32(0);
+    Ok(())
+}
+
+fn fd_seek(_c: Caller<'_, Host>, _input: &[Val], _output: &mut [Val]) -> Result<()> {
+    bail!("fd_seek not supported")
+}
+
+fn copy_memory(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
+    let p = |index: usize| input[index].i32().unwrap() as u32;
+    let b = read(&c, p(1), p(2) as usize)?;
+    write(&mut c, p(0), &b)?;
     Ok(())
 }
 
@@ -526,12 +613,12 @@ struct Function {
 }
 use wasmi::core::ValType::{F64, I32, I64};
 macro_rules! host_function {
-    ($name:literal, $params:expr, $results:expr) => {
+    ($name:literal, $params:expr, $results:expr, $handler:expr) => {
         Function {
             name: $name,
             params: $params,
             results: $results,
-            handler: Some(|c, p, r| host_call($name, c, p, r)),
+            handler: Some($handler),
         }
     };
 }
@@ -546,52 +633,116 @@ macro_rules! export_function {
     };
 }
 const FUNCTIONS: &[Function] = &[
-    host_function!("a", &[I32], &[]),
-    host_function!("b", &[I32, I32, I32, I32, I32, I32, I32, I32], &[]),
-    host_function!("c", &[I32, I32, F64], &[]),
-    host_function!("d", &[I32, I32, I32], &[]),
-    host_function!("e", &[I32, I32, I32, I32], &[I32]),
-    host_function!("f", &[I32], &[I32]),
-    host_function!("g", &[I32, I32, I32, I32, I32, I32, I32], &[]),
-    host_function!("h", &[I32, I32, I32, I32, I32], &[]),
+    host_function!("a", &[I32], &[], emval_decref),
+    host_function!(
+        "b",
+        &[I32, I32, I32, I32, I32, I32, I32, I32],
+        &[],
+        |c, p, r| register_method(Method, c, p, r)
+    ),
+    host_function!("c", &[I32, I32, F64], &[], register_constant),
+    host_function!("d", &[I32, I32, I32], &[], |c, p, _| register_type(
+        c,
+        p[0].i32().unwrap() as u32,
+        "memory_view",
+        0
+    )),
+    host_function!("e", &[I32, I32, I32, I32], &[I32], emval_new),
+    host_function!("f", &[I32], &[I32], emval_string),
+    host_function!("g", &[I32, I32, I32, I32, I32, I32, I32], &[], |c, p, r| {
+        register_method(Static, c, p, r)
+    }),
+    host_function!("h", &[I32, I32, I32, I32, I32], &[], |c, p, _| {
+        register_type(
+            c,
+            p[0].i32().unwrap() as u32,
+            "int",
+            p[2].i32().unwrap() as u32,
+        )
+    }),
     host_function!(
         "i",
         &[
             I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32, I32,
         ],
-        &[]
+        &[],
+        register_class
     ),
-    host_function!("j", &[I32], &[]),
-    host_function!("k", &[I32, I32, I32, I32, I32, I32], &[]),
-    host_function!("l", &[I32, I32], &[I32]),
-    host_function!("m", &[], &[]),
-    host_function!("n", &[I32, I32, I32], &[]),
-    host_function!("o", &[I32, I32, I32], &[I32]),
-    host_function!("p", &[I32], &[I32]),
-    host_function!("q", &[I32], &[I32]),
-    host_function!("r", &[I32, I32, I32, I32], &[I32]),
-    host_function!("s", &[I32, I32, I32], &[I32]),
-    host_function!("t", &[I32, I32], &[]),
-    host_function!("u", &[I32, I32, I32], &[]),
-    host_function!("v", &[I32, I32, I32, I64, I64], &[]),
-    host_function!("w", &[], &[I32]),
-    host_function!("x", &[], &[I32]),
-    host_function!("y", &[I32], &[]),
-    host_function!("z", &[I32, I32, I32], &[F64]),
-    host_function!("A", &[I32, I32], &[I32]),
-    host_function!("B", &[I32, I32, I32], &[]),
-    host_function!("C", &[I32], &[I32]),
-    host_function!("D", &[I32, I64, I32, I32], &[I32]),
-    host_function!("E", &[I32, I32, I32, I32], &[I32]),
-    host_function!("F", &[I32, I32, I32], &[I32]),
-    host_function!("G", &[I32, I32, I32, I32], &[I32]),
-    host_function!("H", &[I32, I32, I32], &[]),
-    host_function!("I", &[I32, I32], &[]),
-    host_function!("J", &[I32, I32, I32, I32, I32], &[]),
-    host_function!("K", &[I32, I32], &[]),
-    host_function!("L", &[I32, I32, I32], &[]),
-    host_function!("M", &[I32], &[I32]),
-    host_function!("N", &[I32, I32, I32, I32, I32, I32], &[]),
+    host_function!("j", &[I32], &[], emval_incref),
+    host_function!(
+        "k",
+        &[I32, I32, I32, I32, I32, I32],
+        &[],
+        register_constructor
+    ),
+    host_function!("l", &[I32, I32], &[I32], emval_take_value),
+    host_function!("m", &[], &[], abort),
+    host_function!("n", &[I32, I32, I32], &[], |c, p, _| register_type(
+        c,
+        p[0].i32().unwrap() as u32,
+        "wstring",
+        p[1].i32().unwrap() as u32
+    )),
+    host_function!("o", &[I32, I32, I32], &[I32], embedded_callback),
+    host_function!("p", &[I32], &[I32], allocate),
+    host_function!("q", &[I32], &[I32], fd_close),
+    host_function!("r", &[I32, I32, I32, I32], &[I32], fd_write),
+    host_function!("s", &[I32, I32, I32], &[I32], fd_metadata),
+    host_function!("t", &[I32, I32], &[], |c, p, _| register_type(
+        c,
+        p[0].i32().unwrap() as u32,
+        "string",
+        4
+    )),
+    host_function!("u", &[I32, I32, I32], &[], |c, p, _| register_type(
+        c,
+        p[0].i32().unwrap() as u32,
+        "float",
+        p[2].i32().unwrap() as u32
+    )),
+    host_function!("v", &[I32, I32, I32, I64, I64], &[], |c, p, _| {
+        register_type(
+            c,
+            p[0].i32().unwrap() as u32,
+            "bigint",
+            p[2].i32().unwrap() as u32,
+        )
+    }),
+    host_function!("w", &[], &[I32], origin),
+    host_function!("x", &[], &[I32], emval_array),
+    host_function!("y", &[I32], &[], emval_run_destructors),
+    host_function!("z", &[I32, I32, I32], &[F64], emval_as),
+    host_function!("A", &[I32, I32], &[I32], emval_get_property),
+    host_function!("B", &[I32, I32, I32], &[], throw_exception),
+    host_function!("C", &[I32], &[I32], resize_heap),
+    host_function!("D", &[I32, I64, I32, I32], &[I32], fd_seek),
+    host_function!("E", &[I32, I32, I32, I32], &[I32], fd_read),
+    host_function!("F", &[I32, I32, I32], &[I32], fd_metadata),
+    host_function!("G", &[I32, I32, I32, I32], &[I32], open_random),
+    host_function!("H", &[I32, I32, I32], &[], copy_memory),
+    host_function!("I", &[I32, I32], &[], |c, p, _| register_type(
+        c,
+        p[0].i32().unwrap() as u32,
+        "emval",
+        4
+    )),
+    host_function!("J", &[I32, I32, I32, I32, I32], &[], |c, p, _| {
+        register_type(
+            c,
+            p[0].i32().unwrap() as u32,
+            "bool",
+            p[2].i32().unwrap() as u32,
+        )
+    }),
+    host_function!("K", &[I32, I32], &[], |c, p, _| register_type(
+        c,
+        p[0].i32().unwrap() as u32,
+        "void",
+        0
+    )),
+    host_function!("L", &[I32, I32, I32], &[], emval_set_property),
+    host_function!("M", &[I32], &[I32], emval_string),
+    host_function!("N", &[I32, I32, I32, I32, I32, I32], &[], register_function),
     export_function!("P", &[], &[]),
     export_function!("T", &[], &[]),
     export_function!("V", &[I32], &[I32]),
@@ -599,10 +750,19 @@ const FUNCTIONS: &[Function] = &[
 ];
 
 /// Owned and called directly by the account net worker for live decode, history and signing.
+struct ResolvedBinding {
+    invoker: Func,
+    context: u32,
+    emval_args: Vec<usize>,
+    upcasts: Vec<Func>,
+}
 pub struct Runtime {
     store: Store<Host>,
     instance: Instance,
     poisoned: bool,
+    class_ids: BTreeMap<String, u32>,
+    bindings: Vec<ResolvedBinding>,
+    destructors: BTreeMap<String, Func>,
 }
 impl Runtime {
     pub fn new(bytes: &[u8], version: &str) -> Result<Self> {
@@ -661,19 +821,21 @@ impl Runtime {
             store,
             instance,
             poisoned: false,
+            class_ids: BTreeMap::new(),
+            bindings: Vec::new(),
+            destructors: BTreeMap::new(),
         };
         rt.export("P", &[])?; // C++ constructors
         rt.export("T", &[])?; // embind type and class registrations
-        rt.validate_interface()?;
-        let available = rt
+        rt.class_ids = rt
             .store
             .data()
-            .globals
-            .get("isAvailable")
-            .cloned()
-            .filter(|b| b.args == 0)
-            .ok_or_else(|| crypto_changed(version, "isAvailable/0"))?;
-        if rt.invoke(available, &[])? == 0 {
+            .classes
+            .iter()
+            .map(|(id, c)| (c.name.clone(), *id))
+            .collect();
+        let (invoker, context) = rt.validate_interface()?;
+        if rt.indirect(invoker, &[context as u64])? == 0 {
             return Err(crypto_changed(version, "isAvailable"));
         }
         Ok(rt)
@@ -696,7 +858,7 @@ impl Runtime {
             let binding = match kind {
                 BindingKind::Static => c.statics.get(name),
                 BindingKind::Method => c.methods.get(name),
-                BindingKind::Constructor => c.constructors.iter().find(|b| b.args == arity),
+                BindingKind::Constructor => c.constructors.get(&arity),
             };
             if let Some(b) = binding {
                 if b.args != arity {
@@ -707,6 +869,9 @@ impl Runtime {
             if kind != BindingKind::Method {
                 return Err(missing());
             }
+            if c.upcast_signature != "ii" {
+                return Err(missing());
+            }
             upcasts.push(c.upcast);
             c = self.store.data().classes.get(&c.base).ok_or_else(missing)?;
         }
@@ -714,11 +879,107 @@ impl Runtime {
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
     }
-    fn validate_interface(&self) -> Result<()> {
-        for &call in INTERFACE {
-            self.binding(call)?;
+    fn validate_indirect(
+        &self,
+        index: u32,
+        params: &[wasmi::core::ValType],
+        results: &[wasmi::core::ValType],
+    ) -> Result<Func> {
+        let missing = || {
+            crypto_changed(
+                &self.store.data().version,
+                &format!("function table {index}"),
+            )
+        };
+        let f = self
+            .instance
+            .get_table(&self.store, "Q")
+            .and_then(|t| t.get(&self.store, index as u64))
+            .and_then(|v| v.funcref().and_then(|r| r.func()).copied())
+            .ok_or_else(missing)?;
+        let ty = f.ty(&self.store);
+        if ty.params() != params || ty.results() != results {
+            return Err(crypto_changed(
+                &self.store.data().version,
+                &format!("function table {index}: expected {params:?} -> {results:?}, got {ty:?}"),
+            ));
         }
-        Ok(())
+        Ok(f)
+    }
+    fn validate_invoker(&self, binding: &Binding) -> Result<Func> {
+        let changed = || crypto_changed(&self.store.data().version, "invoker types");
+        let wire_type = |id| {
+            let ty = self.store.data().types.get(&id).ok_or_else(changed)?;
+            match ty.kind {
+                "bigint" => Ok(I64),
+                "int" | "bool" | "class" | "emval" | "string" | "memory_view" => Ok(I32),
+                _ => Err(changed()),
+            }
+        };
+        let mut params = vec![I32]; // Invoker context precedes the registered arguments.
+        for id in &binding.types {
+            params.push(wire_type(*id)?);
+        }
+        let results = if self
+            .store
+            .data()
+            .types
+            .get(&binding.return_type)
+            .is_some_and(|t| t.kind == "void")
+        {
+            vec![]
+        } else {
+            vec![wire_type(binding.return_type)?]
+        };
+        self.validate_indirect(binding.invoker, &params, &results)
+    }
+    fn validate_interface(&mut self) -> Result<(Func, u32)> {
+        for &call in INTERFACE {
+            let (binding, upcasts) = self.binding(call)?;
+            let invoker = self.validate_invoker(&binding)?;
+            let upcasts = upcasts
+                .into_iter()
+                .map(|i| self.validate_indirect(i, &[I32], &[I32]))
+                .collect::<Result<_>>()?;
+            let emval_args = binding
+                .types
+                .iter()
+                .enumerate()
+                .filter_map(|(i, t)| {
+                    self.store
+                        .data()
+                        .types
+                        .get(t)
+                        .filter(|t| t.kind == "emval")
+                        .map(|_| i)
+                })
+                .collect();
+            self.bindings.push(ResolvedBinding {
+                invoker,
+                context: binding.context,
+                emval_args,
+                upcasts,
+            });
+        }
+        for (name, id) in &self.class_ids {
+            let class = &self.store.data().classes[id];
+            if class.destructor_signature != "vi" {
+                return Err(crypto_changed(
+                    &self.store.data().version,
+                    &format!("{name} destructor"),
+                ));
+            }
+            let f = self.validate_indirect(class.destructor, &[I32], &[])?;
+            self.destructors.insert(name.clone(), f);
+        }
+        let available = self
+            .store
+            .data()
+            .globals
+            .get("isAvailable")
+            .filter(|b| b.args == 0)
+            .ok_or_else(|| crypto_changed(&self.store.data().version, "isAvailable/0"))?;
+        Ok((self.validate_invoker(available)?, available.context))
     }
     fn export(&mut self, name: &str, args: &[Val]) -> Result<Vec<Val>> {
         let f = self
@@ -732,11 +993,6 @@ impl Runtime {
             !self.poisoned,
             "runtime must be discarded after an exception"
         );
-        assert_eq!(
-            f.ty(&self.store).params().len(),
-            args.len(),
-            "export argument count"
-        );
         let mut results: Vec<_> = f
             .ty(&self.store)
             .results()
@@ -749,20 +1005,8 @@ impl Runtime {
         }
         Ok(results)
     }
-    fn indirect(&mut self, index: u32, args: &[u64]) -> Result<u64> {
-        let table = self
-            .instance
-            .get_table(&self.store, "Q")
-            .context("missing function table")?;
-        let val = table
-            .get(&self.store, index as u64)
-            .context("function table index")?;
-        let f = *val
-            .funcref()
-            .and_then(|r| r.func())
-            .context("null function pointer")?;
+    fn indirect(&mut self, f: Func, args: &[u64]) -> Result<u64> {
         let ty = f.ty(&self.store);
-        assert_eq!(ty.params().len(), args.len(), "invoker argument count");
         let values: Result<Vec<Val>> = ty
             .params()
             .iter()
@@ -787,12 +1031,11 @@ impl Runtime {
             .unwrap_or(0))
     }
     fn class(&self, name: &str) -> Result<&Class> {
-        self.store
-            .data()
-            .classes
-            .values()
-            .find(|c| c.name == name)
-            .with_context(|| format!("class {name}"))
+        let id = self
+            .class_ids
+            .get(name)
+            .with_context(|| format!("class {name}"))?;
+        Ok(&self.store.data().classes[id])
     }
     #[cfg(any(test, feature = "harness"))]
     pub fn bindings(&self) -> Vec<(String, Vec<String>)> {
@@ -838,16 +1081,33 @@ impl Runtime {
             "call arity {call:?}"
         );
         (|| {
-            let (binding, upcasts) = self.binding(call)?;
-            let mut values = Vec::with_capacity(arity);
+            let index = call as usize;
+            let mut values = Vec::with_capacity(arity + 1);
+            values.push(self.bindings[index].context as u64);
             if let Some(mut ptr) = this {
-                for upcast in upcasts {
-                    ptr = self.indirect(upcast, &[ptr as u64])? as u32;
+                for i in 0..self.bindings[index].upcasts.len() {
+                    let f = self.bindings[index].upcasts[i];
+                    ptr = self.indirect(f, &[ptr as u64])? as u32;
                 }
                 values.push(ptr as u64);
             }
             values.extend_from_slice(args);
-            self.invoke(binding, &values)
+            // The C++ val wrapper takes one reference; retain the caller's.
+            for &i in &self.bindings[index].emval_args {
+                let handle = values[i + 1];
+                if handle >= 5 {
+                    let h = self
+                        .store
+                        .data_mut()
+                        .handles
+                        .get_mut(handle as usize)
+                        .context("invalid argument handle")?;
+                    ensure!(h.refs > 0, "released argument handle");
+                    h.refs += 1;
+                }
+            }
+            self.indirect(self.bindings[index].invoker, &values)
+                .map(|v| v as u32)
         })()
         .map_err(|error| {
             if error.downcast_ref::<crate::client::Error>().is_some() {
@@ -857,36 +1117,9 @@ impl Runtime {
             }
         })
     }
-    fn invoke(&mut self, b: Binding, args: &[u64]) -> Result<u32> {
-        assert_eq!(args.len(), b.args, "binding argument count");
-        // emval arguments transfer one reference to the C++ val wrapper.
-        // Retain our caller-owned reference until release() is called.
-        for (t, a) in b.types.iter().zip(args) {
-            if self
-                .store
-                .data()
-                .types
-                .get(t)
-                .is_some_and(|t| t.kind == "emval")
-                && *a >= 5
-            {
-                let h = self
-                    .store
-                    .data_mut()
-                    .handles
-                    .get_mut(*a as usize)
-                    .context("invalid argument handle")?;
-                ensure!(h.refs > 0, "released argument handle");
-                h.refs += 1;
-            }
-        }
-        let mut a = vec![b.context as u64];
-        a.extend_from_slice(args);
-        Ok(self.indirect(b.invoker, &a)? as u32)
-    }
     pub fn destroy(&mut self, class: &str, ptr: u32) -> Result<()> {
-        let i = self.class(class)?.destructor;
-        self.indirect(i, &[ptr as u64])?;
+        let f = *self.destructors.get(class).context("class destructor")?;
+        self.indirect(f, &[ptr as u64])?;
         Ok(())
     }
     /// Read immutable module data for the synthetic opaque-ID test helper.
@@ -1031,6 +1264,34 @@ mod contract_tests {
         wasm.extend(types);
         wasm.extend([2, 7, 1, 1, b'a', 1, name, 0, 0]);
         wasm
+    }
+    #[test]
+    fn changed_registered_invoker_and_destructor_types_are_rejected() -> Result<()> {
+        let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
+        let mut rt = Runtime::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
+        let id = rt.class_ids["SecureKey"];
+        let class = &mut rt.store.data_mut().classes.get_mut(&id).unwrap();
+        let binding = class.statics.get_mut("loadToken").unwrap();
+        let invoker = binding.invoker;
+        binding.invoker = class.destructor;
+        let error = rt.validate_interface().unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::client::Error>(),
+            Some(crate::client::Error::SignIn(
+                crate::client::error::SignInFailure::CryptoChanged { .. }
+            ))
+        ));
+        let class = rt.store.data_mut().classes.get_mut(&id).unwrap();
+        class.statics.get_mut("loadToken").unwrap().invoker = invoker;
+        class.destructor = invoker;
+        let error = rt.validate_interface().unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<crate::client::Error>(),
+            Some(crate::client::Error::SignIn(
+                crate::client::error::SignInFailure::CryptoChanged { .. }
+            ))
+        ));
+        Ok(())
     }
     #[test]
     fn wrong_export_signature_is_a_crypto_change() {

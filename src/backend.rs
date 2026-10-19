@@ -600,6 +600,9 @@ impl Backend for FakeBackend {
             while !cancel.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(10));
             }
+            return Err(Error::SignIn(
+                crate::client::error::SignInFailure::Cancelled,
+            ));
         }
         Err(Error::SignIn(crate::client::error::SignInFailure::Server))
     }
@@ -1201,11 +1204,23 @@ impl LineBackend {
             Ok(client) => (client, None),
             Err(error) => {
                 crate::reporting::log("saved-session", "open", error.as_ref());
-                let reason = match crate::client::error::classify(&error) {
-                    Error::SignIn(reason) => reason,
-                    _ => crate::client::error::SignInFailure::SavedSession(
-                        crate::client::error::SavedSessionFailure::Corrupt,
-                    ),
+                use crate::client::error::{SavedSessionFailure, SignInFailure};
+                let reason = match error.downcast_ref::<Error>() {
+                    Some(Error::SignIn(reason)) => reason.clone(),
+                    Some(Error::Offline(_)) => SignInFailure::Network,
+                    Some(Error::Auth) => SignInFailure::Expired,
+                    Some(Error::SessionInvalid) => SignInFailure::SessionIdentity,
+                    Some(Error::Server(_)) => SignInFailure::Server,
+                    Some(_) => SignInFailure::Internal,
+                    None if error.downcast_ref::<std::io::Error>().is_some() => {
+                        SignInFailure::SavedSession(SavedSessionFailure::Io)
+                    }
+                    None if error.downcast_ref::<crate::client::RpcError>().is_some()
+                        || error.downcast_ref::<ureq::Error>().is_some() =>
+                    {
+                        crate::client::pairing::failure(&error, false)
+                    }
+                    None => SignInFailure::SavedSession(SavedSessionFailure::Corrupt),
                 };
                 (None, Some(reason))
             }
@@ -1234,7 +1249,7 @@ fn send_rpc(e: anyhow::Error) -> Error {
         return rpc(e);
     }
     match crate::client::desktop::send_failure(&e) {
-        crate::client::desktop::SendFailure::Rejected => Error::Rejected(RejectReason::NotAccepted),
+        crate::client::desktop::SendFailure::Refused => Error::Rejected(RejectReason::NotAccepted),
         _ => rpc(e),
     }
 }
@@ -1315,7 +1330,14 @@ impl Backend for LineBackend {
                     pairing::Event::Scanned => PairEvent::Scanned,
                 })
             },
-            |staged, api, wasm| desktop::Client::from_api(staged, &self.cache, wasm, api),
+            |staged, api| {
+                desktop::Client::from_api(
+                    staged,
+                    &self.cache,
+                    crate::credentials::load(staged)?,
+                    api,
+                )
+            },
         )
         .map_err(|error| {
             crate::reporting::log("sign-in", "pairing", error.as_ref());

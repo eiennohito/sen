@@ -182,6 +182,7 @@ pub(super) fn decrypt(
     message: &Value,
     envelope: &Envelope,
 ) -> Result<Vec<u8>> {
+    api.prepare_runtime()?;
     let to = required(message, "to")?;
     let from = required(message, "from")?;
     let outgoing = from == my_mid;
@@ -292,9 +293,6 @@ pub fn benchmark_history(
             Ok(body) => ensure!(body["text"].is_string(), "missing fixture text"),
             Err(_) => {
                 failed += 1;
-                if api.rt.is_poisoned() {
-                    api.reinitialize(wasm)?;
-                }
             }
         }
     }
@@ -312,7 +310,7 @@ pub(super) fn run(
     progress: &Progress,
 ) -> Result<()> {
     let state = crate::credentials::load(&opts.state)?;
-    let mut api = Api::with_runtime(module.runtime(wasm)?, &module.version)?;
+    let mut api = Api::with_runtime(module.runtime(wasm)?, wasm, &module.version)?;
     validate_keys(&mut api, &state).context(error::SavedSessionFailure::Keys.error())?;
     let profile = api.profile(access(&state)?)?;
     let my_mid = required(&profile, "mid")?;
@@ -378,9 +376,6 @@ pub(super) fn run(
                     // Only application-defined errors reach here; no server body
                     // or message contents are included in RPC/runtime diagnostics.
                     println!("Encrypted preview attempt {failed} failed: {error:#}");
-                    if api.rt.is_poisoned() {
-                        api.reinitialize(wasm)?;
-                    }
                 }
             }
             if failed >= 5 {

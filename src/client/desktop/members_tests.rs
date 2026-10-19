@@ -1,5 +1,6 @@
-use super::test_client::{Reply, client};
 use super::*;
+
+type Reply = Box<dyn FnOnce(Value) -> (u16, Value)>;
 
 fn chats(ids: Vec<String>) -> (&'static str, Reply) {
     (
@@ -41,13 +42,13 @@ fn contacts(count: usize, absent: &'static str) -> (&'static str, Reply) {
 
 #[test]
 fn batches_members_at_100() {
-    let (mut client, root, worker) = client(vec![
+    let mut rpc = rpc(vec![
         chats((0..201).map(|i| format!("u{i:04}")).collect()),
         contacts(100, ""),
         contacts(100, ""),
         contacts(2, ""),
     ]);
-    let (members, failed) = client.members("group").unwrap();
+    let (members, failed) = load_members("group", "uself", &mut rpc).unwrap();
     assert!(!failed);
     assert_eq!(members.len(), 202);
     assert_eq!(members.iter().filter(|m| m.is_self).count(), 1);
@@ -57,14 +58,12 @@ fn batches_members_at_100() {
             .filter(|m| !m.is_self)
             .all(|m| m.contact.avatar.is_some())
     );
-    worker.join().unwrap();
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
 fn failed_member_lookup_can_be_retried_without_hiding_members() {
     let ids = vec!["uknown".into(), "uabsent".into(), "ufailed".into()];
-    let (mut client, root, worker) = client(vec![
+    let mut rpc = rpc(vec![
         chats(ids.clone()),
         (
             "getContactsV2",
@@ -73,10 +72,10 @@ fn failed_member_lookup_can_be_retried_without_hiding_members() {
         chats(ids),
         contacts(4, "uabsent"),
     ]);
-    let (members, failed) = client.members("group").unwrap();
+    let (members, failed) = load_members("group", "uself", &mut rpc).unwrap();
     assert!(failed);
     assert_eq!(members.len(), 4);
-    let (members, failed) = client.members("group").unwrap();
+    let (members, failed) = load_members("group", "uself", &mut rpc).unwrap();
     assert!(!failed);
     assert_eq!(
         members
@@ -94,6 +93,18 @@ fn failed_member_lookup_can_be_retried_without_hiding_members() {
             .count(),
         1
     );
-    worker.join().unwrap();
-    fs::remove_dir_all(root).unwrap();
+}
+
+fn rpc(steps: Vec<(&'static str, Reply)>) -> impl FnMut(&str, Value) -> Result<Value> {
+    let mut steps = steps.into_iter();
+    move |method, args| {
+        let (expected, reply) = steps.next().expect("unexpected RPC");
+        assert_eq!(method, expected);
+        let (status, data) = reply(args);
+        if status == 200 {
+            Ok(data)
+        } else {
+            Err(Error::Server(status.into()).into())
+        }
+    }
 }

@@ -4,24 +4,6 @@ use std::io::{BufRead, BufReader, Read};
 
 pub(super) type Reply = Box<dyn FnOnce(Value) -> (u16, Value) + Send>;
 
-pub(super) fn server(
-    steps: Vec<(&'static str, Reply)>,
-) -> (http::Transport, std::thread::JoinHandle<()>) {
-    server_responses(
-        steps
-            .into_iter()
-            .map(|(method, reply)| {
-                (
-                    method,
-                    Box::new(move |args| {
-                        let (status, data) = reply(args);
-                        (status, json!({"code":0,"data":data}))
-                    }) as Reply,
-                )
-            })
-            .collect(),
-    )
-}
 pub(super) fn server_responses(
     steps: Vec<(&'static str, Reply)>,
 ) -> (http::Transport, std::thread::JoinHandle<()>) {
@@ -54,32 +36,15 @@ pub(super) fn server_responses(
     })
 }
 
-pub(super) fn client(
-    steps: Vec<(&'static str, Reply)>,
-) -> (Client, PathBuf, std::thread::JoinHandle<()>) {
-    let (transport, worker) = server(steps);
-    let (client, root) = client_with_transport(transport);
-    (client, root, worker)
-}
-pub(super) fn client_with_transport(transport: http::Transport) -> (Client, PathBuf) {
+pub(super) fn client(api: Api) -> (Client, PathBuf) {
     static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(format!(
-        "target/p5-member-tests/{}-{}",
+        "target/crypto-send-tests/{}-{}",
         std::process::id(),
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     ));
     let client = Client {
-        api: Api {
-            rt: super::super::RuntimeSlot(None),
-            signing_key: None,
-            own_keys: HashMap::new(),
-            http: transport,
-            synthetic_signature: true,
-            key_cache: HashMap::new(),
-            channels: HashMap::new(),
-            channel_tick: 0,
-        },
-        wasm: vec![],
+        api,
         stream_access: Arc::new(std::sync::RwLock::new("synthetic".into())),
         state: json!({"token_v3_issue_result":{"accessToken":"synthetic"}}),
         my_mid: "uself".into(),
