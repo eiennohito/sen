@@ -558,7 +558,7 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
     app.select("alice");
     let key = app.body_key("react here");
     let anchor = format!("{:?}", app.state.window_anchor);
-    let unread = app.state.chats[&ChatId("alice".into())].chat.unread_count;
+    let unread = app.state.chats[&ChatId("alice".into())].unread_count;
     for curr in [
         Some(json!({"predefinedReactionType":2})),
         Some(json!({"predefinedReactionType":4})),
@@ -585,7 +585,7 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
         );
         assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
         assert_eq!(
-            app.state.chats[&ChatId("alice".into())].chat.unread_count,
+            app.state.chats[&ChatId("alice".into())].unread_count,
             unread
         );
     }
@@ -609,7 +609,7 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
     assert_eq!(app.notifications, 0);
     assert_eq!(format!("{:?}", app.state.window_anchor), anchor);
     assert_eq!(
-        app.state.chats[&ChatId("alice".into())].chat.unread_count,
+        app.state.chats[&ChatId("alice".into())].unread_count,
         unread
     );
 }
@@ -904,11 +904,10 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         .expect("profile RPC entered and blocked");
     let mut state = AppState::default();
     state.members.push(line::store::Member {
-        resolved: true,
         contact: line::store::Friend {
             profile: Default::default(),
             id: "old".into(),
-            name: "Old chat".into(),
+            name: Some("Old chat".into()),
             status: String::new(),
             group: false,
             avatar: None,
@@ -1253,13 +1252,13 @@ fn rename_contact_failure_then_success_updates_the_store_page() {
         Failure::Bug("decode".into()),
     );
     profile_action(&mut app, action.clone());
-    assert_eq!(app.state.contacts["alice"].name, "葵");
+    assert_eq!(app.state.contacts["alice"].name.as_deref(), Some("葵"));
     assert_eq!(
         app.state.action_error,
         Some(line::engine::ProfileFailure::Rename)
     );
     profile_action(&mut app, action);
-    assert_eq!(app.state.contacts["alice"].name, "Aoi 🌿");
+    assert_eq!(app.state.contacts["alice"].name.as_deref(), Some("Aoi 🌿"));
     assert_eq!(
         app.state.contacts["alice"].profile.original_name.as_deref(),
         Some("葵")
@@ -1395,7 +1394,7 @@ fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
     for kind in [4, 49] {
         let mut source = fake.clone();
         let mut rows = source.friends().unwrap();
-        rows[0].name = format!("Changed {kind}");
+        rows[0].name = Some(format!("Changed {kind}"));
         rows[0].profile = line::store::ContactProfile {
             relation: Some(0),
             ..Default::default()
@@ -1405,7 +1404,7 @@ fn traced_contact_and_chat_operations_refresh_the_affected_identity() {
         app.until(|s| {
             s.contacts
                 .get("alice")
-                .is_some_and(|f| f.name == format!("Changed {kind}"))
+                .is_some_and(|f| f.name == Some(format!("Changed {kind}")))
         });
     }
     let chat = ChatId("weekend".into());
@@ -1525,7 +1524,7 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
     let fake = FakeBackend::canned();
     fake.set_friends(vec![Friend {
         id: "new-friend".into(),
-        name: "New friend".into(),
+        name: Some("New friend".into()),
         ..Default::default()
     }]);
     fake.echo_first(true);

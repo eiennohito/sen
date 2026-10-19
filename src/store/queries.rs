@@ -80,29 +80,23 @@ fn decode_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatInput> {
         last_message_id: r.get(7)?,
         last_message_ms: r.get(8)?,
         server_unread: r.get(9)?,
-        unread_count: 0,
         unread_stale: r.get(10)?,
         last_read_server_id: r.get(11)?,
         list_rank: r.get(12)?,
     })
 }
-fn decode_chat_with_unread(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatInput> {
-    let mut chat = decode_chat(r)?;
-    chat.unread_count = unread(&decode_unread(r, &chat, 13)?);
-    Ok(chat)
-}
 fn chats(conn: &Connection) -> Result<Vec<ChatInput>> {
-    let mut stmt = conn.prepare(&format!("{CHAT_SELECT}, {UNREAD_COLUMNS} FROM chat c"))?;
+    let mut stmt = conn.prepare(&format!("{CHAT_SELECT} FROM chat c"))?;
     Ok(stmt
-        .query_map([], decode_chat_with_unread)?
+        .query_map([], decode_chat)?
         .collect::<std::result::Result<Vec<_>, _>>()?)
 }
 fn chat_record(conn: &Connection, id: &ChatId) -> Result<Option<ChatInput>> {
     Ok(conn
         .query_row(
-            &format!("{CHAT_SELECT}, {UNREAD_COLUMNS} FROM chat c WHERE c.chat_id=?"),
+            &format!("{CHAT_SELECT} FROM chat c WHERE c.chat_id=?"),
             [&id.0],
-            decode_chat_with_unread,
+            decode_chat,
         )
         .optional()?)
 }
@@ -146,12 +140,13 @@ impl Store {
     }
 
     pub fn unread_anchor(&self, chat: &ChatId) -> Result<Option<StoredMessage>> {
-        let Some(c) = self.chat(chat)? else {
+        let Some(item) = self.chat_rows(1, 0, Some(chat), true)?.pop() else {
             return Ok(None);
         };
-        let rows = if c.unread_count == 0 {
+        let count = item.unread_count;
+        let rows = if count == 0 {
             vec![]
-        } else if let Some(id) = c.last_read_server_id {
+        } else if let Some(id) = item.chat.last_read_server_id {
             select_rows(
                 &self.conn,
                 "WHERE chat_id=?1 AND outgoing=0 AND server_id IS NOT NULL AND sort_id>?2 ORDER BY sort_ts,sort_id LIMIT 1",
@@ -161,7 +156,7 @@ impl Store {
             select_rows(
                 &self.conn,
                 "WHERE chat_id=?1 AND outgoing=0 AND server_id IS NOT NULL ORDER BY sort_ts DESC,sort_id DESC LIMIT 1 OFFSET ?2",
-                params![chat.0, c.unread_count - 1],
+                params![chat.0, count - 1],
             )?
         };
         Ok(rows.into_iter().next())
@@ -280,16 +275,17 @@ impl Store {
             .any(|s| (s.lo < *before || s.start) && *before <= s.hi))
     }
     pub fn chat_list(&self, limit: usize, offset: usize) -> Result<Vec<ChatListItem>> {
-        self.chat_rows(limit, offset, None)
+        self.chat_rows(limit, offset, None, false)
     }
     pub fn chat_item(&self, id: &ChatId) -> Result<Option<ChatListItem>> {
-        Ok(self.chat_rows(1, 0, Some(id))?.pop())
+        Ok(self.chat_rows(1, 0, Some(id), false)?.pop())
     }
     fn chat_rows(
         &self,
         limit: usize,
         offset: usize,
         id: Option<&ChatId>,
+        include_removed: bool,
     ) -> Result<Vec<ChatListItem>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,c.muted,c.left,c.last_message_id,
@@ -305,16 +301,22 @@ impl Store {
              LEFT JOIN message m ON m.key=(SELECT key FROM message WHERE chat_id=c.chat_id
                  ORDER BY sort_ts DESC,sort_id DESC LIMIT 1)
              LEFT JOIN draft d ON d.chat_id=c.chat_id
-             WHERE c.removed=0 AND (?3 IS NULL OR c.chat_id=?3)
+             WHERE (c.removed=0 OR ?4) AND (?3 IS NULL OR c.chat_id=?3)
              ORDER BY activity DESC,c.list_rank,c.chat_id LIMIT ?1 OFFSET ?2",
         ))?;
         let rows = stmt
             .query_map(
-                params![sql_limit(limit), sql_limit(offset), id.map(|i| &i.0)],
+                params![
+                    sql_limit(limit),
+                    sql_limit(offset),
+                    id.map(|i| &i.0),
+                    include_removed
+                ],
                 |r| {
-                    let mut chat = decode_chat(r)?;
-                    chat.unread_count = unread(&decode_unread(r, &chat, 38)?);
+                    let chat = decode_chat(r)?;
+                    let unread_count = unread(&decode_unread(r, &chat, 38)?);
                     Ok(ChatListItem {
+                        unread_count,
                         chat,
                         preview: if r.get::<_, Option<i64>>(13)?.is_some() {
                             Some(super::messages::decode_at(r, 13)?)
@@ -562,7 +564,9 @@ const CONTACT_COLUMNS: &str = "mid,name,status,is_group,avatar,member_count,orig
 fn decode_contact(r: &rusqlite::Row<'_>) -> rusqlite::Result<Friend> {
     Ok(Friend {
         id: r.get(0)?,
-        name: r.get(1)?,
+        name: r
+            .get::<_, String>(1)
+            .map(|name| if name.is_empty() { None } else { Some(name) })?,
         status: r.get(2)?,
         group: r.get(3)?,
         avatar: r
@@ -599,7 +603,7 @@ fn upsert_contact(tx: &Connection, row: &Friend) -> Result<()> {
         ),
         params![
             row.id,
-            row.name,
+            row.name.as_deref().unwrap_or_default(),
             row.status,
             row.group,
             row.avatar.as_ref().map(serde_json::to_string).transpose()?,
@@ -642,7 +646,7 @@ impl Store {
                     |r| r.get::<_, bool>(0),
                 )?;
                 if !exists {
-                    if row.resolved {
+                    if row.contact.name.is_some() {
                         upsert_contact(tx, &row.contact)?;
                     } else {
                         continue;
@@ -682,11 +686,7 @@ impl Store {
                     decode_contact,
                 )?;
                 contact.profile.invited = invited;
-                Ok(Member {
-                    contact,
-                    is_self,
-                    resolved: true,
-                })
+                Ok(Member { contact, is_self })
             })
             .collect()
     }

@@ -78,10 +78,7 @@ fn failed_member_lookup_reports_network_failure_and_can_be_retried() {
     );
     let members = load_members("group", "uself", &mut rpc).unwrap();
     assert_eq!(
-        members
-            .iter()
-            .filter(|m| m.contact.name == "Unknown member")
-            .count(),
+        members.iter().filter(|m| m.contact.name.is_none()).count(),
         1
     );
 }

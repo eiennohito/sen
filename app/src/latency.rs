@@ -131,7 +131,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
         .map(|i| line::store::Friend {
             profile: Default::default(),
             id: format!("contact-{i}"),
-            name: format!("Contact {i}"),
+            name: Some(format!("Contact {i}")),
             status: "Available".into(),
             group: false,
             avatar: None,
@@ -150,7 +150,6 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
                 .iter()
                 .cloned()
                 .map(|contact| line::store::Member {
-                    resolved: true,
                     contact,
                     is_self: false,
                 })

@@ -33,9 +33,22 @@ pub(crate) fn install(ui: &AppWindow, actions: Runtime) {
     settings::install(ui, &actions);
     viewer::install(ui, &actions);
     focus::install(ui, &actions);
-    let link_actions = actions.clone();
-    ui.global::<State>().on_open_link(move |url| {
-        link_actions.push(move |_| links::open(url.to_string()));
+    global_callback!(ui, actions, on_open_link, |ui, _d, url| {
+        let weak = ui.as_weak();
+        let chat = ui.global::<State>().get_chat_id();
+        std::thread::spawn(move || {
+            let result = links::open(&url);
+            let _ = weak.upgrade_in_event_loop(move |ui| {
+                let g = ui.global::<State>();
+                if g.get_chat_id() == chat {
+                    if result.is_err() {
+                        g.set_link_feedback(text::LINK_FAILURE.into());
+                    } else if g.get_link_feedback() == text::LINK_FAILURE {
+                        g.set_link_feedback("".into());
+                    }
+                }
+            });
+        });
     });
     rich_content::install(ui);
 }

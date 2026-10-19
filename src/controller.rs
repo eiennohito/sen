@@ -96,6 +96,58 @@ impl Default for AppState {
     }
 }
 impl AppState {
+    pub fn contact(&self, mid: &str) -> Option<&Friend> {
+        self.contacts
+            .get(mid)
+            .or_else(|| self.friends.iter().find(|f| f.id == mid))
+            .or_else(|| {
+                self.members
+                    .iter()
+                    .find(|m| m.contact.id == mid)
+                    .map(|m| &m.contact)
+            })
+    }
+    pub fn reply_target(&self, message_id: &str) -> Option<&StoredMessage> {
+        self.messages
+            .values()
+            .find(|m| {
+                m.server_id
+                    .as_ref()
+                    .is_some_and(|id| id.as_str() == message_id)
+            })
+            .or_else(|| {
+                ServerId::new(message_id.to_owned())
+                    .ok()
+                    .and_then(|id| self.reply_targets.get(&id))
+            })
+    }
+    pub fn profile_own(&self, mid: &str) -> bool {
+        mid == self.profile.mid
+            || self
+                .members
+                .iter()
+                .any(|m| m.is_self && m.contact.id == mid)
+    }
+    pub fn profile_friend(&self, mid: &str) -> bool {
+        !self.profile_own(mid)
+            && self.contact(mid).is_some_and(|f| {
+                f.profile.account_type == 0
+                    && (f.profile.relation == Some(0)
+                        || (f.profile.relation.is_none()
+                            && self.friends.iter().any(|r| r.id == mid && !r.group)))
+            })
+    }
+    pub fn profile_addable(&self, mid: &str) -> bool {
+        !self.profile_own(mid)
+            && !self.profile_friend(mid)
+            && self
+                .contact(mid)
+                .is_some_and(|f| f.profile.account_type == 0)
+    }
+    pub fn profile_available(&self, mid: &str) -> bool {
+        !self.profile_own(mid)
+            && (self.profile_friend(mid) || self.chats.contains_key(&ChatId(mid.into())))
+    }
     pub fn push_detail(&mut self, page: DetailPage, opener: String) {
         self.detail.push(DetailEntry { page, opener });
         self.panel = Panel::Detail;
@@ -372,6 +424,35 @@ impl AppState {
                 .selected
                 .as_ref()
                 .and_then(|id| self.chats.get(id))
-                .is_some_and(|c| c.chat.unread_count > 0)
+                .is_some_and(|c| c.unread_count > 0)
+    }
+}
+
+#[cfg(test)]
+mod content_model_tests {
+    use super::*;
+
+    #[test]
+    fn profile_rules_ignore_names_and_use_contact_precedence() {
+        let mut state = AppState::default();
+        let friend = Friend {
+            id: "member".into(),
+            name: None,
+            ..Default::default()
+        };
+        state.friends.push(friend.clone());
+        assert!(state.profile_friend("member"));
+        assert!(!state.profile_addable("member"));
+        assert!(state.profile_available("member"));
+        let mut contact = friend;
+        contact.profile.relation = Some(2);
+        state.contacts.insert(contact.id.clone(), contact);
+        assert!(!state.profile_friend("member"));
+        assert!(state.profile_addable("member"));
+        assert!(!state.profile_available("member"));
+        let contact = state.contacts.get_mut("member").unwrap();
+        contact.name = Some("Official".into());
+        contact.profile.account_type = 1;
+        assert!(!state.profile_addable("member"));
     }
 }

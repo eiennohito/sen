@@ -186,7 +186,7 @@ fn optional_number<'de, D: serde::Deserializer<'de>>(
 pub struct Friend {
     pub profile: ContactProfile,
     pub id: String,
-    pub name: String,
+    pub name: Option<String>,
     pub status: String,
     pub group: bool,
     pub avatar: Option<Asset>,
@@ -196,7 +196,6 @@ pub struct Friend {
 pub struct Member {
     pub contact: Friend,
     pub is_self: bool,
-    pub resolved: bool,
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -243,6 +242,12 @@ impl Default for DesktopPrefs {
 /// Stable chat identity, independent of client transport types.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ChatId(pub String);
+impl ChatId {
+    pub fn is_room(&self) -> bool {
+        self.0.starts_with('r')
+    }
+}
+
 /// Permanent row identity, including across send confirmation and retries.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Key(pub i64);
@@ -353,6 +358,16 @@ pub struct StoredMessage {
     pub reply: Option<Box<ReplyReference>>,
     pub skip_badge: bool,
 }
+impl StoredMessage {
+    pub fn can_react(&self) -> bool {
+        self.server_id.is_some()
+            && matches!(self.delivery, Delivery::Sent | Delivery::Read)
+            && !matches!(self.body, Content::System { .. } | Content::Withdrawn)
+    }
+    pub fn can_unsend(&self) -> bool {
+        self.outgoing && self.can_react()
+    }
+}
 /// Server chat metadata; last-message hints never replace a stored preview.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ChatInput {
@@ -365,9 +380,7 @@ pub struct ChatInput {
     pub left: bool,
     pub last_message_id: Option<ServerId>,
     pub last_message_ms: Option<i64>,
-    /// Raw server count, independent of the computed unread_count.
     pub server_unread: u32,
-    pub unread_count: u32,
     pub unread_stale: bool,
     pub last_read_server_id: Option<ServerId>,
     pub list_rank: i64,
@@ -411,6 +424,7 @@ pub struct Window {
 /// Visible chat with preview taken exclusively from its newest stored row.
 #[derive(Clone, Debug)]
 pub struct ChatListItem {
+    pub unread_count: u32,
     pub chat: ChatInput,
     pub preview: Option<StoredMessage>,
     pub activity_ms: i64,

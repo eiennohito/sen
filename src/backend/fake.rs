@@ -538,7 +538,7 @@ impl Backend for FakeBackend {
                     ..Default::default()
                 },
                 id: c.id.0.clone(),
-                name: c.title.clone(),
+                name: Some(c.title.clone()),
                 status: String::new(),
                 group: c.is_group,
                 avatar: c.avatar.clone(),
@@ -555,7 +555,6 @@ impl Backend for FakeBackend {
             .friends()?
             .into_iter()
             .map(|contact| crate::store::Member {
-                resolved: true,
                 contact,
                 is_self: false,
             })
@@ -651,7 +650,7 @@ impl Backend for FakeBackend {
                             ..Default::default()
                         },
                         id: mid.into(),
-                        name: c.title.clone(),
+                        name: Some(c.title.clone()),
                         avatar: c.avatar.clone(),
                         group: c.is_group,
                         member_count: c.member_count.map(|n| n as usize),
@@ -679,15 +678,11 @@ impl Backend for FakeBackend {
                     return Ok(());
                 };
                 if matches!(action, ProfileAction::Rename { .. }) {
-                    let original = f
-                        .profile
-                        .original_name
-                        .clone()
-                        .unwrap_or_else(|| f.name.clone());
+                    let original = f.profile.original_name.clone().or_else(|| f.name.clone());
                     f.profile.relation = Some(0);
-                    f.profile.original_name = Some(original);
+                    f.profile.original_name = original;
                     f.profile.overridden_name = Some(name.clone());
-                    f.name = name.clone();
+                    f.name = Some(name.clone());
                 } else {
                     f.profile.relation = Some(0);
                 }
@@ -769,7 +764,7 @@ impl Backend for FakeBackend {
         if let Some(f) = friend {
             let c = ChatInput {
                 id: chat.clone(),
-                title: f.name,
+                title: f.name.unwrap_or_default(),
                 is_group: f.group,
                 member_count: f.member_count.map(|n| n as u32),
                 avatar: f.avatar,

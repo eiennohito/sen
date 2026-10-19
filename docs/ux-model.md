@@ -177,7 +177,7 @@ gaps):
 | --- | --- | --- |
 | Friend | Chat, Rename | Rename opens a one-field dialog (`updateContactSetting`). Favourite is shown read-only (star after the name) until its write is traced. |
 | Non-friend member | Add friend | `addFriendByMid`. No Chat, as in LINE. A fraud notice from `getTargetProfileNotice` sits above the actions as an inline notice. Block and Report are absent until traced. |
-| Unknown member (no contact data) | none | Name "Unknown member", initial avatar, no status. |
+| Unresolved member (no contact data) | none | Uses the member display fallback, initial avatar, no status. |
 | Own | none | Read-only: name, status and avatar. Editing is out of scope. |
 | Official account | Chat when a chat exists | No Add friend until traced for OAs. |
 

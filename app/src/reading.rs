@@ -155,10 +155,7 @@ pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) 
             exposed
         };
         if let Some(id) = marker
-            && state
-                .chats
-                .get(&chat)
-                .is_some_and(|c| c.chat.unread_count > 0)
+            && state.chats.get(&chat).is_some_and(|c| c.unread_count > 0)
             && reading.exposed.get(&chat) != Some(&id)
         {
             reading.exposed.insert(chat.clone(), id.clone());
@@ -272,10 +269,7 @@ mod tests {
             while state.connection != Connection::Online
                 || !state.reaches_end
                 || state.messages.is_empty()
-                || state
-                    .chats
-                    .get(&chat)
-                    .is_none_or(|c| c.chat.unread_count == 0)
+                || state.chats.get(&chat).is_none_or(|c| c.unread_count == 0)
             {
                 state.apply(
                     worker
@@ -310,7 +304,7 @@ mod tests {
             for intent in intents {
                 worker.sender.send(intent);
             }
-            while state.chats[&chat].chat.unread_count != 0 {
+            while state.chats[&chat].unread_count != 0 {
                 state.apply(
                     worker
                         .deltas
@@ -338,10 +332,10 @@ mod tests {
         state.chats.insert(
             chat.clone(),
             ChatListItem {
+                unread_count: 2,
                 chat: ChatInput {
                     id: chat.clone(),
                     server_unread: 2,
-                    unread_count: 2,
                     ..Default::default()
                 },
                 preview: None,

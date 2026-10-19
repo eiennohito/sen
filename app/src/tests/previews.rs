@@ -1,36 +1,44 @@
 use super::*;
 
-fn emoji_message() -> account::MessageView {
+fn emoji_message() -> StoredMessage {
     let body = "日😀[笑]\n again [笑] end";
     let mut m = message("preview-emoji", body);
     m.outgoing = true;
-    m.emoji = body
+    let spans = body
         .match_indices("[笑]")
-        .map(|(start, text)| account::EmojiView {
-            span: line::store::InlineEmoji {
-                start_utf16: body[..start].encode_utf16().count(),
-                end_utf16: body[..start + text.len()].encode_utf16().count(),
-                start_byte: start,
-                end_byte: start + text.len(),
-                fallback: text.into(),
-                product_id: "synthetic".into(),
-                sticon_id: "smile".into(),
-                version: None,
-                animated: false,
-            },
-            image_key: "emoji-key".into(),
+        .map(|(start, text)| line::store::InlineEmoji {
+            start_utf16: body[..start].encode_utf16().count(),
+            end_utf16: body[..start + text.len()].encode_utf16().count(),
+            start_byte: start,
+            end_byte: start + text.len(),
+            fallback: text.into(),
+            product_id: "synthetic".into(),
+            sticon_id: "smile".into(),
+            version: None,
+            animated: false,
         })
         .collect();
+    m.body = Content::Text {
+        text: body.into(),
+        spans,
+    };
     m
 }
 
 #[test]
 fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
     let view = emoji_message();
-    let mut message = message_row(emoji_message());
+    let mut message = message_row(&emoji_message(), None);
     links::decorate_message(&mut message, "葵");
     let mut row = ChatRow::default();
-    preview::set(&mut row, &view, &HashMap::new(), 15);
+    preview::set(
+        &mut row,
+        &view.body,
+        view.outgoing,
+        None,
+        &HashMap::new(),
+        15,
+    );
     assert_eq!(row.preview, "日😀[笑] again [笑] end");
     assert!(row.outgoing_preview);
     assert!(message.accessible_label.ends_with(message.body.as_str()));
@@ -53,7 +61,7 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
             .filter(|r| r.emoji)
             .all(|r| !r.has_picture && r.text == "[笑]")
     );
-    assert_eq!(message_text(&emoji_message()), message.body.as_str());
+    assert_eq!(message_text(&emoji_message().body).1, message.body.as_str());
 }
 
 #[test]
@@ -93,27 +101,29 @@ fn preview_elision_keeps_images_atomic_and_text_on_grapheme_boundaries() {
 
 #[test]
 fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
-    for kind in [1, 2, 7, 14] {
-        let mut m = message("media", "caption");
-        m.rich.content_type = kind;
-        if kind == 1 {
-            m.rich.album_count = Some(4);
-            m.rich.caption = Some("walk".into());
+    for (content, text, _) in label_cases() {
+        let kind = kind_label(&content).0;
+        if !matches!(
+            kind,
+            MessageKind::Photo | MessageKind::Video | MessageKind::Sticker | MessageKind::File
+        ) {
+            continue;
         }
-        m.image_key = if kind == 14 { "" } else { "media-key" }.into();
-        let text = match kind {
-            1 => "Photo",
-            2 => "Video",
-            7 => "Sticker",
-            14 => "File",
-            _ => unreachable!(),
-        };
+        let mut m = message("media", "");
+        m.body = content;
+        let asset = line::client::desktop::assets::Asset::avatar("/synthetic").unwrap();
+        let media_key = asset.key();
+        match &mut m.body {
+            Content::Photo { asset: a, .. } | Content::Sticker { asset: a, .. } => *a = Some(asset),
+            Content::Video { preview, .. } => *preview = Some(asset),
+            _ => {}
+        }
         let mut images = HashMap::new();
         let view = m;
         let mut row = ChatRow::default();
-        preview::set(&mut row, &view, &images, 15);
+        preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
         assert_eq!(row.preview, text);
-        if kind == 14 {
+        if kind == MessageKind::File {
             assert_eq!(row.preview_runs.row_count(), 0);
             continue;
         }
@@ -126,15 +136,105 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
             1,
             1,
         ));
-        images.insert("media-key".into(), picture);
-        preview::set(&mut row, &view, &images, 15);
+        images.insert(media_key.clone(), picture);
+        preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
         assert!(
             preview::layout(&row.preview_runs, "", 100., 1., measure)
                 .iter()
                 .any(|r| r.thumbnail)
         );
-        images.remove("media-key");
-        preview::set(&mut row, &view, &images, 15);
+        images.remove(&media_key);
+        preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
         assert_eq!(row.preview, text);
+    }
+}
+
+fn label_cases() -> [(Content, &'static str, &'static str); 9] {
+    [
+        (
+            Content::Photo {
+                asset: None,
+                size: None,
+                album_count: Some(4),
+                caption: Some("walk".into()),
+            },
+            "Photo",
+            "Album · 4 items · walk",
+        ),
+        (
+            Content::Sticker {
+                pkg: "pkg".into(),
+                id: "id".into(),
+                ver: None,
+                asset: None,
+                text: Some("Hello".into()),
+            },
+            "Sticker",
+            "Sticker · Hello",
+        ),
+        (
+            Content::File {
+                name: Some("notes.txt".into()),
+                size: None,
+                asset: None,
+            },
+            "File · notes.txt",
+            "File · notes.txt",
+        ),
+        (
+            Content::Contact {
+                mid: "mid".into(),
+                name: Some("Alice".into()),
+            },
+            "Contact · Alice",
+            "Contact · Alice",
+        ),
+        (
+            Content::Voice {
+                duration: Some(1200),
+                asset: None,
+            },
+            "Voice message",
+            "Voice message",
+        ),
+        (
+            Content::Undecryptable,
+            "Couldn't decrypt this message",
+            "Couldn't decrypt this message",
+        ),
+        (
+            Content::Unknown { content_type: 7 },
+            "This message type isn't supported yet",
+            "This message type isn't supported yet",
+        ),
+        (Content::Withdrawn, "Message unsent", "Message unsent"),
+        (
+            Content::Video {
+                duration: None,
+                asset: None,
+                preview: None,
+                album_count: None,
+                caption: None,
+            },
+            "Video",
+            "Video",
+        ),
+    ]
+}
+
+#[test]
+fn content_labels_agree_across_rows_previews_and_accessibility() {
+    for (content, compact, full) in label_cases() {
+        let mut m = message("label", "");
+        m.body = content;
+        let mut chat = ChatRow::default();
+        preview::set(&mut chat, &m.body, m.outgoing, None, &HashMap::new(), 15);
+        let mut row = message_row(&m, None);
+        links::decorate_message(&mut row, "Alice");
+        assert_eq!(kind_label(&m.body).1, compact);
+        assert_eq!(message_text(&m.body).1, full);
+        assert_eq!(row.body, full);
+        assert_eq!(chat.preview, compact);
+        assert!(row.accessible_label.ends_with(full));
     }
 }

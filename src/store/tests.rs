@@ -383,10 +383,10 @@ fn unread_read_markers_and_partial_acknowledgements() {
     )
     .unwrap();
     s.increment_unread(&chat()).unwrap();
-    assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 10);
+    assert_eq!(s.chat_list(1, 0).unwrap()[0].unread_count, 10);
     s.mark_read(&chat(), id(2)).unwrap();
     let c = s.chat_list(1, 0).unwrap()[0].chat.clone();
-    assert_eq!(c.unread_count, 8);
+    assert_eq!(s.chat_item(&chat()).unwrap().unwrap().unread_count, 8);
     assert!(!c.unread_stale);
     s.upsert_details(&[ChatInput {
         id: chat(),
@@ -398,7 +398,7 @@ fn unread_read_markers_and_partial_acknowledgements() {
     .unwrap();
     let details = s.chat(&chat()).unwrap().unwrap();
     assert_eq!(details.server_unread, 10);
-    assert_eq!(details.unread_count, 8);
+    assert_eq!(s.chat_item(&chat()).unwrap().unwrap().unread_count, 8);
     assert_eq!(details.last_read_server_id, Some(id(2)));
     assert!(s.pending_reads().unwrap().contains(&chat()));
     s.mark_read(&chat(), id(1)).unwrap();
@@ -413,13 +413,13 @@ fn unread_read_markers_and_partial_acknowledgements() {
         ..Default::default()
     };
     s.upsert_chats(&[server.clone()], false).unwrap();
-    assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 8);
+    assert_eq!(s.chat_list(1, 0).unwrap()[0].unread_count, 8);
     s.confirm_read(&chat(), &id(2)).unwrap();
     server.server_unread = 8;
     s.upsert_chats(&[server], false).unwrap();
-    assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 8);
+    assert_eq!(s.chat_list(1, 0).unwrap()[0].unread_count, 8);
     s.mark_read(&chat(), id(3)).unwrap();
-    assert_eq!(s.chat_list(1, 0).unwrap()[0].chat.unread_count, 7);
+    assert_eq!(s.chat_list(1, 0).unwrap()[0].unread_count, 7);
 }
 #[test]
 fn drafts_preferences_and_account() {
@@ -677,11 +677,10 @@ fn member_cache_preserves_backend_order_and_contact_names() {
         (
             id.into(),
             Member {
-                resolved: true,
                 is_self: id == "self",
                 contact: Friend {
                     id: id.into(),
-                    name: name.into(),
+                    name: Some(name.into()),
                     ..Default::default()
                 },
             },
@@ -789,9 +788,13 @@ fn new_message_before_read_ack_counts_from_zero() {
     .unwrap();
     let c = s.chat_list(1, 0).unwrap().remove(0).chat;
     assert_eq!(c.server_unread, 1);
-    assert_eq!(c.unread_count, 1);
+    assert_eq!(s.chat_item(&chat()).unwrap().unwrap().unread_count, 1);
     s.confirm_read(&chat(), &id(20)).unwrap();
-    assert_eq!(s.chat(&chat()).unwrap().unwrap().unread_count, 1);
+    assert_eq!(s.chat_item(&chat()).unwrap().unwrap().unread_count, 1);
+    let anchor = s.unread_anchor(&chat()).unwrap().unwrap();
+    s.remove_chat(&chat()).unwrap();
+    assert!(s.chat_item(&chat()).unwrap().is_none());
+    assert_eq!(s.unread_anchor(&chat()).unwrap(), Some(anchor));
 }
 
 #[test]

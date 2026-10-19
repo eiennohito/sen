@@ -131,7 +131,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         } else {
             d.state
                 .push_detail(DetailPage::Profile(id.clone()), "profile".into());
-            if id != "self" {
+            if !d.state.profile_own(&id) {
                 d.sender.send(Intent::Contact(id));
             }
         }

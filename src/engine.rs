@@ -1625,10 +1625,10 @@ impl Engine {
                                         let mut row = raw;
                                         if matches!(&action, ProfileAction::Rename { .. }) {
                                             if row.profile.original_name.is_none() {
-                                                row.profile.original_name = Some(row.name.clone());
+                                                row.profile.original_name = row.name.clone();
                                             }
                                             row.profile.overridden_name = Some(name.clone());
-                                            row.name = name.clone();
+                                            row.name = Some(name.clone());
                                         } else {
                                             row.profile.relation = Some(0);
                                         }
@@ -2531,7 +2531,7 @@ impl Engine {
                             Ok(mut rows) => {
                                 let existing = engine.store.contacts()?;
                                 for member in &mut rows {
-                                    if !member.resolved
+                                    if member.contact.name.is_none()
                                         && let Some(old) =
                                             existing.iter().find(|c| c.id == member.contact.id)
                                     {
@@ -2542,7 +2542,7 @@ impl Engine {
                                 }
                                 let contacts = rows
                                     .iter()
-                                    .filter(|m| !m.is_self && m.resolved)
+                                    .filter(|m| !m.is_self && m.contact.name.is_some())
                                     .filter_map(|m| {
                                         let mut contact = m.contact.clone();
                                         contact.profile.invited = false;

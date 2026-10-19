@@ -93,7 +93,7 @@ impl Desktop {
                 self.state
                     .chats
                     .values()
-                    .filter(|c| c.chat.unread_count > 0)
+                    .filter(|c| c.unread_count > 0)
                     .count() as u64,
             );
         }

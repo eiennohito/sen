@@ -35,6 +35,7 @@ struct MessageInputs {
 #[derive(PartialEq)]
 struct ChatInputs {
     chat: ChatInput,
+    unread_count: u32,
     title: String,
     preview: Option<StoredMessage>,
     system_text: Option<String>,
@@ -81,23 +82,12 @@ impl Presenter {
     }
     pub fn present_compose(&mut self, ui: &AppWindow, state: &AppState) {
         let global = ui.global::<State>();
-        let reply = state.composer_reply.as_ref().and_then(|r| {
-            state
-                .messages
-                .values()
-                .find(|m| {
-                    m.server_id
-                        .as_ref()
-                        .is_some_and(|s| s.as_str() == r.message_id)
-                })
-                .or_else(|| {
-                    ServerId::new(r.message_id.clone())
-                        .ok()
-                        .and_then(|id| state.reply_targets.get(&id))
-                })
-        });
+        let reply = state
+            .composer_reply
+            .as_ref()
+            .and_then(|r| state.reply_target(&r.message_id));
         let mut quote = reply
-            .map(|m| self.row(m, state))
+            .map(|m| self.quote(m, state))
             .unwrap_or_else(|| MessageRow {
                 sender_name: "Original message".into(),
                 body: "Original message".into(),
@@ -106,14 +96,6 @@ impl Presenter {
         if let Some(reference) = &state.composer_reply {
             quote.reply_id = reference.message_id.clone().into();
         }
-        if quote.outgoing {
-            quote.sender_name = "You".into();
-        }
-        quote.body = match quote.kind {
-            MessageKind::Photo => "Photo".into(),
-            MessageKind::Sticker => "Sticker".into(),
-            _ => single_line(&quote.body).into(),
-        };
         global.set_composer_reply(quote);
         let selected = global
             .get_new_chat_selected()
@@ -126,8 +108,8 @@ impl Presenter {
             .filter(|f| !f.group && f.id != state.profile.mid)
             .map(|f| ComposeFriend {
                 id: f.id.clone().into(),
-                name: single_line(&f.name).into(),
-                initial: name_initial(&f.name),
+                name: single_line(text::friend_name(f)).into(),
+                initial: name_initial(text::friend_name(f)),
                 avatar: f
                     .avatar
                     .as_ref()
@@ -195,35 +177,32 @@ impl Presenter {
             .unwrap_or_default();
         global.set_sticker_items(ModelRc::new(VecModel::from(items)));
     }
+    fn quote(&self, m: &StoredMessage, state: &AppState) -> MessageRow {
+        let image_key = m.body.image().map(|a| a.key()).unwrap_or_default();
+        let image = self.images.get(&image_key);
+        MessageRow {
+            sender_name: if m.outgoing {
+                "You".into()
+            } else {
+                crate::system_events::name(state, &m.sender_id).into()
+            },
+            sender_id: m.sender_id.clone().into(),
+            body: single_line(&compact_text(m, state)).into(),
+            image_key: image_key.into(),
+            picture: image.cloned().unwrap_or_default(),
+            has_picture: image.is_some(),
+            photo: matches!(m.body, Content::Photo { .. }),
+            sticker: matches!(m.body, Content::Sticker { .. }),
+            ..Default::default()
+        }
+    }
     fn row(&mut self, m: &StoredMessage, state: &AppState) -> MessageRow {
-        let sender = state
-            .contacts
-            .get(&m.sender_id)
-            .or_else(|| state.friends.iter().find(|f| f.id == m.sender_id))
-            .or_else(|| {
-                state
-                    .members
-                    .iter()
-                    .find(|f| f.contact.id == m.sender_id)
-                    .map(|m| &m.contact)
-            })
-            .cloned();
+        let sender = state.contact(&m.sender_id).cloned();
         let system_text = crate::system_events::text(&m.body, state, &m.sender_id);
         let reply = m
             .reply
             .as_ref()
-            .and_then(|r| {
-                state
-                    .reply_targets
-                    .get(&ServerId::new(r.message_id.clone()).ok()?)
-                    .or_else(|| {
-                        state.messages.values().find(|m| {
-                            m.server_id
-                                .as_ref()
-                                .is_some_and(|id| id.as_str() == r.message_id)
-                        })
-                    })
-            })
+            .and_then(|r| state.reply_target(&r.message_id))
             .map(|target| {
                 (
                     target.clone(),
@@ -242,46 +221,31 @@ impl Presenter {
         {
             return row.clone();
         }
-        let mut view = content_view(&m.body);
-        view.rich.system_text = system_text;
-        view.rich.reply = m.reply.as_deref().cloned();
-        view.id = m.key.0.to_string();
-        view.sender_id = m.sender_id.clone();
-        view.sender_name = sender.as_ref().map(|s| s.name.clone()).unwrap_or_else(|| {
-            if m.sender_id.is_empty() {
-                "Unknown sender".into()
-            } else {
-                format!(
-                    "Member · {}",
-                    m.sender_id
-                        .chars()
+        let mut row = message_row(m, system_text.as_deref());
+        row.sender_name = sender
+            .as_ref()
+            .map(|s| text::member_name(s.name.as_deref()).to_owned())
+            .unwrap_or_else(|| {
+                if m.sender_id.is_empty() {
+                    "Unknown sender".into()
+                } else {
+                    let start = m
+                        .sender_id
+                        .char_indices()
                         .rev()
-                        .take(6)
-                        .collect::<String>()
-                        .chars()
-                        .rev()
-                        .collect::<String>()
-                )
-            }
-        });
-        view.sender_key = sender
+                        .nth(5)
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+                    format!("Member · {}", &m.sender_id[start..])
+                }
+            })
+            .into();
+        row.sender_key = sender
             .as_ref()
             .and_then(|s| s.avatar.as_ref())
             .map(|a| a.key())
-            .unwrap_or_default();
-        view.timestamp = m.sort.sort_ts;
-        view.delivered_time = m.sort.sort_ts;
-        view.outgoing = m.outgoing;
-        view.skip_badge = m.skip_badge;
-        if !m.body.is_withdrawn() {
-            view.reactions = reaction_views(&m.reactions);
-        }
-        let mut row = message_row(view);
-        if m.body.is_withdrawn() {
-            row.kind = MessageKind::Withdrawn;
-            row.body = "Message unsent".into();
-            row.image_key = "".into();
-        }
+            .unwrap_or_default()
+            .into();
         row.delivery = match &m.delivery {
             Delivery::Pending => "Sending…",
             Delivery::Sent => "Sent",
@@ -305,9 +269,7 @@ impl Presenter {
                 }
             );
         }
-        row.can_react = m.server_id.is_some()
-            && matches!(m.delivery, Delivery::Sent | Delivery::Read)
-            && !matches!(m.body, Content::System { .. } | Content::Withdrawn);
+        row.can_react = m.can_react();
         row.reaction_count = m.reactions.len() as i32;
         row.own_reaction = m
             .reactions
@@ -321,10 +283,7 @@ impl Presenter {
                 }
             })
             .unwrap_or(0);
-        row.can_unsend = m.outgoing
-            && m.server_id.is_some()
-            && matches!(m.delivery, Delivery::Sent | Delivery::Read)
-            && !matches!(m.body, Content::System { .. } | Content::Withdrawn);
+        row.can_unsend = m.can_unsend();
         row.recoverable = matches!(m.delivery, Delivery::Rejected { .. });
         row.delivery_detail = match &m.delivery {
             Delivery::Rejected { reason } => format!("Not sent: {}", text::rejection(reason)),
@@ -369,22 +328,14 @@ impl Presenter {
                 }
             }
         }
-        if let Some((target, name)) = &inputs.reply {
-            let quoted = content_view(&target.body);
-            row.reply_sender = if target.outgoing {
-                "You".into()
-            } else {
-                name.clone().into()
-            };
-            row.reply_sender_id = target.sender_id.clone().into();
-            row.reply_preview = single_line(&message_text(&quoted)).into();
-            row.reply_image_key = quoted.image_key.into();
-            if matches!(target.body, Content::Photo { .. } | Content::Sticker { .. })
-                && let Some(image) = self.images.get(row.reply_image_key.as_str())
-            {
-                row.reply_picture = image.clone();
-                row.reply_has_picture = true;
-            }
+        if let Some((target, _)) = &inputs.reply {
+            let quoted = self.quote(target, state);
+            row.reply_sender = quoted.sender_name;
+            row.reply_sender_id = quoted.sender_id;
+            row.reply_preview = quoted.body;
+            row.reply_image_key = quoted.image_key;
+            row.reply_picture = quoted.picture;
+            row.reply_has_picture = quoted.has_picture && (quoted.photo || quoted.sticker);
         }
         links::decorate_message(&mut row, "Contact");
         self.rendered.insert(m.key, (inputs, row.clone()));
@@ -397,7 +348,7 @@ impl Presenter {
             .friends
             .iter()
             .filter(|f| {
-                f.name
+                text::friend_name(f)
                     .to_lowercase()
                     .contains(&ui.get_friend_query().to_lowercase())
             })
@@ -414,19 +365,11 @@ impl Presenter {
                     .iter()
                     .filter_map(line::client::desktop::assets::Asset::inline_emoji)
                     .collect::<Vec<_>>();
-                let metadata = spans
-                    .into_iter()
-                    .map(|span| {
-                        let image_key = line::client::desktop::assets::Asset::inline_emoji(&span)
-                            .map(|a| a.key())
-                            .unwrap_or_default();
-                        account::EmojiView { span, image_key }
-                    })
-                    .collect::<Vec<_>>();
+                let metadata = spans.into_iter().map(EmojiView::new).collect::<Vec<_>>();
                 let row = FriendRow {
                     id: f.id.clone().into(),
-                    name: single_line(&f.name).into(),
-                    initial: name_initial(&f.name),
+                    name: single_line(text::friend_name(f)).into(),
+                    initial: name_initial(text::friend_name(f)),
                     status: single_line(&f.status).into(),
                     status_runs: preview::preview_runs(
                         &f.status,
@@ -497,14 +440,16 @@ impl Presenter {
             .into_iter()
             .filter(|m| {
                 let query = ui.get_member_query().to_lowercase();
-                m.contact.name.to_lowercase().contains(&query)
+                text::member_name(m.contact.name.as_deref())
+                    .to_lowercase()
+                    .contains(&query)
                     || m.contact.status.to_lowercase().contains(&query)
                     || (m.is_self && "you".contains(&query))
             })
             .map(|m| MemberRow {
                 id: m.contact.id.clone().into(),
-                name: single_line(&m.contact.name).into(),
-                initial: name_initial(&m.contact.name),
+                name: single_line(text::member_name(m.contact.name.as_deref())).into(),
+                initial: name_initial(text::member_name(m.contact.name.as_deref())),
                 status: single_line(&m.contact.status).into(),
                 is_self: m.is_self,
                 friend: state
@@ -625,44 +570,33 @@ impl Presenter {
                 DetailPage::Members(id) => (id.0.as_str(), 2),
             };
             g.set_detail_page(kind);
-            let own = id == "self"
-                || state.profile.mid == *id
-                || state
-                    .members
-                    .iter()
-                    .any(|m| m.is_self && m.contact.id == id);
-            let f = state
-                .contacts
-                .get(id)
-                .or_else(|| state.friends.iter().find(|f| f.id == id))
-                .or_else(|| {
-                    state
-                        .members
-                        .iter()
-                        .find(|m| m.contact.id == id)
-                        .map(|m| &m.contact)
-                });
+            let room = ChatId(id.into()).is_room();
+            let own = state.profile_own(id);
+            let f = state.contact(id);
             let c = state.chats.get(&ChatId(id.into())).map(|c| &c.chat);
             let name = if own {
                 state.profile.display_name.as_str()
             } else if kind != 0 {
-                c.map(|c| c.title.as_str())
-                    .or_else(|| f.map(|f| f.name.as_str()))
-                    .unwrap_or("Group")
+                text::group_name(
+                    c.map(|c| c.title.as_str())
+                        .filter(|name| !name.is_empty())
+                        .or_else(|| f.and_then(|f| f.name.as_deref())),
+                )
+            } else if let Some(friend) =
+                f.filter(|_| state.friends.iter().any(|friend| friend.id == id))
+            {
+                text::friend_name(friend)
             } else {
-                f.map(|f| f.name.as_str()).unwrap_or("Unknown member")
+                text::member_name(f.and_then(|f| f.name.as_deref()))
             };
             let room_title = state
                 .members
                 .iter()
                 .filter(|m| !m.is_self && !m.contact.profile.invited)
-                .map(|m| m.contact.name.as_str())
+                .map(|m| text::member_name(m.contact.name.as_deref()))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let name = if kind != 0
-                && (id.starts_with('r') || c.is_some_and(|c| c.id.0.starts_with('r')))
-                && !room_title.is_empty()
-            {
+            let name = if kind != 0 && room && !room_title.is_empty() {
                 room_title.as_str()
             } else {
                 name
@@ -672,31 +606,15 @@ impl Presenter {
             } else {
                 f.map(|f| f.status.as_str()).unwrap_or("")
             };
-            let friend = !own
-                && kind == 0
-                && f.is_some_and(|f| f.name != "Unknown member")
-                && f.is_some_and(|f| {
-                    f.profile.relation == Some(0)
-                        || (f.profile.relation.is_none()
-                            && state.friends.iter().any(|r| r.id == id && !r.group))
-                });
-            let official = f.is_some_and(|f| f.profile.account_type != 0);
-            let friend = friend && !official;
+            let friend = kind == 0 && state.profile_friend(id);
             ui.set_profile_id(id.into());
             ui.set_profile_name(name.into());
             ui.set_profile_status(status.into());
             g.set_profile_initial(name_initial(name));
             g.set_profile_own(own);
             g.set_profile_friend(friend);
-            g.set_profile_addable(
-                !own && kind == 0
-                    && !friend
-                    && !official
-                    && f.is_some_and(|f| f.name != "Unknown member"),
-            );
-            ui.set_profile_available(
-                !own && kind == 0 && name != "Unknown member" && (friend || c.is_some()),
-            );
+            g.set_profile_addable(kind == 0 && state.profile_addable(id));
+            ui.set_profile_available(kind == 0 && state.profile_available(id));
             ui.set_profile_group(kind != 0);
             g.set_profile_original(
                 f.and_then(|f| {
@@ -746,7 +664,7 @@ impl Presenter {
             );
             g.set_group_muted(c.is_some_and(|c| c.muted));
             g.set_group_left(c.is_some_and(|c| c.left));
-            g.set_group_room(id.starts_with('r') || c.is_some_and(|c| c.id.0.starts_with('r')));
+            g.set_group_room(room);
             g.set_group_writable(
                 state
                     .group_info
@@ -767,6 +685,7 @@ impl Presenter {
             }
             let inputs = ChatInputs {
                 chat: c.clone(),
+                unread_count: item.unread_count,
                 title: title.to_owned(),
                 preview: item.preview.clone(),
                 system_text: item
@@ -791,7 +710,7 @@ impl Presenter {
                 index: index as i32,
                 title: single_line(title).into(),
                 initial: name_initial(title),
-                unread: c.unread_count as i32,
+                unread: item.unread_count as i32,
                 failed: item.failed_count > 0,
                 draft: item.draft.as_ref().is_some_and(|d| !d.text.is_empty()),
                 draft_preview: item
@@ -808,10 +727,14 @@ impl Presenter {
                 ..Default::default()
             };
             if let Some(m) = &item.preview {
-                let mut view = content_view(&m.body);
-                view.outgoing = m.outgoing;
-                view.rich.system_text = inputs.system_text.clone();
-                preview::set(&mut row, &view, &self.images, ui.get_text_size());
+                preview::set(
+                    &mut row,
+                    &m.body,
+                    m.outgoing,
+                    inputs.system_text.as_deref(),
+                    &self.images,
+                    ui.get_text_size(),
+                );
             } else if item.activity_ms == 0 {
                 row.time = "New".into();
                 row.preview = "No messages yet".into();
@@ -837,6 +760,11 @@ impl Presenter {
         // Choose on first population, then retain the mode for this conversation.
         // Switching delegate types during a live arrival would lose selection
         // and the current reading anchor at the size boundary.
+        if self.history_chat != state.selected
+            && ui.global::<State>().get_link_feedback() == text::LINK_FAILURE
+        {
+            ui.global::<State>().set_link_feedback("".into());
+        }
         if self.messages.row_count() == 0 || self.history_chat != state.selected {
             ui.global::<State>().set_history_virtual(rows.len() > 60);
             self.history_chat = state.selected.clone();
@@ -856,8 +784,10 @@ impl Presenter {
             }
         }
         let mut projected = Vec::new();
+        let mut source = Vec::new();
         for (m, row) in rows.iter().zip(messages) {
             if state.gaps.iter().any(|g| g.after == m.key) {
+                source.push(None);
                 projected.push((
                     RowKey::Gap(m.key),
                     MessageRow {
@@ -868,10 +798,11 @@ impl Presenter {
                     },
                 ));
             }
+            source.push(Some(*m));
             projected.push((RowKey::Message(m.key), row));
         }
         let (keys, mut messages): (Vec<_>, Vec<_>) = projected.into_iter().unzip();
-        group_messages(&mut messages);
+        group_messages(&mut messages, &source);
         patch(
             &self.messages,
             &mut self.message_keys,
@@ -904,6 +835,8 @@ impl Presenter {
             .set_account_initial(name_initial(state.profile.display_name.as_str()));
         ui.global::<State>()
             .set_has_account(!state.profile.mid.is_empty());
+        ui.global::<State>()
+            .set_account_mid(state.profile.mid.clone().into());
         ui.set_account_name(state.profile.display_name.as_str().into());
         ui.global::<State>().set_connection(match state.connection {
             Connection::Local => ConnectionState::Local,
@@ -972,9 +905,9 @@ impl Presenter {
             && !state.chats.contains_key(id)
         {
             let friend = state.friends.iter().find(|f| f.id == id.0);
-            ui.set_chat_title(friend.map(|f| f.name.as_str()).unwrap_or(&id.0).into());
+            let title = friend.map(text::friend_name).unwrap_or(&id.0);
+            ui.set_chat_title(title.into());
             ui.global::<State>().set_chat_id(id.0.clone().into());
-            let title = friend.map(|f| f.name.as_str()).unwrap_or(&id.0);
             ui.global::<State>().set_chat_initial(name_initial(title));
             ui.global::<State>().set_chat_avatar(
                 friend
@@ -1012,11 +945,7 @@ impl Presenter {
         ui.global::<State>()
             .set_history_can_follow(state.reaches_end);
         ui.global::<State>().set_unread_conversations(
-            state
-                .chats
-                .values()
-                .filter(|c| c.chat.unread_count > 0)
-                .count() as i32,
+            state.chats.values().filter(|c| c.unread_count > 0).count() as i32,
         );
         ui.global::<State>().set_unread_stale(
             state.connection != Connection::Online
@@ -1152,17 +1081,7 @@ impl Presenter {
                 ui.global::<State>().set_chat_avatar(image.clone());
             }
             let profile = match state.detail_page() {
-                Some(line::controller::DetailPage::Profile(id)) => state
-                    .contacts
-                    .get(id)
-                    .or_else(|| state.friends.iter().find(|f| &f.id == id))
-                    .or_else(|| {
-                        state
-                            .members
-                            .iter()
-                            .find(|m| &m.contact.id == id)
-                            .map(|m| &m.contact)
-                    }),
+                Some(line::controller::DetailPage::Profile(id)) => state.contact(id),
                 _ => None,
             };
             if profile
@@ -1172,15 +1091,11 @@ impl Presenter {
                 ui.set_profile_avatar(image.clone());
             }
             let other_avatar = match state.detail_page() {
-                Some(line::controller::DetailPage::Profile(id))
-                    if id == "self" || state.profile.mid == *id =>
-                {
-                    state
-                        .profile
-                        .picture_path
-                        .as_deref()
-                        .and_then(line::client::desktop::assets::Asset::avatar)
-                }
+                Some(line::controller::DetailPage::Profile(id)) if state.profile_own(id) => state
+                    .profile
+                    .picture_path
+                    .as_deref()
+                    .and_then(line::client::desktop::assets::Asset::avatar),
                 Some(line::controller::DetailPage::GroupInfo(id)) => {
                     state.chats.get(id).and_then(|c| c.chat.avatar.clone())
                 }
@@ -1339,100 +1254,8 @@ fn patch_runs(
     }
 }
 
-/// All content labels belong to the presentation layer.
-pub(crate) fn content_view(content: &Content) -> account::MessageView {
-    use line::client::desktop::rich::RichContent;
-    let mut view = account::MessageView::default();
-    let mut rich = RichContent::default();
-    view.body = match content {
-        Content::Text { text, spans } => {
-            rich.emoji = spans.clone();
-            text.clone()
-        }
-        Content::Photo {
-            album_count,
-            caption,
-            ..
-        } => {
-            view.photo = true;
-            rich.content_type = 1;
-            rich.album_count = *album_count;
-            rich.caption = caption.clone();
-            "Photo".into()
-        }
-        Content::Sticker { text, .. } => {
-            view.sticker = true;
-            rich.content_type = 7;
-            text.clone().unwrap_or_else(|| "Sticker".into())
-        }
-        Content::File { name, size, .. } => {
-            rich.content_type = 14;
-            rich.file_name = name.clone();
-            rich.file_size = *size;
-            name.clone().unwrap_or_else(|| "File".into())
-        }
-        Content::Video {
-            duration,
-            album_count,
-            caption,
-            ..
-        } => {
-            rich.content_type = 2;
-            rich.duration_ms = *duration;
-            rich.album_count = *album_count;
-            rich.caption = caption.clone();
-            "Video".into()
-        }
-        Content::Voice { duration, .. } => {
-            rich.content_type = 3;
-            rich.duration_ms = *duration;
-            "Voice message".into()
-        }
-        Content::Contact { name, .. } => {
-            rich.content_type = 13;
-            rich.contact_name = name.clone();
-            name.clone().unwrap_or_else(|| "Contact".into())
-        }
-        Content::Location { .. } => {
-            rich.content_type = 15;
-            "Location".into()
-        }
-        Content::System { kind, params, text } => {
-            rich.content_type = 18;
-            rich.system_key = kind.clone();
-            rich.system_args = params.clone();
-            rich.system_text = text.clone();
-            text.clone().unwrap_or_default()
-        }
-        Content::Withdrawn => {
-            rich.withdrawn = true;
-            "Message unsent".into()
-        }
-        Content::Undecryptable => {
-            view.decryption_failed = true;
-            "Unable to decrypt this message with the saved keys".into()
-        }
-        Content::Unknown { content_type } => {
-            rich.content_type = i64::from(*content_type);
-            "This message type isn't supported yet".into()
-        }
-    };
-    view.image_key = content.image().map(|a| a.key()).unwrap_or_default();
-    view.emoji = content
-        .spans()
-        .iter()
-        .map(|span| account::EmojiView {
-            span: span.clone(),
-            image_key: line::client::desktop::assets::Asset::inline_emoji(span)
-                .map(|a| a.key())
-                .unwrap_or_default(),
-        })
-        .collect();
-    view.rich = rich;
-    view
-}
-fn reaction_views(reactions: &[Reaction]) -> Vec<account::ReactionView> {
-    let mut groups: Vec<(String, String, usize)> = vec![];
+pub(crate) fn reaction_views(reactions: &[Reaction]) -> Vec<ReactionRow> {
+    let mut groups: Vec<(String, String)> = vec![];
     for reaction in reactions {
         let (label, key) = match &reaction.kind {
             ReactionKind::Predefined(id) => (
@@ -1454,16 +1277,18 @@ fn reaction_views(reactions: &[Reaction]) -> Vec<account::ReactionView> {
                 asset.as_ref().map(|a| a.key()).unwrap_or_default(),
             ),
         };
-        if let Some(group) = groups.iter_mut().find(|g| g.0 == label && g.1 == key) {
-            group.2 += 1;
-        } else {
-            groups.push((label, key, 1));
+        if !groups.iter().any(|g| g.0 == label && g.1 == key) {
+            groups.push((label, key));
         }
     }
     groups
         .into_iter()
         .take(3)
-        .map(|(label, image_key, _count)| account::ReactionView { label, image_key })
+        .map(|(label, image_key)| ReactionRow {
+            label: label.into(),
+            image_key: image_key.into(),
+            ..Default::default()
+        })
         .collect()
 }
 
@@ -1472,9 +1297,13 @@ pub(crate) fn chat_title<'a>(chat: &'a ChatInput, state: &'a AppState) -> &'a st
         return &chat.title;
     }
     state
-        .contacts
-        .get(&chat.id.0)
-        .map(|c| c.name.as_str())
+        .contact(&chat.id.0)
+        .and_then(|c| c.name.as_deref())
         .filter(|name| !name.trim().is_empty())
         .unwrap_or("Conversation")
+}
+
+fn compact_text(message: &StoredMessage, state: &AppState) -> String {
+    crate::system_events::text(&message.body, state, &message.sender_id)
+        .unwrap_or_else(|| kind_label(&message.body).1)
 }

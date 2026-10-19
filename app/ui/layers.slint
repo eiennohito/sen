@@ -194,7 +194,7 @@ export component Layers inherits Rectangle {
                             if root.settings-section == 4: VerticalLayout {
                                 spacing: 12px;
                                 Text { text: "LINE"; font-size: Tokens.heading; }
-                                if State.has-account: Button { text: State.account-name; text-button: true; clicked => { State.open-profile("self"); } }
+                                if State.has-account: Button { text: State.account-name; text-button: true; clicked => { State.open-profile(State.account-mid); } }
                                 Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
                                 if State.desktop-warning != "": Text { text: State.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
                             }

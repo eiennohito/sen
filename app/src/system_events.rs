@@ -9,19 +9,9 @@ pub(crate) fn name(state: &AppState, mid: &str) -> String {
     if mid == state.profile.mid {
         return "You".into();
     }
-    state
-        .contacts
-        .get(mid)
-        .or_else(|| state.friends.iter().find(|f| f.id == mid))
-        .or_else(|| {
-            state
-                .members
-                .iter()
-                .find(|m| m.contact.id == mid)
-                .map(|m| &m.contact)
-        })
-        .map(|f| crate::present::single_line(&f.name))
-        .unwrap_or_else(|| "Unknown member".into())
+    crate::present::single_line(crate::text::member_name(
+        state.contact(mid).and_then(|f| f.name.as_deref()),
+    ))
 }
 
 fn event_text(event: &Event<'_>, sender: &str, name: impl Fn(&str) -> String) -> String {
@@ -80,7 +70,7 @@ mod tests {
                 id.into(),
                 Friend {
                     id: id.into(),
-                    name: name.into(),
+                    name: Some(name.into()),
                     ..Default::default()
                 },
             );

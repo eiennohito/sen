@@ -1,4 +1,3 @@
-//! Desktop bus workers are unchanged; the adapter consumes controller deltas.
 use crate::attention_policy::{self as policy, Context, EventKind, Preferences, PreviewLevel};
 use crate::*;
 pub(crate) struct Notifications {
@@ -62,7 +61,12 @@ impl Notifications {
                 .get(&m.chat_id)
                 .map(|c| presenter::chat_title(&c.chat, state))
                 .unwrap_or("LINE");
-            let text = policy::redact(prefs.preview, title, &presenter::content_view(&m.body).body);
+            let text = policy::redact(
+                prefs.preview,
+                title,
+                &crate::system_events::text(&m.body, state, &m.sender_id)
+                    .unwrap_or_else(|| kind_label(&m.body).1),
+            );
             self.service.notify(attention::Notice {
                 chat: m.chat_id.0.clone(),
                 summary: text.summary,

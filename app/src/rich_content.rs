@@ -1,7 +1,7 @@
 //! Rich text uses native measured runs; the original body remains the copy source.
 use crate::*;
 
-pub(crate) fn runs(body: &str, emoji: &[account::EmojiView]) -> ModelRc<RichRun> {
+pub(crate) fn runs(body: &str, emoji: &[present::EmojiView]) -> ModelRc<RichRun> {
     let mut rows = Vec::new();
     let mut offset = 0;
     for item in emoji {
@@ -548,7 +548,7 @@ mod tests {
         };
         row.rich_runs = runs(
             body,
-            &[account::EmojiView {
+            &[present::EmojiView {
                 span: line::store::InlineEmoji {
                     start_utf16: 3,
                     end_utf16: 6,
@@ -824,7 +824,7 @@ mod tests {
         };
         let rows = runs(
             body,
-            &[account::EmojiView {
+            &[present::EmojiView {
                 span,
                 image_key: "image-key".into(),
             }],
@@ -869,7 +869,7 @@ mod tests {
             };
             let runs = runs(
                 &body,
-                &[account::EmojiView {
+                &[present::EmojiView {
                     span,
                     image_key: "synthetic".into(),
                 }],

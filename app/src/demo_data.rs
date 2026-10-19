@@ -144,7 +144,7 @@ fn message(
                 relation: Some(0),
                 ..Default::default()
             },
-            name: "葵".into(),
+            name: Some("葵".into()),
             avatar: Some(image_asset(fake, "avatar-aoi", avatar(0))),
             ..Default::default()
         });
@@ -235,7 +235,7 @@ pub fn group(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
         if !outgoing {
             fake.set_contact(Friend {
                 id: sender.into(),
-                name: name.into(),
+                name: Some(name.into()),
                 avatar: Some(image_asset(
                     fake,
                     &format!("avatar-{sender}"),
@@ -415,7 +415,7 @@ pub fn seed(fake: &FakeBackend) {
         .map(|(i, c)| line::store::Friend {
             profile: Default::default(),
             id: c.id.0.clone(),
-            name: c.title.clone(),
+            name: Some(c.title.clone()),
             status: [
                 "散歩とコーヒーが好き 🌿",
                 "Saturday by the river",
@@ -430,7 +430,7 @@ pub fn seed(fake: &FakeBackend) {
     friends.push(line::store::Friend {
         profile: Default::default(),
         id: "new-friend".into(),
-        name: "新しい友だち 🌸".into(),
+        name: Some("新しい友だち 🌸".into()),
         status: "まだ会話のない友だち".into(),
         group: false,
         avatar: None,
@@ -439,7 +439,6 @@ pub fn seed(fake: &FakeBackend) {
     fake.set_friends(friends);
     let members = (0..26)
         .map(|i| line::store::Member {
-            resolved: true,
             is_self: i == 0,
             contact: line::store::Friend {
                 profile: ContactProfile {
@@ -453,11 +452,11 @@ pub fn seed(fake: &FakeBackend) {
                     _ => format!("member-{i}"),
                 },
                 name: match i {
-                    0 => "Offline preview".into(),
-                    1 => "葵".into(),
-                    2 => "蓮".into(),
-                    24 => "Unknown member".into(),
-                    _ => format!("Weekend walker {i:02}"),
+                    0 => Some("Offline preview".into()),
+                    1 => Some("葵".into()),
+                    2 => Some("蓮".into()),
+                    24 => None,
+                    _ => Some(format!("Weekend walker {i:02}")),
                 },
                 status: String::new(),
                 group: false,
@@ -749,7 +748,7 @@ pub fn sticker(fake: &FakeBackend, chat: &str) -> MessageInput {
 pub fn run_review(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
     fake.set_contact(Friend {
         id: "aoi".into(),
-        name: "葵".into(),
+        name: Some("葵".into()),
         avatar: Some(image_asset(fake, "run-avatar", avatar(0))),
         ..Default::default()
     });

@@ -31,11 +31,11 @@ use crate::store::{Content, Friend, Member, Reaction, ReactionKind};
 fn member_identity(id: &str, contact: &Value, my_mid: &str) -> Member {
     Member {
         is_self: id == my_mid,
-        resolved: contact_name(contact).is_some(),
+
         contact: Friend {
             profile: serde_json::from_value(contact.clone()).unwrap_or_default(),
             id: id.into(),
-            name: contact_name(contact).unwrap_or("Unknown member").into(),
+            name: contact_name(contact).map(str::to_owned),
             status: contact["statusMessage"].as_str().unwrap_or_default().into(),
             group: false,
             avatar: contact["picturePath"].as_str().and_then(Asset::avatar),
@@ -290,7 +290,7 @@ impl Client {
         let response = self.talk("getContactsV2", json!([{"targetUserMids":[mid]}, 2]))?;
         let contact = &response["contacts"][mid]["contact"];
         let member = member_identity(mid, contact, &self.my_mid);
-        Ok(member.resolved.then_some(member.contact))
+        Ok(member.contact.name.is_some().then_some(member.contact))
     }
     pub fn profile_notice(&mut self, mid: &str) -> Result<Value> {
         self.api.call(
@@ -357,7 +357,7 @@ impl Client {
                 friends.push(Friend {
                     profile: serde_json::from_value(contact.clone()).unwrap_or_default(),
                     id: id.into(),
-                    name: contact_name(contact).unwrap_or("Unnamed friend").into(),
+                    name: contact_name(contact).map(str::to_owned),
                     status: contact["statusMessage"].as_str().unwrap_or_default().into(),
                     group: false,
                     member_count: None,
@@ -389,8 +389,7 @@ impl Client {
                     name: chat["chatName"]
                         .as_str()
                         .filter(|s| !s.is_empty())
-                        .unwrap_or("Unnamed group")
-                        .into(),
+                        .map(str::to_owned),
                     status: String::new(),
                     group: true,
                     member_count: rich::group_member_count(chat, &self.my_mid),
@@ -1039,12 +1038,12 @@ mod protocol_tests {
             &json!({"displayNameOverridden":"Alias","displayName":"Name","statusMessage":"Hello","picturePath":"/avatar"}),
             "self",
         );
-        assert_eq!(known.contact.name, "Alias");
+        assert_eq!(known.contact.name.as_deref(), Some("Alias"));
         assert_eq!(known.contact.status, "Hello");
         assert!(!known.is_self);
         for contact in [Value::Null, json!({"displayName":"  "})] {
             let member = member_identity("self", &contact, "self");
-            assert_eq!(member.contact.name, "Unknown member");
+            assert_eq!(member.contact.name, None);
             assert!(member.is_self);
             assert!(member.contact.avatar.is_none());
         }

@@ -23,7 +23,7 @@ pub(crate) fn small(image: &slint::Image, size: i32) -> slint::Image {
 
 pub(crate) fn preview_runs(
     text: &str,
-    metadata: &[account::EmojiView],
+    metadata: &[present::EmojiView],
     images: &HashMap<String, slint::Image>,
     size: i32,
 ) -> ModelRc<RichRun> {
@@ -88,35 +88,25 @@ pub(crate) fn preview_runs(
 
 pub(crate) fn set(
     row: &mut ChatRow,
-    view: &account::MessageView,
+    content: &Content,
+    outgoing: bool,
+    system_text: Option<&str>,
     images: &HashMap<String, slint::Image>,
     size: i32,
 ) {
-    let kind = links::kind(
-        view.rich.content_type,
-        view.rich.withdrawn,
-        view.decryption_failed,
-    );
-    row.preview = match kind {
-        MessageKind::Sticker => "Sticker".into(),
-        MessageKind::Photo => "Photo".into(),
-        MessageKind::Video => "Video".into(),
-        MessageKind::Voice => "Voice".into(),
-        MessageKind::File => "File".into(),
-        MessageKind::Location => "Location".into(),
-        MessageKind::Contact => "Contact".into(),
-        _ => single_line(&message_text(view)).into(),
-    };
-    row.outgoing_preview = view.outgoing;
-    row.preview_runs = if !view.image_key.is_empty()
+    let (kind, label) = kind_label(content);
+    row.preview = single_line(system_text.unwrap_or(&label)).into();
+    row.outgoing_preview = outgoing;
+    let image_key = content.image().map(|a| a.key()).unwrap_or_default();
+    row.preview_runs = if !image_key.is_empty()
         && matches!(
             kind,
             MessageKind::Photo | MessageKind::Sticker | MessageKind::Video
         ) {
-        let image = images.get(&view.image_key);
+        let image = images.get(&image_key);
         ModelRc::new(VecModel::from(vec![
             RichRun {
-                image_key: view.image_key.clone().into(),
+                image_key: image_key.clone().into(),
                 picture: image.map(|i| small(i, size)).unwrap_or_default(),
                 has_picture: image.is_some(),
                 thumbnail: true,
@@ -130,7 +120,13 @@ pub(crate) fn set(
             },
         ]))
     } else {
-        preview_runs(&view.body, &view.emoji, images, size)
+        let emoji = content
+            .spans()
+            .iter()
+            .cloned()
+            .map(EmojiView::new)
+            .collect::<Vec<_>>();
+        preview_runs(content.as_text(), &emoji, images, size)
     };
 }
 

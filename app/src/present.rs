@@ -1,5 +1,18 @@
 use crate::*;
 
+pub struct EmojiView {
+    pub span: line::store::InlineEmoji,
+    pub image_key: String,
+}
+impl EmojiView {
+    pub(crate) fn new(span: line::store::InlineEmoji) -> Self {
+        let image_key = line::client::desktop::assets::Asset::inline_emoji(&span)
+            .map(|a| a.key())
+            .unwrap_or_default();
+        Self { span, image_key }
+    }
+}
+
 #[cfg(feature = "demo")]
 thread_local! {
     static FIXED_NOW: std::cell::Cell<Option<i64>> = const { std::cell::Cell::new(None) };
@@ -38,27 +51,38 @@ pub(crate) fn single_line(text: &str) -> String {
 }
 /// Group only adjacent messages with known time and identity. Presentation is
 /// derived after sorting/reconciliation, so refreshes and local sends agree.
-pub(crate) fn group_messages(messages: &mut [MessageRow]) {
-    let mut previous_date = String::new();
-    for row in messages.iter_mut() {
+pub(crate) fn group_messages(messages: &mut [MessageRow], source: &[Option<&StoredMessage>]) {
+    let mut previous_date = None;
+    for (row, message) in messages.iter_mut().zip(source) {
         row.sender_initial = name_initial(&row.sender_name);
-        let (date, clock) = row.time.rsplit_once(' ').unwrap_or(("", row.time.as_str()));
-        row.clock = clock.into();
+        let time =
+            message.and_then(|m| calendar_pair(m.sort.sort_ts, now_millis()).map(|(time, _)| time));
+        let date = time.map(|time| time.date_naive());
+        row.clock = time
+            .map(|time| time.format("%H:%M").to_string())
+            .unwrap_or_default()
+            .into();
         row.day_label = if date != previous_date {
-            day_label(row.sort_key.parse().unwrap_or(0), now_millis()).into()
+            message
+                .map(|m| day_label(m.sort.sort_ts, now_millis()))
+                .unwrap_or_default()
+                .into()
         } else {
             "".into()
         };
-        previous_date = date.to_owned();
+        previous_date = date;
     }
-    let joins = |left: &MessageRow, right: &MessageRow| {
-        let a = left.sort_key.parse::<i64>().unwrap_or(0);
-        let b = right.sort_key.parse::<i64>().unwrap_or(0);
-        !matches!(left.kind, MessageKind::System | MessageKind::Withdrawn)
-            && !matches!(right.kind, MessageKind::System | MessageKind::Withdrawn)
-            && matches!(left.delivery.as_str(), "" | "Sent" | "Read")
-            && matches!(right.delivery.as_str(), "" | "Sent" | "Read")
-            && right.day_label.is_empty()
+    let joins = |left: usize, right: usize| {
+        let (Some(left), Some(right)) = (source[left], source[right]) else {
+            return false;
+        };
+        let a = left.sort.sort_ts;
+        let b = right.sort.sort_ts;
+        !matches!(left.body, Content::System { .. } | Content::Withdrawn)
+            && !matches!(right.body, Content::System { .. } | Content::Withdrawn)
+            && matches!(left.delivery, Delivery::Sent | Delivery::Read)
+            && matches!(right.delivery, Delivery::Sent | Delivery::Read)
+            && calendar_pair(a, b).is_some_and(|(a, b)| a.date_naive() == b.date_naive())
             && left.outgoing == right.outgoing
             && (left.outgoing || (!left.sender_id.is_empty() && left.sender_id == right.sender_id))
             && a > 0
@@ -66,8 +90,8 @@ pub(crate) fn group_messages(messages: &mut [MessageRow]) {
             && b - a <= 300_000
     };
     for i in 0..messages.len() {
-        let before = i > 0 && joins(&messages[i - 1], &messages[i]);
-        let after = i + 1 < messages.len() && joins(&messages[i], &messages[i + 1]);
+        let before = i > 0 && joins(i - 1, i);
+        let after = i + 1 < messages.len() && joins(i, i + 1);
         messages[i].run_position = match (before, after) {
             (false, false) => line_desktop_ui::RunPosition::Single,
             (false, true) => line_desktop_ui::RunPosition::First,
@@ -151,93 +175,115 @@ fn calendar_pair(
     ))
 }
 
-pub(crate) fn message_text(m: &account::MessageView) -> String {
-    let kind = crate::links::kind(m.rich.content_type, m.rich.withdrawn, m.decryption_failed);
-    if kind == MessageKind::System {
-        return m.rich.system_text.clone().unwrap_or_default();
+/// Compact labels shared by previews, notifications and reply quotes.
+pub(crate) fn kind_label(content: &Content) -> (MessageKind, String) {
+    use MessageKind::*;
+    match content {
+        Content::Text { text, .. } => (Text, text.clone()),
+        Content::Photo { .. } => (Photo, "Photo".into()),
+        Content::Video { .. } => (Video, "Video".into()),
+        Content::Voice { .. } => (Voice, "Voice message".into()),
+        Content::Sticker { .. } => (Sticker, "Sticker".into()),
+        Content::File { name, .. } => (
+            File,
+            name.as_ref()
+                .map(|n| format!("File · {n}"))
+                .unwrap_or_else(|| "File".into()),
+        ),
+        Content::Contact { name, .. } => (
+            Contact,
+            name.as_ref()
+                .map(|n| format!("Contact · {n}"))
+                .unwrap_or_else(|| "Contact".into()),
+        ),
+        Content::Location { .. } => (Location, "Location".into()),
+        Content::System { text, .. } => (System, text.clone().unwrap_or_default()),
+        Content::Withdrawn => (Withdrawn, "Message unsent".into()),
+        Content::Undecryptable => (Undecryptable, "Couldn't decrypt this message".into()),
+        Content::Unknown { .. } => (Unknown, "This message type isn't supported yet".into()),
     }
-    let mut body = crate::links::placeholder(kind)
-        .map(|label| {
-            if matches!(kind, MessageKind::File | MessageKind::Contact) && !m.body.is_empty() {
-                if kind == MessageKind::File {
-                    m.rich.file_name.clone().unwrap_or_else(|| m.body.clone())
-                } else {
-                    m.rich
-                        .contact_name
-                        .clone()
-                        .unwrap_or_else(|| m.body.trim_start_matches("Contact · ").to_owned())
-                }
-            } else {
-                label.into()
-            }
-        })
-        .unwrap_or_else(|| m.body.clone());
-    if kind == MessageKind::Sticker && !m.body.is_empty() && m.body != "Sticker" {
-        body = format!("{body} · {}", m.body);
-    }
-    if matches!(kind, MessageKind::Photo | MessageKind::Video) {
-        if let Some(count) = m.rich.album_count {
-            body = format!("Album · {count} items");
-        }
-        if let Some(caption) = &m.rich.caption {
-            body = format!("{body} · {caption}");
-        }
-    }
-    body
 }
 
-pub(crate) fn message_row(m: account::MessageView) -> MessageRow {
-    let kind = crate::links::kind(m.rich.content_type, m.rich.withdrawn, m.decryption_failed);
-    let rich_runs = if kind == MessageKind::Text && !m.emoji.is_empty() {
-        crate::rich_content::runs(&m.body, &m.emoji)
+/// Full row text for display, accessibility and copy.
+pub(crate) fn message_text(content: &Content) -> (MessageKind, String) {
+    let (kind, mut body) = kind_label(content);
+    match content {
+        Content::Photo {
+            album_count,
+            caption,
+            ..
+        }
+        | Content::Video {
+            album_count,
+            caption,
+            ..
+        } => {
+            if let Some(count) = album_count {
+                body = format!("Album · {count} items");
+            }
+            if let Some(caption) = caption {
+                body = format!("{body} · {caption}");
+            }
+        }
+        Content::Sticker {
+            text: Some(text), ..
+        } => body = format!("{body} · {text}"),
+        _ => {}
+    }
+    (kind, body)
+}
+
+pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> MessageRow {
+    let (kind, body) = message_text(&m.body);
+    let emoji = m
+        .body
+        .spans()
+        .iter()
+        .cloned()
+        .map(EmojiView::new)
+        .collect::<Vec<_>>();
+    let rich_runs = if kind == MessageKind::Text && !emoji.is_empty() {
+        crate::rich_content::runs(m.body.as_text(), &emoji)
     } else {
         ModelRc::default()
     };
-    let reply_id = m
-        .rich
-        .reply
-        .as_ref()
-        .map(|r| r.message_id.clone())
-        .unwrap_or_default();
-    let detail = m
-        .rich
-        .duration_ms
-        .map(crate::rich_content::duration)
-        .or_else(|| m.rich.file_size.map(crate::rich_content::file_size))
-        .unwrap_or_default();
-    let body = message_text(&m);
-    let reactions = m
-        .reactions
-        .into_iter()
-        .map(|r| ReactionRow {
-            label: r.label.into(),
-            image_key: r.image_key.into(),
-            ..Default::default()
-        })
-        .collect::<Vec<_>>();
+    let detail = match &m.body {
+        Content::Video { duration, .. } | Content::Voice { duration, .. } => {
+            duration.map(crate::rich_content::duration)
+        }
+        Content::File { size, .. } => size.map(crate::rich_content::file_size),
+        _ => None,
+    }
+    .unwrap_or_default();
+    let reactions = if m.body.is_withdrawn() {
+        vec![]
+    } else {
+        crate::presenter::reaction_views(&m.reactions)
+    };
     MessageRow {
         skip_badge: m.skip_badge,
-        rich_fallback: kind == MessageKind::Text
-            && !m.emoji.is_empty()
-            && rich_runs.row_count() == 0,
+        rich_fallback: kind == MessageKind::Text && !emoji.is_empty() && rich_runs.row_count() == 0,
         rich_runs,
-        reply_id: reply_id.into(),
+        reply_id: m
+            .reply
+            .as_ref()
+            .map(|r| r.message_id.as_str())
+            .unwrap_or_default()
+            .into(),
         reply_preview: "Original message".into(),
         detail: detail.into(),
         kind,
-        delivered_time: order_key(m.delivered_time).into(),
-        id: m.id.into(),
-        sender_id: m.sender_id.into(),
-        sender_name: m.sender_name.into(),
-        sender_key: m.sender_key.into(),
-        sticker: m.sticker,
-        photo: m.photo,
-        sort_key: order_key(m.timestamp).into(),
-        body: body.into(),
-        time: display_time(m.timestamp).into(),
+        delivered_time: order_key(m.sort.sort_ts).into(),
+        id: m.key.0.to_string().into(),
+        sender_id: m.sender_id.clone().into(),
+        sticker: kind == MessageKind::Sticker,
+        photo: kind == MessageKind::Photo,
+        body: system_text.unwrap_or(&body).into(),
+        time: display_time(m.sort.sort_ts).into(),
         outgoing: m.outgoing,
-        image_key: m.image_key.into(),
+        image_key: m.body.image().map(|a| a.key()).unwrap_or_default().into(),
         reactions: ModelRc::new(VecModel::from(reactions)),
+
         ..Default::default()
     }
 }

@@ -1,6 +1,6 @@
 //! Link parsing and desktop dispatch. Parsing uses UTF-8 boundaries and never
 //! treats adjacent Japanese sentence punctuation as part of a URL.
-use crate::{LinkRow, MessageKind, MessageRow};
+use crate::{LinkRow, MessageRow};
 use slint::{ModelRc, VecModel};
 
 pub(crate) fn detect(text: &str) -> Vec<(String, String)> {
@@ -93,7 +93,6 @@ pub(crate) fn rendered_text(row: &MessageRow) -> String {
             .iter()
             .map(|run| run.text.to_string())
             .collect();
-        // A reused row with a changed body still has the previous decorated runs.
         if rendered != row.body.as_str() && row.rich_runs.iter().any(|run| run.link_id != 0) {
             row.body.to_string()
         } else {
@@ -135,56 +134,20 @@ pub(crate) fn decorate_message(row: &mut MessageRow, fallback_sender: &str) {
     .into();
 }
 
-pub(crate) fn kind(content_type: i64, withdrawn: bool, decryption_failed: bool) -> MessageKind {
-    if withdrawn {
-        return MessageKind::Withdrawn;
-    }
-    if decryption_failed {
-        return MessageKind::Undecryptable;
-    }
-    match content_type {
-        0 => MessageKind::Text,
-        1 => MessageKind::Photo,
-        2 => MessageKind::Video,
-        3 => MessageKind::Voice,
-        7 => MessageKind::Sticker,
-        13 => MessageKind::Contact,
-        14 => MessageKind::File,
-        15 => MessageKind::Location,
-        18 => MessageKind::System,
-        _ => MessageKind::Unknown,
-    }
-}
-
-pub(crate) fn placeholder(kind: MessageKind) -> Option<&'static str> {
-    match kind {
-        MessageKind::Text => None,
-        MessageKind::Photo => Some("Photo"),
-        MessageKind::Sticker => Some("Sticker"),
-        MessageKind::Video => Some("Video"),
-        MessageKind::Voice => Some("Voice message"),
-        MessageKind::File => Some("File"),
-        MessageKind::Location => Some("Location"),
-        MessageKind::Contact => Some("Contact"),
-        MessageKind::System => None,
-        MessageKind::Withdrawn => Some("Message unsent"),
-        MessageKind::Undecryptable => Some("Couldn't decrypt this message"),
-        MessageKind::Unknown => Some("This message type isn't supported yet"),
-    }
-}
-
-/// Only detected web URLs reach the desktop, and child startup never blocks UI.
-pub(crate) fn open(url: String) {
+/// Only detected web URLs reach the desktop; callers dispatch off the UI thread.
+pub(crate) fn open(url: &str) -> std::io::Result<()> {
     if !url.starts_with("https://") && !url.starts_with("http://") {
-        return;
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "Unsupported link",
+        ));
     }
-    let _ = std::thread::Builder::new()
-        .name("open-link".into())
-        .spawn(move || {
-            if let Ok(mut child) = std::process::Command::new("xdg-open").arg(url).spawn() {
-                let _ = child.wait();
-            }
-        });
+    let status = std::process::Command::new("xdg-open").arg(url).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other("Link opener failed"))
+    }
 }
 
 #[cfg(test)]
@@ -275,20 +238,5 @@ mod tests {
         row.delivery = "Not sent".into();
         decorate_message(&mut row, "葵");
         assert_eq!(row.accessible_label, "Outgoing, 12:30, Not sent: Hello");
-    }
-
-    #[test]
-    fn placeholder_kinds_are_distinct() {
-        let kinds = [1, 2, 3, 7, 13, 14, 15, 99];
-        let labels = kinds.map(|value| placeholder(kind(value, false, false)).unwrap());
-        assert_eq!(
-            labels
-                .iter()
-                .collect::<std::collections::HashSet<_>>()
-                .len(),
-            kinds.len()
-        );
-        assert_eq!(kind(0, true, false), MessageKind::Withdrawn);
-        assert_eq!(kind(0, false, true), MessageKind::Undecryptable);
     }
 }

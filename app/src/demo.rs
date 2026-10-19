@@ -178,7 +178,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                     });
                 }
                 let mut snapshot = d.state.chats[&target].chat.clone();
-                snapshot.server_unread = snapshot.unread_count + count as u32;
+                snapshot.server_unread = d.state.chats[&target].unread_count + count as u32;
                 snapshot.last_message_id = rows.last().map(|row| row.server_id.clone());
                 snapshot.last_message_ms = rows.last().map(|row| row.created_ms);
                 fake.add_chat(snapshot);

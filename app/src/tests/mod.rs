@@ -1,11 +1,26 @@
 use super::*;
-fn message(id: &str, text: &str) -> account::MessageView {
-    account::MessageView {
-        id: id.into(),
-        body: text.into(),
-        timestamp: 1,
-        delivered_time: 1,
-        ..Default::default()
+fn message(_id: &str, text: &str) -> StoredMessage {
+    StoredMessage {
+        key: Key(1),
+        chat_id: ChatId("chat".into()),
+        server_id: None,
+        local_id: None,
+        request_seq: None,
+        sort: line::store::Cursor {
+            sort_ts: 1,
+            sort_id: "1".into(),
+        },
+        sender_id: String::new(),
+        outgoing: false,
+        body: Content::text(text),
+        reactions: vec![],
+        reactions_rev: 0,
+        body_rev: None,
+        delivery: Delivery::Sent,
+        created_at_local: 1,
+        mentioned: false,
+        reply: None,
+        skip_badge: false,
     }
 }
 fn test_window() -> AppWindow {

@@ -263,7 +263,6 @@ fn chat_input(c: crate::client::desktop::Chat) -> Result<ChatInput> {
         last_message_id: c.last_message_id.as_deref().map(decode_id).transpose()?,
         last_message_ms: Some(c.timestamp_ms),
         server_unread: c.unread.unwrap_or(0) as u32,
-        unread_count: 0,
         unread_stale: false,
         last_read_server_id: c.last_read_message.as_deref().map(decode_id).transpose()?,
         list_rank: 0,

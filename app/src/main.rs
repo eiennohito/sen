@@ -10,7 +10,6 @@ use line::{
 };
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use std::{cell::RefCell, collections::HashMap, rc::Rc};
-mod account;
 mod callbacks;
 mod desktop;
 mod reading;
