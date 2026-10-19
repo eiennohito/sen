@@ -1,5 +1,6 @@
 use super::*;
 use crate::client::http::tests::{accept, local_server, read_request};
+use std::sync::mpsc;
 use std::thread;
 use std::{io, net::TcpStream};
 
@@ -593,7 +594,7 @@ fn empty_close_waits_three_seconds_without_resync_and_delivers_next_stream() {
         |_| Ok("synthetic-token".into()),
         |event| {
             if let Event::Resync { complete, .. } = &event {
-                complete.send(Ok(())).unwrap();
+                complete.send_blocking(Ok(())).unwrap();
             }
             assert!(
                 !matches!(event, Event::Failure { .. }),

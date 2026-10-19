@@ -42,6 +42,15 @@ impl CancelToken {
     pub fn is_cancelled(&self) -> bool {
         self.signal.is_closed()
     }
+    pub(crate) fn recv<T>(&self, receiver: &async_channel::Receiver<T>) -> Option<T> {
+        future::block_on(future::or(
+            async {
+                self.cancelled().await;
+                None
+            },
+            async { receiver.recv().await.ok() },
+        ))
+    }
     pub async fn cancelled(&self) {
         let _ = self.wait.recv().await;
     }

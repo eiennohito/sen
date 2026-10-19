@@ -4,8 +4,6 @@ use crate::store::*;
 use serde_json::Value;
 use std::sync::Arc;
 
-use std::time::Duration;
-
 pub use crate::client::error::{Failure, Refusal, SignOutReason};
 pub type Result<T> = std::result::Result<T, Failure>;
 /// Traced writes; live account verification remains pending.
@@ -55,18 +53,18 @@ pub enum StreamEvent {
     Asset(crate::client::desktop::assets::Completion),
     Authorize {
         asset: crate::client::desktop::assets::Asset,
-        reply: std::sync::mpsc::SyncSender<
+        reply: async_channel::Sender<
             std::result::Result<Option<String>, crate::client::desktop::assets::Failure>,
         >,
     },
     Resync {
         revision: Option<i64>,
-        complete: std::sync::mpsc::SyncSender<Result<()>>,
+        complete: async_channel::Sender<Result<()>>,
     },
     Operation(LiveOp),
     Raw(Value),
     RefreshToken {
-        reply: std::sync::mpsc::SyncSender<Result<()>>,
+        reply: async_channel::Sender<Result<()>>,
     },
     Connection(Result<()>),
     Exited,
@@ -255,6 +253,32 @@ fn chat_input(c: crate::client::desktop::Chat) -> Result<ChatInput> {
         list_rank: 0,
     })
 }
+fn asset_authorization(
+    asset: &crate::client::desktop::assets::Asset,
+    cancel: &CancelToken,
+    deliver: &Deliver,
+) -> std::result::Result<Option<String>, crate::client::desktop::assets::Failure> {
+    let (reply, rx) = async_channel::bounded(1);
+    if !deliver(StreamEvent::Authorize {
+        asset: asset.clone(),
+        reply,
+    }) {
+        return Err(crate::client::desktop::assets::Failure::Cancelled);
+    }
+    cancel
+        .recv(&rx)
+        .unwrap_or(Err(crate::client::desktop::assets::Failure::Cancelled))
+}
+
+fn refresh_stream_token(stop: &CancelToken, deliver: &Deliver) -> Result<()> {
+    let (reply, rx) = async_channel::bounded(1);
+    if !deliver(StreamEvent::RefreshToken { reply }) {
+        return Err(Failure::SignedOut(SignOutReason::AuthenticationFailed));
+    }
+    stop.recv(&rx)
+        .unwrap_or(Err(Failure::SignedOut(SignOutReason::AuthenticationFailed)))
+}
+
 impl Backend for LineBackend {
     fn finish_attachment(
         &mut self,
@@ -345,25 +369,7 @@ impl Backend for LineBackend {
         self.fetchers = Some(Arc::new(client.asset_fetchers(
             stop,
             Default::default(),
-            move |asset, cancel| {
-                let (reply, rx) = std::sync::mpsc::sync_channel(1);
-                if !auth(StreamEvent::Authorize {
-                    asset: asset.clone(),
-                    reply,
-                }) {
-                    return Err(crate::client::desktop::assets::Failure::Cancelled);
-                }
-                loop {
-                    if cancel.is_cancelled() {
-                        return Err(crate::client::desktop::assets::Failure::Cancelled);
-                    }
-                    match rx.recv_timeout(Duration::from_millis(50)) {
-                        Ok(r) => return r,
-                        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
-                        Err(_) => return Err(crate::client::desktop::assets::Failure::Cancelled),
-                    }
-                }
-            },
+            move |asset, cancel| asset_authorization(asset, cancel, &auth),
             {
                 let deliver = deliver.clone();
                 move |completion, _| {
@@ -587,28 +593,7 @@ impl Backend for LineBackend {
                 &stop,
                 |renew| {
                     if renew {
-                        let (reply, rx) = std::sync::mpsc::sync_channel(1);
-                        if !refresh_deliver(StreamEvent::RefreshToken { reply }) {
-                            return Err(
-                                Failure::SignedOut(SignOutReason::AuthenticationFailed).into()
-                            );
-                        }
-                        loop {
-                            match rx.recv_timeout(Duration::from_millis(100)) {
-                                Ok(result) => {
-                                    result?;
-                                    break;
-                                }
-                                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
-                                    if !stop.is_cancelled() => {}
-                                Err(_) => {
-                                    return Err(Failure::SignedOut(
-                                        SignOutReason::AuthenticationFailed,
-                                    )
-                                    .into());
-                                }
-                            }
-                        }
+                        refresh_stream_token(&stop, &refresh_deliver)?;
                     }
                     Ok(access.read().unwrap().clone())
                 },
@@ -738,9 +723,113 @@ fn decode_id(value: &str) -> Result<ServerId> {
 }
 
 #[cfg(test)]
-mod id_tests {
+mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn stream_reply_wait_wakes_for_reply_or_cancellation() {
+        use std::{sync::mpsc, thread, time::Duration};
+        for (authorize, cancel) in [(true, false), (true, true), (false, false), (false, true)] {
+            let stop = Arc::new(CancelToken::new());
+            let worker_stop = stop.clone();
+            let (events, pending) = mpsc::channel();
+            let deliver: Deliver = Arc::new(move |event| events.send(event).is_ok());
+            let (finished, done) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                if authorize {
+                    assert_eq!(
+                        asset_authorization(&FakeBackend::asset(true), &worker_stop, &deliver),
+                        if cancel {
+                            Err(crate::client::desktop::assets::Failure::Cancelled)
+                        } else {
+                            Ok(Some("token".into()))
+                        }
+                    );
+                } else {
+                    assert_eq!(
+                        refresh_stream_token(&worker_stop, &deliver),
+                        if cancel {
+                            Err(Failure::SignedOut(SignOutReason::AuthenticationFailed))
+                        } else {
+                            Ok(())
+                        }
+                    );
+                }
+                finished.send(()).unwrap();
+            });
+            let event = pending.recv_timeout(Duration::from_secs(3)).unwrap();
+            match &event {
+                StreamEvent::Authorize { reply, .. } if authorize => {
+                    if cancel {
+                        stop.cancel();
+                    } else {
+                        reply.try_send(Ok(Some("token".into()))).unwrap();
+                    }
+                }
+                StreamEvent::RefreshToken { reply } if !authorize => {
+                    if cancel {
+                        stop.cancel();
+                    } else {
+                        reply.try_send(Ok(())).unwrap();
+                    }
+                }
+                _ => panic!("unexpected stream request"),
+            }
+            done.recv_timeout(Duration::from_secs(3))
+                .expect("stream reply stayed blocked");
+            worker.join().unwrap();
+            drop(event);
+        }
+    }
+
+    #[test]
+    fn demo_stream_and_pairing_wake_on_cancellation() {
+        use std::{sync::mpsc, thread, time::Duration};
+        for pairing in [false, true] {
+            let stop = Arc::new(CancelToken::new());
+            let worker_stop = stop.clone();
+            let (started, entered) = mpsc::channel();
+            let (finished, done) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                if pairing {
+                    let mut backend = FakeBackend::signed_out();
+                    let result = backend.sign_in(
+                        worker_stop,
+                        Arc::new(move |event| {
+                            if matches!(
+                                event,
+                                PairEvent::Stage(crate::client::pairing::Stage::AwaitScan)
+                            ) {
+                                started.send(()).unwrap();
+                            }
+                        }),
+                    );
+                    assert!(result.is_err());
+                } else {
+                    let mut backend = FakeBackend::canned();
+                    backend
+                        .stream(
+                            0,
+                            worker_stop,
+                            Arc::new(move |event| {
+                                if matches!(event, StreamEvent::Connection(Ok(()))) {
+                                    started.send(()).unwrap();
+                                }
+                                true
+                            }),
+                        )
+                        .unwrap()();
+                }
+                finished.send(()).unwrap();
+            });
+            entered.recv_timeout(Duration::from_secs(3)).unwrap();
+            stop.cancel();
+            done.recv_timeout(Duration::from_secs(3))
+                .expect("demo worker stayed blocked");
+            worker.join().unwrap();
+        }
+    }
 
     #[test]
     fn reaction_actor_uses_the_observed_wire_field() {

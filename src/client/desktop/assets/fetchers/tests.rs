@@ -4,6 +4,7 @@ use std::{
     io::{BufRead, BufReader, Write},
     net::{TcpListener, TcpStream},
     sync::{
+        Condvar,
         atomic::{AtomicU64, Ordering},
         mpsc,
     },
@@ -813,10 +814,12 @@ fn official_image_urls_fetch_plain_bytes_without_line_headers() {
 
 // Keep the queue paused so ordering and capacity checks do not depend on worker timing.
 fn paused_fetchers() -> Fetchers {
+    let (ready, wait) = async_channel::bounded(THREADS);
     Fetchers {
         shared: Arc::new(Shared {
             queue: Mutex::default(),
-            ready: Condvar::new(),
+            ready,
+            wait,
             stop: Arc::default(),
             global_stop: Arc::default(),
             failures: Failures::default(),
@@ -961,15 +964,63 @@ fn workers_publish_evictions_after_inflight_fetches_finish() {
     }
     gate.release();
     let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
+    let mut inflight: std::collections::HashSet<_> =
+        (0..THREADS).map(|i| avatar(&base, i).key()).collect();
+    let mut evicted = false;
+    while !evicted || !inflight.is_empty() {
         let completion = completions
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .expect("workers never published the thumbnail eviction");
+            .expect("workers did not finish the inflight fetches and publish the eviction");
         if matches!(completion.result, Ok(Payload::Evicted)) {
             assert_eq!(completion.key, avatar(&base, THREADS).key());
-            break;
+            evicted = true;
+        } else if inflight.remove(&completion.key) {
+            assert!(matches!(completion.result, Ok(Payload::Image(_))));
         }
     }
     drop(fetchers);
     server.join().unwrap();
+}
+
+#[test]
+fn idle_workers_wake_for_work_and_both_shutdown_signals() {
+    for global in [false, true] {
+        let (_root, cache) = Cache::new();
+        let stop = Arc::new(CancelToken::new());
+        let (published, completions) = mpsc::channel();
+        let mut fetchers = Fetchers::start(
+            http::Transport::local_assets("http://127.0.0.1".into()),
+            cache,
+            stop.clone(),
+            Failures::default(),
+            |_, _| Ok(None),
+            move |completion, _| {
+                published.send(completion).unwrap();
+            },
+        );
+        let mut asset = avatar("http://127.0.0.1", 0);
+        asset.failure = Some(Failure::RejectedPath);
+        assert!(fetchers.enqueue(asset, Purpose::Thumbnail));
+        assert!(matches!(
+            completions
+                .recv_timeout(Duration::from_secs(3))
+                .unwrap()
+                .result,
+            Err(Failure::RejectedPath)
+        ));
+        let (finished, done) = mpsc::channel();
+        let worker = thread::spawn(move || {
+            if global {
+                stop.cancel();
+                for worker in fetchers.threads.drain(..) {
+                    worker.join().unwrap();
+                }
+            }
+            drop(fetchers);
+            finished.send(()).unwrap();
+        });
+        done.recv_timeout(Duration::from_secs(3))
+            .expect("idle asset workers did not stop");
+        worker.join().unwrap();
+    }
 }

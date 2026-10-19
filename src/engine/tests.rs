@@ -1,6 +1,18 @@
 use super::*;
 use crate::{client::error::classify, controller::AppState};
 
+fn resync_reply(
+    rx: &async_channel::Receiver<crate::backend::Result<()>>,
+) -> crate::backend::Result<()> {
+    futures_lite::future::block_on(futures_lite::future::or(
+        async { rx.recv().await.unwrap() },
+        async {
+            async_io::Timer::after(Duration::from_secs(3)).await;
+            panic!("resync reply timed out");
+        },
+    ))
+}
+
 struct App {
     worker: Worker,
     state: AppState,
@@ -22,7 +34,6 @@ impl App {
                 timing: Timing {
                     retry_initial: Duration::from_millis(1),
                     retry_max: Duration::from_millis(10),
-                    poll: Duration::from_millis(1),
                     offline_after: Duration::from_millis(100),
                     health_now: Instant::now,
                 },
@@ -136,6 +147,46 @@ fn persistent_stream_loss_shows_offline_and_success_clears_it() {
 }
 
 #[test]
+fn health_deadline_is_recomputed_after_a_message() {
+    static CLOCK: std::sync::OnceLock<Mutex<Instant>> = std::sync::OnceLock::new();
+    let clock = CLOCK.get_or_init(|| Mutex::new(Instant::now()));
+    let mut app = App::new();
+    app.on_engine(|engine| {
+        engine.timing.health_now = || *CLOCK.get().unwrap().lock().unwrap();
+        engine.timing.offline_after = Duration::from_secs(3600);
+    });
+    app.worker.sender.0.live(StreamEvent::Retry {
+        attempt: 1,
+        error: Failure::Unanswered,
+    });
+    app.on_engine(|_| {});
+    *clock.lock().unwrap() += Duration::from_secs(3600);
+    app.on_engine(|_| {});
+    app.until(|state| state.connection == Connection::Offline);
+    app.worker.sender.0.live(StreamEvent::Connection(Ok(())));
+    app.until(|state| state.connection == Connection::Online);
+}
+
+#[test]
+fn retry_deadline_set_by_completion_wakes_idle_engine() {
+    let mut app = App::new();
+    app.fake.set_page(
+        ChatId("alice".into()),
+        vec![FakeBackend::message("alice", 9000, "after retry", false)],
+    );
+    app.on_engine(|engine| {
+        engine.timing.retry_initial = Duration::from_millis(20);
+        engine.retry_later(Refresh::Recent(ChatId("alice".into())));
+    });
+    app.until(|state| {
+        state
+            .messages
+            .values()
+            .any(|row| row.body.as_text() == "after retry")
+    });
+}
+
+#[test]
 fn expired_session_cancels_queued_work_without_changing_the_reason() {
     let mut app = App::new();
     let (entered, release) = app.fake.block_send();
@@ -150,11 +201,20 @@ fn expired_session_cancels_queued_work_without_changing_the_reason() {
         Failure::SignedOut(SignOutReason::NotAuthorizedDevice),
     );
     app.worker.sender.send(Intent::StickerPackages);
+    let action = ProfileAction::Mute {
+        chat: ChatId("alice".into()),
+        disabled: true,
+    };
+    app.state.action = Some(action.clone());
+    app.worker
+        .sender
+        .send(Intent::ProfileAction(action.clone()));
     app.worker.sender.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "queued".into(),
         reply: None,
     });
+    app.on_engine(|_| {});
     app.expire_session();
     app.until(|state| {
         matches!(
@@ -181,7 +241,10 @@ fn expired_session_cancels_queued_work_without_changing_the_reason() {
             .any(|row| row.body.as_text() == "in flight" && row.delivery == Delivery::Sent)
     });
     app.on_engine(|_| {});
+    app.until(|state| state.action.is_none());
+    assert_eq!(app.state.action_error, Some(ProfileFailure::Mute));
     assert!(!app.fake.calls().contains(&FakeRpc::StickerPackages));
+    assert!(!app.fake.calls().contains(&FakeRpc::Action(action)));
     assert_eq!(
         app.state.connection,
         Connection::SignedOut {
@@ -371,12 +434,9 @@ fn refused_chat_refresh_stays_suppressed_across_resync_until_opened() {
     );
     app.fake
         .fail_rpc(FakeRpc::Messages(chat.clone()), failure.clone());
-    let (tx, rx) = mpsc::sync_channel(1);
+    let (tx, rx) = async_channel::bounded(1);
     app.on_engine(move |engine| engine.resync(None, tx).unwrap());
-    assert_eq!(
-        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
-        Err(failure)
-    );
+    assert_eq!(resync_reply(&rx), Err(failure));
     app.until(|s| {
         s.refresh_failures
             .contains_key(&Refresh::Recent(ChatId("alice".into())))
@@ -392,14 +452,14 @@ fn refused_chat_refresh_stays_suppressed_across_resync_until_opened() {
     let before = count(&app);
     // Exercise both the selected-chat path and the background-chat path.
     for selected in [true, false] {
-        let (tx, rx) = mpsc::sync_channel(1);
+        let (tx, rx) = async_channel::bounded(1);
         app.on_engine(move |engine| {
             if !selected {
                 engine.window = None;
             }
             engine.resync(None, tx).unwrap();
         });
-        rx.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+        resync_reply(&rx).unwrap();
         app.settle();
         assert_eq!(count(&app), before);
     }
@@ -417,9 +477,9 @@ fn live_chat_operation_allows_a_previously_refused_refresh() {
         &crate::client::decode_response("/getRecentMessagesV2", 400, b"bad request").unwrap_err(),
     );
     app.fake.fail_rpc(FakeRpc::Messages(chat.clone()), failure);
-    let (tx, rx) = mpsc::sync_channel(1);
+    let (tx, rx) = async_channel::bounded(1);
     app.on_engine(move |engine| engine.resync(None, tx).unwrap());
-    assert!(rx.recv_timeout(Duration::from_secs(3)).unwrap().is_err());
+    assert!(resync_reply(&rx).is_err());
     app.settle();
     let before = app
         .fake
@@ -520,12 +580,9 @@ fn suppression_is_only_for_invalid_requests_and_resync_owned_refreshes() {
         });
         app.fake
             .fail_rpc(FakeRpc::Messages(ChatId("alice".into())), failure.clone());
-        let (tx, rx) = mpsc::sync_channel(1);
+        let (tx, rx) = async_channel::bounded(1);
         app.on_engine(move |engine| engine.resync(None, tx).unwrap());
-        assert_eq!(
-            rx.recv_timeout(Duration::from_secs(3)).unwrap(),
-            Err(failure)
-        );
+        assert_eq!(resync_reply(&rx), Err(failure));
         app.settle();
         let before = app.fake.calls().len();
         app.on_engine(move |engine| {

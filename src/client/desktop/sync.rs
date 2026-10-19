@@ -3,7 +3,7 @@ use super::*;
 use crate::client::http::CancelToken;
 use std::{
     io::{BufRead, BufReader, Read},
-    sync::{Arc, mpsc},
+    sync::Arc,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -21,7 +21,7 @@ pub enum Event {
     Operation(Value),
     Resync {
         next_revision: Option<String>,
-        complete: mpsc::SyncSender<std::result::Result<(), crate::client::error::Failure>>,
+        complete: async_channel::Sender<std::result::Result<(), crate::client::error::Failure>>,
     },
 }
 #[derive(Default)]
@@ -218,27 +218,22 @@ fn dispatch(
                 .as_str()
                 .map(str::to_owned)
                 .or_else(|| number(&data["nextRevision"]).map(|v| v.to_string()));
-            let (tx, rx) = mpsc::sync_channel(1);
+            let (tx, rx) = async_channel::bounded(1);
             if !deliver(Event::Resync {
                 next_revision: next.clone(),
                 complete: tx,
             }) {
                 return Ok(false);
             }
-            loop {
-                if stop.is_cancelled() {
-                    return Ok(false);
-                }
-                match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(Ok(())) => break,
-                    Ok(Err(error)) => return Err(error.into()),
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        return Err(crate::client::error::Failure::Bug(
-                            "resync worker disconnected".into(),
-                        )
-                        .into());
-                    }
-                    Err(_) => {}
+            match stop.recv(&rx) {
+                Some(Ok(())) => {}
+                Some(Err(error)) => return Err(error.into()),
+                None if stop.is_cancelled() => return Ok(false),
+                None => {
+                    return Err(crate::client::error::Failure::Bug(
+                        "resync worker disconnected".into(),
+                    )
+                    .into());
                 }
             }
             if let Some(next) = next.and_then(|v| v.parse().ok()) {
@@ -247,7 +242,7 @@ fn dispatch(
             return Ok(false);
         }
         "connInfoRevision" if number(&data).is_some_and(|r| r > revisions.local) => {
-            let (tx, _rx) = mpsc::sync_channel(1);
+            let (tx, _rx) = async_channel::bounded(1);
             if !deliver(Event::Resync {
                 next_revision: None,
                 complete: tx,
@@ -399,7 +394,7 @@ mod transport_tests {
             match event {
                 Event::Operation(v) => seen.push(number(&v["revision"]).unwrap()),
                 Event::Resync { complete, .. } => {
-                    complete.send(Ok(())).unwrap();
+                    complete.send_blocking(Ok(())).unwrap();
                 }
                 Event::State(s) => assert_eq!(s, SyncState::Connected),
                 _ => {}
@@ -427,7 +422,7 @@ mod transport_tests {
                 &stop,
                 &mut |e| {
                     if let Event::Resync { complete, .. } = e {
-                        complete.send(Ok(())).unwrap();
+                        complete.send_blocking(Ok(())).unwrap();
                     }
                     true
                 }
@@ -437,7 +432,61 @@ mod transport_tests {
         Ok(())
     }
     #[test]
-    fn failed_full_sync_never_advances_and_cancellation_does_not_block() {
+    fn resync_wait_wakes_for_completion_or_cancellation() {
+        use std::{sync::mpsc, thread};
+        for cancel in [false, true] {
+            let stop = Arc::new(CancelToken::new());
+            let worker_stop = stop.clone();
+            let (requests, pending) = mpsc::channel();
+            let (finished, done) = mpsc::channel();
+            let worker = thread::spawn(move || {
+                let mut revisions = Revisions { local: 9 };
+                let result = dispatch(
+                    "fullSync",
+                    json!({"nextRevision":"20"}),
+                    &mut revisions,
+                    &mut 0,
+                    &worker_stop,
+                    &mut |event| {
+                        if let Event::Resync { complete, .. } = event {
+                            requests.send(complete).unwrap();
+                        }
+                        true
+                    },
+                );
+                finished.send((result.unwrap(), revisions.local)).unwrap();
+            });
+            let complete = pending.recv_timeout(Duration::from_secs(3)).unwrap();
+            if cancel {
+                stop.cancel();
+            } else {
+                complete.send_blocking(Ok(())).unwrap();
+            }
+            assert_eq!(
+                done.recv_timeout(Duration::from_secs(3))
+                    .expect("resync stayed blocked"),
+                (false, if cancel { 9 } else { 20 })
+            );
+            worker.join().unwrap();
+            if cancel {
+                assert!(
+                    !dispatch(
+                        "open",
+                        Value::Null,
+                        &mut Revisions { local: 9 },
+                        &mut 0,
+                        &stop,
+                        &mut |_| true,
+                    )
+                    .unwrap()
+                );
+            }
+            drop(complete);
+        }
+    }
+
+    #[test]
+    fn failed_full_sync_never_advances() {
         let stop = CancelToken::new();
         let mut r = Revisions { local: 9 };
         let mut attempt = 0;
@@ -451,7 +500,7 @@ mod transport_tests {
                 &mut |e| {
                     if let Event::Resync { complete, .. } = e {
                         complete
-                            .send(Err(crate::client::error::Failure::Unanswered))
+                            .send_blocking(Err(crate::client::error::Failure::Unanswered))
                             .unwrap();
                     }
                     true
@@ -460,20 +509,6 @@ mod transport_tests {
             .is_err()
         );
         assert_eq!(r.local, 9);
-        stop.cancel();
-        let started = Instant::now();
-        assert!(
-            !dispatch(
-                "open",
-                Value::Null,
-                &mut r,
-                &mut attempt,
-                &stop,
-                &mut |_| true
-            )
-            .unwrap()
-        );
-        assert!(started.elapsed() < Duration::from_millis(100));
     }
 }
 
