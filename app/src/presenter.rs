@@ -343,7 +343,7 @@ impl Presenter {
             row.image_failed = true;
             row.image_failure = format!("{failure:?}").into();
             row.image_error = text::image_text(*failure).into();
-            row.image_retryable = line::client::error::media_retry(*failure, false);
+            row.image_retryable = failure.retry_read();
         }
         if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
             for i in 0..runs.row_count() {
@@ -1257,7 +1257,7 @@ fn patch_message_asset(
             .map(|f| text::image_text(*f))
             .unwrap_or_default()
             .into();
-        row.image_retryable = failure.is_some_and(|f| line::client::error::media_retry(*f, false));
+        row.image_retryable = failure.is_some_and(|f| f.retry_read());
     }
     if row.sender_key == key
         && let Some(image) = image

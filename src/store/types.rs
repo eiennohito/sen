@@ -247,9 +247,22 @@ pub struct ChatId(pub String);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct Key(pub i64);
 /// Canonical decimal server identity: 1–20 digits, no leading zeros except zero.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ServerId(String);
+impl Ord for ServerId {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.0
+            .len()
+            .cmp(&other.0.len())
+            .then_with(|| self.0.cmp(&other.0))
+    }
+}
+impl PartialOrd for ServerId {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
 impl ServerId {
     pub fn as_str(&self) -> &str {
         &self.0
@@ -480,4 +493,33 @@ pub struct StickerPackage {
     pub name: String,
     pub version: String,
     pub stickers: Vec<Content>,
+}
+
+#[cfg(test)]
+mod server_id_ordering {
+    use super::*;
+    #[test]
+    fn canonical_ids_sort_numerically() {
+        let mut ids: Vec<_> = [
+            "10",
+            "0",
+            "9",
+            "18446744073709551616",
+            "9999999999999999999",
+        ]
+        .into_iter()
+        .map(|id| ServerId::new(id).unwrap())
+        .collect();
+        ids.sort();
+        assert_eq!(
+            ids.iter().map(ServerId::as_str).collect::<Vec<_>>(),
+            [
+                "0",
+                "9",
+                "10",
+                "9999999999999999999",
+                "18446744073709551616"
+            ]
+        );
+    }
 }

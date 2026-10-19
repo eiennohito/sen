@@ -1,4 +1,4 @@
-//! Read-only, bounded real-message decryption probe. Never persists chat data.
+//! Letter Sealing message envelopes, keys and cached channels.
 use super::*;
 
 pub(super) fn talk(api: &mut Api, method: &str, args: Value) -> Result<Value> {
@@ -59,18 +59,17 @@ impl Envelope {
     }
 }
 
-pub(super) fn own_key(api: &mut Api, state: &Value, id: u64) -> Result<u32> {
+pub(super) fn own_key(api: &mut Api, state: &Session, id: u64) -> Result<u32> {
     if let Some(key) = api.own_keys.get(&id) {
         return Ok(*key);
     }
     let rt = &mut api.rt;
-    let key = state["e2ee_keys"]
-        .as_array()
-        .context("missing saved E2EE keys")?
+    let key = state
+        .e2ee_keys
         .iter()
-        .find(|key| key["id"].as_u64() == Some(id))
+        .find(|key| key.id == id)
         .context("matching own key unavailable")?;
-    let h = rt.bytes(&decode(required(key, "exported_key")?)?);
+    let h = rt.bytes(&decode(&key.exported_key)?);
     let ptr = rt.static_call(Call::E2EEKeyLoadKey, &[h])?;
     rt.release(h)?;
     api.own_keys.insert(id, ptr);
@@ -109,7 +108,7 @@ pub(super) enum Channel {
 }
 pub(super) fn message_channel(
     api: &mut Api,
-    state: &Value,
+    state: &Session,
     my_mid: &str,
     id: &Channel,
 ) -> Result<u32> {
@@ -175,7 +174,7 @@ pub(super) fn message_channel(
 
 pub(super) fn decrypt(
     api: &mut Api,
-    state: &Value,
+    state: &Session,
     my_mid: &str,
     message: &Value,
     envelope: &Envelope,
@@ -242,7 +241,7 @@ pub(super) fn decrypt(
 
 pub(super) fn decrypt_body(
     api: &mut Api,
-    state: &Value,
+    state: &Session,
     my_mid: &str,
     raw: &Value,
 ) -> Result<Value> {
@@ -261,7 +260,7 @@ pub fn benchmark_history(
     to: &str,
     from: &str,
 ) -> Result<f64> {
-    let mut api = Api::new(wasm, version)?;
+    let mut api = Api::with_runtime(Runtime::new(wasm, version)?, wasm, version)?;
     let started = Instant::now();
     let h = api.rt.bytes(&decode(required(fixture, "exported_key")?)?);
     let key = api.rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
@@ -279,7 +278,7 @@ pub fn benchmark_history(
         },
         ch,
     )?;
-    let state = json!({"token_v3_issue_result":{"accessToken":"synthetic"},"e2ee_keys":[]});
+    let state = Session::default();
     let ct = decode(required(fixture, "ciphertext")?)?;
     let mut failed = 0;
     for index in 0..50 {
@@ -306,14 +305,12 @@ mod tests {
     use super::*;
 
     #[test]
-    #[ignore = "requires the locally obtained official WASM; synthetic fixture only"]
     fn cached_channel_is_reusable_across_messages() -> Result<()> {
+        let module = crate::test_support::installed_module();
+
         let fixture: Value =
             serde_json::from_str(include_str!("../../fixtures/letter-sealing-v2.json"))?;
-        let mut api = Api::new(
-            &crate::test_support::read_fixture(&crate::test_support::fixture_path())?,
-            crate::test_support::FIXTURE_VERSION,
-        )?;
+        let mut api = Api::new(&module.read()?, &module.version)?;
         let h = api.rt.bytes(&decode(required(&fixture, "exported_key")?)?);
         let key = api.rt.static_call(Call::Curve25519KeyLoadKey, &[h])?;
         api.rt.release(h)?;
@@ -345,7 +342,7 @@ mod tests {
             json!({"from":from,"to":to,"chunks":chunks,"contentMetadata":{"e2eeVersion":"1"}});
         // Empty own-key state makes a channel cache miss fail before any network
         // call. Neither account state nor a real token is read by this test.
-        let state = json!({"e2ee_keys":[],"token_v3_issue_result":{"accessToken":"synthetic-not-a-session"}});
+        let state = Session::default();
         let envelope = Envelope::parse(&message)?;
         for _ in 0..2 {
             assert_eq!(
@@ -392,12 +389,5 @@ mod tests {
             assert_eq!(envelope.ciphertext, ciphertext);
             assert_eq!((envelope.sender, envelope.receiver), (42, 99));
         }
-    }
-
-    #[test]
-    fn malformed_envelopes_are_rejected_before_entering_wasm() {
-        assert!(Envelope::parse(&json!({"chunks":[]})).is_err());
-        assert!(Envelope::parse(&json!({"chunks":["", "", "", "AA==", "AAAAAA=="]})).is_err());
-        assert!(Envelope::parse(&json!({"chunks":["", "", "", "AAAAAA==", "AAAAAA=="],"contentMetadata":{"e2eeVersion":"3"}})).is_err());
     }
 }

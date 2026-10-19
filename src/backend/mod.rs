@@ -194,20 +194,7 @@ impl LineBackend {
             Ok(client) => (client, None),
             Err(error) => {
                 crate::reporting::log("saved-session", "open", error.as_ref());
-                let reason = match error.downcast_ref::<crate::client::error::Error>() {
-                    Some(crate::client::error::Error::SignIn(reason)) => reason.clone(),
-                    None if error.chain().any(|cause| {
-                        cause.is::<Failure>()
-                            || cause.is::<crate::client::RpcError>()
-                            || cause.is::<crate::client::error::TransportFailure>()
-                    }) =>
-                    {
-                        return Err(error);
-                    }
-                    None => crate::client::error::SignInFailure::SavedSession(
-                        crate::client::error::SavedSessionFailure::Corrupt,
-                    ),
-                };
+                let reason = crate::client::error::saved_session_failure(&error)?;
                 (None, Some(reason))
             }
         };
@@ -326,17 +313,17 @@ impl Backend for LineBackend {
                 desktop::Client::from_api(
                     staged,
                     &self.cache,
-                    crate::credentials::load(staged)?,
+                    serde_json::from_value(crate::credentials::load(staged)?)
+                        .map_err(|_| crate::client::error::SignInFailure::SavedSession)?,
                     api,
                 )
             },
         )
         .map_err(|error| {
             crate::reporting::log("sign-in", "pairing", error.as_ref());
-            Failure::SignedOut(SignOutReason::Unavailable(pairing::failure(
-                &error,
-                cancel.is_cancelled(),
-            )))
+            Failure::SignedOut(SignOutReason::Unavailable(
+                crate::client::error::sign_in_failure(&error, cancel.is_cancelled()),
+            ))
         })?;
         client.installed_at(&self.state);
         self.client = Some(client);

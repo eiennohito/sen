@@ -1,4 +1,4 @@
-//! Explicit native sign-in. QR/PIN data stays in memory; old sessions are retained.
+//! Explicit native sign-in. QR/PIN data stays in memory; one previous session is retained.
 use super::*;
 use crate::client::http::CancelToken;
 
@@ -42,9 +42,8 @@ impl<F: Fn(Event)> NativeLogin<'_, F> {
         (self.emit)(Event::Stage(stage));
         Ok(())
     }
-    fn qr(&self, png: &[u8]) -> Result<()> {
+    fn qr(&self, image: image::RgbaImage) -> Result<()> {
         self.check()?;
-        let image = image::load_from_memory(png)?.to_rgba8();
         (self.emit)(Event::Qr {
             width: image.width(),
             height: image.height(),
@@ -78,8 +77,7 @@ fn login_with(
     let key = api.rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
     let public = bytes_method(&mut api.rt, Call::Curve25519KeyGetPublicKey, key, &[])?;
     let link = callback(required(&qr, "callbackUrl")?, &public)?;
-    let png = qr_png(&link)?;
-    progress.qr(&png)?;
+    progress.qr(qr::rgba(&link)?)?;
     progress.set(Stage::AwaitScan)?;
     let interval = qr["longPollingIntervalSec"]
         .as_u64()
@@ -106,14 +104,14 @@ fn login_with(
             Err(error) => {
                 let expired = error
                     .downcast_ref::<RpcError>()
-                    .is_some_and(|e| e.gateway == 10052 && e.status == 410);
+                    .is_some_and(RpcError::qr_expired);
                 if !expired || started.elapsed() > Duration::from_secs(300) {
-                    return Err(pairing::phone_error(error));
+                    return Err(error::phone_error(error));
                 }
             }
         }
     }
-    ensure!(verified, error::Error::SignIn(error::SignInFailure::Phone));
+    ensure!(verified, error::SignInFailure::Phone);
     progress.check()?;
     progress.scanned()?;
     progress.set(Stage::CheckingCertificate)?;
@@ -128,7 +126,7 @@ fn login_with(
             ensure!(
                 error
                     .downcast_ref::<RpcError>()
-                    .is_some_and(|e| e.http == 400),
+                    .is_some_and(RpcError::certificate_missing),
                 "certificate check failed: {error}"
             );
             let pin = api.qr("createPinCode", json!({"authSessionId":session}), "", 0)?;
@@ -145,7 +143,7 @@ fn login_with(
                 &session,
                 110,
             )
-            .map_err(pairing::phone_error)?;
+            .map_err(error::phone_error)?;
         }
     }
     progress.check()?;
@@ -155,10 +153,16 @@ fn login_with(
     if token["accessToken"].as_str().is_none_or(|s| s.is_empty()) {
         token = json!({"accessToken":required(&result,"authToken")?});
     }
-    let mut state = json!({"format":1,"token_v3_issue_result":token,"certificate":result["certificate"],"login_metadata":result["metaData"],"e2ee_keys":[]});
     progress.set(Stage::UnwrappingKeys)?;
-    let keys = unwrap_keys(&mut api.rt, key, &state["login_metadata"])?;
-    state["e2ee_keys"] = json!(keys);
+    let keys = unwrap_keys(&mut api.rt, key, &result["metaData"])?;
+    let mut state = Session {
+        format: 1,
+        token_v3_issue_result: serde_json::from_value(token)?,
+        certificate: result["certificate"].clone(),
+        login_metadata: result["metaData"].clone(),
+        e2ee_keys: keys,
+        ..Default::default()
+    };
     save_state(state_path, &state)?;
     progress.set(Stage::KeysVerified)?;
     api.rt.destroy("Curve25519Key", key)?;
@@ -168,7 +172,8 @@ fn login_with(
         profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
         "authenticated profile missing"
     );
-    state["profile"] = profile;
+    state.profile = serde_json::from_value(profile)?;
+    api.state = state.clone();
     save_state(state_path, &state)?;
     progress.set(Stage::CheckingKeys)?;
     validate_keys(api, &state)?;
@@ -185,7 +190,7 @@ pub fn sign_in(
     emit: impl Fn(Event),
 ) -> Result<()> {
     if cancel.is_cancelled() {
-        return Err(super::error::Error::SignIn(super::error::SignInFailure::Cancelled).into());
+        return Err(super::error::SignInFailure::Cancelled.into());
     }
     let module = crate::crypto_module::resolve(wasm_override, version_override)?;
     sign_in_validated(state, module, cancel, emit, |_, _| Ok(()))
@@ -204,10 +209,8 @@ pub(crate) fn sign_in_validated<T>(
     let mut api = Api::with_runtime(module.runtime(&wasm)?, &wasm, &module.version)?;
     ui.set(Stage::WaitingKeyring)?;
     let probe_state = state.to_owned();
-    let (send, receive) = std::sync::mpsc::sync_channel(1);
-    // Filesystem probes and Secret Service may block without reading our token.
-    // Poll their result on the pairing owner so cancellation also releases the
-    // network queue. The probe owns no pairing session and never publishes UI.
+    let (send, receive) = async_channel::bounded(1);
+    // Race prerequisite completion against cancellation without polling.
     std::thread::spawn(move || {
         let result = (|| -> Result<_> {
             let state = probe_state;
@@ -217,37 +220,32 @@ pub(crate) fn sign_in_validated<T>(
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
             let probe_directory = || -> Result<u128> {
-                let new_directory = !parent.exists();
-                fs::create_dir_all(parent)?;
-                if new_directory {
-                    fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
-                }
+                private_directory(parent)?;
                 let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
                 let probe = state.with_extension(format!("sign-in-{stamp}.check"));
                 private_write(&probe, b"sign-in storage check")?;
                 fs::remove_file(probe)?;
                 Ok(stamp)
             };
-            let stamp = probe_directory().context(super::error::Error::SignIn(
-                super::error::SignInFailure::StateDirectory(parent.into()),
-            ))?;
-            crate::credentials::check_writable().context(super::error::Error::SignIn(
-                super::error::SignInFailure::Keyring,
-            ))?;
+            let stamp = probe_directory()
+                .context(super::error::SignInFailure::StateDirectory(parent.into()))?;
+            crate::credentials::check_writable().context(super::error::SignInFailure::Keyring)?;
             Ok(stamp)
         })();
-        let _ = send.send(result);
+        let _ = send.send_blocking(result);
     });
-    let stamp = loop {
-        ui.check()?;
-        match receive.recv_timeout(Duration::from_millis(25)) {
-            Ok(result) => break result?,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-                bail!("sign-in prerequisite worker exited")
-            }
-        }
-    };
+    let stamp = futures_lite::future::block_on(futures_lite::future::or(
+        async {
+            receive
+                .recv()
+                .await
+                .context("sign-in prerequisite worker exited")?
+        },
+        async {
+            cancel.cancelled().await;
+            Err(error::SignInFailure::Cancelled.into())
+        },
+    ))?;
     ui.check()?;
     let parent = state
         .parent()
@@ -257,13 +255,16 @@ pub(crate) fn sign_in_validated<T>(
     login_with(&staged, &mut api, &ui)?;
     let validated = validate(&staged, api)?;
     ui.check()?;
-    install_session(state, &staged, Some(cancel)).context(super::error::Error::SignIn(
-        super::error::SignInFailure::StateDirectory(parent.into()),
-    ))?;
+    install_session(state, &staged, Some(cancel))
+        .context(super::error::SignInFailure::StateDirectory(parent.into()))?;
     Ok(validated)
 }
 
 fn install_session(state: &Path, staged: &Path, cancel: Option<&CancelToken>) -> Result<()> {
+    ensure!(
+        !cancel.is_some_and(|cancel| cancel.is_cancelled()),
+        super::error::SignInFailure::Cancelled
+    );
     let bytes = fs::read(staged)?;
     // Preserve old credentials so their separately encrypted drafts remain
     // recoverable. Never re-key or migrate drafts into a newly paired account.
@@ -272,33 +273,15 @@ fn install_session(state: &Path, staged: &Path, cancel: Option<&CancelToken>) ->
         let backup = state.with_extension(format!("before-sign-in-{stamp}.json"));
         private_write(&backup, &fs::read(state)?)?;
     }
-    ensure!(
-        !cancel.is_some_and(|cancel| cancel.is_cancelled()),
-        super::error::Error::SignIn(super::error::SignInFailure::Cancelled)
-    );
     private_write(state, &bytes)?;
     let _ = fs::remove_file(staged);
     Ok(())
 }
 
-/// Classify at the pairing boundary before protocol diagnostics are discarded.
-pub fn failure(error: &anyhow::Error, cancelled: bool) -> super::error::SignInFailure {
-    super::error::sign_in_failure(error, cancelled)
-}
-
-pub(super) fn phone_error(error: anyhow::Error) -> anyhow::Error {
-    if error.downcast_ref::<super::RpcError>().is_some() {
-        error.context(super::error::Error::SignIn(
-            super::error::SignInFailure::Phone,
-        ))
-    } else {
-        error
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     #[test]
     fn missing_or_unsupported_crypto_fails_before_requesting_a_qr() -> Result<()> {
         use super::super::error::SignInFailure;
@@ -328,7 +311,7 @@ mod tests {
             )
             .unwrap_err();
             assert_eq!(
-                failure(&error, false),
+                error::sign_in_failure(&error, false),
                 SignInFailure::CryptoModule(wasm.clone())
             );
             assert!(!state.exists());
@@ -338,33 +321,16 @@ mod tests {
     }
 
     #[test]
-    fn transport_and_phone_errors_keep_their_categories() {
-        use super::super::error::{Failure, SignInFailure};
-        let offline = anyhow::Error::new(Failure::NotDelivered).context("transport");
-        assert_eq!(failure(&offline, false), SignInFailure::Network);
-        let rpc = super::super::RpcError {
-            gateway: 0,
-            method: "checkPinCodeVerified".into(),
-            http: 403,
-            code: 1,
-            status: 403,
-        };
-        assert_eq!(
-            failure(&phone_error(rpc.into()), false),
-            SignInFailure::Phone
-        );
-        assert_eq!(failure(&offline, true), SignInFailure::Cancelled);
-    }
-
-    #[test]
     fn qr_gateway_poll_timeout_keeps_waiting_until_the_scan_event() -> Result<()> {
+        let module = crate::test_support::installed_module();
+
         use crate::client::http::tests::{accept, local_server};
         use std::io::{BufRead, BufReader, Read};
         let (http, server) = local_server(|listener| {
             for response in [
                 json!({"code":0,"message":"OK","data":{"authSessionId":"synthetic"}}),
                 json!({"code":0,"message":"OK","data":{"callbackUrl":"line://au/q/test","longPollingMaxCount":2}}),
-                json!({"code":10052,"data":{"statusCode":410}}),
+                error::wire_fixture::qr_expired(),
                 json!({"code":0,"message":"OK","data":{}}),
             ] {
                 let mut socket = BufReader::new(accept(&listener));
@@ -392,8 +358,8 @@ mod tests {
                 .unwrap();
             }
         });
-        let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
-        let mut api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
+        let wasm = module.read()?;
+        let mut api = Api::new(&wasm, &module.version)?;
         api.http = http;
         let cancel = CancelToken::new();
         let events = std::cell::RefCell::new(Vec::new());
@@ -427,43 +393,6 @@ mod tests {
     }
 
     #[test]
-    fn qr_png_reaches_the_desktop_as_rgba() -> Result<()> {
-        let link = "line://au/q/synthetic?secret=synthetic&e2eeVersion=1";
-        let modules = qrcodegen::QrCode::encode_text(link, qrcodegen::QrCodeEcc::Low)?.size();
-        let png = qr_png(link)?;
-        let events = std::cell::RefCell::new(Vec::new());
-        let cancel = CancelToken::new();
-        let ui = NativeLogin {
-            emit: |event| events.borrow_mut().push(event),
-            cancel: &cancel,
-        };
-        ui.qr(&png)?;
-        let Event::Qr {
-            width,
-            height,
-            rgba,
-        } = events.borrow_mut().pop().unwrap()
-        else {
-            panic!("expected QR image");
-        };
-        let size = ((modules + 8) * 10) as u32;
-        assert_eq!((width, height), (size, size));
-        assert_eq!(rgba.len(), (width * height * 4) as usize);
-        let (pixels, remainder) = rgba.as_chunks::<4>();
-        assert!(remainder.is_empty());
-        assert!(
-            pixels
-                .iter()
-                .all(|pixel| matches!(pixel, [0, 0, 0, 255] | [255, 255, 255, 255]))
-        );
-        assert!(pixels.contains(&[0, 0, 0, 255]));
-        assert!(pixels.contains(&[255, 255, 255, 255]));
-        cancel.cancel();
-        assert!(ui.qr(&png).is_err());
-        assert!(events.borrow().is_empty());
-        Ok(())
-    }
-    #[test]
     fn replacement_preserves_old_session_and_cancellation_never_pairs() -> Result<()> {
         let root = std::env::temp_dir().join(format!("line-pairing-{}", std::process::id()));
         fs::create_dir_all(&root)?;
@@ -483,7 +412,16 @@ mod tests {
             })
             .unwrap();
         assert_eq!(fs::read(&backup)?, b"old session");
-        assert_eq!(fs::metadata(backup)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(&backup)?.permissions().mode() & 0o777, 0o600);
+        private_write(&staged, b"latest session")?;
+        install_session(&state, &staged, None)?;
+        assert_eq!(fs::read(&backup)?, b"old session");
+        assert_eq!(fs::read_dir(&root)?.count(), 3);
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        private_write(&staged, b"cancelled session")?;
+        assert!(install_session(&state, &staged, Some(&cancel)).is_err());
+        assert_eq!(fs::read(&backup)?, b"old session");
         assert!(
             sign_in(
                 &state,
@@ -498,7 +436,7 @@ mod tests {
             )
             .is_err()
         );
-        assert_eq!(fs::read(&state)?, b"new session");
+        assert_eq!(fs::read(&state)?, b"latest session");
         fs::remove_dir_all(root)?;
         Ok(())
     }

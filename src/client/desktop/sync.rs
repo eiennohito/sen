@@ -67,7 +67,6 @@ impl Decoder {
     }
 }
 /// Revision is advanced only after the bounded consumer has accepted the event.
-#[derive(Default)]
 pub struct Revisions {
     pub local: u64,
 }

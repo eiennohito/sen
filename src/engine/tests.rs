@@ -76,16 +76,10 @@ impl App {
             self.state.apply(delta);
         }
     }
-    fn retry(&self, code: i64) {
-        let error = classify(
-            &crate::client::RpcError {
-                gateway: 0,
-                method: "stream".into(),
-                http: 200,
-                code,
-                status: 0,
-            }
-            .into(),
+    fn expire_session(&self) {
+        let error = crate::client::error::classify(
+            &crate::client::decode_response("/test", 200, br#"{"code":10051,"data":{"code":1}}"#)
+                .unwrap_err(),
         );
         self.worker
             .sender
@@ -127,8 +121,7 @@ fn persistent_stream_loss_shows_offline_and_success_clears_it() {
         error: Failure::Unanswered,
     });
     app.until(|state| state.connection == Connection::Offline);
-    let response =
-        crate::client::error::decode_response("/api/test", 503, "", b"unavailable").unwrap_err();
+    let response = crate::client::decode_response("/api/test", 503, b"unavailable").unwrap_err();
     app.worker.sender.0.live(StreamEvent::Retry {
         attempt: 2,
         error: classify(&response),
@@ -137,7 +130,7 @@ fn persistent_stream_loss_shows_offline_and_success_clears_it() {
 }
 
 #[test]
-fn code_one_ends_the_session_and_cancels_queued_work_without_changing_the_reason() {
+fn expired_session_cancels_queued_work_without_changing_the_reason() {
     let mut app = App::new();
     let (entered, release) = app.fake.block_send();
     app.worker.sender.send(Intent::Send {
@@ -156,7 +149,7 @@ fn code_one_ends_the_session_and_cancels_queued_work_without_changing_the_reason
         text: "queued".into(),
         reply: None,
     });
-    app.retry(1);
+    app.expire_session();
     app.until(|state| {
         matches!(
             state.connection,
@@ -205,8 +198,7 @@ fn refresh_503_backoff_does_not_hold_a_send() {
         .iter()
         .filter(|call| **call == FakeRpc::Messages(chat.clone()))
         .count();
-    let error =
-        crate::client::error::decode_response("/api/test", 503, "", b"unavailable").unwrap_err();
+    let error = crate::client::decode_response("/api/test", 503, b"unavailable").unwrap_err();
     app.fake
         .fail_rpc(FakeRpc::Messages(chat.clone()), classify(&error));
     app.worker.sender.send(Intent::Page {

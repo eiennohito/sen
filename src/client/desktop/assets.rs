@@ -415,8 +415,7 @@ impl ImageCache {
     }
     pub fn new(root: &Path, account: &str) -> Result<Self> {
         let directory = root.join(format!("{:x}", Sha256::digest(account.as_bytes())));
-        fs::create_dir_all(&directory)?;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
+        super::super::private_directory(&directory)?;
         let mut cache = Self {
             directory,
             memory: HashMap::new(),
@@ -609,6 +608,7 @@ pub(super) fn original_pixels(bytes: &[u8]) -> Result<Pixels> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
     #[test]
     fn recently_read_old_media_survives_prune() -> Result<()> {
         let root = std::env::temp_dir().join(format!("line-cache-lru-{}", std::process::id()));

@@ -787,9 +787,11 @@ impl Runtime {
             }
             let handler = spec.handler.expect("host handler");
             linker.func_new("a", spec.name, ty.clone(), move |c, args, out| {
-                handler(c, args, out).map_err(|e| match e.downcast::<crate::client::Error>() {
-                    Ok(e) => wasmi::Error::host(e),
-                    Err(e) => wasmi::Error::new(format!("import {}: {e:#}", spec.name)),
+                handler(c, args, out).map_err(|e| {
+                    match e.downcast::<crate::client::error::SignInFailure>() {
+                        Ok(e) => wasmi::Error::host(e),
+                        Err(e) => wasmi::Error::new(format!("import {}: {e:#}", spec.name)),
+                    }
                 })
             })?;
         }
@@ -1181,10 +1183,10 @@ impl Runtime {
 }
 
 fn crypto_changed(version: &str, missing: &str) -> anyhow::Error {
-    crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged {
+    crate::client::error::SignInFailure::CryptoChanged {
         version: version.into(),
         missing: missing.into(),
-    })
+    }
     .into()
 }
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1242,7 +1244,7 @@ interface! {
 }
 
 fn runtime_error(error: wasmi::Error) -> anyhow::Error {
-    match error.downcast_ref::<crate::client::Error>() {
+    match error.downcast_ref::<crate::client::error::SignInFailure>() {
         Some(error) => error.clone().into(),
         None => error.into(),
     }
@@ -1269,7 +1271,7 @@ mod contract_tests {
             .err()
             .expect("bad export accepted");
         assert!(
-            matches!(error.downcast_ref::<crate::client::Error>(), Some(crate::client::Error::SignIn(crate::client::error::SignInFailure::CryptoChanged { missing, .. })) if missing == "P")
+            matches!(error.downcast_ref::<crate::client::error::SignInFailure>(), Some(crate::client::error::SignInFailure::CryptoChanged { missing, .. }) if missing == "P")
         );
     }
     #[test]
@@ -1283,10 +1285,8 @@ mod contract_tests {
                 .err()
                 .expect("invalid interface accepted");
             assert!(matches!(
-                error.downcast_ref::<crate::client::Error>(),
-                Some(crate::client::Error::SignIn(
-                    crate::client::error::SignInFailure::CryptoChanged { .. }
-                ))
+                error.downcast_ref::<crate::client::error::SignInFailure>(),
+                Some(crate::client::error::SignInFailure::CryptoChanged { .. })
             ));
         }
     }
