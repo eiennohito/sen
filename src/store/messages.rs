@@ -162,7 +162,7 @@ fn receipt(conn: &Connection, m: &mut StoredMessage) -> Result<()> {
             |r| r.get(0),
         )?;
         if let Some(marker) = marker
-            && server_sort(id) <= server_sort(&ServerId::new(marker)?)
+            && *id <= ServerId::new(marker)?
         {
             m.delivery = Delivery::Read;
         }
@@ -601,7 +601,7 @@ impl Store {
                 )?
                 .map(ServerId::new)
                 .transpose()?;
-            let marker = numeric_max(old, Some(up_to)).expect("marker supplied");
+            let marker = max(old, Some(up_to)).expect("marker supplied");
             tx.execute(
                 "UPDATE chat SET receipt_server_id=?2 WHERE chat_id=?1",
                 params![chat.0, marker,],

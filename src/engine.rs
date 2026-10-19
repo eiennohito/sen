@@ -2189,14 +2189,7 @@ impl Engine {
         if active {
             self.emit(Delta::UploadFinished(key));
         }
-        if active
-            && same_session
-            && matches!(
-                result,
-                Err(Failure::NotDelivered
-                    | Failure::Refused(Refusal::Talk(115) | Refusal::Gateway(99999)))
-            )
-        {
+        if active && same_session && result.as_ref().is_err_and(|failure| failure.retry_send()) {
             self.retry_later(Refresh::Send(key));
             return Ok(());
         }

@@ -88,7 +88,7 @@ impl FakeBackend {
     }
     pub fn open(&self) -> anyhow::Result<Self> {
         if let Some(reason) = self.0.lock().unwrap().open_failure.clone()
-            && !matches!(reason, crate::client::error::SignInFailure::SavedSession(_))
+            && !matches!(reason, crate::client::error::SignInFailure::SavedSession)
         {
             return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)).into());
         }

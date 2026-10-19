@@ -1,5 +1,5 @@
 use super::*;
-use crate::client::error::{media_failure, media_retry};
+use crate::client::error::media_failure;
 use crate::client::http::CancelToken;
 use std::{
     collections::HashSet,
@@ -50,8 +50,8 @@ impl Failures {
             key,
             Failed {
                 class,
-                retry: media_retry(class, false),
-                automatic_retry: media_retry(class, true),
+                retry: class.retry_read(),
+                automatic_retry: class.retry_automatically(),
                 at: Instant::now(),
                 job,
                 retried,

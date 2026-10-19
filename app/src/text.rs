@@ -19,9 +19,15 @@ pub(crate) fn image_text(failure: Failure) -> &'static str {
 
 pub(crate) fn rejection(reason: &Refusal) -> String {
     match reason {
-        Refusal::Http(code) => return format!("HTTP {code}"),
-        Refusal::Gateway(code) => return format!("gateway code {code}"),
-        Refusal::Talk(code) => return format!("server code {code}"),
+        Refusal::Server(line::client::error::ServerRefusal::Http(code)) => {
+            return format!("HTTP {code}");
+        }
+        Refusal::Server(line::client::error::ServerRefusal::Gateway(code)) => {
+            return format!("gateway code {code}");
+        }
+        Refusal::Server(line::client::error::ServerRefusal::Talk(code)) => {
+            return format!("server code {code}");
+        }
         Refusal::SignedOut => "signed out",
         Refusal::Unanswered => "no answer received",
         Refusal::AppClosed => "app closed before sending",
@@ -104,20 +110,27 @@ pub fn sign_in_failure(reason: &line::client::error::SignInFailure) -> String {
         Server => "LINE refused sign-in. Try again later.".into(),
         Phone => "Phone approval was rejected or timed out. Start again and approve sign-in on your phone.".into(),
         Cancelled => String::new(),
-        SavedSession(reason) => {
-            use line::client::error::SavedSessionFailure;
-            let reason = match reason {
-                SavedSessionFailure::Keys => "Letter Sealing keys are missing or do not match",
-                SavedSessionFailure::Corrupt => "the saved data is corrupt",
-                SavedSessionFailure::CredentialsStore => "the credentials store does not match",
-                SavedSessionFailure::Keyring => "the keyring is locked or unavailable, or its key is missing",
-                SavedSessionFailure::Io => "the saved session could not be read or written",
-                SavedSessionFailure::ImageCache => "the image cache could not be opened",
-            };
-            format!("Your saved sign-in can't be used: {reason}. Sign in again to replace it.")
-        },
+        SavedSession => "Your saved sign-in file is corrupt or unreadable. Restore a backup or sign in again.".into(),
+        SessionStoreMismatch => "Your saved sign-in uses a different credential store. Select the original credential store and try again.".into(),
+        SessionKeyMissing => "Unlock your keyring and try again. This saved sign-in needs its original keyring item; restore it if missing.".into(),
+        SessionIo => "Can't read or write your saved sign-in file. Check file permissions and storage, then try again.".into(),
         Expired => "Sign-in expired. Sign in again.".into(),
         SessionIdentity => "The saved sign-in belongs to a different account. Sign in again.".into(),
         Internal => "Sign-in stopped because of an internal error. See the log and try again.".into(),
+    }
+}
+
+pub fn sign_out_reason(reason: &line::client::error::SignOutReason) -> String {
+    use line::client::error::SignOutReason::*;
+    match reason {
+        Unavailable(reason) => sign_in_failure(reason),
+        NoSession => "Sign in to connect to LINE.".into(),
+        AuthenticationFailed => "Sign-in expired. Sign in again.".into(),
+        NotAvailableUser => "This LINE account is unavailable.".into(),
+        NotAuthorizedDevice => "This device is no longer authorized. Sign in again.".into(),
+        TokenRefresh => "Your sign-in could not be renewed. Sign in again.".into(),
+        IdentityChanged => {
+            "The saved sign-in belongs to a different account. Sign in again.".into()
+        }
     }
 }

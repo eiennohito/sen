@@ -1,5 +1,18 @@
 //! The single network-policy boundary.
 use super::http::TransportError;
+use std::fmt;
+pub(super) const TALK_EXCEPTION: i64 = 10051;
+pub(super) const UNKNOWN_GATEWAY: i64 = 99999;
+
+#[derive(Debug)]
+pub(crate) struct RpcError {
+    pub(crate) gateway: i64,
+    pub(crate) method: String,
+    pub(crate) http: u16,
+    pub(crate) code: i64,
+    pub(crate) status: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum Failure {
     #[error("request not written")]
@@ -14,6 +27,7 @@ pub enum Failure {
     #[error("internal failure: {0}")]
     Bug(String),
 }
+
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SignOutReason {
     #[error("no session")]
@@ -31,12 +45,7 @@ pub enum SignOutReason {
     #[error("{0}")]
     Unavailable(SignInFailure),
 }
-/// Local sign-in prerequisites are independent of network policy.
-#[derive(Clone, Debug, thiserror::Error)]
-pub enum Error {
-    #[error("sign-in failed: {0:?}")]
-    SignIn(SignInFailure),
-}
+
 /// Whether hyper may have delivered the request, with a redacted transport cause.
 #[derive(Debug, thiserror::Error)]
 #[error("HTTPS transport failed; response not logged")]
@@ -44,6 +53,75 @@ pub(crate) struct TransportFailure {
     pub write_started: bool,
     pub source: TransportError,
 }
+
+/// Stable rejection categories; diagnostic errors never become row text.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
+pub enum Refusal {
+    #[error("internal error")]
+    Internal,
+    #[error(transparent)]
+    Server(#[from] ServerRefusal),
+    #[error("signed out")]
+    SignedOut,
+    #[error("no answer received")]
+    Unanswered,
+    #[error("app closed before sending")]
+    AppClosed,
+    #[error("File missing")]
+    FileMissing,
+    #[serde(other)]
+    #[serde(rename = "Message was not accepted")]
+    #[error("rejection: {self:?}")]
+    NotAccepted,
+}
+
+/// Rejections returned by the remote services.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
+pub enum ServerRefusal {
+    #[error("HTTP {0}")]
+    Http(u16),
+    #[error("gateway code {0}")]
+    Gateway(i64),
+    #[error("TalkException code {0}")]
+    Talk(i64),
+}
+
+/// Prerequisites and protocol outcomes carried intact to the sign-in surface.
+#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
+#[error("sign-in: {}", self.kind())]
+pub enum SignInFailure {
+    CryptoModule(std::path::PathBuf),
+    ExtensionMissing,
+    CryptoChanged { version: String, missing: String },
+    StateDirectory(std::path::PathBuf),
+    Keyring,
+    Network,
+    Server,
+    Phone,
+    Cancelled,
+    SavedSession,
+    SessionStoreMismatch,
+    SessionKeyMissing,
+    SessionIo,
+    Expired,
+    SessionIdentity,
+    Internal,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("HTTPS request cancelled")]
+pub(crate) struct Cancelled;
+
+impl fmt::Display for RpcError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: HTTP {}, LINE code {}, status {}",
+            self.method, self.http, self.code, self.status
+        )
+    }
+}
+impl std::error::Error for RpcError {}
 
 pub(super) fn find_source<T: std::error::Error + Send + Sync + 'static>(
     error: &anyhow::Error,
@@ -67,7 +145,7 @@ fn causes(error: &anyhow::Error) -> impl Iterator<Item = &(dyn std::error::Error
 }
 
 pub fn classify(error: &anyhow::Error) -> Failure {
-    if let Some(Error::SignIn(reason)) = error.downcast_ref::<Error>() {
+    if let Some(reason) = error.downcast_ref::<SignInFailure>() {
         return Failure::SignedOut(SignOutReason::Unavailable(reason.clone()));
     }
     if let Some(failure) = error.downcast_ref::<Failure>() {
@@ -89,19 +167,25 @@ pub fn classify(error: &anyhow::Error) -> Failure {
                 _ => Failure::Bug("HTTP protocol failure".into()),
             };
         }
-        if let Some(error) = cause.downcast_ref::<crate::client::RpcError>() {
-            if error.gateway == 99999 {
-                return Failure::Refused(Refusal::Gateway(99999));
+        if let Some(error) = cause.downcast_ref::<RpcError>() {
+            if error.gateway == UNKNOWN_GATEWAY {
+                return Failure::Refused(Refusal::Server(ServerRefusal::Gateway(UNKNOWN_GATEWAY)));
             }
             return match error.code {
                 1 => Failure::SignedOut(SignOutReason::AuthenticationFailed),
                 7 => Failure::SignedOut(SignOutReason::NotAvailableUser),
                 8 => Failure::SignedOut(SignOutReason::NotAuthorizedDevice),
-                115 => Failure::Refused(Refusal::Talk(115)),
-                code if code != 0 => Failure::Refused(Refusal::Talk(code)),
-                _ if error.http != 200 => Failure::Refused(Refusal::Http(error.http)),
-                _ if error.gateway != 0 => Failure::Refused(Refusal::Gateway(error.gateway)),
-                _ => Failure::Refused(Refusal::Gateway(99999)),
+                code if code != 0 => Failure::Refused(Refusal::Server(ServerRefusal::Talk(code))),
+                _ if error.http != 200 => {
+                    Failure::Refused(Refusal::Server(ServerRefusal::Http(error.http)))
+                }
+                _ => Failure::Refused(Refusal::Server(ServerRefusal::Gateway(
+                    if error.gateway == 0 {
+                        UNKNOWN_GATEWAY
+                    } else {
+                        error.gateway
+                    },
+                ))),
             };
         }
         if let Some(error) = cause.downcast_ref::<super::desktop::assets::Failure>() {
@@ -109,56 +193,13 @@ pub fn classify(error: &anyhow::Error) -> Failure {
                 super::desktop::assets::Failure::Network
                 | super::desktop::assets::Failure::Timeout => Failure::Unanswered,
                 super::desktop::assets::Failure::Http(code) => {
-                    Failure::Refused(Refusal::Http(*code))
+                    Failure::Refused(Refusal::Server(ServerRefusal::Http(*code)))
                 }
                 _ => Failure::Bug("media response failure".into()),
             };
         }
     }
     Failure::Bug("decode, crypto, protocol or invariant failure".into())
-}
-
-/// Stable rejection categories; diagnostic errors never become row text.
-#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, thiserror::Error)]
-pub enum Refusal {
-    #[error("internal error")]
-    Internal,
-    #[error("HTTP {0}")]
-    Http(u16),
-    #[error("gateway code {0}")]
-    Gateway(i64),
-    #[error("TalkException code {0}")]
-    Talk(i64),
-    #[error("signed out")]
-    SignedOut,
-    #[error("no answer received")]
-    Unanswered,
-    #[error("app closed before sending")]
-    AppClosed,
-    #[error("File missing")]
-    FileMissing,
-    #[serde(other)]
-    #[serde(rename = "Message was not accepted")]
-    #[error("rejection: {self:?}")]
-    NotAccepted,
-}
-
-/// Prerequisites and protocol outcomes carried intact to the sign-in surface.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum SignInFailure {
-    CryptoModule(std::path::PathBuf),
-    ExtensionMissing,
-    CryptoChanged { version: String, missing: String },
-    StateDirectory(std::path::PathBuf),
-    Keyring,
-    Network,
-    Server,
-    Phone,
-    Cancelled,
-    SavedSession(SavedSessionFailure),
-    Expired,
-    SessionIdentity,
-    Internal,
 }
 
 impl SignInFailure {
@@ -179,7 +220,10 @@ impl SignInFailure {
             Self::Server => "server",
             Self::Phone => "phone",
             Self::Cancelled => "cancelled",
-            Self::SavedSession(_) => "saved-session",
+            Self::SavedSession => "saved-session-corrupt",
+            Self::SessionStoreMismatch => "saved-session-store-mismatch",
+            Self::SessionKeyMissing => "saved-session-key-missing",
+            Self::SessionIo => "saved-session-io",
             Self::Internal => "internal",
             Self::Expired => "expired",
             Self::SessionIdentity => "session-identity",
@@ -187,160 +231,153 @@ impl SignInFailure {
     }
 }
 
-/// Local saved-session failures, independent of LINE authentication.
-#[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum SavedSessionFailure {
-    #[error("saved-session: {self:?}")]
-    Keys,
-    #[error("saved-session: {self:?}")]
-    Corrupt,
-    #[error("saved-session: {self:?}")]
-    CredentialsStore,
-    #[error("saved-session: {self:?}")]
-    Keyring,
-    #[error("saved-session: {self:?}")]
-    Io,
-    #[error("saved-session: {self:?}")]
-    ImageCache,
-}
-impl SavedSessionFailure {
-    pub(crate) fn error(self) -> Error {
-        Error::SignIn(SignInFailure::SavedSession(self))
-    }
-}
-
-impl super::Api {
-    pub(super) fn call(
-        &mut self,
-        path: &str,
-        args: &serde_json::Value,
-        session: &str,
-        poll_seconds: u64,
-    ) -> anyhow::Result<serde_json::Value> {
-        let token = super::access(&self.state)
-            .map_err(|_| Failure::SignedOut(SignOutReason::NoSession))?
-            .to_owned();
-        let result = self.call_once(path, args, &token, session, poll_seconds);
-        if !needs_refresh(&result) {
-            return result;
-        }
-        self.refresh_session()?;
-        let token = super::access(&self.state)?.to_owned();
-        let result = self.call_once(path, args, &token, session, poll_seconds);
-        if needs_refresh(&result) {
-            Err(Failure::SignedOut(SignOutReason::TokenRefresh).into())
-        } else {
-            result
-        }
-    }
-    pub(super) fn refresh_session(&mut self) -> anyhow::Result<()> {
-        let token = self.state["token_v3_issue_result"]["refreshToken"]
-            .as_str()
-            .filter(|token| !token.is_empty())
-            .ok_or(Failure::SignedOut(SignOutReason::TokenRefresh))?
-            .to_owned();
-        let access = super::access(&self.state)?.to_owned();
-        let args = serde_json::json!({"refreshToken": token});
-        let result = self.call_once("/api/auth/tokenRefresh", &args, &access, "", 0);
-        let result = if result
-            .as_ref()
-            .err()
-            .and_then(|error| error.downcast_ref::<super::RpcError>())
-            .is_some_and(|error| error.gateway == 10202)
-        {
-            self.call_once("/api/auth/tokenRefresh", &args, &access, "", 0)
-        } else {
-            result
-        };
-        let value = result.map_err(|error| {
-            if error
-                .downcast_ref::<super::RpcError>()
-                .is_some_and(|error| error.code == 119 || error.gateway == 10201)
-            {
-                anyhow::Error::new(Failure::SignedOut(SignOutReason::TokenRefresh))
-            } else {
-                error
-            }
-        })?;
-        let access = value["accessToken"]
-            .as_str()
-            .filter(|token| !token.is_empty())
-            .ok_or(Failure::Bug("refresh missing access token".into()))?
-            .to_owned();
-        self.state["token_v3_issue_result"]
-            .as_object_mut()
-            .ok_or(Failure::Bug("saved token".into()))?
-            .extend(
-                value
-                    .as_object()
-                    .ok_or(Failure::Bug("refresh token response".into()))?
-                    .clone(),
-            );
-        if let Some(path) = &self.session_path {
-            super::save_state(path, &self.state)?;
-        }
-        *self.stream_access.write().unwrap() = access;
-        Ok(())
-    }
-}
 pub(super) fn needs_refresh<T>(result: &anyhow::Result<T>) -> bool {
     result
         .as_ref()
         .err()
-        .and_then(|error| error.downcast_ref::<super::RpcError>())
-        .is_some_and(|error| error.code == 119)
+        .and_then(|error| error.downcast_ref::<RpcError>())
+        .is_some_and(RpcError::needs_refresh)
 }
 
-pub(crate) fn decode_response(
-    path: &str,
-    http: u16,
-    _content_type: &str,
-    bytes: &[u8],
-) -> anyhow::Result<serde_json::Value> {
-    let response: serde_json::Value = match serde_json::from_slice(bytes) {
-        Ok(response) => response,
-        Err(_) if http != 200 => {
-            return Err(super::RpcError {
-                gateway: 0,
-                method: path.rsplit('/').next().unwrap_or("RPC").into(),
-                http,
-                code: 0,
-                status: 0,
-            }
-            .into());
-        }
-        Err(_) => {
-            return Err(Failure::Bug(format!(
-                "response decode failed: status={http} body-length={}",
-                bytes.len()
-            ))
-            .into());
-        }
-    };
-    if http == 200 && response["message"] == "OK" {
-        return Ok(response
-            .get("data")
-            .cloned()
-            .unwrap_or(serde_json::Value::Null));
+pub fn sign_in_failure(error: &anyhow::Error, cancelled: bool) -> SignInFailure {
+    if cancelled {
+        return SignInFailure::Cancelled;
     }
-    let gateway = response["code"]
-        .as_i64()
-        .unwrap_or(if http == 200 { 99999 } else { 0 });
-    let code = if gateway == 10051 {
-        response["data"]["code"]
-            .as_i64()
-            .ok_or(Failure::Bug("missing TalkException code".into()))?
+    match classify(error) {
+        Failure::SignedOut(SignOutReason::Unavailable(reason)) => reason,
+        Failure::NotDelivered | Failure::Unanswered => SignInFailure::Network,
+        Failure::Refused(_) => SignInFailure::Server,
+        Failure::SignedOut(_) => SignInFailure::Expired,
+        Failure::Bug(_) => SignInFailure::Internal,
+    }
+}
+
+impl wasmi::core::HostError for SignInFailure {}
+
+impl Failure {
+    pub fn key_rotated(&self) -> bool {
+        matches!(
+            self,
+            Self::Refused(Refusal::Server(ServerRefusal::Talk(82 | 84)))
+        )
+    }
+    pub fn retry_send(&self) -> bool {
+        matches!(
+            self,
+            Self::NotDelivered
+                | Self::Refused(Refusal::Server(
+                    ServerRefusal::Talk(115) | ServerRefusal::Gateway(UNKNOWN_GATEWAY)
+                ))
+        )
+    }
+
+    pub fn retry_read(&self) -> bool {
+        matches!(
+            self,
+            Self::NotDelivered
+                | Self::Unanswered
+                | Self::Refused(Refusal::Server(
+                    ServerRefusal::Talk(115)
+                        | ServerRefusal::Gateway(UNKNOWN_GATEWAY)
+                        | ServerRefusal::Http(408 | 429 | 500..=599)
+                ))
+        )
+    }
+}
+
+pub(crate) fn media_failure(error: &anyhow::Error) -> super::desktop::assets::Failure {
+    use super::desktop::assets::Failure as Media;
+    if let Some(failure) = error.downcast_ref::<Media>() {
+        return *failure;
+    }
+    if error.downcast_ref::<Cancelled>().is_some() {
+        return Media::Cancelled;
+    }
+    if error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Media::Http(404);
+    }
+    if let Some(transport) = find_source::<TransportFailure>(error) {
+        return match transport.source {
+            TransportError::Timeout => Media::Timeout,
+            TransportError::Io(_)
+            | TransportError::ConnectionFailed
+            | TransportError::ProxyConfiguration => Media::Network,
+            _ => Media::Decode,
+        };
+    }
+    if let Some(rpc) = find_source::<RpcError>(error) {
+        return Media::Http(rpc.http);
+    }
+    Media::Decode
+}
+
+impl super::desktop::assets::Failure {
+    pub fn retry_read(self) -> bool {
+        self.retry_automatically() || matches!(self, Self::Cancelled | Self::Http(403 | 408 | 429))
+    }
+    pub fn retry_automatically(self) -> bool {
+        matches!(self, Self::Network | Self::Timeout | Self::Http(500..=599))
+    }
+}
+
+pub(crate) fn transport_loss(error: &anyhow::Error) -> bool {
+    matches!(classify(error), Failure::NotDelivered | Failure::Unanswered)
+}
+
+impl RpcError {
+    pub(crate) fn qr_expired(&self) -> bool {
+        self.gateway == 10052 && self.status == 410
+    }
+    pub(crate) fn certificate_missing(&self) -> bool {
+        self.http == 400
+    }
+    pub(crate) fn needs_refresh(&self) -> bool {
+        self.code == 119
+    }
+    pub(crate) fn retry_refresh(&self) -> bool {
+        self.gateway == 10202
+    }
+    pub(crate) fn refresh_rejected(&self) -> bool {
+        self.needs_refresh() || self.gateway == 10201
+    }
+}
+
+pub(crate) fn saved_session_failure(error: &anyhow::Error) -> anyhow::Result<SignInFailure> {
+    if let Some(reason) = error.downcast_ref::<SignInFailure>() {
+        return Ok(reason.clone());
+    }
+    if error.chain().any(|cause| {
+        cause.is::<Failure>() || cause.is::<RpcError>() || cause.is::<TransportFailure>()
+    }) {
+        return Err(anyhow::Error::new(classify(error)));
+    }
+    Ok(SignInFailure::SavedSession)
+}
+
+pub(crate) fn diagnostic(error: &(dyn std::error::Error + 'static)) -> Option<String> {
+    if let Some(rpc) = error.downcast_ref::<RpcError>() {
+        return Some(format!("rpc:http={}:code={}", rpc.http, rpc.code));
+    }
+    if let Some(failure) = error.downcast_ref::<Failure>() {
+        return Some(match failure {
+            Failure::Bug(label) => format!("client-bug:{label}"),
+            _ => failure.to_string(),
+        });
+    }
+    error
+        .downcast_ref::<SignInFailure>()
+        .map(|reason| format!("sign-in:{}", reason.kind()))
+}
+
+pub(super) fn phone_error(error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<RpcError>().is_some() {
+        error.context(SignInFailure::Phone)
     } else {
-        0
-    };
-    Err(super::RpcError {
-        gateway,
-        method: path.rsplit('/').next().unwrap_or("RPC").into(),
-        http,
-        code,
-        status: response["data"]["statusCode"].as_i64().unwrap_or(0),
+        error
     }
-    .into())
 }
 
 #[cfg(test)]
@@ -350,7 +387,7 @@ mod tests {
 
     #[test]
     fn classification_uses_the_first_matching_cause() {
-        let rpc = crate::client::RpcError {
+        let rpc = RpcError {
             gateway: 0,
             method: "test".into(),
             http: 503,
@@ -371,94 +408,79 @@ mod tests {
     }
 
     #[test]
-    fn response_code_table() {
-        let signed_out = [
+    fn send_retry_is_limited_to_safe_failures() {
+        assert!(Failure::NotDelivered.retry_send());
+        assert!(!Failure::Unanswered.retry_send());
+        for (refusal, expected) in [
+            (ServerRefusal::Talk(115), true),
+            (ServerRefusal::Gateway(UNKNOWN_GATEWAY), true),
+            (ServerRefusal::Http(408), false),
+            (ServerRefusal::Http(429), false),
+            (ServerRefusal::Http(503), false),
+            (ServerRefusal::Talk(13), false),
+        ] {
+            assert_eq!(
+                Failure::Refused(Refusal::Server(refusal)).retry_send(),
+                expected
+            );
+        }
+        let error =
+            super::super::decode_response("/test", 200, br#"{"code":0,"message":"unexpected"}"#)
+                .unwrap_err();
+        assert_eq!(
+            classify(&error),
+            Failure::Refused(Refusal::Server(ServerRefusal::Gateway(UNKNOWN_GATEWAY)))
+        );
+    }
+    #[test]
+    fn extension_response_rules() {
+        for (code, reason) in [
             (1, SignOutReason::AuthenticationFailed),
             (7, SignOutReason::NotAvailableUser),
             (8, SignOutReason::NotAuthorizedDevice),
-        ];
-        for (code, reason) in signed_out {
-            let response = json!({"code": 10051, "data": {"code": code}}).to_string();
-            assert_eq!(
-                classify(&decode_response("/api/test", 200, "", response.as_bytes()).unwrap_err()),
-                Failure::SignedOut(reason)
-            );
+        ] {
+            let error = super::super::decode_response(
+                "/test",
+                200,
+                &json!({"code":10051,"data":{"code":code}})
+                    .to_string()
+                    .into_bytes(),
+            )
+            .unwrap_err();
+            assert_eq!(classify(&error), Failure::SignedOut(reason));
         }
-        for code in [13, 14, 17, 43, 44, 119, 120, 503] {
-            let response = json!({"code": 10051, "data": {"code": code}}).to_string();
-            assert_eq!(
-                classify(&decode_response("/api/test", 200, "", response.as_bytes()).unwrap_err()),
-                Failure::Refused(Refusal::Talk(code))
-            );
-        }
-        for code in [503, 10105, 10201, 10202, 99999] {
-            let response = json!({"code":code});
-            assert_eq!(
-                classify(
-                    &decode_response("/api/test", 200, "", response.to_string().as_bytes())
-                        .unwrap_err()
-                ),
-                Failure::Refused(Refusal::Gateway(code))
-            );
-        }
-        {
-            let response = json!({"code":10051,"data":{"code":115}});
-            assert_eq!(
-                classify(
-                    &decode_response("/api/test", 200, "", response.to_string().as_bytes())
-                        .unwrap_err()
-                ),
-                Failure::Refused(Refusal::Talk(115))
-            );
-        }
+        let rpc = |gateway, code| RpcError {
+            gateway,
+            code,
+            method: "test".into(),
+            http: 200,
+            status: 0,
+        };
+        assert!(rpc(10051, 119).needs_refresh());
+        assert!(rpc(10201, 0).refresh_rejected());
+        assert!(rpc(10202, 0).retry_refresh());
+        assert!(classify(&rpc(10051, 115).into()).retry_read());
         assert_eq!(
-            classify(&decode_response("/api/test", 200, "", b"{}").unwrap_err()),
-            Failure::Refused(Refusal::Gateway(99999))
-        );
-        for status in [400, 401, 403, 408, 429, 500, 503] {
-            assert_eq!(
-                classify(
-                    &decode_response("/api/test", status, "", b"gateway unavailable").unwrap_err()
-                ),
-                Failure::Refused(Refusal::Http(status))
-            );
-            assert_eq!(
-                classify(&decode_response("/api/test", status, "", b"{}").unwrap_err()),
-                Failure::Refused(Refusal::Http(status))
-            );
-        }
-        for write_started in [false, true] {
-            let error = TransportFailure {
-                write_started,
-                source: TransportError::Io(std::io::ErrorKind::ConnectionReset.into()),
-            };
-            assert_eq!(
-                classify(&error.into()),
-                if write_started {
-                    Failure::Unanswered
-                } else {
-                    Failure::NotDelivered
-                }
-            );
-        }
-        assert_eq!(
-            classify(&decode_response("/api/test", 200, "text/html", b"private body").unwrap_err()),
-            Failure::Bug("response decode failed: status=200 body-length=12".into())
+            classify(&rpc(10051, 13).into()),
+            Failure::Refused(Refusal::Server(ServerRefusal::Talk(13)))
         );
     }
 
     #[test]
     fn missing_access_token_returns_signed_out_without_a_request() {
+        let module = crate::test_support::installed_module();
+
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path()).unwrap();
-        let mut api = super::super::Api::new(&wasm, crate::test_support::FIXTURE_VERSION).unwrap();
+        let wasm = module.read().unwrap();
+        let mut api = super::super::Api::new(&wasm, &module.version).unwrap();
         api.http = super::super::http::Transport::local(
             "synthetic",
             format!("http://{}", listener.local_addr().unwrap()),
         );
         for token in [serde_json::Value::Null, json!("")] {
-            api.state = json!({"token_v3_issue_result":{"accessToken":token}});
+            api.state.token_v3_issue_result.access_token =
+                token.as_str().unwrap_or_default().into();
             assert_eq!(
                 classify(&api.call("/api/test", &json!([]), "", 0).unwrap_err()),
                 Failure::SignedOut(SignOutReason::NoSession)
@@ -472,6 +494,8 @@ mod tests {
 
     #[test]
     fn second_119_ends_the_session() {
+        let module = crate::test_support::installed_module();
+
         use crate::client::http::tests::{accept, local_server};
         use std::io::{BufRead, BufReader, Read, Write};
         let (http, server) = local_server(|listener| {
@@ -518,113 +542,30 @@ mod tests {
                 .unwrap();
             }
         });
-        let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path()).unwrap();
-        let mut api = super::super::Api::new(&wasm, crate::test_support::FIXTURE_VERSION).unwrap();
+        let wasm = module.read().unwrap();
+        let mut api = super::super::Api::new(&wasm, &module.version).unwrap();
         api.http = http;
-        api.state = json!({"token_v3_issue_result":{"accessToken":"old","refreshToken":"refresh"}});
+        api.state.token_v3_issue_result = super::super::Tokens {
+            access_token: "old".into(),
+            refresh_token: Some("refresh".into()),
+            rest: serde_json::from_value(json!({"expiresIn":123,"extra":{"a":true}})).unwrap(),
+        };
         let error = api.call("/api/test", &json!([]), "", 0).unwrap_err();
         assert_eq!(
             classify(&error),
             Failure::SignedOut(SignOutReason::TokenRefresh)
         );
+        assert_eq!(
+            api.state.token_v3_issue_result.refresh_token.as_deref(),
+            Some("refresh")
+        );
+        assert_eq!(api.state.token_v3_issue_result.access_token, "renewed");
+        assert_eq!(
+            serde_json::to_value(&api.state.token_v3_issue_result).unwrap(),
+            json!({"accessToken":"renewed","refreshToken":"refresh","expiresIn":123,"extra":{"a":true}})
+        );
         server.join().unwrap();
     }
-}
-
-#[derive(Debug, thiserror::Error)]
-#[error("HTTPS request cancelled")]
-pub(crate) struct Cancelled;
-
-impl std::fmt::Display for SignInFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::ExtensionMissing => f.write_str("the LINE extension is not installed"),
-            Self::CryptoChanged { .. } => f.write_str("the crypto module has changed"),
-            Self::CryptoModule(_) => f.write_str("the crypto module is unavailable"),
-            Self::StateDirectory(_) => f.write_str("the session directory is not writable"),
-            Self::Keyring => f.write_str("the keyring is unavailable"),
-            Self::Network => f.write_str("LINE could not be reached"),
-            Self::Server => f.write_str("LINE refused sign-in"),
-            Self::Phone => f.write_str("phone approval was not received"),
-            Self::Cancelled => f.write_str("sign-in was cancelled"),
-            Self::SavedSession(reason) => write!(f, "{reason}"),
-            Self::Expired => f.write_str("sign-in expired"),
-            Self::SessionIdentity => f.write_str("the session belongs to another account"),
-            Self::Internal => f.write_str("the saved session could not be opened"),
-        }
-    }
-}
-
-pub(super) fn sign_in_failure(error: &anyhow::Error, cancelled: bool) -> SignInFailure {
-    if cancelled {
-        return SignInFailure::Cancelled;
-    }
-    match classify(error) {
-        Failure::SignedOut(SignOutReason::Unavailable(reason)) => reason,
-        Failure::NotDelivered | Failure::Unanswered => SignInFailure::Network,
-        Failure::Refused(_) => SignInFailure::Server,
-        Failure::SignedOut(_) => SignInFailure::Expired,
-        Failure::Bug(_) => SignInFailure::Internal,
-    }
-}
-
-impl wasmi::core::HostError for Error {}
-
-impl Failure {
-    pub fn retry_read(&self) -> bool {
-        matches!(
-            self,
-            Self::NotDelivered
-                | Self::Unanswered
-                | Self::Refused(
-                    Refusal::Talk(115)
-                        | Refusal::Gateway(99999)
-                        | Refusal::Http(408 | 429 | 500..=599)
-                )
-        )
-    }
-}
-
-pub(crate) fn media_failure(error: &anyhow::Error) -> super::desktop::assets::Failure {
-    use super::desktop::assets::Failure as Media;
-    if let Some(failure) = error.downcast_ref::<Media>() {
-        return *failure;
-    }
-    if error.downcast_ref::<Cancelled>().is_some() {
-        return Media::Cancelled;
-    }
-    if error
-        .downcast_ref::<std::io::Error>()
-        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound)
-    {
-        return Media::Http(404);
-    }
-    match classify(error) {
-        Failure::NotDelivered | Failure::Unanswered => {
-            if find_source::<TransportFailure>(error)
-                .is_some_and(|error| matches!(error.source, TransportError::Timeout))
-            {
-                Media::Timeout
-            } else {
-                Media::Network
-            }
-        }
-        Failure::Refused(Refusal::Http(code)) => Media::Http(code),
-        _ => Media::Decode,
-    }
-}
-
-pub fn media_retry(failure: super::desktop::assets::Failure, automatic: bool) -> bool {
-    use super::desktop::assets::Failure as Media;
-    match failure {
-        Media::Network | Media::Timeout | Media::Http(500..=599) => true,
-        Media::Cancelled | Media::Http(403 | 408 | 429) => !automatic,
-        _ => false,
-    }
-}
-
-pub(crate) fn transport_loss(error: &anyhow::Error) -> bool {
-    matches!(classify(error), Failure::NotDelivered | Failure::Unanswered)
 }
 
 #[cfg(test)]
@@ -633,7 +574,7 @@ mod top_level_tests {
 
     #[test]
     fn refresh_checks_do_not_follow_io_sources() {
-        let rpc = || super::super::RpcError {
+        let rpc = || RpcError {
             gateway: 0,
             method: "test".into(),
             http: 200,
@@ -658,5 +599,24 @@ mod top_level_tests {
         assert_eq!(media_failure(&missing().into()), Media::Http(404));
         let wrapped = std::io::Error::other(missing());
         assert_eq!(media_failure(&wrapped.into()), Media::Decode);
+    }
+}
+
+#[cfg(test)]
+pub(super) mod wire_fixture {
+    pub const KEY_ROTATED: i64 = 82;
+    pub const SENDER_KEY_STALE: i64 = 83;
+    pub const GROUP_KEY_ROTATED: i64 = 84;
+    pub fn talk(code: i64) -> serde_json::Value {
+        serde_json::json!({"code":10051,"data":{"code":code}})
+    }
+    pub fn refused_key() -> serde_json::Value {
+        talk(13)
+    }
+    pub fn signed_out() -> serde_json::Value {
+        talk(1)
+    }
+    pub fn qr_expired() -> serde_json::Value {
+        serde_json::json!({"code":10052,"data":{"statusCode":410}})
     }
 }
