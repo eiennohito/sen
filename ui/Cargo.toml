@@ -5,6 +5,11 @@ edition = "2024"
 publish = false
 description = "Generated Slint UI for the LINE desktop client"
 
+# Generated code only; building it again as an empty test harness costs ~7 s per .slint edit.
+[lib]
+test = false
+doctest = false
+
 [features]
 testing = []
 ui-debug = ["slint/mcp"]

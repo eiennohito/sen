@@ -67,6 +67,14 @@ opt-level = 0
 [profile.fast.package.line-desktop-ui]
 opt-level = 0
 
+# The Slint compiler runs in ui/build.rs on every .slint edit.
+[profile.fast.build-override]
+opt-level = 2
+
+# File and line in backtraces; full debug info made the dev binary 760 MB.
+[profile.dev]
+debug = "line-tables-only"
+
 # The crypto module runs in wasmi; unoptimized it is ~10x slower in tests.
 [profile.dev.package."*"]
 opt-level = 2

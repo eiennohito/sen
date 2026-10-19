@@ -11,7 +11,7 @@ its public API so Rust-only app edits reuse the compiled UI. Slint edits still
 rebuild it. Sources stay in `app/ui/` to preserve imports and icon paths.
 The UI build script tracks that directory and `app/assets/`, including additions;
 slint-build also tracks imported files and embedded resources. Keep the small
-Slint test in `app/src/rich_content.rs` with its Rust tests.
+Slint test in `app/src/tests/rich_flow.rs` with its Rust tests.
 
 For MCP iteration, build once and pass that binary explicitly:
 
