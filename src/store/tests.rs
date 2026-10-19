@@ -807,3 +807,15 @@ fn server_ids_validate_construction_and_deserialization() {
         assert_eq!(ServerId::new(value).unwrap().as_str(), value);
     }
 }
+
+#[test]
+fn pending_row_rejects_retry_and_discard_without_changing_sequence() {
+    let mut s = store();
+    let key = pending(&mut s, 7);
+    assert!(s.retry(key, 8).is_err());
+    assert_eq!(s.message(key).unwrap().request_seq, Some(7));
+    assert!(s.discard(key).is_err());
+    let row = s.message(key).unwrap();
+    assert_eq!(row.request_seq, Some(7));
+    assert_eq!(row.delivery, Delivery::Pending);
+}
