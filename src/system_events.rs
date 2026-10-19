@@ -126,20 +126,7 @@ pub fn parse(content: &Content) -> Option<Event<'_>> {
         "C_OL" => Event::Limit(people(1)?),
         "C_BG" => Event::Upgrade,
         "pseudo_leave_chat" => Event::LeaveChat(arg(0)?),
-        _ => {
-            static UNKNOWN: std::sync::OnceLock<
-                std::sync::Mutex<std::collections::BTreeSet<String>>,
-            > = std::sync::OnceLock::new();
-            if UNKNOWN
-                .get_or_init(Default::default)
-                .lock()
-                .unwrap()
-                .insert(kind.into())
-            {
-                log::debug!("Hidden chat event: {kind}");
-            }
-            return None;
-        }
+        _ => return None,
     })
 }
 pub fn displayable(content: &Content) -> bool {
