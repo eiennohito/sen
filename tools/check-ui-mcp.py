@@ -19,7 +19,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--port", type=int, default=9447)
 parser.add_argument("--screenshot", type=Path)
 parser.add_argument("--unread", action="store_true", help="Check synthetic unread badges, divider and arrivals while reading older history")
-parser.add_argument("--scenarios", action="store_true", help="Run synthetic arrival, media, clipboard, and uncertain-send scenarios")
+parser.add_argument("--scenarios", action="store_true", help="Run synthetic arrival, media, clipboard, and unanswered-send scenarios")
 parser.add_argument("--friends", action="store_true", help="Exercise offline friend search, profiles, categories and opening chats")
 parser.add_argument("--layout-photos", action="store_true", help="Check bounded avatars/media, settings placement, and photo viewer")
 parser.add_argument("--reading", action="store_true", help="Check reading focus, keyboard scroll, stable loading, links and content placeholders")
@@ -175,9 +175,9 @@ if args.signed_out:
     click("Close demo scenarios")
     if args.missing_module:
         click("Sign in")
-        message = "Crypto module missing or unsupported. Install the supported module at /demo/crypto.wasm and try again."
+        message = "Can't load the LINE crypto module at /demo/crypto.wasm. Check LINE for Chrome or the developer override."
         element(message, "Text")
-        element("Sign-in is unavailable until the crypto module is installed.", "Text")
+        element("Sign-in needs a supported LINE for Chrome installation.", "Text")
         for _ in range(2):
             click("Check again")
             element(message, "Text")
@@ -605,17 +605,17 @@ if args.scenarios:
     assert any("到着 3" in item.get("accessibleValue", "") for item in bodies()), "at-latest burst did not remain visible"
     assert not any("Latest" in item.get("accessibleLabel", "") for item in tree() if item.get("accessibleRole") == "Button"), "at-latest burst disabled following"
     call("set_element_value", elementHandle=composer, value="Keep this newer draft")
-    demo_scenario("Uncertain send")
+    demo_scenario("Unanswered send")
     time.sleep(1.2)
     assert not any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") in ("Retry connection", "Retry conversations", "Retry older") for item in tree()), "removed network Retry control returned"
-    assert any("May not have been sent" in item.get("accessibleLabel", "") for item in tree()), "uncertain result was not attached to its outgoing item"
+    assert any("Not sent" in item.get("accessibleLabel", "") for item in tree()), "unanswered result was not attached to its outgoing item"
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue") == "Keep this newer draft", "late result replaced newer text"
-    failed = next(item for item in bodies() if "May not have been sent" in item.get("accessibleLabel", ""))
+    failed = next(item for item in bodies() if "Not sent" in item.get("accessibleLabel", ""))
     call("click_element", elementHandle=failed["handle"], button="Right")
     call("click_element", elementHandle=element("Copy to composer", "Text")["handle"])
     call("click_element", elementHandle=element("Append", "Button")["handle"])
     assert call("get_element_properties", elementHandle=composer).get("accessibleValue", "").startswith("Keep this newer draft\n"), "recovery overwrote the draft"
-    print("PASS: simulated pointer scrolling, burst anchor/count, keyboard selection/clipboard, uncertain-send recovery")
+    print("PASS: simulated pointer scrolling, burst anchor/count, keyboard selection/clipboard, unanswered-send recovery")
 
 if args.layout_photos:
     assert not any(item.get("accessibleLabel") in ("Smaller text", "Larger text", "Text size") for item in tree()), "text-size controls leaked onto the main screen"
@@ -945,8 +945,9 @@ if args.layers:
     demo_scenario("Photo preview")
     call("click_element", elementHandle=element("Open photo", "Button")["handle"])
     call("click_element", elementHandle=element("Next", "Button")["handle"])
-    assert any("800 × 1200" in item.get("accessibleLabel", "") for item in tree()), "Next left the loaded photo scope"
+    wait_for(lambda: any("800 × 1200" in item.get("accessibleLabel", "") for item in tree()), "Next left the loaded photo scope")
     call("click_element", elementHandle=element("Previous", "Button")["handle"])
+    wait_for(lambda: any("1200 × 800" in item.get("accessibleLabel", "") for item in tree()), "Previous did not load the first photo")
     call("dispatch_key_event", windowHandle=window, text="1")
     image = element("Photo in viewer", "Image")
     assert image["size"]["width"] >= 1199, "1 did not show original size"

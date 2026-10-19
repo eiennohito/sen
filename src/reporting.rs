@@ -37,6 +37,9 @@ fn chain(error: &(dyn Error + 'static)) -> String {
             }
         } else if let Some(e) = e.downcast_ref::<crate::client::error::Error>() {
             match e {
+                crate::client::error::Error::SignIn(
+                    reason @ crate::client::error::SignInFailure::CryptoChanged { .. },
+                ) => format!("{reason:?}"),
                 crate::client::error::Error::SignIn(reason) => format!("sign-in:{}", reason.kind()),
             }
         } else if let Some(e) = e.downcast_ref::<crate::store::StoreError>() {

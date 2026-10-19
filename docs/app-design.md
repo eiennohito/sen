@@ -26,7 +26,7 @@ migrated once or discarded, not supported in parallel.
 
 ## Everyday usability gate
 
-The current sketch is a PoC, not ready for daily use. The user's issue list is
+The current sketch is a prototype, not ready for daily use. The user's issue list is
 non-exhaustive; audit interaction sequences and asynchronous state changes as
 well as appearance. See the reference map's everyday-use requirements for
 per-message send/server-confirmation/read states, selection/copy, preview
@@ -37,7 +37,7 @@ behavior and toolkit deviations, is recorded in ux-acceptance.md.
 ## Rendering and input decision
 
 Pin Slint and slint-build to 1.18.1. Disable default features and enable `std`,
-`compat-1-18`, `backend-winit`, `renderer-software`, and `accessibility`.
+`backend-winit`, `renderer-software`, and `accessibility`.
 Normal launches select `winit` + `software` programmatically and fail if unavailable. Slint
 documents CPU rendering through this backend/renderer combination, and separate
 Wayland/X11 feature flags if a smaller platform-specific build is needed.
@@ -127,8 +127,30 @@ The desktop and CLI now share `src/client.rs` and `src/client/chat.rs`.
 owns authenticated media retrieval and private thumbnail caching. The CLI is
 a thin frontend over the same transport, session, and WASM implementation.
 
-The GUI thread owns Slint models and text editing. The account worker owns its
-WASM runtime, tokens, key caches and RPC requests. Three blocking asset threads
+The crypto module source is the installed LINE Chrome extension, ID
+`ophjlpahpchlmihnnnihgmmeilfjmjjc`. Startup searches
+Chrome and Chromium profiles under `$XDG_CONFIG_HOME` (default
+`$HOME/.config`), selecting the newest numeric
+manifest version across all profiles. The module is
+`static/js/ltsm.wasm` under that extension root. There is no app
+module copy or install script. The manifest's `version` is passed into signing,
+headers and receive URLs. `--wasm` and `--client-version` are developer overrides;
+only explicit test/oracle fixtures pin repository artifacts.
+
+Immediately after instantiation the host probes the required embind classes,
+constructors, methods and functions. Missing interfaces produce a typed
+“LINE for Chrome <ver> changed its crypto module (missing <name>); this app
+doesn't support it yet” error on both sign-in and the strip, and in the log.
+No extension produces “Install LINE for Chrome — this app uses its crypto
+module” with the Chrome and Chromium search locations. Sessions are independent
+of module builds. Failed key restore follows SessionUnusable with its reason. LINE could refuse an old client: shows as refused sign-in/session.
+
+The GUI thread owns Slint models and text editing. The account net worker owns
+one runtime, tokens, key caches and RPC requests. Live decode, history and
+signing call that runtime directly;
+the stream thread borrows authorization and requests token refresh from the
+worker, never instantiating WASM. Runtime recovery runs only when a WASM exception poisons the store. It builds a new instance, then assigns it, propagating any failure. Missing device keys, RPC errors and parse errors fail only their item and preserve runtime caches. Latest peer and group keys are fetched per send; key-ID data and channels are cached. Media file crypto stays native, and the optional
+`native-crypto` trial feature is unchanged. Three blocking asset threads
 share one asset HTTP agent and the thumbnail cache; they own media downloads,
 decryption and decoding. Three slots allow visible images to overlap while
 bounding simultaneous encoded downloads to 48 MiB. The asset agent uses the
@@ -184,10 +206,7 @@ Window deltas are fenced by subscription ID.
 Submission saves a durable pending item before queueing a network command,
 then clears the submitted editor. Confirmation links the server ID to the same
 stable store key; it never clears newer text or changes focus. Known server IDs reconcile to
-that same row identity on refresh. Ambiguous sends remain unresolved across
-restart and are never retried automatically. Definite rejection and uncertain
-results have separate states. Recovery requires a deliberate Replace/Append
-choice when newer text exists; Retry warns about duplicate risk.
+that same row identity on refresh. Failed sends show “Not sent: <reason>” with Retry/Delete, including unanswered or mid-send rows after restart; they are never automatically resent, and our echo (op 25/43 with our reqSeq) confirms a row in any state as Sent.
 
 Each `Api` owns one persistent `ureq::Agent` with rustls and WebPKI roots for
 HTTP/1.1 RPCs (no ALPN h2); the agent pool reuses connections. Requests use the
@@ -400,8 +419,8 @@ focused browser/composer scripts test their keyboard and draft invariants.
 Demo and snapshot scenes use FakeBackend through the same engine, SQLite
 store, controller and presenter. Demo stores use in-memory SQLite; account
 stores live on disk. Demo sends receive scripted Sent/Incoming or failure
-results. F12 **Fail next send** arms one uncertain result;
-Rejected and Uncertain send scenarios submit a prepared message through that same
+results. F12 **Fail next send** arms one unanswered result;
+Rejected and Unanswered send scenarios submit a prepared message through that same
 path while preserving the existing draft. First-open fixtures follow latest;
 reading, rich-content and photo-inspection scenarios deliberately start at the top.
 Today’s fixture clock slots span the last 2h54m before now, preserving minute
@@ -435,7 +454,7 @@ at both the default `--demo` size (conversation sheet) and
 profile in offline headless snapshots. `--snapshot-scene` selects `chats`,
 `chats-query`, `friends`, `friends-query`, `friends-empty-group`, `settings`,
 `composer`, `composer-reason`, `latest`, or `return` for shell layout captures.
-`conversation` starts at the first date divider; `failed-send` shows an uncertain
+`conversation` starts at the first date divider; `failed-send` shows an unanswered
 outgoing item at latest.
 `chats-hover` points at an unselected row; `chats-unread` keeps the selected
 row's unread badge visible. `message-selected-incoming` and
@@ -483,4 +502,3 @@ Probe facts apply only to their opening epoch (including a pending attempt's pri
 Cancel restores that prior state; staged credentials are opened and validated before install,
 which commits sign-in even if Cancel races. Local cached work remains available in every state.
 
-An unanswered send immediately shows “May not have been sent” with Retry/Delete and is never automatically resent; a later echo (op 25/43 carrying our reqSeq) changes it to Sent.

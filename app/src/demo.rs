@@ -1,11 +1,11 @@
 //! Synthetic data enters through the backend and follows the normal commit path.
 use crate::*;
-use line_wasm_poc::backend::{LiveOp, Op};
+use line::backend::{LiveOp, Op};
 pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: i32) {
     let chat = d.state.selected.clone().unwrap_or(ChatId("alice".into()));
     match kind {
         40..=46 => {
-            use line_wasm_poc::client::error::SignInFailure::*;
+            use line::client::error::SignInFailure::*;
             fake.fail_sign_in(match kind {
                 40 => CryptoModule("/demo/crypto.wasm".into()),
                 41 => StateDirectory("/demo/state".into()),
@@ -45,10 +45,8 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 FakeBackend::official_image("protocol", 6302),
             ];
             fake.fail_rpc(
-                line_wasm_poc::backend::FakeRpc::Unsend(ServerId("6301".into())),
-                line_wasm_poc::backend::Failure::Refused(
-                    line_wasm_poc::client::error::Refusal::SyntheticUnsend,
-                ),
+                line::backend::FakeRpc::Unsend(ServerId("6301".into())),
+                line::backend::Failure::Refused(line::client::error::Refusal::SyntheticUnsend),
             );
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
         }
@@ -170,7 +168,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
 
             demo_data::rich(
                 &mut row,
-                line_wasm_poc::client::desktop::rich::RichContent {
+                line::client::desktop::rich::RichContent {
                     content_type: 1,
                     ..Default::default()
                 },
@@ -187,7 +185,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
         }
         19 => fake.auth_expired(),
         3 => {
-            fake.uncertain_send();
+            fake.unanswered_send();
             d.sender.send(Intent::Send {
                 chat: chat.clone(),
                 text: "駅に着いたら連絡してね。See you soon! 🐈".into(),
@@ -198,7 +196,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                     text: d.state.composer.clone(),
                     cursor: 0,
                     anchor: 0,
-                    updated: line_wasm_poc::engine::now_ms(),
+                    updated: line::engine::now_ms(),
                 },
             });
         }
@@ -221,11 +219,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
 pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
     if scene == "signed-out" {
         if case == Some("missing-module") {
-            fake.fail_open(Some(
-                line_wasm_poc::client::error::SignInFailure::CryptoModule(
-                    "/demo/crypto.wasm".into(),
-                ),
-            ));
+            fake.fail_open(Some(line::client::error::SignInFailure::CryptoModule(
+                "/demo/crypto.wasm".into(),
+            )));
         }
         return;
     }
@@ -262,7 +258,7 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
 
         demo_data::rich(
             &mut row,
-            line_wasm_poc::client::desktop::rich::RichContent {
+            line::client::desktop::rich::RichContent {
                 content_type: 1,
                 ..Default::default()
             },
@@ -305,7 +301,7 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
 
         demo_data::rich(
             &mut row,
-            line_wasm_poc::client::desktop::rich::RichContent {
+            line::client::desktop::rich::RichContent {
                 content_type: 1,
                 ..Default::default()
             },
@@ -343,8 +339,8 @@ pub fn install(ui: &AppWindow, actions: Runtime, fake: FakeBackend) {
     });
 }
 
-fn media_failure(index: usize) -> line_wasm_poc::client::desktop::assets::Failure {
-    use line_wasm_poc::client::desktop::assets::Failure::*;
+fn media_failure(index: usize) -> line::client::desktop::assets::Failure {
+    use line::client::desktop::assets::Failure::*;
     [
         Timeout,
         Network,
@@ -390,7 +386,7 @@ fn fixture(
             text: d.state.composer.clone(),
             cursor: ui.get_editor_caret() as usize,
             anchor: ui.get_editor_anchor() as usize,
-            updated: line_wasm_poc::engine::now_ms(),
+            updated: line::engine::now_ms(),
         },
     });
     d.sender.send(Intent::MoreChats);

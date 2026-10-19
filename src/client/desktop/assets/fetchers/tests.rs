@@ -50,7 +50,10 @@ fn local_server(
 ) -> (http::Transport, mpsc::Receiver<String>, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     listener.set_nonblocking(true).unwrap();
-    let http = http::Transport::local(format!("http://{}", listener.local_addr().unwrap()));
+    let http = http::Transport::local(
+        "9.8.7",
+        format!("http://{}", listener.local_addr().unwrap()),
+    );
     let (tx, rx) = mpsc::channel();
     let serve = Arc::new(serve);
     let thread = thread::spawn(move || {
@@ -342,7 +345,7 @@ fn shared_http_preserves_asset_hosts_paths_headers_and_no_redirects() {
         assert!(!lower.contains("content-type:"));
         if headers.contains("/r/talk/") {
             assert!(lower.contains("x-line-access: synthetic\r\n"));
-            assert!(lower.contains("x-line-application: chromeos\t"));
+            assert!(lower.contains("x-line-application: chromeos\t9.8.7\tchrome_os\t"));
             assert!(lower.contains("x-talk-meta:"));
         } else {
             assert!(!lower.contains("x-line-"));
@@ -585,7 +588,7 @@ fn local_timeout_network_and_route_failures_are_typed() {
         gate.release();
         server.join().unwrap();
     }
-    let http = http::Transport::local("http://127.0.0.1:1".into());
+    let http = http::Transport::local("9.8.7", "http://127.0.0.1:1".into());
     for (meta, expected) in [
         (json!({"OID":"../no"}), Failure::RejectedPath),
         (
@@ -703,7 +706,7 @@ fn failure_records_evict_at_the_queue_bound() {
     let (_root, cache) = Cache::new();
     let (tx, rx) = mpsc::channel();
     let fetchers = Fetchers::start(
-        http::Transport::local("http://127.0.0.1:1".into()),
+        http::Transport::local("9.8.7", "http://127.0.0.1:1".into()),
         cache,
         Arc::default(),
         Arc::default(),

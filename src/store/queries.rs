@@ -291,7 +291,7 @@ impl Store {
              m.delivery,m.created_at_local,m.content_rev,m.mentioned,m.skip_badge,m.reply_json,
              d.text,d.cursor,d.anchor,d.updated,
              (SELECT count(*) FROM message f WHERE f.chat_id=c.chat_id AND f.server_id IS NULL
-              AND (f.delivery='\"Uncertain\"' OR json_type(f.delivery,'$.Rejected') IS NOT NULL)),
+              AND json_type(f.delivery,'$.Rejected') IS NOT NULL),
              max(coalesce(c.last_activity,0),coalesce(m.sort_ts,0)) AS activity
              FROM chat c
              LEFT JOIN message m ON m.key=(SELECT key FROM message WHERE chat_id=c.chat_id

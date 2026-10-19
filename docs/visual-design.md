@@ -2,7 +2,7 @@
 
 Written 2026-10-18 by the coordinator from an audit of every screen (headless
 captures at 980×720, 1280×900 and 420×760, light and dark). It replaces the
-PoC look. Behaviour is [ux-model.md](ux-model.md); §10 there sets the type
+prototype look. Behaviour is [ux-model.md](ux-model.md); §10 there sets the type
 scale and spacing steps, and this file sets everything else. The reference is
 LINE's own client: quiet neutral surfaces, green for the brand, grey and green
 bubbles, icons rather than words in toolbars. Implementations follow this file

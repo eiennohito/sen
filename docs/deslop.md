@@ -30,6 +30,19 @@ Assume the session produced something that only looks like a program.
   impossible states, docs describing intent instead of code.
 - Verdicts are blunt: "delete", "rewrite as X", "wrong model".
 
+## Rare cases
+
+Sessions invent rare cases and give each one its own state, flag or code
+path. Triage instead:
+
+1. Make it self-healing so it doesn't matter in practice.
+2. Fold it into the existing model in a better way, without a new state.
+3. Accept it as a degradation if it isn't critical, and say so in one line.
+
+Example: a send that may have reached LINE before the connection dropped is
+just "Not sent" with Retry (2); our echo arriving later turns any row into
+Sent (1). No "may not have been sent" state.
+
 ## Tests are code under review
 
 Passing tests show only that tests and code agree. Tests are audited like

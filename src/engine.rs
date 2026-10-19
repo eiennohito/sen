@@ -805,7 +805,6 @@ fn begin_attempt(inbox: &Arc<Inbox>, address: (String, Key), generation: u64) ->
             let current =
                 generation == engine.generation.load(Ordering::SeqCst) && engine.account.ready();
             if current {
-                engine.store.start_attempt(address.1)?;
                 engine.in_flight.insert(address);
             }
             let _ = reply.send(current);
@@ -1272,6 +1271,11 @@ impl Engine {
             return Ok(());
         }
         self.attempt = self.attempt.saturating_add(1);
+        if self.connection == Connection::Local {
+            self.connection(Connection::Connecting {
+                attempt: self.attempt,
+            });
+        }
 
         self.rpc(
             move |backend| backend.profile(),
@@ -1296,22 +1300,27 @@ impl Engine {
                             && let Some(root) = &engine.account_root
                         {
                             use sha2::{Digest, Sha256};
-                            let mut target =
-                                Store::open(&root.join(format!("{:x}", Sha256::digest(&p.mid))))?;
-                            for row in target.all_pending()? {
-                                if row.delivery == Delivery::Pending
-                                    && !engine.in_flight.contains(&(p.mid.clone(), row.key))
-                                {
-                                    let delivery = if target.attempt_started(row.key)? {
-                                        Delivery::Uncertain
-                                    } else {
-                                        Delivery::Rejected {
-                                            reason: Refusal::AppClosed,
-                                        }
-                                    };
-                                    target.mark_failed(row.key, delivery)?;
+                            let directory = root.join(format!("{:x}", Sha256::digest(&p.mid)));
+                            let first_identity = engine.store_mid.is_none()
+                                && !directory.join("store.sqlite3").exists();
+                            let target = if first_identity {
+                                engine.store.persist_to(&directory)?
+                            } else {
+                                let mut target = Store::open(&directory)?;
+                                for row in target.all_pending()? {
+                                    if row.delivery == Delivery::Pending
+                                        && !engine.in_flight.contains(&(p.mid.clone(), row.key))
+                                    {
+                                        target.mark_failed(
+                                            row.key,
+                                            Delivery::Rejected {
+                                                reason: Refusal::AppClosed,
+                                            },
+                                        )?;
+                                    }
                                 }
-                            }
+                                target
+                            };
                             engine.store = target;
                             engine.store_mid = Some(p.mid.clone());
                             engine
@@ -1321,6 +1330,13 @@ impl Engine {
                                 .unwrap()
                                 .refresh
                                 .retain(|r| !matches!(r, Refresh::Send(_)));
+                            if first_identity {
+                                for row in engine.store.all_pending()? {
+                                    if row.delivery == Delivery::Pending {
+                                        engine.inbox.refresh(Refresh::Send(row.key));
+                                    }
+                                }
+                            }
                             engine.emit(Delta::Prefs(engine.store.prefs()?));
                             if engine.window.is_none()
                                 && let Some(chat) = engine.store.prefs()?.last_chat
@@ -1473,6 +1489,13 @@ impl Engine {
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
         if (!self.account.ready() || self.account_mid().is_empty())
+            && !(matches!(self.account, AccountSession::Checking)
+                && matches!(
+                    i,
+                    Intent::Send { .. }
+                        | Intent::SendAttachments { .. }
+                        | Intent::SendSticker { .. }
+                ))
             && !matches!(
                 i,
                 Intent::SignIn
@@ -2274,7 +2297,9 @@ impl Engine {
                         Failure::SignedOut(_) | Failure::NotDelivered => Delivery::Rejected {
                             reason: Refusal::SignedOut,
                         },
-                        Failure::Unanswered => Delivery::Uncertain,
+                        Failure::Unanswered => Delivery::Rejected {
+                            reason: Refusal::Unanswered,
+                        },
                         Failure::Bug(_) => Delivery::Rejected {
                             reason: Refusal::Internal,
                         },

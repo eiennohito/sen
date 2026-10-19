@@ -503,7 +503,7 @@ impl FakeBackend {
         };
         row
     }
-    pub fn uncertain_send(&self) {
+    pub fn unanswered_send(&self) {
         self.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::Unanswered);
     }
     pub fn echo_first(&self, value: bool) {
@@ -605,6 +605,9 @@ impl Backend for FakeBackend {
             while !cancel.load(Ordering::Relaxed) {
                 std::thread::sleep(Duration::from_millis(10));
             }
+            return Err(Failure::SignedOut(SignOutReason::Unavailable(
+                crate::client::error::SignInFailure::Cancelled,
+            )));
         }
         Err(Failure::SignedOut(SignOutReason::Unavailable(
             crate::client::error::SignInFailure::Server,
@@ -1188,34 +1191,43 @@ pub struct LineBackend {
     fetchers: Option<Arc<crate::client::desktop::assets::Fetchers>>,
     client: Option<crate::client::desktop::Client>,
     state: std::path::PathBuf,
-    wasm: std::path::PathBuf,
+    wasm_override: Option<std::path::PathBuf>,
+    version_override: Option<String>,
 }
 impl LineBackend {
     pub fn local_mid(&self) -> Option<String> {
-        let mid = self.client.as_ref()?.local_mid();
-        (!mid.is_empty()).then(|| mid.to_owned())
+        self.client
+            .as_ref()
+            .map(|client| client.local_mid().to_owned())
     }
     pub fn open_local(
         state: &std::path::Path,
-        wasm: &std::path::Path,
+        wasm_override: Option<std::path::PathBuf>,
         cache: &std::path::Path,
+        version_override: Option<String>,
     ) -> anyhow::Result<Self> {
-        let (client, session_failure) = if state.exists() {
-            match crate::client::desktop::Client::open_local(state, wasm, cache) {
-                Ok(client) => (Some(client), None),
-                Err(error) => {
-                    crate::reporting::log("saved-session", "open", error.as_ref());
-                    let reason = match crate::client::error::classify(&error) {
-                        Failure::SignedOut(SignOutReason::Unavailable(reason)) => reason,
-                        _ => crate::client::error::SignInFailure::SavedSession(
-                            crate::client::error::SavedSessionFailure::Corrupt,
-                        ),
-                    };
-                    (None, Some(reason))
-                }
+        let open = || -> anyhow::Result<Option<crate::client::desktop::Client>> {
+            let module =
+                crate::crypto_module::resolve(wasm_override.clone(), version_override.clone())?;
+            if state.try_exists()? {
+                crate::client::desktop::Client::open_local(state, module, cache).map(Some)
+            } else {
+                drop(module.runtime(&module.read()?)?);
+                Ok(None)
             }
-        } else {
-            (None, None)
+        };
+        let (client, session_failure) = match open() {
+            Ok(client) => (client, None),
+            Err(error) => {
+                crate::reporting::log("saved-session", "open", error.as_ref());
+                let reason = match crate::client::error::classify(&error) {
+                    Failure::SignedOut(SignOutReason::Unavailable(reason)) => reason,
+                    _ => crate::client::error::SignInFailure::SavedSession(
+                        crate::client::error::SavedSessionFailure::Corrupt,
+                    ),
+                };
+                (None, Some(reason))
+            }
         };
         Ok(Self {
             fetchers: None,
@@ -1223,7 +1235,8 @@ impl LineBackend {
             client,
             session_failure,
             state: state.into(),
-            wasm: wasm.into(),
+            wasm_override,
+            version_override,
         })
     }
 }
@@ -1283,9 +1296,15 @@ impl Backend for LineBackend {
             pairing,
         };
         desktop::set_cancellation_token(cancel.clone());
+        let module = crate::crypto_module::resolve(
+            self.wasm_override.clone(),
+            self.version_override.clone(),
+        )
+        .map_err(rpc)?;
+        self.client = None;
         let mut client = pairing::sign_in_validated(
             &self.state,
-            &self.wasm,
+            module,
             &cancel,
             move |event| {
                 deliver(match event {
@@ -1303,7 +1322,14 @@ impl Backend for LineBackend {
                     pairing::Event::Scanned => PairEvent::Scanned,
                 })
             },
-            |staged| desktop::Client::open_local(staged, &self.wasm, &self.cache),
+            |staged, api| {
+                desktop::Client::from_api(
+                    staged,
+                    &self.cache,
+                    crate::credentials::load(staged)?,
+                    api,
+                )
+            },
         )
         .map_err(|error| {
             crate::reporting::log("sign-in", "pairing", error.as_ref());
@@ -1662,6 +1688,12 @@ impl Backend for LineBackend {
             .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
             .latest_revision()
             .map_err(rpc)?;
+        let client_version = self
+            .client
+            .as_ref()
+            .ok_or(Failure::SignedOut(SignOutReason::AuthenticationFailed))?
+            .client_version()
+            .to_owned();
         let access = self
             .client
             .as_mut()
@@ -1671,6 +1703,7 @@ impl Backend for LineBackend {
             use crate::client::desktop::sync::{self, Event, SyncState};
             let refresh_deliver = deliver.clone();
             let result = sync::receive_with_auth(
+                &client_version,
                 revision as u64,
                 &stop,
                 |renew| {

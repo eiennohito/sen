@@ -25,6 +25,19 @@ impl Store {
             .create(dir)?;
         Self::initialize(Connection::open(dir.join("store.sqlite3"))?)
     }
+    /// Persist work composed before the first account identity was available.
+    pub(crate) fn persist_to(&self, dir: &Path) -> Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        self.conn.execute(
+            "VACUUM INTO ?",
+            [dir.join("store.sqlite3").to_string_lossy().as_ref()],
+        )?;
+        Self::open(dir)
+    }
     /// Remove clipboard files only after collecting unsent references from all accounts.
     pub(crate) fn prune_clipboard(&self, root: &Path, accounts: &Path) -> Result<()> {
         let mut referenced = std::collections::BTreeSet::new();
@@ -70,7 +83,7 @@ impl Store {
     }
     fn initialize(mut conn: Connection) -> Result<Self> {
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 6 {
+        if version > 5 {
             return Err(StoreError::NewerSchema(version));
         }
         conn.execute_batch(
@@ -103,11 +116,6 @@ impl Store {
             let tx = conn.transaction()?;
             tx.execute_batch(include_str!("store/004.sql"))?;
             tx.pragma_update(None, "user_version", 5)?;
-            tx.commit()?;
-        }
-        if version < 6 {
-            let tx = conn.transaction()?;
-            tx.execute_batch("ALTER TABLE message ADD COLUMN attempt_started INTEGER NOT NULL DEFAULT 0; PRAGMA user_version=6;")?;
             tx.commit()?;
         }
         conn.execute_batch("CREATE TABLE IF NOT EXISTS sticker_packages (id INTEGER PRIMARY KEY CHECK(id=1), value TEXT NOT NULL);")?;

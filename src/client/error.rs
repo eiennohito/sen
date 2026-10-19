@@ -104,6 +104,8 @@ pub enum Refusal {
     Code(i64),
     #[error("signed out")]
     SignedOut,
+    #[error("no answer received")]
+    Unanswered,
     #[error("app closed before sending")]
     AppClosed,
     #[error("File missing")]
@@ -130,6 +132,8 @@ pub enum Refusal {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SignInFailure {
     CryptoModule(std::path::PathBuf),
+    ExtensionMissing,
+    CryptoChanged { version: String, missing: String },
     StateDirectory(std::path::PathBuf),
     Keyring,
     Network,
@@ -143,9 +147,17 @@ pub enum SignInFailure {
 }
 
 impl SignInFailure {
+    pub fn is_prerequisite(&self) -> bool {
+        matches!(
+            self,
+            Self::CryptoModule(_) | Self::ExtensionMissing | Self::CryptoChanged { .. }
+        )
+    }
     pub fn kind(&self) -> &'static str {
         match self {
-            Self::CryptoModule(_) => "crypto-module",
+            Self::CryptoModule(_) | Self::ExtensionMissing | Self::CryptoChanged { .. } => {
+                "crypto-module"
+            }
             Self::StateDirectory(_) => "state-directory",
             Self::Keyring => "keyring",
             Self::Network => "network",
@@ -163,19 +175,17 @@ impl SignInFailure {
 /// Local saved-session failures, independent of LINE authentication.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SavedSessionFailure {
-    #[error("the saved crypto version is unsupported")]
-    Version,
-    #[error("Letter Sealing keys are missing or do not match")]
+    #[error("saved-session: {self:?}")]
     Keys,
-    #[error("the saved data is corrupt")]
+    #[error("saved-session: {self:?}")]
     Corrupt,
-    #[error("the credentials store does not match")]
+    #[error("saved-session: {self:?}")]
     CredentialsStore,
-    #[error("the keyring is locked or unavailable, or its key is missing")]
+    #[error("saved-session: {self:?}")]
     Keyring,
-    #[error("the saved session could not be read or written")]
+    #[error("saved-session: {self:?}")]
     Io,
-    #[error("the image cache could not be opened")]
+    #[error("saved-session: {self:?}")]
     ImageCache,
 }
 impl SavedSessionFailure {
@@ -383,10 +393,7 @@ mod tests {
 
     #[test]
     fn second_119_ends_the_session() {
-        use crate::{
-            client::http::tests::{accept, local_server},
-            runtime::Runtime,
-        };
+        use crate::client::http::tests::{accept, local_server};
         use std::io::{BufRead, BufReader, Read, Write};
         let (http, server) = local_server(|listener| {
             for (path, response) in [
@@ -432,17 +439,10 @@ mod tests {
                 .unwrap();
             }
         });
-        let mut api = super::super::Api {
-            rt: Runtime::stub().unwrap(),
-            http,
-            synthetic_signature: true,
-            key_cache: Default::default(),
-            channels: Default::default(),
-            channel_tick: 0,
-            state: json!({"token_v3_issue_result":{"accessToken":"old","refreshToken":"refresh"}}),
-            session_path: None,
-            stream_access: Default::default(),
-        };
+        let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path()).unwrap();
+        let mut api = super::super::Api::new(&wasm, crate::test_support::FIXTURE_VERSION).unwrap();
+        api.http = http;
+        api.state = json!({"token_v3_issue_result":{"accessToken":"old","refreshToken":"refresh"}});
         let error = api.call("/api/test", &json!([]), "old", "", 0).unwrap_err();
         assert_eq!(
             classify(&error),
@@ -459,6 +459,8 @@ pub(crate) struct Cancelled;
 impl std::fmt::Display for SignInFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::ExtensionMissing => f.write_str("the LINE extension is not installed"),
+            Self::CryptoChanged { .. } => f.write_str("the crypto module has changed"),
             Self::CryptoModule(_) => f.write_str("the crypto module is unavailable"),
             Self::StateDirectory(_) => f.write_str("the session directory is not writable"),
             Self::Keyring => f.write_str("the keyring is unavailable"),
@@ -540,3 +542,5 @@ impl super::desktop::assets::Failure {
         matches!(self, Self::Timeout | Self::Network | Self::Http(500..=599))
     }
 }
+
+impl wasmi::core::HostError for Error {}

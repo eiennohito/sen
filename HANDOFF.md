@@ -1,4 +1,4 @@
-# LINE native client PoC: fresh-session handoff
+# LINE native client prototype: fresh-session handoff
 
 Updated 2026-10-18. Workspace: `/home/eien/work/misc/line-app`.
 
@@ -10,8 +10,8 @@ Updated 2026-10-18. Workspace: `/home/eien/work/misc/line-app`.
    `LINE_DESKTOP_CREDENTIALS=plaintext-file` is the development store for
    agent/debug instances (one plaintext file per `--state` path, as
    requested). The repo's `artifacts/auth/session.json` is still plaintext and
-   untouched; it migrates in place on the first authorised `Client::open` or
-   `line-auth status` with a reachable keyring.
+   untouched; keyring mode refuses plaintext files. Only the explicit
+   plaintext-file development store can open it.
 2. **T5, P1–P3, P5–P7 traces came from a live Chrome capture driven by the
    user (done 2026-10-18).** Results: [docs/protocol-traces.md](docs/protocol-traces.md);
    tool: `node tools/capture-line-protocol.mjs` (shapes only; control by
@@ -70,7 +70,7 @@ implementation includes core model phase 3: SQLite owns messages and account
 state; the engine merges every input, the controller applies FIFO deltas, and
 the presenter updates keyed Slint models. Messages have no retention limit.
 Read the acceptance rows for partial behavior and verification; this remains
-a PoC, not a daily-use or live-compatibility claim.
+a prototype, not a daily-use or live-compatibility claim.
 
 [docs/ux-model.md](docs/ux-model.md) defines behavior;
 [docs/app-design.md](docs/app-design.md) owns engineering constraints and
@@ -80,9 +80,8 @@ a PoC, not a daily-use or live-compatibility claim.
 Do not run the default app, `line-auth status`, `--check-live`, pairing, sends,
 read markers, or server preference changes without a new device-slot assignment.
 Preserve `artifacts/auth/session.json` and all encrypted local state. CLI
-defaults use `$XDG_DATA_HOME/line-desktop/session.json` and `ltsm.wasm`
-(fallback `$HOME/.local/share/line-desktop/`) and follow the app's saved paths
-choice. Historical
+defaults use `$XDG_DATA_HOME/line-desktop/session.json`
+(fallback `$HOME/.local/share/line-desktop/session.json`). Crypto comes from the newest installed LINE extension under `$XDG_CONFIG_HOME` (default `$HOME/.config`), at its version directory’s `static/js/ltsm.wasm`. Historical
 live results below do not prove current authorization.
 
 Safe build and verification commands (synthetic data only):
@@ -174,10 +173,10 @@ agent configs are ignored. Preserve the official blob and state on disk.
 
 ## Historical verified state (before Chrome login)
 
-- Chrome extension version fetched for this PoC: **3.7.2**. Its unmodified WASM is
+- Chrome extension version fetched for this prototype: **3.7.2**. Its unmodified WASM is
   `artifacts/line-3.7.2/ltsm.wasm`, 2,254,973 bytes, SHA-256
   `58bb4e189ab9bbd7d72ed415258da36afd50e306cb019bab75329d4f5f1b65b3`.
-  The runtime intentionally rejects other hashes. This is the version obtained
+  The synthetic oracle fixture rejects other hashes; the app validates the installed module’s interfaces. This is the version obtained
   during this work, not a claim that it will remain the newest available.
 - Rust + Wasmi instantiate it without JavaScript. The host implements the needed
   Emscripten/embind/emval imports and callbacks.
@@ -227,7 +226,7 @@ artifacts/line-3.7.2/ltsm.wasm` reads at most ten chat previews with five
 messages each, tries at most five supported candidates, and stops on the first
 verified JSON payload. It reads credentials without rewriting them and does not
 send messages, mark them read, register keys, or persist chat data. Each candidate
-uses a fresh runtime, so a WASM exception cannot poison the next attempt.
+rebuilds the runtime only after a WASM exception poisons it; item-level key, RPC and parse failures preserve its caches.
 
 The desktop now extends this into real message retrieval, text display, and
 media decryption. Successful samples do not cover every direction, chat type,
@@ -238,8 +237,8 @@ unverified against the account.
 
 The explicitly selected repo session `artifacts/auth/session.json` contains
 **real access/refresh credentials and wrapped
-keys**, still in the legacy plaintext form (T11 migration has not run on it). It is mode 0600, and its newly created parent directory is mode 0700.
-Once sealed, it is only readable with its key in the desktop keyring: do not
+keys**, in plaintext form (usable only with the plaintext-file development store). It is mode 0600, and its newly created parent directory is mode 0700.
+Sealed sessions are only readable with their key in the desktop keyring: do not
 delete `line-desktop` keyring items.
 Preserve it. Do not dump it, put it into prompts/logs, commit it, or copy its
 contents into documentation. HAR files under `dumps/` are sensitive too.
@@ -253,7 +252,7 @@ timestamps only; consult it for the latest run's stage.
 
 - `src/runtime.rs`: minimal WASM host, dynamic embind bindings, emval handling.
 - `src/lib.rs`: shared version/hash constants, runtime module, request signing.
-- `src/main.rs`: offline crypto/signature PoC.
+- `examples/crypto-harness.rs`: offline crypto/signature and benchmark harness.
 - `src/bin/line-auth.rs`: thin CLI wrapper. `src/client.rs` contains the shared
   transport, QR flow, state restoration, and persistence.
 - `src/client/chat.rs`: shared chunk/key adapters and bounded decryption check.
@@ -278,7 +277,7 @@ Normal build/check commands when network access works:
 cargo build --release --bins
 cargo test --release --workspace
 cargo clippy --release --workspace --all-targets -- -D warnings
-cargo run --release --bin line-wasm-poc
+cargo run --offline --release --features harness --example crypto-harness
 ```
 
 Current test totals and exact verified builds are recorded in the acceptance
@@ -307,7 +306,7 @@ configuration points to it.
    fix enabled real key recovery. Inherited methods also use registered upcasts.
 3. Chrome V2 encryption/decryption takes API-provided **opaque encrypted MIDs**
    (44 characters), not raw 33-character LINE IDs. Pass real API IDs unchanged.
-   The fixed-offset WASM-memory helper in the offline PoC exists only to build
+   The fixed-offset WASM-memory helper in the offline harness exists only to build
    synthetic opaque IDs for tests; it is not a production identity mechanism.
 4. A WASM exception poisons that runtime instance. Construct a new one before
    retrying; do not reuse it after a rejected crypto operation.

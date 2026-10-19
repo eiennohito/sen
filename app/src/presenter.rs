@@ -8,7 +8,7 @@ pub struct Presenter {
     history_chat: Option<ChatId>,
     message_keys: Vec<RowKey>,
     pub images: HashMap<String, slint::Image>,
-    pub failures: HashMap<String, line_wasm_poc::client::desktop::assets::Failure>,
+    pub failures: HashMap<String, line::client::desktop::assets::Failure>,
     friends: Rc<VecModel<FriendRow>>,
     friend_keys: Vec<String>,
     members: Rc<VecModel<MemberRow>>,
@@ -210,7 +210,6 @@ impl Presenter {
             Delivery::Sent => "Sent",
             Delivery::Read => "Read",
             Delivery::Rejected { .. } => "Not sent",
-            Delivery::Uncertain => "May not have been sent",
         }
         .into();
         if let Some(_item) = m
@@ -225,7 +224,7 @@ impl Presenter {
             row.file_missing = matches!(
                 m.delivery,
                 Delivery::Rejected {
-                    reason: line_wasm_poc::backend::Refusal::FileMissing
+                    reason: line::backend::Refusal::FileMissing
                 }
             );
         }
@@ -244,12 +243,9 @@ impl Presenter {
             })
             .unwrap_or(0);
         row.can_unsend = m.outgoing && m.server_id.is_some() && !m.body.is_withdrawn();
-        row.recoverable = matches!(m.delivery, Delivery::Rejected { .. } | Delivery::Uncertain);
+        row.recoverable = matches!(m.delivery, Delivery::Rejected { .. });
         row.delivery_detail = match &m.delivery {
             Delivery::Rejected { reason } => format!("Not sent: {}", text::rejection(reason)),
-            Delivery::Uncertain => {
-                "The message may have arrived. Check before sending again.".into()
-            }
             _ => String::new(),
         }
         .into();
@@ -407,12 +403,12 @@ impl Presenter {
         let mut chat_list_error = String::new();
         let mut detail_error = String::new();
         let detail_id = state.detail.last().map(|entry| match &entry.page {
-            line_wasm_poc::controller::DetailPage::Profile(id) => id.as_str(),
-            line_wasm_poc::controller::DetailPage::GroupInfo(id)
-            | line_wasm_poc::controller::DetailPage::Members(id) => id.0.as_str(),
+            line::controller::DetailPage::Profile(id) => id.as_str(),
+            line::controller::DetailPage::GroupInfo(id)
+            | line::controller::DetailPage::Members(id) => id.0.as_str(),
         });
         for (request, failure) in &state.refresh_failures {
-            use line_wasm_poc::{client::error::Failure, engine::Refresh};
+            use line::{client::error::Failure, engine::Refresh};
             let message = match failure {
                 Failure::Refused(reason) => format!("Couldn't load this item: {reason}"),
                 Failure::Bug(_) => "Couldn't load this item.".into(),
@@ -464,10 +460,10 @@ impl Presenter {
                 .action
                 .as_ref()
                 .map(|a| match a {
-                    line_wasm_poc::backend::ProfileAction::Rename { .. } => "rename",
-                    line_wasm_poc::backend::ProfileAction::AddFriend { .. } => "add",
-                    line_wasm_poc::backend::ProfileAction::Mute { .. } => "mute",
-                    line_wasm_poc::backend::ProfileAction::Leave { .. } => "leave",
+                    line::backend::ProfileAction::Rename { .. } => "rename",
+                    line::backend::ProfileAction::AddFriend { .. } => "add",
+                    line::backend::ProfileAction::Mute { .. } => "mute",
+                    line::backend::ProfileAction::Leave { .. } => "leave",
                 })
                 .unwrap_or("")
                 .into(),
@@ -487,7 +483,7 @@ impl Presenter {
                 .is_some_and(|id| state.chats.get(id).is_some_and(|c| c.chat.left)),
         );
         if let Some(page) = state.detail_page() {
-            use line_wasm_poc::controller::DetailPage;
+            use line::controller::DetailPage;
             let (id, kind) = match page {
                 DetailPage::Profile(id) => (id.as_str(), 0),
                 DetailPage::GroupInfo(id) => (id.0.as_str(), 1),
@@ -596,7 +592,7 @@ impl Presenter {
                     .profile
                     .picture_path
                     .as_deref()
-                    .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar)
+                    .and_then(line::client::desktop::assets::Asset::avatar)
             } else {
                 f.and_then(|f| f.avatar.clone())
                     .or_else(|| c.and_then(|c| c.avatar.clone()))
@@ -1012,7 +1008,7 @@ impl Presenter {
                 ui.global::<State>().set_chat_avatar(image.clone());
             }
             let profile = match state.detail_page() {
-                Some(line_wasm_poc::controller::DetailPage::Profile(id)) => state
+                Some(line::controller::DetailPage::Profile(id)) => state
                     .contacts
                     .get(id)
                     .or_else(|| state.friends.iter().find(|f| &f.id == id))
@@ -1032,16 +1028,16 @@ impl Presenter {
                 ui.set_profile_avatar(image.clone());
             }
             let other_avatar = match state.detail_page() {
-                Some(line_wasm_poc::controller::DetailPage::Profile(id))
+                Some(line::controller::DetailPage::Profile(id))
                     if id == "self" || state.profile.mid == *id =>
                 {
                     state
                         .profile
                         .picture_path
                         .as_deref()
-                        .and_then(line_wasm_poc::client::desktop::assets::Asset::avatar)
+                        .and_then(line::client::desktop::assets::Asset::avatar)
                 }
-                Some(line_wasm_poc::controller::DetailPage::GroupInfo(id)) => {
+                Some(line::controller::DetailPage::GroupInfo(id)) => {
                     state.chats.get(id).and_then(|c| c.chat.avatar.clone())
                 }
                 _ => None,
@@ -1080,7 +1076,7 @@ fn patch_message_asset(
     row: &mut MessageRow,
     key: &str,
     image: Option<&slint::Image>,
-    failure: Option<&line_wasm_poc::client::desktop::assets::Failure>,
+    failure: Option<&line::client::desktop::assets::Failure>,
 ) -> bool {
     if !uses_asset(row, key) {
         return false;
@@ -1181,7 +1177,7 @@ fn patch_runs(
 
 /// All content labels belong to the presentation layer.
 pub(crate) fn content_view(content: &Content) -> account::MessageView {
-    use line_wasm_poc::client::desktop::rich::RichContent;
+    use line::client::desktop::rich::RichContent;
     let mut view = account::MessageView::default();
     let mut rich = RichContent::default();
     view.body = match content {
@@ -1265,7 +1261,7 @@ pub(crate) fn content_view(content: &Content) -> account::MessageView {
         .iter()
         .map(|span| account::EmojiView {
             span: span.clone(),
-            image_key: line_wasm_poc::client::desktop::assets::Asset::inline_emoji(span)
+            image_key: line::client::desktop::assets::Asset::inline_emoji(span)
                 .map(|a| a.key())
                 .unwrap_or_default(),
         })

@@ -1,9 +1,8 @@
 //! Session credentials at rest.
 //!
 //! The session file is sealed with AES-256-GCM; its key lives in the desktop
-//! Secret Service (org.freedesktop.secrets), one item per sealed file. Legacy
-//! plaintext files are still readable and are sealed by `load_migrating` only
-//! after a verified round trip. Sealed files are never downgraded.
+//! Secret Service (org.freedesktop.secrets), one item per sealed file.
+//! Keyring storage refuses plaintext files; sealed files are never downgraded.
 //!
 //! `LINE_DESKTOP_CREDENTIALS=plaintext-file` is the development store for
 //! agent and debug instances without a keyring (e.g. the private D-Bus session
@@ -47,7 +46,11 @@ pub trait Keys {
 }
 
 pub fn load(path: &Path) -> Result<Value> {
-    load_with(path, Store::from_environment()?, &secret_service::Keyring)
+    load_with(
+        path,
+        Store::from_environment().context(SavedSessionFailure::CredentialsStore.error())?,
+        &secret_service::Keyring,
+    )
 }
 pub fn save(path: &Path, state: &Value) -> Result<()> {
     save_with(
@@ -56,25 +59,6 @@ pub fn save(path: &Path, state: &Value) -> Result<()> {
         Store::from_environment()?,
         &secret_service::Keyring,
     )
-}
-/// Like `load`, and seals a legacy plaintext file when the keyring is
-/// reachable. Call once per account start, before the sync thread can save.
-pub fn load_migrating(path: &Path) -> Result<Value> {
-    load_migrating_with(
-        path,
-        Store::from_environment().context(SavedSessionFailure::CredentialsStore.error())?,
-        &secret_service::Keyring,
-    )
-    .map_err(|error| {
-        if error
-            .downcast_ref::<crate::client::error::Error>()
-            .is_some()
-        {
-            error
-        } else {
-            error.context(SavedSessionFailure::Corrupt.error())
-        }
-    })
 }
 /// Fails early, before a phone approval, when new credentials could not be sealed.
 pub fn check_writable() -> Result<()> {
@@ -94,15 +78,29 @@ fn sealed(value: &Value) -> bool {
 }
 
 pub fn load_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
-    let envelope = parse(&fs::read(path).context(SavedSessionFailure::Io.error())?)?;
+    let envelope = parse(&fs::read(path).context(SavedSessionFailure::Io.error())?)
+        .context(SavedSessionFailure::Corrupt.error())?;
     if !sealed(&envelope) {
+        ensure!(
+            store == Store::PlaintextFile,
+            SavedSessionFailure::CredentialsStore.error()
+        );
         return Ok(envelope);
     }
     ensure!(
         store == Store::Keyring,
         SavedSessionFailure::CredentialsStore.error()
     );
-    open(&envelope, keys)
+    open(&envelope, keys).map_err(|error| {
+        if error
+            .downcast_ref::<crate::client::error::Error>()
+            .is_some()
+        {
+            error
+        } else {
+            error.context(SavedSessionFailure::Corrupt.error())
+        }
+    })
 }
 
 pub fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Result<()> {
@@ -121,6 +119,10 @@ pub fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> 
         );
         return private_write(path, &plain);
     }
+    ensure!(
+        existing.as_ref().is_none_or(sealed),
+        SavedSessionFailure::CredentialsStore.error()
+    );
     let sealed = match existing_id {
         Some(id) => {
             let key = keys
@@ -128,41 +130,12 @@ pub fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> 
                 .context("the keyring no longer holds this session's key")?;
             seal(&id, &key, &plain)?
         }
-        None => match new_key(keys) {
-            Ok((id, key)) => seal(&id, &key, &plain)?,
-            // Keep a refreshed token usable rather than losing it; a plaintext
-            // file is sealed at the next start with a reachable keyring.
-            Err(_) if existing.is_some() => return private_write(path, &plain),
-            Err(error) => return Err(error),
-        },
+        None => {
+            let (id, key) = new_key(keys)?;
+            seal(&id, &key, &plain)?
+        }
     };
     private_write(path, &sealed)
-}
-
-pub fn load_migrating_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
-    let original = fs::read(path).context(SavedSessionFailure::Io.error())?;
-    let state = load_with(path, store, keys)?;
-    if store == Store::PlaintextFile || sealed(&parse(&original)?) {
-        return Ok(state);
-    }
-    let Ok((id, key)) = new_key(keys) else {
-        return Ok(state);
-    };
-    let bytes = seal(&id, &key, &original)?;
-    // Verify the stored key and the envelope before the plaintext goes away.
-    let stored = keys
-        .get(&id)
-        .context(SavedSessionFailure::Keyring.error())?
-        .context(SavedSessionFailure::Keyring.error())?;
-    ensure!(
-        open(&parse(&bytes)?, &MapKeys::single(&id, stored))? == state,
-        "sealed session did not round-trip"
-    );
-    // Do not overwrite a concurrent save made since the first read.
-    if fs::read(path).context(SavedSessionFailure::Io.error())? == original {
-        private_write(path, &bytes).context(SavedSessionFailure::Io.error())?;
-    }
-    Ok(state)
 }
 
 fn new_key(keys: &impl Keys) -> Result<(String, [u8; 32])> {
@@ -232,14 +205,9 @@ fn open(envelope: &Value, keys: &impl Keys) -> Result<Value> {
     parse(&plain)
 }
 
-/// In-memory keys: verification of a fresh envelope, and tests.
+/// In-memory keys for credential store tests.
 #[derive(Default)]
 pub struct MapKeys(std::sync::Mutex<std::collections::HashMap<String, [u8; 32]>>);
-impl MapKeys {
-    fn single(id: &str, key: [u8; 32]) -> Self {
-        Self(std::sync::Mutex::new([(id.to_owned(), key)].into()))
-    }
-}
 impl Keys for MapKeys {
     fn get(&self, id: &str) -> Result<Option<[u8; 32]>> {
         Ok(self.0.lock().unwrap().get(id).copied())

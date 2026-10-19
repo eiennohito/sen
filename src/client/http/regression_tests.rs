@@ -39,7 +39,7 @@ fn stalled_resolver() -> (
 #[test]
 fn dns_cancellation_is_prompt_and_helpers_are_bounded() {
     let (resolver, started, release, finished, calls) = stalled_resolver();
-    let mut transport = Transport::configured(None, resolver, Config::testing());
+    let mut transport = Transport::configured("9.8.7", None, resolver, Config::testing());
     transport.base = "http://stall.test".into();
     let cancel = Arc::new(AtomicBool::new(false));
     let signal = cancel.clone();
@@ -471,7 +471,7 @@ fn proxy_connect_keeps_target_tls_and_errors_private() {
             listener.local_addr().unwrap()
         ))
         .unwrap();
-        let transport = Transport::with_parts(Some(proxy), PollResolver::default());
+        let transport = Transport::with_parts("9.8.7", Some(proxy), PollResolver::default());
         let server = thread::spawn(move || {
             let mut stream = BufReader::new(accept(&listener));
             let mut line = String::new();
@@ -525,7 +525,7 @@ fn proxy_connect_keeps_target_tls_and_errors_private() {
 fn environment_proxy_and_no_proxy_are_honoured() {
     const CHILD: &str = "LINE_TEST_PROXY_CHILD";
     if let Ok(expected) = std::env::var(CHILD) {
-        let result = Transport::new();
+        let result = Transport::new("9.8.7");
         if expected == "invalid" {
             let Err(error) = result else {
                 panic!("invalid proxy must fail closed");

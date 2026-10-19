@@ -65,7 +65,7 @@ impl Client {
                         .expect("JSON"),
                 )
             };
-            let application = format!("CHROMEOS\t{VERSION}\tChrome_OS\t");
+            let application = format!("CHROMEOS\t{}\tChrome_OS\t", http.client_version);
             let total = (encrypted.len() + preview.len()) as f32;
             progress(0.);
             let oid = http.upload(
@@ -117,29 +117,12 @@ impl Client {
         })
     }
     pub fn finish_attachment(&mut self, to: &str, uploaded: Value, seq: u32) -> Result<Message> {
-        let sealed = self.encrypted_payload(
+        self.send_encrypted(
             to,
             uploaded["contentType"].as_u64().context("media type")?,
-            &json!({"keyMaterial": uploaded["keyMaterial"], "fileName": uploaded["fileName"]}),
-        );
-        let mut message = match sealed {
-            Ok(message) => message,
-            Err(error) => {
-                let _ = self.reset_runtime();
-                return Err(error);
-            }
-        };
-        ensure!(
-            message["contentMetadata"]["e2eeVersion"] == "2",
-            "media requires E2EE V2"
-        );
-        for (key, value) in uploaded["contentMetadata"]
-            .as_object()
-            .context("media metadata")?
-        {
-            message["contentMetadata"][key] = value.clone();
-        }
-        let result = self.talk("sendMessage", json!([seq, message]))?;
-        self.confirmation(&result)
+            &json!({"keyMaterial":uploaded["keyMaterial"], "fileName":uploaded["fileName"]}),
+            &uploaded["contentMetadata"],
+            seq,
+        )
     }
 }

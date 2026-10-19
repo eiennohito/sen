@@ -15,7 +15,7 @@ pub enum Stage {
     RequestCredentials,
     UnwrappingKeys,
     KeysVerified,
-    CheckingRecovery,
+    CheckingKeys,
     Synthetic,
     RestoredKeys(usize),
 }
@@ -40,8 +40,8 @@ impl std::fmt::Display for Stage {
             Self::KeysVerified => {
                 f.write_str("Letter Sealing keys unwrapped and export/import verified")
             }
-            Self::CheckingRecovery => {
-                f.write_str("Authenticated getProfile succeeded; checking restart recovery")
+            Self::CheckingKeys => {
+                f.write_str("Authenticated getProfile succeeded; validating saved keys")
             }
             Self::Synthetic => f.write_str("Synthetic sign-in"),
             Self::RestoredKeys(count) => write!(
@@ -102,25 +102,31 @@ impl<F: Fn(Event)> LoginUi for NativeLogin<'_, F> {
 /// A new pairing has separate encrypted draft storage, even for the same person.
 pub fn sign_in(
     state: &Path,
-    wasm_path: &Path,
+    wasm_override: Option<PathBuf>,
+    version_override: Option<String>,
     cancel: &AtomicBool,
     emit: impl Fn(Event),
 ) -> Result<()> {
-    sign_in_validated(state, wasm_path, cancel, emit, |_| Ok(()))
+    if cancel.load(Ordering::Relaxed) {
+        return Err(super::error::Error::SignIn(super::error::SignInFailure::Cancelled).into());
+    }
+    let module = crate::crypto_module::resolve(wasm_override, version_override)?;
+    sign_in_validated(state, module, cancel, emit, |_, _| Ok(()))
 }
 
 pub(crate) fn sign_in_validated<T>(
     state: &Path,
-    wasm_path: &Path,
+    module: crate::crypto_module::CryptoModule,
     cancel: &AtomicBool,
     emit: impl Fn(Event),
-    validate: impl FnOnce(&Path) -> Result<T>,
+    validate: impl FnOnce(&Path, Api) -> Result<T>,
 ) -> Result<T> {
     let ui = NativeLogin { emit, cancel };
     ui.check()?;
+    let wasm = module.read()?;
+    let mut api = Api::with_runtime(module.runtime(&wasm)?, &wasm, &module.version)?;
     ui.set(Stage::WaitingKeyring)?;
     let probe_state = state.to_owned();
-    let probe_wasm = wasm_path.to_owned();
     let (send, receive) = std::sync::mpsc::sync_channel(1);
     // Filesystem probes and Secret Service may block without reading our token.
     // Poll their result on the pairing owner so cancellation also releases the
@@ -128,16 +134,6 @@ pub(crate) fn sign_in_validated<T>(
     std::thread::spawn(move || {
         let result = (|| -> Result<_> {
             let state = probe_state;
-            let wasm_path = probe_wasm;
-            let wasm = fs::read(&wasm_path).context(super::error::Error::SignIn(
-                super::error::SignInFailure::CryptoModule(wasm_path.clone()),
-            ))?;
-            ensure!(
-                format!("{:x}", Sha256::digest(&wasm)) == HASH,
-                super::error::Error::SignIn(super::error::SignInFailure::CryptoModule(
-                    wasm_path.clone()
-                ))
-            );
             // Fail local prerequisites before requesting a phone approval.
             let parent = state
                 .parent()
@@ -161,11 +157,11 @@ pub(crate) fn sign_in_validated<T>(
             crate::credentials::check_writable().context(super::error::Error::SignIn(
                 super::error::SignInFailure::Keyring,
             ))?;
-            Ok((wasm, stamp))
+            Ok(stamp)
         })();
         let _ = send.send(result);
     });
-    let (wasm, stamp) = loop {
+    let stamp = loop {
         ui.check()?;
         match receive.recv_timeout(Duration::from_millis(25)) {
             Ok(result) => break result?,
@@ -181,15 +177,8 @@ pub(crate) fn sign_in_validated<T>(
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
-    let opts = Options {
-        command: "login".into(),
-        state: staged.clone(),
-        wasm: wasm_path.into(),
-        qr_file: None,
-        display: "none".into(),
-    };
-    login_with(&opts, &wasm, &ui)?;
-    let validated = validate(&staged)?;
+    login_with(&staged, &mut api, &ui)?;
+    let validated = validate(&staged, api)?;
     ui.check()?;
     install_session(state, &staged, Some(cancel)).context(super::error::Error::SignIn(
         super::error::SignInFailure::StateDirectory(parent.into()),
@@ -245,12 +234,21 @@ mod tests {
             if exists {
                 fs::write(&wasm, b"unsupported module")?;
             }
-            let error = sign_in(&state, &wasm, &AtomicBool::new(false), |event| {
-                assert!(
-                    matches!(event, Event::Stage(Stage::WaitingKeyring)),
-                    "prerequisite failure requested a QR"
-                );
-            })
+            let error = sign_in_validated(
+                &state,
+                crate::crypto_module::CryptoModule {
+                    wasm: wasm.clone(),
+                    version: "9.8.7".into(),
+                },
+                &AtomicBool::new(false),
+                |event| {
+                    assert!(
+                        matches!(event, Event::Stage(Stage::WaitingKeyring)),
+                        "prerequisite failure requested a QR"
+                    );
+                },
+                |_, _| Ok(()),
+            )
             .unwrap_err();
             assert_eq!(
                 failure(&error, false),
@@ -342,7 +340,8 @@ mod tests {
         assert!(
             sign_in(
                 &state,
-                &root.join("unused.wasm"),
+                Some(root.join("unused.wasm")),
+                None,
                 &AtomicBool::new(true),
                 |_| panic!("cancelled flow emitted an event")
             )

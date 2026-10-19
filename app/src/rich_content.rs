@@ -549,7 +549,7 @@ mod tests {
         row.rich_runs = runs(
             body,
             &[account::EmojiView {
-                span: line_wasm_poc::store::InlineEmoji {
+                span: line::store::InlineEmoji {
                     start_utf16: 3,
                     end_utf16: 6,
                     start_byte: 7,
@@ -811,7 +811,7 @@ mod tests {
         let body = "日本👩🏽‍💻[笑]\nlongunbrokentext";
         let start = body.find("[笑]").unwrap();
         let end = start + "[笑]".len();
-        let span = line_wasm_poc::store::InlineEmoji {
+        let span = line::store::InlineEmoji {
             start_utf16: 0,
             end_utf16: 0,
             start_byte: start,
@@ -856,7 +856,7 @@ mod tests {
             let start = words.len();
             let body = format!("{words}[笑]");
             let end = start + "[笑]".len();
-            let span = line_wasm_poc::store::InlineEmoji {
+            let span = line::store::InlineEmoji {
                 start_utf16: 0,
                 end_utf16: 0,
                 start_byte: start,
@@ -1240,13 +1240,13 @@ mod tests {
             for size in [(980, 720), (360, 520)] {
                 for text_size in [15, 24] {
                     ui.set_text_size(text_size);
-                    for delivery in ["Not sent", "May not have been sent"] {
+                    {
                         ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                             id: "failed".into(),
                             body: "Meet at eleven.".into(),
                             outgoing: true,
                             recoverable: true,
-                            delivery: delivery.into(),
+                            delivery: "Not sent".into(),
                             time: "12:01".into(),
                             clock: "12:01".into(),
                             ..Default::default()
@@ -1265,12 +1265,7 @@ mod tests {
                             pixels.enumerate_pixels().any(|(x, y, p)| x > right
                                 && y >= top
                                 && y <= bottom
-                                && p.0
-                                    == if delivery == "Not sent" {
-                                        [217, 48, 37]
-                                    } else {
-                                        [107, 111, 118]
-                                    }),
+                                && p.0 == [217, 48, 37]),
                             "failure mark moved below the bubble"
                         );
                     }

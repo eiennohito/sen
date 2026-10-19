@@ -4,7 +4,7 @@ The message primitives are portable. A complete replacement for `ltsm.wasm`
 is **not established**: token loading, persisted private-key blobs and the MID
 key still depend on the proprietary SKB engine. This trial adds native
 plaintext-key operations and differential tests; every production caller still
-uses `Runtime`. It does not remove the blob requirement or the second runtime.
+uses `Runtime`. The account net worker owns one runtime and calls it directly for live decode, history and signing; the blob remains required.
 
 Evidence is pinned to Chrome 3.7.2, SHA-256
 `58bb4e189ab9bbd7d72ed415258da36afd50e306cb019bab75329d4f5f1b65b3`.
@@ -237,8 +237,8 @@ coverage is reported as ignored rather than passed. To run an oracle suite:
 cargo test --release --offline --features native-crypto aes_matches_oracle -- --ignored --nocapture
 ```
 
-Explicit oracle runs require the pinned fixture at `DEFAULT_WASM` or
-`LINE_CRYPTO_ORACLE_PATH`. A missing fixture fails loudly with the named
+Explicit oracle runs require `artifacts/line-3.7.2/ltsm.wasm` or an explicit
+`LINE_CRYPTO_ORACLE_PATH` pointing to that fixture. A missing fixture fails loudly with the named
 `SKIP native crypto oracle` diagnostic; permission errors and wrong hashes
 also fail. There is no successful early return for an absent oracle.
 
@@ -290,8 +290,8 @@ MAC verification succeeded before padding rejection.
 ```sh
 GOCACHE="$PWD/target/t9-fixture-go-cache" GOTELEMETRY=off GOPROXY=off \
   go run tools/generate-fixture.go fixtures/letter-sealing-v2.json fixtures/letter-sealing-v2.json
-cargo test --release --offline -p line-wasm-poc --features native-crypto native_crypto -- --nocapture
-cargo test --release --offline -p line-wasm-poc --features native-crypto native_crypto::tests::benchmark_decrypt -- --ignored --nocapture
+cargo test --release --offline -p line --features native-crypto native_crypto -- --nocapture
+cargo test --release --offline -p line --features native-crypto native_crypto::tests::benchmark_decrypt -- --ignored --nocapture
 ```
 
 The round-2 benchmark on this worktree measured a 74-byte fixture message, reused
