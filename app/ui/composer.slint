@@ -9,6 +9,8 @@ import { Pane } from "scrollpane.slint";
 import { DraftEditor } from "draft-editor.slint";
 
 export component Composer inherits Rectangle {
+    property <int> demo-reset: State.demo-reset-generation;
+    changed demo-reset => { picker.close(); composer.restore(0, 0); }
     property <length> reply-height: State.composer-reply.reply-id != "" ? max(44px, Tokens.small * 2.8 + 12px) : 0px;
     height: root.reply-height + max(52px, min(Tokens.base * 8.4 + 32px, draft-measure.preferred-height + 32px));
     vertical-stretch: 0; background: Tokens.bg;

@@ -93,16 +93,13 @@ cargo test --release --offline --workspace
 cargo clippy --release --offline --workspace --all-targets -- -D warnings
 target/release/line-desktop --demo --snapshot /tmp/line-ui.ppm
 cargo build --release --offline -p line-desktop --features ui-debug
-cp target/release/line-desktop /tmp/line-ui-debug-9447
-python3 tools/run-ui-debug.py --binary /tmp/line-ui-debug-9447 --port 9447 --log /tmp/line-ui-9447.log -- --demo
-# In another terminal:
-# Run each group on a fresh instance (the helper invokes run-ui-debug.py):
-python3 tools/check-ui-mcp.py --launch --port 9448 --scenarios
-# Repeat separately for --reading --rich --layers --friends --focus
-# --layout-photos --media --unread --auth-recovery, one flag per fresh launch.
+# All groups in a random order (prints the seed; --seed N reproduces):
+python3 tools/check-ui-mcp.py --all --binary target/release/line-desktop
+# One or more groups:
+python3 tools/check-ui-mcp.py --binary target/release/line-desktop --group rich --group layers
 ```
 
-Agent-started GUI previews must use `tools/run-ui-debug.py` with a `ui-debug`
+Agent-started GUI previews must use `tools/run_ui_debug.py` with a `ui-debug`
 build and `dbus-run-session`: Slint's headless software backend runs in private
 0700 XDG directories and a D-Bus session with no activation service directories.
 Use a unique port and binary copy per session; the wrapper reports owned
@@ -151,7 +148,7 @@ validated sessions can open stored content before connecting. Asset fetchers
 and desktop bus work run separately.
 Normal builds omit MCP;
 `--features ui-debug` enables loopback inspection through the guarded private
-`tools/run-ui-debug.py` scope above; use a unique port for each owner.
+`tools/run_ui_debug.py` scope above; use a unique port for each owner.
 `tools/check-ui-mcp.py` checks synthetic browser, reading, media, layer and
 rich-content flows; focused browser/composer scripts cover their keyboard paths.
 Actual Fcitx preedit/candidate acceptance is still pending.

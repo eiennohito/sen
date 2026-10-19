@@ -40,14 +40,10 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     let headless = snapshot.is_some();
     #[cfg(not(feature = "demo"))]
     let headless = false;
-    let automation = debug_launch::intent(
-        background,
-        cfg!(feature = "ui-debug"),
-        demo,
-        std::env::var("LINE_DESKTOP_AUTOMATION_SOCKET")
-            .ok()
-            .as_deref(),
-    )? == debug_launch::Intent::VirtualAutomation;
+    let automation = background;
+    if automation && (!cfg!(feature = "ui-debug") || !demo) {
+        return Err("--debug-background requires a ui-debug build and an offline demo.".into());
+    }
     if !headless {
         if automation {
             // Slint 1.18.1 supports headless in create_backend(), but not BackendSelector.
@@ -223,10 +219,6 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         draining: Default::default(),
     };
     callbacks::install(&ui, desktop.clone());
-    #[cfg(feature = "demo")]
-    if let Some(fake) = &fake {
-        demo::install(&ui, desktop.clone(), fake.clone());
-    }
     // Initial synthetic rendering uses the same FIFO as interactive rendering.
     #[cfg(feature = "demo")]
     if headless {
@@ -248,9 +240,19 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     }
     let weak = ui.as_weak();
     let d = desktop.clone();
-    let worker = Rc::new(worker);
+    let worker = Rc::new(RefCell::new(worker));
+    #[cfg(feature = "demo")]
+    if let Some(fake) = &fake {
+        demo::install(
+            &ui,
+            desktop.clone(),
+            fake.clone(),
+            worker.clone(),
+            text_size,
+        );
+    }
     let w = worker.clone();
-    worker.on_deltas(event_loop::wake);
+    worker.borrow().on_deltas(event_loop::wake);
     event_loop::install(move || {
         if let Some(ui) = weak.upgrade() {
             if let Some(events) = &activations {
@@ -266,7 +268,8 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                     }
                 }
             }
-            d.update(|d| d.apply_batch(&ui, w.deltas.try_iter()));
+            let deltas = w.borrow().deltas.try_iter().collect::<Vec<_>>();
+            d.update(|d| d.apply_batch(&ui, deltas));
             d.update(|d| {
                 d.background.apply(&ui);
                 d.observe_reading(&ui);
@@ -280,7 +283,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     demo::stage(&ui, &desktop, fake.as_ref(), &scene, snapshot_profile);
     #[cfg(feature = "demo")]
     if snapshot_path.is_some() {
-        demo::settle(&ui, &desktop, &worker);
+        demo::settle(&ui, &desktop, &worker.borrow());
     }
     #[cfg(feature = "ui-debug")]
     if demo && std::env::var_os("LINE_UI_LATENCY").is_some() {

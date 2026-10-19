@@ -1,4 +1,5 @@
 import { Button, ScrollView } from "std-widgets.slint";
+import { DemoAutomation } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
@@ -85,7 +86,8 @@ export component DemoScenarios inherits Rectangle {
                                     TouchArea { accessible-role: button; accessible-label: "Preview attachments"; clicked => { root.dismiss(); State.inject-attachments(State.attachment-injection-paths); } }
                                 }
                             }
-                            demo-marker := Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.small; }
+                            if State.demo-reset-enabled && !root.media-menu: Button { text: "Reset demo"; clicked => { root.dismiss(); State.demo-automation(DemoAutomation.reset); } }
+                            demo-marker := Text { text: "Synthetic interaction scenarios"; accessible-value: State.demo-instance; accessible-description: "Reset generation " + State.demo-reset-generation; color: Tokens.secondary; font-size: Tokens.small; }
                             VerticalLayout {
                                 visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
                                 spacing: 8px; alignment: start;

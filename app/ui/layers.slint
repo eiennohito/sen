@@ -40,9 +40,13 @@ component SettingsSections inherits FocusScope {
 }
 
 export component Layers inherits Rectangle {
+    property <int> demo-reset: State.demo-reset-generation;
+    changed demo-reset => { root.settings-section = 0; root.pan-x = 0px; root.pan-y = 0px; }
     out property <FeedbackRect> profile-bounds: { x: profile.absolute-position.x, y: profile.absolute-position.y, width: profile.visible ? profile.width : 0px, height: profile.height };
     property <bool> cancel-confirm <=> State.auth-cancel-confirm;
     property <int> settings-section;
+    property <int> message-text-size: State.text-size;
+    changed message-text-size => { text-size.current-index = root.message-text-size <= 13 ? 0 : root.message-text-size <= 15 ? 1 : root.message-text-size <= 18 ? 2 : 3; }
     property <bool> auth-visible: State.auth-open;
     changed auth-visible => { if !self.auth-visible { root.cancel-confirm = false; } }
     property <bool> approval-busy: State.auth-busy;
