@@ -284,6 +284,7 @@ pub enum Delta {
     },
     ReactionFailed(Key),
     StickerPackages(Vec<StickerPackage>),
+    StickerPackagesFailed,
     CreatedChat(std::result::Result<ChatId, CreateFailure>),
     Fatal,
     Reset,
@@ -646,6 +647,7 @@ impl Worker {
                                 waiting_assets: VecDeque::new(),
                                 waiting_retries: Vec::new(),
                                 refresh_failures: BTreeSet::new(),
+                                refused_refreshes: BTreeSet::new(),
                                 account: AccountSession::Opening { epoch: 0 },
                                 operation: "startup".into(),
                                 force_list: true,
@@ -735,6 +737,7 @@ struct Engine {
     )>,
     waiting_retries: Vec<String>,
     refresh_failures: BTreeSet<Refresh>,
+    refused_refreshes: BTreeSet<ChatId>,
     account: AccountSession,
     operation: String,
     force_list: bool,
@@ -791,6 +794,7 @@ impl Engine {
         let generation = self.generation.load(Ordering::SeqCst);
         let live_generation = self.generation.clone();
         let job: NetJob = Box::new(move |backend| {
+            crate::reporting::set_operation(&operation);
             crate::client::desktop::set_cancellation_token(cancel);
             // Cancelled jobs have no network outcome and never enter the backend.
             let result = (generation == live_generation.load(Ordering::SeqCst)).then(|| {
@@ -1370,6 +1374,7 @@ impl Engine {
         Ok(())
     }
     fn open(&mut self, w: WindowSub) -> Result<()> {
+        self.chat_changed(&w.chat);
         let exists = self.store.chat(&w.chat)?.is_some();
         let friend = self
             .store
@@ -1508,6 +1513,7 @@ impl Engine {
                                 engine.retry_after.clear();
                                 engine.store = Store::open_in_memory()?;
                                 engine.store_mid = None;
+                                engine.refused_refreshes.clear();
                                 engine.window = None;
                                 engine.chat_keys.clear();
                                 engine.message_keys.clear();
@@ -1560,6 +1566,7 @@ impl Engine {
                 self.inbox.refresh(Refresh::Contact(mid));
             }
             Intent::GroupInfo(chat) => {
+                self.chat_changed(&chat);
                 self.emit(Delta::GroupInfo {
                     chat: chat.clone(),
                     data: self.store.full_chat(&chat)?,
@@ -1636,6 +1643,7 @@ impl Engine {
                 self.inbox.refresh(Refresh::Friends);
             }
             Intent::Members(chat) => {
+                self.chat_changed(&chat);
                 self.emit(Delta::Members {
                     rows: self.store.members(&chat)?.into_iter().collect::<Vec<_>>(),
                     chat: chat.clone(),
@@ -1675,6 +1683,7 @@ impl Engine {
                 self.inbox.refresh(Refresh::MoreChats);
             }
             Intent::Page { chat, kind } => {
+                self.chat_changed(&chat);
                 if !self.store.stored_page(&chat, &kind)? {
                     self.defer_page(chat, kind);
                 }
@@ -1721,9 +1730,12 @@ impl Engine {
                         if !current {
                             return Ok(());
                         }
-                        if let Ok(rows) = result {
-                            engine.store.save_sticker_packages(&rows)?;
-                            engine.emit(Delta::StickerPackages(rows));
+                        match result {
+                            Ok(rows) => {
+                                engine.store.save_sticker_packages(&rows)?;
+                                engine.emit(Delta::StickerPackages(rows));
+                            }
+                            Err(_) => engine.emit(Delta::StickerPackagesFailed),
                         }
                         Ok(())
                     },
@@ -2327,6 +2339,9 @@ impl Engine {
             .insert(r.clone(), Instant::now() + self.timing.delay(*attempt));
         self.inbox.refresh(r);
     }
+    fn chat_changed(&mut self, chat: &ChatId) {
+        self.refused_refreshes.remove(chat);
+    }
     fn refresh(&mut self, r: Refresh) -> Result<()> {
         if r == Refresh::Profile {
             return self.online();
@@ -2621,6 +2636,18 @@ impl Engine {
             }
             StreamEvent::Operation(op) => {
                 if op.revision > self.store.sync_revision()? {
+                    match &op.op {
+                        Op::Message(m) => self.chat_changed(&m.chat_id),
+                        Op::Recent(chat) | Op::Read { chat, .. } | Op::Receipt { chat, .. } => {
+                            self.chat_changed(chat)
+                        }
+                        Op::Withdraw(id) | Op::Reaction { id, .. } => {
+                            if let Some(row) = self.store.message_by_server(id)? {
+                                self.chat_changed(&row.chat_id);
+                            }
+                        }
+                        Op::Checkpoint => {}
+                    }
                     let fresh = if let Op::Message(m) = &op.op {
                         if self.store.chat(&m.chat_id)?.is_none() {
                             self.inbox.refresh(Refresh::Details(m.chat_id.clone()));
@@ -2678,6 +2705,7 @@ impl Engine {
                     .is_some_and(|r| r > self.store.sync_revision().unwrap_or(0))
                 {
                     let id = raw["param1"].as_str().unwrap_or_default().to_owned();
+                    self.chat_changed(&ChatId(id.clone()));
                     match raw["type"].as_u64() {
                         Some(4 | 49) => self.inbox.refresh(Refresh::Contact(id)),
                         Some(41)
@@ -2735,19 +2763,13 @@ impl Engine {
             }
             StreamEvent::Connecting(_) => {}
             StreamEvent::Connection(Ok(())) => {
+                self.continuous = true;
                 self.retry_attempts.remove(&Refresh::Stream);
                 if self.refresh_failures.remove(&Refresh::Stream) {
                     self.emit(Delta::RefreshRecovered(Refresh::Stream));
                 }
                 self.attempt = 0;
-                let reconnect = self.connection != Connection::Online;
                 self.network_success();
-                if reconnect {
-                    self.inbox.refresh(Refresh::ChatList);
-                    if let Some(w) = &self.window {
-                        self.inbox.refresh(Refresh::Recent(w.chat.clone()));
-                    }
-                }
             }
             StreamEvent::Connection(Err(e)) => {
                 self.network_outcome::<()>(&Err(e.clone()));
@@ -2766,7 +2788,23 @@ impl Engine {
         revision: Option<i64>,
         complete: mpsc::SyncSender<std::result::Result<(), Failure>>,
     ) -> Result<()> {
-        let chat = self.window.as_ref().map(|w| w.chat.clone());
+        // Suppression applies only to Recent refreshes initiated by this resync.
+        let chats: Vec<_> = self
+            .store
+            .chat_list(usize::MAX, 0)?
+            .into_iter()
+            .map(|c| c.chat.id)
+            .chain(self.window.as_ref().map(|w| w.chat.clone()))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .filter(|chat| !self.refused_refreshes.contains(chat))
+            .collect();
+        let chat = self
+            .window
+            .as_ref()
+            .map(|w| w.chat.clone())
+            .filter(|chat| chats.contains(chat));
+        let requested_chat = chat.clone();
         self.rpc(
             move |backend| {
                 chat.map(|chat| {
@@ -2791,14 +2829,20 @@ impl Engine {
                     }
                     Ok(None) => {}
                     Err(error) => {
+                        if let Some(chat) = requested_chat {
+                            if error.suppress_resync_refresh() {
+                                engine.refused_refreshes.insert(chat.clone());
+                            }
+                            engine.rpc_failed(Refresh::Recent(chat), error.clone());
+                        }
                         let _ = complete.send(Err(error));
                         return Ok(());
                     }
                 }
                 engine.inbox.refresh(Refresh::ChatList);
-                for c in engine.store.chat_list(usize::MAX, 0)? {
-                    if engine.window.as_ref().is_none_or(|w| w.chat != c.chat.id) {
-                        engine.inbox.refresh(Refresh::Recent(c.chat.id));
+                for chat in chats {
+                    if engine.window.as_ref().is_none_or(|w| w.chat != chat) {
+                        engine.inbox.refresh(Refresh::Recent(chat));
                     }
                 }
                 if let Some(revision) = revision {

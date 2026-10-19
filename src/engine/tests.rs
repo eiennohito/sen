@@ -336,3 +336,242 @@ fn request_sequence_wraps_without_persisting_preferences() {
         );
     });
 }
+
+#[test]
+fn reconnect_without_revision_change_does_not_refresh_chats() {
+    let mut app = App::new();
+    let before = app.fake.calls();
+    app.on_engine(|engine| {
+        engine
+            .live(StreamEvent::Connection(Err(Failure::NotDelivered)))
+            .unwrap();
+        engine.live(StreamEvent::Connection(Ok(()))).unwrap();
+        engine.live(StreamEvent::Connection(Ok(()))).unwrap();
+    });
+    app.settle();
+    let after = app.fake.calls();
+    assert_eq!(
+        after[before.len()..]
+            .iter()
+            .filter(|call| matches!(
+                call,
+                FakeRpc::Messages(_) | FakeRpc::Receipts(_) | FakeRpc::Chats
+            ))
+            .count(),
+        0
+    );
+}
+
+#[test]
+fn refused_chat_refresh_stays_suppressed_across_resync_until_opened() {
+    let mut app = App::new();
+    let chat = ChatId("alice".into());
+    let failure = classify(
+        &crate::client::decode_response("/getRecentMessagesV2", 400, b"bad request").unwrap_err(),
+    );
+    app.fake
+        .fail_rpc(FakeRpc::Messages(chat.clone()), failure.clone());
+    let (tx, rx) = mpsc::sync_channel(1);
+    app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+    assert_eq!(
+        rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+        Err(failure)
+    );
+    app.until(|s| {
+        s.refresh_failures
+            .contains_key(&Refresh::Recent(ChatId("alice".into())))
+    });
+    app.settle();
+    let count = |app: &App| {
+        app.fake
+            .calls()
+            .iter()
+            .filter(|c| **c == FakeRpc::Messages(ChatId("alice".into())))
+            .count()
+    };
+    let before = count(&app);
+    // Exercise both the selected-chat path and the background-chat path.
+    for selected in [true, false] {
+        let (tx, rx) = mpsc::sync_channel(1);
+        app.on_engine(move |engine| {
+            if !selected {
+                engine.window = None;
+            }
+            engine.resync(None, tx).unwrap();
+        });
+        rx.recv_timeout(Duration::from_secs(3)).unwrap().unwrap();
+        app.settle();
+        assert_eq!(count(&app), before);
+    }
+    let intent = app.state.select(chat);
+    app.worker.sender.send(intent);
+    app.settle();
+    assert_eq!(count(&app), before + 1);
+}
+
+#[test]
+fn live_chat_operation_allows_a_previously_refused_refresh() {
+    let mut app = App::new();
+    let chat = ChatId("alice".into());
+    let failure = classify(
+        &crate::client::decode_response("/getRecentMessagesV2", 400, b"bad request").unwrap_err(),
+    );
+    app.fake.fail_rpc(FakeRpc::Messages(chat.clone()), failure);
+    let (tx, rx) = mpsc::sync_channel(1);
+    app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+    assert!(rx.recv_timeout(Duration::from_secs(3)).unwrap().is_err());
+    app.settle();
+    let before = app
+        .fake
+        .calls()
+        .iter()
+        .filter(|c| **c == FakeRpc::Messages(chat.clone()))
+        .count();
+    app.on_engine(|engine| {
+        engine
+            .live(StreamEvent::Operation(LiveOp {
+                revision: engine.store.sync_revision().unwrap() + 1,
+                replay: false,
+                op: Op::Recent(ChatId("alice".into())),
+            }))
+            .unwrap();
+    });
+    app.settle();
+    assert_eq!(
+        app.fake
+            .calls()
+            .iter()
+            .filter(|c| **c == FakeRpc::Messages(chat.clone()))
+            .count(),
+        before + 1
+    );
+}
+
+#[test]
+fn sticker_failure_is_visible_and_retry_recovers() {
+    let mut app = App::new();
+    app.fake
+        .fail_rpc(FakeRpc::StickerPackages, Failure::Unanswered);
+    app.worker.sender.send(Intent::StickerPackages);
+    app.until(|s| s.sticker_packages_failed);
+    app.worker.sender.send(Intent::StickerPackages);
+    app.settle();
+    assert!(!app.state.sticker_packages_failed);
+    assert_eq!(
+        app.fake
+            .calls()
+            .iter()
+            .filter(|c| **c == FakeRpc::StickerPackages)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn unchanged_revision_connection_after_exit_restores_head_continuity() {
+    let app = App::new();
+    app.on_engine(|engine| {
+        let chat = ChatId("continuity".into());
+        let first = FakeBackend::message("continuity", 10000, "first", false);
+        engine
+            .store
+            .apply_page(&chat, PageKind::Recent, &[first], true)
+            .unwrap();
+        engine.live(StreamEvent::Exited).unwrap();
+        engine.live(StreamEvent::Connection(Ok(()))).unwrap();
+        let revision = engine.store.sync_revision().unwrap() + 1;
+        engine
+            .live(StreamEvent::Operation(LiveOp {
+                revision,
+                replay: false,
+                op: Op::Message(FakeBackend::message("continuity", 10001, "next", false).into()),
+            }))
+            .unwrap();
+        let window = engine
+            .store
+            .window(&chat, Anchor::Latest, 100, 100)
+            .unwrap();
+        assert_eq!(window.rows.len(), 2);
+        assert!(
+            window.gaps.is_empty(),
+            "live message must extend the head segment"
+        );
+    });
+}
+
+#[test]
+fn suppression_is_only_for_invalid_requests_and_resync_owned_refreshes() {
+    let mut app = App::new();
+    for (http, body, suppress) in [
+        (403, "forbidden", false),
+        (200, r#"{"code":10051,"data":{"code":5}}"#, false),
+        (400, "bad request", true),
+        (200, r#"{"code":10051,"data":{"code":0}}"#, true),
+    ] {
+        let failure = classify(
+            &crate::client::decode_response("/getRecentMessagesV2", http, body.as_bytes())
+                .unwrap_err(),
+        );
+        let ordinary_failure = failure.clone();
+        app.on_engine(move |engine| {
+            engine.refused_refreshes.clear();
+            engine.rpc_failed(Refresh::Recent(ChatId("alice".into())), ordinary_failure);
+            assert!(engine.refused_refreshes.is_empty());
+        });
+        app.fake
+            .fail_rpc(FakeRpc::Messages(ChatId("alice".into())), failure.clone());
+        let (tx, rx) = mpsc::sync_channel(1);
+        app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+        assert_eq!(
+            rx.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Err(failure)
+        );
+        app.settle();
+        let before = app.fake.calls().len();
+        app.on_engine(move |engine| {
+            let chat = ChatId("alice".into());
+            assert_eq!(engine.refused_refreshes.contains(&chat), suppress);
+            engine.refresh(Refresh::Recent(chat)).unwrap();
+        });
+        app.settle();
+        assert!(
+            app.fake.calls()[before..].contains(&FakeRpc::Messages(ChatId("alice".into()))),
+            "ordinary refresh must go out even when suppressed for resync"
+        );
+    }
+    for action in 0..5 {
+        app.on_engine(move |engine| {
+            let chat = ChatId("alice".into());
+            engine.refused_refreshes.insert(chat.clone());
+            let intent = match action {
+                0 => Intent::Members(chat.clone()),
+                1 => Intent::GroupInfo(chat.clone()),
+                2 => Intent::Page {
+                    chat: chat.clone(),
+                    kind: PageKind::Around {
+                        id: ServerId::new("1").unwrap(),
+                    },
+                },
+                3 => Intent::Page {
+                    chat: chat.clone(),
+                    kind: PageKind::Older {
+                        before: Cursor {
+                            sort_ts: 0,
+                            sort_id: "0".into(),
+                        },
+                    },
+                },
+                _ => Intent::Window(WindowSub {
+                    sub: 99,
+                    chat: chat.clone(),
+                    anchor: Anchor::Latest,
+                    before: 20,
+                    after: 20,
+                }),
+            };
+            engine.intent(intent).unwrap();
+            assert!(!engine.refused_refreshes.contains(&chat));
+        });
+        app.settle();
+    }
+}

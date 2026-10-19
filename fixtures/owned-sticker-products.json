@@ -1,0 +1,22 @@
+{
+  "offset": 0,
+  "totalSize": 1001,
+  "productList": [
+    {
+      "id": "617",
+      "name": "Fixture stickers",
+      "latestVersion": "9",
+      "productTypeSummary": {
+        "stickerSummary": {"stickerIdRanges": [{"start": "100", "size": 2}, {"start": 200, "size": "1"}]}
+      },
+      "validUntil": "-1"
+    },
+    {
+      "id": "expired",
+      "name": "Expired stickers",
+      "latestVersion": 1,
+      "productTypeSummary": {"stickerSummary": {"stickerIdRanges": [{"start": 300, "size": 1}]}},
+      "validUntil": "1"
+    }
+  ]
+}

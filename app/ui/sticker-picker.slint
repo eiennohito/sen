@@ -1,7 +1,7 @@
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Pane } from "scrollpane.slint";
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, Button } from "std-widgets.slint";
 export component StickerPicker inherits Rectangle {
     callback close();
     background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: Tokens.border;
@@ -22,7 +22,11 @@ export component StickerPicker inherits Rectangle {
                     }
                 }
             }
-            if State.sticker-tabs.length == 0: Text { text: "No stickers"; color: Tokens.secondary; horizontal-alignment: center; vertical-alignment: center; }
+            if State.stickers-failed: HorizontalLayout {
+                Text { text: "Couldn't load stickers"; color: Tokens.secondary; vertical-alignment: center; }
+                Button { text: "Retry"; clicked => { State.load-stickers(); } }
+            }
+            if State.sticker-tabs.length == 0 && !State.stickers-failed: Text { text: "No stickers"; color: Tokens.secondary; horizontal-alignment: center; vertical-alignment: center; }
             Pane { full-height: ceil(State.sticker-items.length / 4) * 76px;
                 for sticker[i] in State.sticker-items: Rectangle {
                     x: mod(i, 4) * (parent.width / 4); y: floor(i / 4) * 76px; width: 72px; height: 72px; border-radius: 8px;

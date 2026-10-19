@@ -126,8 +126,10 @@ fn receive_on(
     let mut revisions = Revisions { local: revision };
     let mut refreshed_once = false;
     let mut attempt = 0;
+    let mut close_delay = Duration::from_secs(3);
     while !stop.is_cancelled() {
         let mut delivered = false;
+        let mut reconnect = false;
         let mut result = stream(
             transport,
             client_version,
@@ -136,24 +138,17 @@ fn receive_on(
             stop,
             PING_TIMEOUT,
             |name, data| {
+                delivered |= name != "open";
+                reconnect |= name == "reconnect";
                 if matches!(name, "message" | "ping") {
                     refreshed_once = false;
                 }
-                dispatch(
-                    name,
-                    data,
-                    &mut revisions,
-                    &mut attempt,
-                    stop,
-                    &mut |event| {
-                        let message = matches!(event, Event::Operation(_));
-                        let accepted = deliver(event);
-                        delivered |= message && accepted;
-                        accepted
-                    },
-                )
+                dispatch(name, data, &mut revisions, &mut attempt, stop, &mut deliver)
             },
         );
+        if delivered {
+            close_delay = Duration::from_secs(3);
+        }
         if stop.is_cancelled() {
             break;
         }
@@ -183,8 +178,11 @@ fn receive_on(
                 break;
             }
             wait(stop, backoff(attempt));
-        } else if !delivered {
-            wait(stop, backoff(1));
+        } else if !reconnect {
+            wait(stop, close_delay);
+            if !delivered {
+                close_delay = (close_delay * 2).min(Duration::from_secs(30));
+            }
         }
         if !stop.is_cancelled() && !deliver(Event::State(SyncState::Reconnecting { attempt })) {
             break;
@@ -248,7 +246,7 @@ fn dispatch(
             }
             return Ok(false);
         }
-        "connInfoRevision" => {
+        "connInfoRevision" if number(&data).is_some_and(|r| r > revisions.local) => {
             let (tx, _rx) = mpsc::sync_channel(1);
             if !deliver(Event::Resync {
                 next_revision: None,
@@ -274,33 +272,8 @@ fn dispatch(
             }
             .into());
         }
-        "open" => {
-            let (tx, rx) = mpsc::sync_channel(1);
-            if !deliver(Event::Resync {
-                next_revision: None,
-                complete: tx,
-            }) {
-                return Ok(false);
-            }
-            loop {
-                if stop.is_cancelled() {
-                    return Ok(false);
-                }
-                match rx.recv_timeout(Duration::from_millis(100)) {
-                    Ok(Ok(())) => break,
-                    Ok(Err(error)) => return Err(error.into()),
-                    Err(mpsc::RecvTimeoutError::Disconnected) => {
-                        return Err(crate::client::error::Failure::Bug(
-                            "resync worker disconnected".into(),
-                        )
-                        .into());
-                    }
-                    Err(_) => {}
-                }
-            }
-            if !deliver(Event::State(SyncState::Connected)) {
-                return Ok(false);
-            }
+        "open" if stop.is_cancelled() || !deliver(Event::State(SyncState::Connected)) => {
+            return Ok(false);
         }
         _ => {}
     }
@@ -506,3 +479,42 @@ mod transport_tests {
 
 #[cfg(test)]
 mod stream_tests;
+
+#[cfg(test)]
+mod reconnect_tests {
+    use super::*;
+
+    #[test]
+    fn open_and_unchanged_revision_do_not_request_resync() -> Result<()> {
+        let stop = CancelToken::new();
+        let mut revisions = Revisions { local: 12 };
+        let mut attempt = 0;
+        let mut resyncs = 0;
+        for (name, data) in [
+            ("open", Value::Null),
+            ("connInfoRevision", json!(12)),
+            ("reconnect", Value::Null),
+            ("open", Value::Null),
+            ("connInfoRevision", json!("12")),
+            ("connInfoRevision", json!(11)),
+            ("connInfoRevision", json!(13)),
+        ] {
+            dispatch(
+                name,
+                data,
+                &mut revisions,
+                &mut attempt,
+                &stop,
+                &mut |event| {
+                    if let Event::Resync { .. } = event {
+                        resyncs += 1;
+                    }
+                    true
+                },
+            )?;
+        }
+        assert_eq!(resyncs, 1);
+        assert_eq!(revisions.local, 12);
+        Ok(())
+    }
+}

@@ -87,6 +87,7 @@ export global State {
     in-out property <[StickerTab]> sticker-tabs;
     in-out property <[StickerItem]> sticker-items;
     in-out property <int> sticker-package;
+    in-out property <bool> stickers-failed;
     callback load-stickers();
     callback select-sticker-package(int);
     callback send-sticker(int);

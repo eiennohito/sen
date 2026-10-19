@@ -25,6 +25,7 @@ pub struct DetailEntry {
 pub struct AppState {
     pub uploads: BTreeMap<Key, f32>,
     pub sticker_packages: Vec<StickerPackage>,
+    pub sticker_packages_failed: bool,
     pub detail: Vec<DetailEntry>,
     pub contacts: BTreeMap<String, crate::store::Friend>,
     pub group_info: BTreeMap<ChatId, serde_json::Value>,
@@ -62,6 +63,7 @@ impl Default for AppState {
         Self {
             uploads: BTreeMap::new(),
             sticker_packages: vec![],
+            sticker_packages_failed: false,
             detail: vec![],
             contacts: BTreeMap::new(),
             group_info: BTreeMap::new(),
@@ -268,7 +270,11 @@ impl AppState {
             Delta::RefreshRecovered(request) => {
                 self.refresh_failures.remove(&request);
             }
-            Delta::StickerPackages(rows) => self.sticker_packages = rows,
+            Delta::StickerPackages(rows) => {
+                self.sticker_packages = rows;
+                self.sticker_packages_failed = false;
+            }
+            Delta::StickerPackagesFailed => self.sticker_packages_failed = true,
             Delta::Fatal => {
                 self.connection = Connection::Fatal;
                 self.submitting = None;

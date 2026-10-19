@@ -4,6 +4,16 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+thread_local! {
+    static OPERATION: std::cell::RefCell<String> = std::cell::RefCell::new("network".into());
+}
+pub(crate) fn set_operation(operation: &str) {
+    OPERATION.with(|value| operation.clone_into(&mut value.borrow_mut()));
+}
+pub(crate) fn source(error: &(dyn Error + 'static)) {
+    OPERATION.with(|value| log(&value.borrow(), "source", error));
+}
+
 /// Log the full chain's categories, preserving OS/SQLite codes without payloads.
 /// RPC errors may embed tokens or message bodies, so their Display is not safe.
 pub fn log(operation: &str, kind: &str, error: &(dyn Error + 'static)) {
@@ -11,13 +21,15 @@ pub fn log(operation: &str, kind: &str, error: &(dyn Error + 'static)) {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
     eprintln!(
-        "{}.{:03} operation={} kind={} chain={}",
+        "{}.{:03} {}",
         stamp.as_secs(),
         stamp.subsec_millis(),
-        operation,
-        kind,
-        chain(error)
+        format_event(operation, kind, error)
     );
+}
+
+fn format_event(operation: &str, kind: &str, error: &(dyn Error + 'static)) -> String {
+    format!("operation={operation} kind={kind} chain={}", chain(error))
 }
 
 fn chain(error: &(dyn Error + 'static)) -> String {
@@ -59,6 +71,20 @@ fn chain(error: &(dyn Error + 'static)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn rpc_log_includes_operation_method_gateway_and_codes() {
+        let error = crate::client::error::RpcError {
+            method: "/api/talk/thrift/Talk/TalkService/getRecentMessagesV2".into(),
+            http: 400,
+            gateway: 10051,
+            code: 0,
+            status: 0,
+        };
+        assert_eq!(
+            format_event("refresh-recent", "source", &error),
+            "operation=refresh-recent kind=source chain=rpc:getRecentMessagesV2:http=400:gateway=10051:code=0"
+        );
+    }
     #[test]
     fn transparent_store_errors_and_sign_in_keep_typed_causes() {
         let io = crate::store::StoreError::Io(std::io::Error::from_raw_os_error(libc::ENOSPC));

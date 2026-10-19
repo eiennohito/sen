@@ -237,9 +237,17 @@ served in this order:
    Each intent records its reason only for logging.
 
 Refresh intents are internal and have no UI. Freshness is the app's job: it
-refreshes on open, on reconnect and when the store knows it is behind. No
-surface gets a Refresh or Reload control. The only user-initiated retries are on things the user did: a failed send (Retry,
-Discard) and an explicitly opened original or file that failed to download.
+refreshes on open and when the store knows it is behind. Reconnects with an
+unchanged revision restore live continuity without refreshing chats; a revision
+gap or named full sync requests resync.
+
+Resync skips chats whose resync-owned Recent request failed with HTTP 400 or
+Talk ILLEGAL_ARGUMENT. Chat activity or a user request clears that chat's
+suppression.
+
+No surface gets a Refresh or Reload control. The only user-initiated retries are on things the user did: a failed
+send (Retry, Discard) and an explicitly opened original or file that failed to
+download.
 
 Job completions return to the store thread after queued user intents and live
 operations. Refresh work is dispatched when the net thread is available, so the
@@ -336,12 +344,13 @@ diagnostics construct their own owner outside the desktop engine.
 
 The SSE thread reconnects after failures with backoff on its own thread; only
 SignedOut or shutdown stops it. Read and ping failures are Unanswered. A clean
-close that delivered no messages waits at least the initial retry delay before
-reopening, without changing health or failure backoff. Other clean closes and
-reconnect events also wait when no message was delivered. A malformed frame is
-skipped. The engine supervises unexpected stream exits and restarts them with backoff unless signed out. Live
-frames enter decoding in FIFO arrival order, before refresh work. The engine
-persists the revision in the same transaction that applies an operation, and
+close waits 3 seconds before reopening, without changing health or failure
+backoff. Repeated closes without any delivered event double this delay up to
+30 seconds; a stream delivering events resets it to 3 seconds. Only the server
+`reconnect` event reopens immediately. Reconnecting/Connected state transitions
+follow the wait. A malformed frame is skipped. The engine supervises unexpected
+stream exits and restarts them with backoff unless signed out. Live frames enter
+decoding in FIFO arrival order, before refresh work. The engine persists the revision in the same transaction that applies an operation, and
 seeds `localRev` from it on start (D5). Operations replayed during catch-up
 carry `replay=true`, which suppresses notifications and unread increments. The
 UI-thread pumps (tray, notifications, activation) become channels drained on
