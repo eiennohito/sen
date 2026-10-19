@@ -1,5 +1,5 @@
 export enum PanelState { none, settings, detail, viewer, sign-in }
-export enum ConnectionState { local, connecting, online, offline, auth-expired, session-invalid, signing-in }
+export enum ConnectionState { local, connecting, online, offline, signed-out, fatal, signing-in }
 export struct RichRun { text: string, break-before: bool, url: string, link-start: bool, link-first: bool, link-id: int, link-width: float, positioned: bool, natural-width: float, line-width: float, image-key: string, picture: image, has-picture: bool, emoji: bool, thumbnail: bool, contain: bool, thumbnail-text: string, newline: bool, x: float, y: float, measured-width: float, measured-height: float, available: float }
 export enum RunPosition { single, first, middle, last }
 export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }

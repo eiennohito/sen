@@ -110,6 +110,7 @@ export component Conversation inherits Rectangle {
                     }
                 }
             }
+            if State.conversation-error != "": Text { text: State.conversation-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
             history-surface := Rectangle {
               vertical-stretch: 1;
               history-focus := FocusScope {

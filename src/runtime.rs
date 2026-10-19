@@ -1109,14 +1109,9 @@ impl Runtime {
             self.indirect(self.bindings[index].invoker, &values)
                 .map(|v| v as u32)
         })()
-        .map_err(|error| {
-            if error.downcast_ref::<crate::client::Error>().is_some() {
-                error
-            } else {
-                error.context(crate::client::Error::Crypto)
-            }
-        })
+        .map_err(|error| error.context(crate::client::error::Failure::Bug("crypto".into())))
     }
+
     pub fn destroy(&mut self, class: &str, ptr: u32) -> Result<()> {
         let f = *self.destructors.get(class).context("class destructor")?;
         self.indirect(f, &[ptr as u64])?;

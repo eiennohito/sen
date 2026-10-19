@@ -40,6 +40,7 @@ export component Members inherits FocusScope {
             }
         }
         if State.members.length == 0: Text { text: State.member-query == "" ? "No members" : "No members match your search"; wrap: word-wrap; color: Tokens.secondary; }
+        if State.detail-error != "": Text { text: State.detail-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
         list := FocusScope {
             accessible-role: AccessibleRole.list; accessible-label: "Group members";
             accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";

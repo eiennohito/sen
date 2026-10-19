@@ -22,7 +22,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
     let mut api = Api::with_runtime(rt, &wasm, crate::test_support::FIXTURE_VERSION)?;
     api.signature("/synthetic", "", "synthetic")?;
     let (mut client, root) = client(api);
-    client.state["e2ee_keys"] = json!([{"id":99}]);
+    client.api.state["e2ee_keys"] = json!([{"id":99}]);
     client.api.own_keys.insert(99, own);
     for code in [82, 83, 84] {
         client.api.key_cache.clear();
@@ -60,7 +60,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
                 assert_eq!(decode(args[1]["chunks"][4].as_str().unwrap()).unwrap(), (id as u32).to_be_bytes());
                 sent.lock().unwrap().push(args[1].clone());
                 if id == 42 {
-                    (200, json!({"code":code,"data":{}}))
+                    (200, json!({"code":10051,"data":{"code":code}}))
                 } else {
                     (200, json!({"code":0,"message":"OK","data":{"id":"sent","from":"uself","to":"upeer","contentType":0,"text":"hello"}}))
                 }
@@ -81,8 +81,8 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
         if code == 83 {
             let error = result.err().expect("stale sender key accepted");
             assert!(matches!(
-                error.downcast_ref::<SendFailure>(),
-                Some(SendFailure::Refused)
+                super::super::error::classify(&error),
+                super::super::error::Failure::Refused(super::super::error::Refusal::Talk(83))
             ));
         } else {
             assert_eq!(result?.id, "sent");
@@ -135,13 +135,50 @@ fn rpc_success_uses_http_and_message_and_allows_absent_data() -> Result<()> {
         ("getProfile", Box::new(|_| (201, json!({"message":"OK"})))),
     ]);
     client.api.http = transport;
-    assert_eq!(client.api.profile("synthetic")?, Value::Null);
-    assert_eq!(client.api.profile("synthetic")?["displayName"], "Name");
+    assert_eq!(client.api.profile()?, Value::Null);
+    assert_eq!(client.api.profile()?["displayName"], "Name");
     for http in [200, 201] {
-        let error = client.api.profile("synthetic").unwrap_err();
+        let error = client.api.profile().unwrap_err();
         let error = error.downcast_ref::<RpcError>().unwrap();
         assert_eq!((error.http, error.code), (http, 0));
     }
+    server.join().unwrap();
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Result<()> {
+    let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
+    let api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
+    let (mut client, root) = client(api);
+    let own = client
+        .api
+        .rt
+        .static_call(Call::Curve25519KeyGenerate, &[1])?;
+    client.api.own_keys.insert(99, own);
+    let encrypted = json!({"id":"101","from":"upeer","to":"uself","chunks":["", "", "", "AAAAKg==", "AAAAYw=="],"contentType":0});
+    let valid = json!({"id":"102","from":"upeer","to":"uself","text":"still here","contentType":0});
+    let page = json!({"code":0,"message":"OK","data":[encrypted.clone(),valid]});
+    let (http, server) = server_responses(vec![
+        ("getRecentMessagesV2", Box::new(move |_| (200, page))),
+        (
+            "getE2EEPublicKey",
+            Box::new(|_| (200, json!({"code":10051,"data":{"code":13}}))),
+        ),
+        (
+            "getE2EEPublicKey",
+            Box::new(|_| (200, json!({"code":10051,"data":{"code":1}}))),
+        ),
+    ]);
+    client.api.http = http;
+    let messages = client.messages("upeer")?;
+    assert_eq!(messages[0].content, Content::Undecryptable);
+    assert_eq!(messages[1].content.as_text(), "still here");
+    let (_, live) = client
+        .operation(&json!({"type":26,"message":encrypted}))?
+        .unwrap();
+    assert_eq!(live.content, Content::Undecryptable);
     server.join().unwrap();
     fs::remove_dir_all(root)?;
     Ok(())

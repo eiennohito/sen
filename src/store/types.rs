@@ -259,15 +259,14 @@ pub struct LocalId(pub String);
 pub enum Delivery {
     Pending,
     Rejected {
-        reason: crate::client::error::RejectReason,
+        reason: crate::client::error::Refusal,
     },
-    Uncertain,
     Sent,
     Read,
 }
 impl Delivery {
     pub fn is_failed(&self) -> bool {
-        matches!(self, Self::Rejected { .. } | Self::Uncertain)
+        matches!(self, Self::Rejected { .. })
     }
 }
 /// Typed decoded server content. Nonpositive created_ms falls back to delivered_ms.

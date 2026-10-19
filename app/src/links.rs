@@ -272,9 +272,9 @@ mod tests {
         decorate_message(&mut row, "葵");
         assert_eq!(row.accessible_label, "Incoming from 葵, 12:30: Hello");
         row.outgoing = true;
-        row.delivery = "Unconfirmed".into();
+        row.delivery = "Not sent".into();
         decorate_message(&mut row, "葵");
-        assert_eq!(row.accessible_label, "Outgoing, 12:30, Unconfirmed: Hello");
+        assert_eq!(row.accessible_label, "Outgoing, 12:30, Not sent: Hello");
     }
 
     #[test]

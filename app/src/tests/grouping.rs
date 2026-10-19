@@ -43,7 +43,7 @@ fn grouping_respects_identity_five_minutes_and_calendar_days() {
     group_messages(&mut rows);
     assert_eq!(rows[3].run_position, line_desktop_ui::RunPosition::Single);
     assert_eq!(rows[4].run_position, line_desktop_ui::RunPosition::Single);
-    rows[4].delivery = "Rejected".into();
+    rows[4].delivery = "Not sent".into();
     group_messages(&mut rows);
     assert_eq!(rows[4].run_position, line_desktop_ui::RunPosition::Single);
     // Unknown group senders must never merge into a fictitious person.

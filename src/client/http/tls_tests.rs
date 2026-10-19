@@ -154,8 +154,6 @@ impl Connector for ResetConnector {
                 control,
             }),
             last_attempt: 0,
-            header_match: 0,
-            headers_done: false,
         })))
     }
 }
@@ -234,7 +232,7 @@ impl UreqTransport for ObserveTls {
 }
 
 #[test]
-fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
+fn tls_reused_header_failure_returns_without_resending() {
     let (mut transport, listener, config) = fixture();
     let (reset_now, wait_reset) = mpsc::channel();
     let (acknowledge, acknowledged) = mpsc::channel();
@@ -255,26 +253,17 @@ fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
         PollResolver::default(),
     );
     let server = thread::spawn(move || {
-        let mut accepts = 0;
-        let mut deliveries = 0;
         let mut first = tls_accept(&listener, &config);
-        accepts += 1;
         assert_eq!(read_post(&mut first), b"{}");
         respond(&mut first);
         wait_reset.recv_timeout(Duration::from_secs(3)).unwrap();
         reset(first);
         acknowledge.send(()).unwrap();
-        let mut fresh = tls_accept(&listener, &config);
-        accepts += 1;
-        assert_eq!(read_post(&mut fresh), SECOND_BODY.as_bytes());
-        deliveries += 1;
-        respond(&mut fresh);
         wait_done.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
-        (accepts, deliveries)
     });
     transport
         .request("/api/test", "{}", &[], Duration::from_millis(600))
@@ -282,9 +271,12 @@ fn tls_reused_header_write_failure_retries_once_and_delivers_body_once() {
     control.armed.store(true, Ordering::Relaxed);
     let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
     done.send(()).unwrap();
-    assert_eq!(server.join().unwrap(), (2, 1));
-    assert_eq!(result.unwrap(), (200, String::new(), b"{}".to_vec()));
-    assert_eq!(control.connections.load(Ordering::Relaxed), 2);
+    server.join().unwrap();
+    assert_eq!(
+        crate::client::error::classify(&result.unwrap_err()),
+        crate::client::error::Failure::NotDelivered
+    );
+    assert_eq!(control.connections.load(Ordering::Relaxed), 1);
     assert_eq!(
         control.swallowed.load(Ordering::Relaxed),
         1,
@@ -297,28 +289,23 @@ fn tls_failure_after_full_send_is_not_retried() {
     let (transport, listener, config) = fixture();
     let (done, wait_done) = mpsc::channel();
     let server = thread::spawn(move || {
-        let mut accepts = 0;
-        let mut deliveries = 0;
         let mut stream = tls_accept(&listener, &config);
-        accepts += 1;
         assert_eq!(read_post(&mut stream), b"{}");
         respond(&mut stream);
         assert_eq!(read_post(&mut stream), SECOND_BODY.as_bytes());
-        deliveries += 1;
         reset(stream);
         wait_done.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
-        (accepts, deliveries)
     });
     transport
         .request("/api/test", "{}", &[], Duration::from_millis(600))
         .unwrap();
     let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
     done.send(()).unwrap();
-    assert_eq!(server.join().unwrap(), (1, 1));
+    server.join().unwrap();
     assert_eq!(
         result.unwrap_err().to_string(),
         "HTTPS transport failed; response not logged"
@@ -500,7 +487,10 @@ fn buffered_http_and_tls_bytes_survive_a_spent_watchdog_budget() {
                 body.ping();
                 let error = body.read(&mut [0]).unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-                assert_eq!(error.to_string(), "SSE ping expired");
+                assert_eq!(
+                    crate::client::error::classify(&error.into()),
+                    crate::client::error::Failure::Unanswered
+                );
                 Ok(())
             },
         )

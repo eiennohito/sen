@@ -46,7 +46,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             ];
             fake.fail_rpc(
                 line::backend::FakeRpc::Unsend(ServerId("6301".into())),
-                line::backend::Error::Rejected(line::client::error::RejectReason::SyntheticUnsend),
+                line::backend::Failure::Refused(line::client::error::Refusal::Gateway(13)),
             );
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
         }
@@ -96,7 +96,6 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
         ),
         14 => {
             demo_data::hidden_events(fake);
-            d.sender.send(Intent::MoreChats);
             for (target, count) in [(chat.clone(), 3), (ChatId("weekend".into()), 2)] {
                 let mut rows = fake.page(&target);
                 // New ids must sort after everything already read.
@@ -115,8 +114,14 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                         op: Op::Message((row).into()),
                     });
                 }
+                let mut snapshot = d.state.chats[&target].chat.clone();
+                snapshot.unread_count += count as u32;
+                snapshot.last_message_id = rows.last().map(|row| row.server_id.clone());
+                snapshot.last_message_ms = rows.last().map(|row| row.created_ms);
+                fake.add_chat(snapshot);
                 fake.set_page(target, rows);
             }
+            d.sender.send(Intent::MoreChats);
         }
         15 => {
             for i in 0..40 {
@@ -187,7 +192,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
         }
         19 => fake.auth_expired(),
         3 => {
-            fake.uncertain_send();
+            fake.unanswered_send();
             d.sender.send(Intent::Send {
                 chat: chat.clone(),
                 text: "駅に着いたら連絡してね。See you soon! 🐈".into(),
@@ -205,7 +210,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             });
         }
         10 | 31 => {
-            fake.fail_send();
+            fake.fail_send(chat.clone());
             if kind == 10 {
                 d.sender.send(Intent::Send {
                     chat,
@@ -214,7 +219,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 });
             }
         }
-        30 => fake.fail_send(),
+        30 => fake.fail_send(chat.clone()),
         17 => fake.offline(true),
         16 => fake.offline(false),
         _ => {}
@@ -483,7 +488,11 @@ pub(crate) fn stage(
     if scene == "failed-send"
         && let Some(fake) = fake
     {
-        fake.fail_send();
+        desktop.update(|d| {
+            if let Some(chat) = d.state.selected.clone() {
+                fake.fail_send(chat);
+            }
+        });
         ui.set_draft("See you soon! 🐈".into());
         ui.invoke_send();
     }
@@ -507,7 +516,10 @@ pub(crate) fn worker(fake: FakeBackend, text_size: i32) -> Worker {
     let worker = Worker::start_projected(
         StoreLocation::Memory,
         move || fake.open(),
-        Default::default(),
+        line::engine::Timing {
+            offline_after: std::time::Duration::from_millis(300),
+            ..Default::default()
+        },
         move |delta| match delta {
             Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
                 prefs.text_size = text_size;

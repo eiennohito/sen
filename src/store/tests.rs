@@ -179,7 +179,7 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
     s.mark_failed(
         k,
         Delivery::Rejected {
-            reason: crate::client::error::RejectReason::NotAccepted,
+            reason: crate::client::error::Refusal::NotAccepted,
         },
     )
     .unwrap();
@@ -190,7 +190,13 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
     s.retry(k, 2).unwrap();
     assert_eq!(s.message(k).unwrap().delivery, Delivery::Pending);
     assert_eq!(s.message(k).unwrap().request_seq, Some(2));
-    s.mark_failed(k, Delivery::Uncertain).unwrap();
+    s.mark_failed(
+        k,
+        Delivery::Rejected {
+            reason: crate::client::error::Refusal::Unanswered,
+        },
+    )
+    .unwrap();
     assert_eq!(s.pending(&chat()).unwrap().len(), 1);
     let changes = s.discard(k).unwrap();
     assert!(changes.messages_removed.contains(&k));
@@ -200,7 +206,15 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
     s.link_sent(3, id(5), 5).unwrap();
     assert!(s.discard(k2).is_err());
     assert!(s.retry(k2, 4).is_err());
-    assert!(s.mark_failed(k2, Delivery::Uncertain).is_err());
+    assert!(
+        s.mark_failed(
+            k2,
+            Delivery::Rejected {
+                reason: crate::client::error::Refusal::Unanswered
+            }
+        )
+        .is_err()
+    );
     assert!(s.mark_failed(k2, Delivery::Read).is_err());
 }
 #[test]
@@ -509,7 +523,13 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
         let mut s = Store::open(&dir.0).unwrap();
         page(&mut s, &[1, 2], true);
         key = pending(&mut s, 1);
-        s.mark_failed(key, Delivery::Uncertain).unwrap();
+        s.mark_failed(
+            key,
+            Delivery::Rejected {
+                reason: crate::client::error::Refusal::Unanswered,
+            },
+        )
+        .unwrap();
         s.withdraw(&id(9)).unwrap();
         s.set_account(
             "own",
@@ -557,7 +577,12 @@ fn disk_reopen_preserves_state_permissions_and_pragmas() {
     );
     let mut s = Store::open(&dir.0).unwrap();
     assert_eq!(all(&s).len(), 3);
-    assert_eq!(s.message(key).unwrap().delivery, Delivery::Uncertain);
+    assert_eq!(
+        s.message(key).unwrap().delivery,
+        Delivery::Rejected {
+            reason: crate::client::error::Refusal::Unanswered
+        }
+    );
     assert_eq!(s.sync_revision().unwrap(), 42);
     assert_eq!(s.account().unwrap().own_mid, "own");
     assert_eq!(s.load_draft(&chat()).unwrap().unwrap().text, "draft");
@@ -581,11 +606,11 @@ fn newer_schema_is_refused_without_migration() {
     let dir = TempDir::new();
     {
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 7).unwrap();
+        s.conn.pragma_update(None, "user_version", 8).unwrap();
     }
     assert!(matches!(
         Store::open(&dir.0),
-        Err(StoreError::NewerSchema(7))
+        Err(StoreError::NewerSchema(8))
     ));
 }
 
@@ -783,9 +808,8 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
     let mut other = Store::open(&accounts.join("other")).unwrap();
     for (index, delivery) in [
         Delivery::Pending,
-        Delivery::Uncertain,
         Delivery::Rejected {
-            reason: crate::backend::RejectReason::UploadFailed,
+            reason: crate::backend::Refusal::FileMissing,
         },
         Delivery::Sent,
     ]
@@ -821,11 +845,33 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
     std::fs::write(&orphan, b"abandoned selection").unwrap();
     drop(other);
     current.prune_clipboard(&clipboard, &accounts).unwrap();
-    for index in 0..3 {
+    for index in 0..2 {
         assert!(clipboard.join(format!("{index}.txt")).exists());
     }
-    assert!(!clipboard.join("3.txt").exists());
+    assert!(!clipboard.join("2.txt").exists());
     assert!(!orphan.exists());
     drop(current);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn migration_converts_uncertain_rows_to_not_sent() {
+    let dir = TempDir::new();
+    let key = {
+        let mut store = Store::open(&dir.0).unwrap();
+        let key = pending(&mut store, 1);
+        store
+            .conn
+            .execute(r#"UPDATE message SET delivery='"Uncertain"'"#, [])
+            .unwrap();
+        store.conn.pragma_update(None, "user_version", 6).unwrap();
+        key
+    };
+    let store = Store::open(&dir.0).unwrap();
+    assert_eq!(
+        store.message(key).unwrap().delivery,
+        Delivery::Rejected {
+            reason: crate::client::error::Refusal::Unanswered
+        }
+    );
 }

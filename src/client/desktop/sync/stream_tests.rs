@@ -177,6 +177,10 @@ fn eof_and_reset_return_to_reconnect_without_waiting_for_ping() {
         if truncated {
             let error = result.unwrap_err();
             assert_eq!(
+                crate::client::error::classify(&error),
+                crate::client::error::Failure::Unanswered
+            );
+            assert_eq!(
                 error.downcast_ref::<io::Error>().unwrap().kind(),
                 io::ErrorKind::UnexpectedEof
             );
@@ -189,34 +193,38 @@ fn eof_and_reset_return_to_reconnect_without_waiting_for_ping() {
 }
 
 #[test]
-fn rejects_an_oversize_unterminated_line_while_server_stays_open() {
+fn bad_frame_is_skipped_and_the_next_operation_arrives() {
     let (transport, server) = local_server(|listener| {
         let mut socket = BufReader::new(accept(&listener));
         request(&mut socket);
         headers(&mut socket);
-        let block = [b'x'; 8192];
-        for _ in 0..MAX_LINE / block.len() as u64 {
-            socket.get_mut().write_all(&block).unwrap();
-        }
-        socket.get_mut().write_all(b"x").unwrap();
-        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        socket
+            .get_mut()
+            .write_all(b"data: broken JSON\n\ndata: {\"revision\":13}\n\n")
+            .unwrap();
     });
-    let error = stream(
+    let mut operations = Vec::new();
+    stream(
         &transport,
         "9.8.7",
         "synthetic-token",
         12,
         &Arc::new(AtomicBool::new(false)),
         PING_TIMEOUT,
-        |_, _| Ok(true),
+        |name, data| {
+            if name == "message" {
+                operations.push(data);
+            }
+            Ok(true)
+        },
     )
-    .unwrap_err();
-    assert_eq!(error.to_string(), "SSE line too large");
+    .unwrap();
+    assert_eq!(operations, vec![json!({"revision":13})]);
     server.join().unwrap();
 }
 
 #[test]
-fn statuses_preserve_auth_mapping_and_any_content_type_is_accepted_on_200() {
+fn statuses_keep_exact_classes_and_200_accepts_any_content_type() {
     for (status, content_type) in [
         (401, "text/event-stream"),
         (403, "text/html"),
@@ -252,15 +260,16 @@ fn statuses_preserve_auth_mapping_and_any_content_type_is_accepted_on_200() {
                 Ok(false)
             },
         );
-        // 401/403 remain statuses, so receive retains its refresh/expiry path.
-        if status == 503 {
-            assert!(matches!(
-                result.unwrap_err().downcast_ref::<crate::client::Error>(),
-                Some(crate::client::Error::Server(503))
-            ));
+        if status != 200 {
+            let failure = crate::client::error::classify(&result.unwrap_err());
+            assert_eq!(
+                failure,
+                crate::client::error::Failure::Refused(crate::client::error::Refusal::Http(status))
+            );
         } else {
             assert_eq!(result.unwrap(), status);
         }
+
         server.join().unwrap();
     }
 }
@@ -537,7 +546,10 @@ fn partial_line_trickle_expires_without_waiting_for_an_empty_poll() {
     )
     .unwrap_err();
     let elapsed = started.elapsed();
-    assert_eq!(error.to_string(), "SSE ping expired");
+    assert_eq!(
+        crate::client::error::classify(&error),
+        crate::client::error::Failure::Unanswered
+    );
     assert_eq!(
         error.downcast_ref::<io::Error>().unwrap().kind(),
         io::ErrorKind::TimedOut
@@ -545,4 +557,59 @@ fn partial_line_trickle_expires_without_waiting_for_an_empty_poll() {
     assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
     assert!(elapsed < Duration::from_millis(800), "{elapsed:?}");
     server.join().unwrap();
+}
+
+#[test]
+fn empty_close_waits_before_reconnecting_and_delivers_next_stream() {
+    let (transport, server) = local_server(|listener| {
+        {
+            let mut first = BufReader::new(accept(&listener));
+            request(&mut first);
+            headers(&mut first);
+        }
+        let mut second = BufReader::new(accept(&listener));
+        request(&mut second);
+        headers(&mut second);
+        second
+            .get_mut()
+            .write_all(b"data: {\"revision\":13}\r\n\r\n")
+            .unwrap();
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut events = Vec::new();
+    let mut waits = Vec::new();
+    receive_on(
+        &transport,
+        "9.8.7",
+        12,
+        &stop,
+        |_| Ok("synthetic-token".into()),
+        |event| {
+            if let Event::Resync { complete, .. } = &event {
+                complete.send(Ok(())).unwrap();
+            }
+            assert!(
+                !matches!(event, Event::Failure { .. }),
+                "unexpected stream failure: {event:?}"
+            );
+            if matches!(event, Event::Operation(_)) {
+                stop.store(true, Ordering::Relaxed);
+            }
+            events.push(event);
+            true
+        },
+        |_, delay| {
+            assert!(
+                waits.is_empty(),
+                "stream did not resume after the empty close"
+            );
+            waits.push(delay);
+        },
+    )
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(waits, [backoff(1)]);
+    assert!(
+        matches!(events.as_slice(), [Event::Resync { .. }, Event::State(SyncState::Connected), Event::State(SyncState::Reconnecting { attempt: 0 }), Event::Resync { .. }, Event::State(SyncState::Connected), Event::State(SyncState::Connected), Event::Operation(value)] if value["revision"] == 13)
+    );
 }

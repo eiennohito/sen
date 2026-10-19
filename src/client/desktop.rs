@@ -59,31 +59,6 @@ pub struct Message {
     pub skip_badge: bool,
 }
 
-#[derive(Debug)]
-pub enum SendFailure {
-    Refused,
-    Uncertain,
-}
-impl std::fmt::Display for SendFailure {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "send failure: {self:?}")
-    }
-}
-impl std::error::Error for SendFailure {}
-pub fn send_failure(error: &anyhow::Error) -> SendFailure {
-    if error
-        .downcast_ref::<SendFailure>()
-        .is_some_and(|v| matches!(v, SendFailure::Refused))
-        || error
-            .downcast_ref::<RpcError>()
-            .is_some_and(|e| (400..500).contains(&e.http) || e.code != 0)
-    {
-        SendFailure::Refused
-    } else {
-        SendFailure::Uncertain
-    }
-}
-
 /// Install the owning worker's cancellation token for all synchronous requests.
 pub fn set_cancellation_token(cancel: std::sync::Arc<std::sync::atomic::AtomicBool>) {
     set_request_cancel(cancel);
@@ -91,10 +66,7 @@ pub fn set_cancellation_token(cancel: std::sync::Arc<std::sync::atomic::AtomicBo
 
 pub struct Client {
     api: Api,
-    session_path: PathBuf,
     cache_root: PathBuf,
-    state: Value,
-    stream_access: Arc<std::sync::RwLock<String>>,
     my_mid: String,
     obs_access: Option<String>,
     sequence: u64,
@@ -117,7 +89,7 @@ impl Client {
         state_path: &Path,
         cache_root: &Path,
         state: Value,
-        api: Api,
+        mut api: Api,
     ) -> Result<Self> {
         access(&state).context(super::error::SavedSessionFailure::Corrupt.error())?;
         let my_mid = state["profile"]["mid"]
@@ -127,13 +99,13 @@ impl Client {
             .to_owned();
         let cache = ImageCache::new(cache_root, &my_mid)
             .context(super::error::SavedSessionFailure::ImageCache.error())?;
+        api.stream_access = Arc::new(std::sync::RwLock::new(access(&state)?.into()));
+        api.state = state;
+        api.session_path = Some(state_path.into());
         let sequence = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         Ok(Self {
             api,
-            session_path: state_path.into(),
             cache_root: cache_root.into(),
-            stream_access: Arc::new(std::sync::RwLock::new(access(&state)?.into())),
-            state,
             my_mid: my_mid.clone(),
             obs_access: None,
             sequence,
@@ -142,36 +114,24 @@ impl Client {
     }
 
     pub(crate) fn installed_at(&mut self, path: &Path) {
-        self.session_path = path.into();
+        self.api.session_path = Some(path.into());
     }
 
     fn talk(&mut self, method: &str, args: Value) -> Result<Value> {
-        chat::talk(&mut self.api, access(&self.state)?, method, args)
+        chat::talk(&mut self.api, method, args)
     }
 
     pub fn local_mid(&self) -> &str {
         &self.my_mid
     }
     pub fn online_profile(&mut self) -> Result<Value> {
-        let token = access(&self.state).map_err(|_| crate::client::Error::Auth)?;
-        let profile = match self.api.profile(token) {
-            Ok(profile) => profile,
-            Err(error)
-                if error.downcast_ref::<RpcError>().is_some_and(|e| {
-                    matches!(e.http, 401 | 403) || matches!(e.code, 1 | 7 | 8 | 119)
-                }) =>
-            {
-                let cancel = REQUEST_CANCEL
-                    .with(|slot| slot.borrow().clone())
-                    .unwrap_or_default();
-                self.refresh_token(&cancel)?;
-                self.api.profile(access(&self.state)?)?
-            }
-            Err(error) => return Err(error),
-        };
+        let profile = self.api.profile()?;
         let mid = required(&profile, "mid")?;
         if !self.my_mid.is_empty() && mid != self.my_mid {
-            return Err(crate::backend::Error::SessionInvalid.into());
+            return Err(crate::client::error::Failure::SignedOut(
+                crate::client::error::SignOutReason::IdentityChanged,
+            )
+            .into());
         }
         if self.my_mid.is_empty() {
             self.my_mid = mid.into();
@@ -180,9 +140,12 @@ impl Client {
                 mid,
             )?));
         }
-        *self.stream_access.write().unwrap() = access(&self.state)?.into();
-        self.state["profile"] = profile.clone();
-        save_state(&self.session_path, &self.state)?;
+        *self.api.stream_access.write().unwrap() = access(&self.api.state)?.to_owned();
+        self.api.state["profile"] = profile.clone();
+        save_state(
+            self.api.session_path.as_ref().context("session path")?,
+            &self.api.state,
+        )?;
         Ok(profile)
     }
     pub fn latest_revision(&mut self) -> Result<i64> {
@@ -221,17 +184,11 @@ impl Client {
         &self.api.http.client_version
     }
     pub fn stream_access(&self) -> Arc<std::sync::RwLock<String>> {
-        self.stream_access.clone()
+        self.api.stream_access.clone()
     }
-    pub fn refresh_token(&mut self, stop: &std::sync::atomic::AtomicBool) -> Result<()> {
-        sync::refresh(&mut self.api, &mut self.state, &self.session_path, stop).map_err(|e| {
-            if sync::expired_refresh(&e) {
-                crate::client::Error::Auth.into()
-            } else {
-                e
-            }
-        })?;
-        *self.stream_access.write().unwrap() = access(&self.state)?.into();
+    pub fn refresh_token(&mut self) -> Result<()> {
+        self.api.refresh_session()?;
+        *self.api.stream_access.write().unwrap() = access(&self.api.state)?.to_owned();
         self.obs_access = None;
         Ok(())
     }
@@ -329,18 +286,16 @@ impl Client {
         Ok(chats)
     }
 
-    pub fn contact(&mut self, mid: &str) -> Result<Friend> {
+    pub fn contact(&mut self, mid: &str) -> Result<Option<Friend>> {
         let response = self.talk("getContactsV2", json!([{"targetUserMids":[mid]}, 2]))?;
         let contact = &response["contacts"][mid]["contact"];
         let member = member_identity(mid, contact, &self.my_mid);
-        ensure!(member.resolved, "unresolved contact");
-        Ok(member.contact)
+        Ok(member.resolved.then_some(member.contact))
     }
     pub fn profile_notice(&mut self, mid: &str) -> Result<Value> {
         self.api.call(
             "/api/talk/thrift/Relation/RelationService/getTargetProfileNotice",
             &json!([{"targetUserMid":mid}]),
-            access(&self.state)?,
             "",
             0,
         )
@@ -350,7 +305,7 @@ impl Client {
         Ok(())
     }
     pub fn add_friend(&mut self, mid: &str, chat_mid: &str, seq: u32) -> Result<()> {
-        self.api.call("/api/talk/thrift/Relation/RelationService/addFriendByMid", &json!([{"reqSeq":seq,"userMid":mid,"tracking":{"reference":"","trackingMetaV2":{"chat":{"chatMid":chat_mid}}}}]), access(&self.state)?, "", 0)?;
+        self.api.call("/api/talk/thrift/Relation/RelationService/addFriendByMid", &json!([{"reqSeq":seq,"userMid":mid,"tracking":{"reference":"","trackingMetaV2":{"chat":{"chatMid":chat_mid}}}}]), "", 0)?;
         Ok(())
     }
     pub fn full_chat(&mut self, mid: &str) -> Result<Value> {
@@ -446,7 +401,7 @@ impl Client {
         Ok(friends)
     }
 
-    pub fn members(&mut self, chat: &str) -> Result<(Vec<Member>, bool)> {
+    pub fn members(&mut self, chat: &str) -> Result<Vec<Member>> {
         let my_mid = self.my_mid.clone();
         load_members(chat, &my_mid, |method, args| self.talk(method, args))
     }
@@ -503,25 +458,32 @@ impl Client {
         Ok(messages)
     }
 
+    fn confirmation(&mut self, raw: &Value) -> Result<Message> {
+        required(raw, "id")?;
+        let mut confirmation = raw.clone();
+        confirmation["chunks"] = Value::Null;
+        self.message(&confirmation)
+    }
     fn message(&mut self, raw: &Value) -> Result<Message> {
         let fingerprint = format!("{:x}", Sha256::digest(raw.to_string()));
         let mut data = raw.clone();
         let encrypted = raw["chunks"].as_array().is_some_and(|c| !c.is_empty());
-        let mut failed = false;
+        let mut undecryptable = false;
         if encrypted {
-            let result = chat::decrypt_body(&mut self.api, &self.state, &self.my_mid, raw);
-            match result {
+            let state = self.api.state.clone();
+            match chat::decrypt_body(&mut self.api, &state, &self.my_mid, raw) {
                 Ok(body) => merge_decrypted(&mut data, &body),
-                Err(_) => {
-                    failed = true;
+                Err(error) if crate::client::error::transport_loss(&error) => {
+                    return Err(error);
                 }
+                Err(_) => undecryptable = true,
             }
         }
         let meta = &data["contentMetadata"];
         let details = rich::parse(&data);
         let content = if details.withdrawn {
             Content::Withdrawn
-        } else if failed {
+        } else if undecryptable {
             Content::Undecryptable
         } else {
             match data["contentType"].as_i64().unwrap_or(0) {
@@ -713,7 +675,7 @@ impl Client {
         reply: Option<&crate::store::ReplyReference>,
     ) -> Result<Message> {
         let Content::Sticker { pkg, id, ver, .. } = sticker else {
-            return Err(SendFailure::Refused.into());
+            return Err(crate::client::error::Failure::Bug("invalid send payload".into()).into());
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -721,7 +683,7 @@ impl Client {
         let mut args = json!([seq, {"from":self.my_mid,"to":to,"toType":if is_user(to){0}else if to.starts_with(['C','c']){2}else{1},"id":format!("{now:015}"),"createdTime":now,"sessionId":0,"contentType":7,"contentMetadata":{"STKPKGID":pkg,"STKID":id,"STKVER":ver.as_deref().unwrap_or("1")},"hasContent":true}]);
         attach_reply(&mut args[1], reply);
         let result = self.talk("sendMessage", args)?;
-        self.message(&result)
+        self.confirmation(&result)
     }
     pub fn create_chat(
         &mut self,
@@ -750,7 +712,6 @@ impl Client {
         let value = self.api.call(
             "/api/shop/thrift/ShopService/ShopService/getOwnedProductSummaries",
             &json!(["STICKER", 0, 100, [1, 2, 3, 4]]),
-            access(&self.state)?,
             "",
             0,
         )?;
@@ -814,7 +775,7 @@ impl Client {
             "invalid persisted send sequence"
         );
         if text.trim().is_empty() || text.len() > 10_000 {
-            return Err(SendFailure::Refused.into());
+            return Err(crate::client::error::Failure::Bug("invalid send payload".into()).into());
         }
         self.send_encrypted(to, 0, &json!({"text":text}), &json!({}), request_seq, reply)
     }
@@ -843,30 +804,21 @@ impl Client {
         };
         let result = match send(self) {
             Err(error)
-                if error
-                    .downcast_ref::<RpcError>()
-                    .is_some_and(|e| matches!(e.code, 82 | 84)) =>
+                if matches!(
+                    super::error::classify(&error),
+                    super::error::Failure::Refused(super::error::Refusal::Talk(82 | 84))
+                ) =>
             {
                 send(self)
             }
             result => result,
-        }
-        .map_err(|error| {
-            if error
-                .downcast_ref::<RpcError>()
-                .is_some_and(|e| e.code == 83)
-            {
-                SendFailure::Refused.into()
-            } else {
-                error
-            }
-        })?;
-        self.message(&result)
+        }?;
+        self.confirmation(&result)
     }
 
     fn encrypted_payload(&mut self, to: &str, content_type: u64, payload: &Value) -> Result<Value> {
         self.api.prepare_runtime()?;
-        let key = self.state["e2ee_keys"]
+        let key = self.api.state["e2ee_keys"]
             .as_array()
             .context("missing own keys")?
             .iter()
@@ -893,9 +845,10 @@ impl Client {
             let version = shared["specVersion"].as_u64().unwrap_or(2);
             (id, version)
         };
+        let state = self.api.state.clone();
         let ch = chat::message_channel(
             &mut self.api,
-            &self.state,
+            &state,
             &self.my_mid,
             &if is_user(to) {
                 chat::Channel::Direct {
@@ -1096,27 +1049,6 @@ mod protocol_tests {
             assert!(member.contact.avatar.is_none());
         }
     }
-
-    #[test]
-    fn send_rejected_response_shapes_and_unanswered_transport() {
-        for (http, code) in [(400, 0), (403, 10052), (200, 10102)] {
-            let error = anyhow::Error::new(RpcError {
-                method: "sendMessage".into(),
-                http,
-                code,
-                status: 0,
-            });
-            assert!(matches!(send_failure(&error), SendFailure::Refused));
-        }
-        assert!(matches!(
-            send_failure(&anyhow::anyhow!("transport timeout")),
-            SendFailure::Uncertain
-        ));
-        assert!(matches!(
-            send_failure(&anyhow::Error::new(SendFailure::Refused)),
-            SendFailure::Refused
-        ));
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -1198,7 +1130,7 @@ fn load_members(
     chat: &str,
     my_mid: &str,
     mut talk: impl FnMut(&str, Value) -> Result<Value>,
-) -> Result<(Vec<Member>, bool)> {
+) -> Result<Vec<Member>> {
     ensure!(!is_user(chat), "not a group or room");
     let response = talk(
         "getChats",
@@ -1220,31 +1152,24 @@ fn load_members(
         }
     }
     let mut contacts = HashMap::new();
-    let mut failed = false;
     for chunk in ids.chunks(100) {
-        match talk(
+        let response = talk(
             "getContactsV2",
             json!([{"targetUserMids":chunk,"neededContactCalendarEvents":[]},0]),
-        ) {
-            Ok(response) if response["contacts"].is_object() => {
-                for id in chunk {
-                    contacts.insert(id.clone(), response["contacts"][id]["contact"].clone());
-                }
-            }
-            _ => failed = true,
+        )?;
+        ensure!(response["contacts"].is_object(), "missing contacts");
+        for id in chunk {
+            contacts.insert(id.clone(), response["contacts"][id]["contact"].clone());
         }
     }
-    Ok((
-        ids.iter()
-            .map(|id| {
-                let mut member =
-                    member_identity(id, contacts.get(id).unwrap_or(&Value::Null), my_mid);
-                member.contact.profile.invited = invited.contains(id);
-                member
-            })
-            .collect(),
-        failed,
-    ))
+    Ok(ids
+        .iter()
+        .map(|id| {
+            let mut member = member_identity(id, contacts.get(id).unwrap_or(&Value::Null), my_mid);
+            member.contact.profile.invited = invited.contains(id);
+            member
+        })
+        .collect())
 }
 
 fn attach_reply(message: &mut Value, reply: Option<&crate::store::ReplyReference>) {

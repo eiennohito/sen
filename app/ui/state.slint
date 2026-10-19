@@ -126,6 +126,9 @@ export global State {
     in-out property <string> detail-running;
     in-out property <bool> viewer-from-detail;
     in-out property <string> detail-error;
+    in-out property <string> conversation-error;
+    in-out property <string> friends-error;
+    in-out property <string> chat-list-error;
     in-out property <bool> profile-friend;
     in-out property <bool> profile-addable;
     in-out property <bool> profile-own;
@@ -250,10 +253,10 @@ export global State {
     callback close-settings();
     in-out property <ConnectionState> connection: local;
     out property <bool> connected: self.connection == ConnectionState.online;
-    out property <bool> connection-failed: self.connection == ConnectionState.offline || self.auth-expired || self.session-unavailable;
-    out property <bool> auth-expired: self.connection == ConnectionState.auth-expired;
-    out property <bool> session-unavailable: self.connection == ConnectionState.session-invalid;
-    out property <bool> sign-in-available: !self.has-account || self.auth-expired || self.session-unavailable;
+    out property <bool> connection-failed: self.connection == ConnectionState.offline || self.signed-out || self.fatal;
+    out property <bool> signed-out: self.connection == ConnectionState.signed-out;
+    out property <bool> fatal: self.connection == ConnectionState.fatal;
+    out property <bool> sign-in-available: !self.has-account || self.signed-out || self.fatal;
     out property <bool> connection-feedback-visible: self.has-account && self.connection-failed && !self.window-modal-open && !(self.detail-open && self.profile-sheet );
     out property <bool> connection-actions-enabled: self.sign-in-available && self.connection-feedback-visible && !self.retrying-connection && !self.auth-busy;
     out property <length> connection-notice-height: 36px;

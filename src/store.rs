@@ -15,7 +15,6 @@ pub struct Store {
     conn: Connection,
     writes: u64,
     changes: Changes,
-    settings_changed: bool,
 }
 impl Store {
     pub fn open(dir: &Path) -> Result<Self> {
@@ -25,6 +24,19 @@ impl Store {
             .mode(0o700)
             .create(dir)?;
         Self::initialize(Connection::open(dir.join("store.sqlite3"))?)
+    }
+    /// Persist work composed before the first account identity was available.
+    pub(crate) fn persist_to(&self, dir: &Path) -> Result<Self> {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+        self.conn.execute(
+            "VACUUM INTO ?",
+            [dir.join("store.sqlite3").to_string_lossy().as_ref()],
+        )?;
+        Self::open(dir)
     }
     /// Remove clipboard files only after collecting unsent references from all accounts.
     pub(crate) fn prune_clipboard(&self, root: &Path, accounts: &Path) -> Result<()> {
@@ -71,7 +83,7 @@ impl Store {
     }
     fn initialize(mut conn: Connection) -> Result<Self> {
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 6 {
+        if version > 7 {
             return Err(StoreError::NewerSchema(version));
         }
         conn.execute_batch(
@@ -113,11 +125,16 @@ impl Store {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS message_pending_chat ON message(chat_id,delivery) WHERE server_id IS NULL;
             CREATE INDEX IF NOT EXISTS message_server_order ON message(chat_id,sort_id) WHERE server_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS message_incoming_order ON message(chat_id,sort_id) WHERE outgoing=0 AND server_id IS NOT NULL;")?;
+        if version < 7 {
+            let tx = conn.transaction()?;
+            tx.execute(r#"UPDATE message SET delivery='{"Rejected":{"reason":"Unanswered"}}' WHERE delivery='"Uncertain"'"#, [])?;
+            tx.pragma_update(None, "user_version", 7)?;
+            tx.commit()?;
+        }
         Ok(Self {
             conn,
             writes: 0,
             changes: Changes::default(),
-            settings_changed: false,
         })
     }
     pub fn sticker_packages(&self) -> Result<Vec<StickerPackage>> {
@@ -162,57 +179,6 @@ impl Store {
             Ok(())
         })?;
         Ok(())
-    }
-    /// Carry only work created before the first account identity was known.
-    pub fn carry_local_to(&self, target: &mut Store) -> Result<Vec<Key>> {
-        let source = self.prefs()?;
-        let mut prefs = target.prefs()?;
-        let mut seq = prefs.request_seq.max(source.request_seq);
-        prefs.request_seq = seq;
-        if self.settings_changed {
-            prefs.text_size = source.text_size;
-            prefs.enter_sends = source.enter_sends;
-            prefs.desktop = source.desktop;
-        }
-        if source.last_chat.is_some() {
-            prefs.last_chat = source.last_chat;
-        }
-        let tx = target.conn.savepoint()?;
-        tx.execute(
-            "UPDATE preferences SET value=?",
-            [serde_json::to_string(&prefs)?],
-        )?;
-        let mut drafts = self.conn.prepare("SELECT chat_id FROM draft")?;
-        for chat in drafts.query_map([], |r| r.get::<_, String>(0))? {
-            let chat = ChatId(chat?);
-            let draft = self.load_draft(&chat)?.unwrap();
-            ensure_chat(&tx, &chat)?;
-            tx.execute("INSERT OR REPLACE INTO draft(chat_id,text,cursor,updated,anchor,reply_json) VALUES(?,?,?,?,?,?)",
-                params![chat.0,draft.text,draft.cursor as i64,draft.updated,draft.anchor as i64,serde_json::to_string(&draft.reply)?])?;
-        }
-        let mut keys = Vec::new();
-        for mut row in self.all_pending()? {
-            seq += 1;
-            row.request_seq = Some(seq);
-            row.key = messages::insert(
-                &tx,
-                &row.chat_id,
-                row.local_id.as_ref(),
-                Some(seq),
-                row.created_at_local,
-            )?
-            .key;
-            messages::save(&tx, &row)?;
-            if row.delivery == Delivery::Pending {
-                keys.push(row.key);
-            }
-        }
-        tx.execute(
-            "UPDATE preferences SET value=json_set(value,'$.request_seq',?)",
-            [seq],
-        )?;
-        tx.commit()?;
-        Ok(keys)
     }
     pub fn writes(&self) -> u64 {
         self.writes

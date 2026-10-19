@@ -138,7 +138,7 @@ There is one total order everywhere: `(sort_ts, sort_id)`.
 | Server page (recent, older, newer) | Upsert by `server_id`. Content fields take the newer `reactions_rev`/edit; withdrawal is sticky; `delivery` only advances (Sent → Read). Never deletes rows. Extends or merges `segment`s. |
 | Live message op (25/26/43) | Upsert by `server_id`. Outgoing op 25 with a `request_seq` matching a pending row links to that row (sets `server_id`, `delivery=Sent`). Adjacent to the newest segment when the stream is continuous since the last applied revision; otherwise starts a new segment. |
 | Send result | Link the pending row by `request_seq` → `server_id`. If the echo already created a separate row, merge the two (keep the pending row's `key`, delete the duplicate, emit `Removed{key}`). |
-| Send failure | `delivery = Rejected{reason}` or `Uncertain`. The row stays until resolved. |
+| Send failure | `delivery = Rejected{reason}` (Not sent). Retry keeps the row; a late echo or success turns it Sent. |
 | Unsend op 64/65 | body becomes `Content::Withdrawn`, `delivery` untouched. |
 | Reaction op 139/140 | Replace `reactions_json` if the op's revision is newer. |
 | Receipt op 55 / read ranges | Advance `delivery` to Read for outgoing rows up to the marker. |
@@ -188,7 +188,7 @@ age expiry (D8).
 ### Outbox
 
 Pending sends are `message` rows whose `delivery` is one of `Pending`,
-`Rejected{reason}`, `Uncertain`, `Sent`, `Read` (a Rust enum serialised as
+`Rejected{reason}`, `Sent`, `Read` (a Rust enum serialised as
 JSON, never compared as a string). The submit flow is:
 
 1. Insert a pending row (a durable commit on the worker thread; the UI waits
@@ -197,8 +197,7 @@ JSON, never compared as a string). The submit flow is:
 3. Link it, or mark it failed.
 
 The actions on failed rows are Retry (same row, new `request_seq`), Discard
-(deletes the row) and Copy to composer. Resend after `Uncertain` creates a new
-row and discards the old one after a duplicate-risk confirmation. There is no
+(deletes the row) and Copy to composer. There is no
 count cap; a chat's failed rows are listed in its row badge until resolved.
 
 ### Existing files
@@ -267,10 +266,9 @@ enum Connection {
     Local,                         // store open, no network attempt yet
     Connecting { attempt: u32 },
     Online,
-    Offline { retry_at: Instant, cause: NetCause },
-    AuthExpired,                   // refresh failed; needs sign-in
-    SessionInvalid,                // MID mismatch / revoked
-    SigningIn { stage: PairStage },
+    Offline,
+    SignedOut { reason: SignOutReason },
+    SigningIn,
 }
 ```
 
@@ -285,29 +283,37 @@ Startup is two-phase:
   and SHA-256, ImageCache prune). Unread counts are marked stale
   (ux-model §150–155). A validated profile atomically updates `last-mid`.
 - **Online open** validates the profile, then resumes sync from the stored
-  revision. A MID mismatch moves to `SessionInvalid` and leaves the store
+  revision. A MID mismatch moves to `SignedOut` and leaves the store
   untouched.
 
-Intents that need the network while not `Online` are kept as refresh intents
-and run on the transition to `Online`. They are not dropped.
+Reads and in-session sends remain schedulable while Offline, with independent
+per-refresh backoff. SignedOut cancels queued work; old message rows require Retry
+after sign-in.
 
 ### Typed errors
 
-`client::Error { Offline(NetCause), Auth, SessionInvalid, Server(code),
-Rejected(RejectReason), Decode, Protocol, Crypto }`, built with `thiserror` at the
-`Client` boundary. The engine maps errors to connection transitions and
-per-row states. Transport I/O (including DNS, reset and timeout) is Offline; HTTP 5xx is
-Server even when its body is not JSON. Invalid responses/missing fields are
-Decode or Protocol; WASM failures are Crypto. Only Offline changes network
-availability; Auth and SessionInvalid remain terminal identity states. Other
-RPC failures retry their intent without changing the connection state. Rejected
-sends store a typed reason whose presentation preserves the existing wording.
-Store errors remain separate transaction errors.
+`client::error::classify` is the sole network-policy boundary. It returns
+`Failure::{NotDelivered, Unanswered, SignedOut, Refused, Bug}`. Transport evidence
+distinguishes failure before any request byte was written from failure after
+writing started. HTTP status, gateway and TalkException codes keep their
+separate namespaces.
+The engine reschedules reads after transport loss, retryable server failures and
+gateway UNKNOWN_ERROR. Sends retry before delivery (NotDelivered, TalkException
+115 or gateway UNKNOWN_ERROR) in the same session. Unanswered sends require Retry/Delete;
+other Refused and Bug terminate the item. One health object publishes Offline
+15 seconds after a transport failure. Successful network jobs and received
+refusals, including HTTP 5xx, clear it. Cached asset hits and local-only jobs do
+not affect health. SignedOut cancels queued work, preserves in-flight completions
+for their account, and requires explicit sign-in. Store errors remain separate transaction
+errors. Every Bug is logged at the engine error boundary with the operation,
+programmer-owned Bug text and context strings. Account-scoped dispatch requires
+both a ready session and a known account MID; pending local sends wait for profile validation.
+Authenticated API calls without an access token return SignedOut(NoSession).
 
 Each refresh intent (including stream startup/restart) has its own exponential backoff: 2 seconds, 4, 8, 16,
 32, then a 60-second cap, reset after success. Profile reconnection uses the
-same policy and publishes the actual attempt in `Connecting`. `Timing` is
-passed at worker startup; tests inject millisecond delays and scheduler waits.
+same per-refresh policy without changing visible connection state during transient failures. `Timing` is
+passed at worker startup; tests inject delays, scheduler waits and the health clock.
 Transport configuration separately supplies connect, socket polling, pool-idle
 and asset budgets; each RPC and stream supplies a duration for its request or
 ping budget. Tests select short budgets explicitly.
@@ -324,8 +330,13 @@ alone loads credentials, owns WASM, refreshes/persists tokens and updates that
 view; token values do not travel back through stream events. Standalone sync
 diagnostics construct their own owner outside the desktop engine.
 
-The SSE thread is restarted with backoff on every non-terminal exit. Terminal
-states are only `AuthExpired`, `SessionInvalid` and shutdown. The engine
+The SSE thread reconnects after failures with backoff on its own thread; only
+SignedOut or shutdown stops it. Read and ping failures are Unanswered. A clean
+close that delivered no messages waits at least the initial retry delay before
+reopening, without changing health or failure backoff. Other clean closes and
+reconnect events also wait when no message was delivered. A malformed frame is
+skipped. The engine supervises unexpected stream exits and restarts them with backoff unless signed out. Live
+frames enter decoding in FIFO arrival order, before refresh work. The engine
 persists the revision in the same transaction that applies an operation, and
 seeds `localRev` from it on start (D5). Operations replayed during catch-up
 carry `replay=true`, which suppresses notifications and unread increments. The
@@ -391,7 +402,7 @@ store and controller:
 - Chat-list pagination survives live operations.
 - Updates during pointer-down are all applied, none lost.
 - Unsend, reaction and receipt each update the row in place.
-- Failed send: discard, retry, resend-after-uncertain.
+- Failed send: discard, retry and late echo confirmation.
 - Restart: history, drafts, failed outbox items and the scroll anchor are
   restored from the store.
 
@@ -414,6 +425,5 @@ The implementation has these specific constraints:
   account's MID-hashed database. Successful validation records profile identity
   in the session so subsequent launches can open that database before network
   access. Legacy message/state files are neither read nor imported.
-- RPC errors use `client::Error`; authorization expiry is a single `Auth`
-  variant rather than a separate `AuthCause` enum. Media failures retain the
-  existing asset fetcher's typed failure enum.
+- RPC errors retain separate HTTP, gateway and TalkException namespaces through
+  classification. Media failures retain the asset fetcher's typed failure enum.
