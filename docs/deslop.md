@@ -98,6 +98,7 @@ of the budget: slow tests cost development speed.
 | Misleading names | `paths.json`, a "local data could not be saved" message for an auth failure |
 | Comments that narrate history instead of describing the code | "old square cache entries…", "legacy" wording |
 | Changing a persisted format without loading what the previous code wrote | typed `Session` renamed fields and would have signed the user out; a split error enum made stored failed sends unreadable |
+| Imperative Slint: Timers, `changed` handlers and functions doing what states, transitions, bindings and `animate` declare | 0 ms "settle" Timers and inline animation functions; repeating Timers burned 100% CPU |
 | "Consolidation" that moves code instead of removing it, and quietly changes wording | five label tables became one plus per-call-site variants; unnamed groups shown as "Unknown member" |
 
 Persisted data has two rules. The saved session survives every change:
