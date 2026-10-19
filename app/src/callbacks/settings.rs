@@ -5,14 +5,14 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         ui.set_auth_error("".into());
         ui.set_auth_qr(slint::Image::default());
         ui.set_auth_pin("".into());
-        ui.set_auth_stage("Preparing sign-in…".into());
+        ui.set_auth_stage(text::PREPARING_SIGN_IN.into());
         ui.set_auth_cancelling(false);
         d.sender.send(Intent::SignIn);
     });
     callback!(ui, actions, on_cancel_sign_in, |ui, d| {
         ui.set_auth_cancelling(true);
         d.sender.cancel_sign_in();
-        ui.set_auth_stage("Cancelling sign-in…".into());
+        ui.set_auth_stage(text::CANCELLING_SIGN_IN.into());
     });
     callback!(ui, actions, on_settings_changed, |ui, d| {
         let s = ui.global::<State>();

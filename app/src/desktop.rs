@@ -398,16 +398,20 @@ impl Desktop {
                 use line::backend::PairEvent;
                 match event {
                     PairEvent::Stage(stage) => {
-                        ui.set_auth_stage(text::pairing_stage(*stage).into())
+                        ui.set_auth_stage(text::pairing_stage(*stage).into());
+                        if matches!(stage, line::client::pairing::Stage::RequestCredentials) {
+                            ui.set_auth_pin("".into());
+                        }
                     }
                     PairEvent::Qr(p) => {
+                        ui.set_auth_stage(text::WAITING_FOR_PHONE.into());
                         ui.global::<State>().set_auth_prerequisite_missing(false);
                         ui.set_auth_qr(slint::Image::from_rgba8(
                             slint::SharedPixelBuffer::clone_from_slice(&p.rgba, p.width, p.height),
                         ));
                     }
                     PairEvent::Pin(pin) => ui.set_auth_pin(pin.into()),
-                    PairEvent::Scanned => ui.set_auth_stage("Phone scanned the code".into()),
+                    PairEvent::Scanned => ui.set_auth_stage(text::WAITING_FOR_PHONE.into()),
                 }
             }
             Delta::PairFailed { reason } => {
@@ -449,7 +453,7 @@ impl Desktop {
                 self.presenter.patch_asset(ui, &self.state, key);
                 if self.viewer_asset.as_ref() == Some(key) {
                     ui.set_viewer_loading(false);
-                    ui.set_viewer_error(text::viewer_failure(*failure).into());
+                    ui.set_viewer_error(text::image_text(*failure).into());
                 }
             }
             Delta::File { name, bytes } => {

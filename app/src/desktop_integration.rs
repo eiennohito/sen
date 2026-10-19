@@ -39,11 +39,7 @@ impl Application {
                 .into_iter()
                 .next()
                 .and_then(|v| String::try_from(v).ok())
-                .filter(|id| {
-                    !id.is_empty()
-                        && id.len() <= 256
-                        && id.bytes().all(|byte| byte.is_ascii_graphic())
-                })
+                .filter(|id| !id.is_empty() && id.bytes().all(|byte| byte.is_ascii_graphic()))
                 .map(Activation::OpenChat)
                 .unwrap_or(Activation::Show)
         } else {
@@ -172,7 +168,7 @@ mod tests {
         app.activate(HashMap::new()); // Full queues never block a D-Bus reply.
         assert!(matches!(rx.try_recv().unwrap(), Activation::Show));
         assert!(rx.try_recv().is_err());
-        for id in ["", "contains space", "new\nline", &"x".repeat(257)] {
+        for id in ["", "contains space", "new\nline"] {
             app.activate_action(
                 "open-chat",
                 vec![OwnedValue::from(zbus::zvariant::Str::from(id))],

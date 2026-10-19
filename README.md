@@ -266,6 +266,13 @@ cargo clippy --offline --workspace --all-targets -- -D warnings
 cargo clippy --offline -p line-desktop --all-targets --features ui-debug -- -D warnings
 ```
 
+The ignored notification and tray contract tests claim desktop service names.
+Run them only on a private session bus (plain tests leave them ignored):
+
+```sh
+dbus-run-session -- env LINE_DESKTOP_TEST_BUS=1 cargo test --offline -p line-desktop -- --ignored
+```
+
 Slint MCP inspection is opt-in and disabled in normal builds. The check command
 builds nothing and launches its own offline demos on Slint’s headless software
 backend with a private D-Bus session and temporary XDG directories, including

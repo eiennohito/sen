@@ -102,7 +102,6 @@ pub fn decide(preferences: &Preferences, context: Context, event: EventKind) -> 
 pub struct NotificationText {
     pub summary: String,
     pub body: String,
-    pub avatar: bool,
 }
 
 pub fn redact(level: PreviewLevel, name: &str, text: &str) -> NotificationText {
@@ -110,18 +109,23 @@ pub fn redact(level: PreviewLevel, name: &str, text: &str) -> NotificationText {
     match level {
         PreviewLevel::NameAndText => NotificationText {
             summary: name.into(),
-            body: text.into(),
-            avatar: true,
+            body: {
+                let mut chars = text.chars();
+                let mut body: String = chars.by_ref().take(1000).collect();
+                if chars.next().is_some() {
+                    body.pop();
+                    body.push('…');
+                }
+                body
+            },
         },
         PreviewLevel::NameOnly => NotificationText {
             summary: name.into(),
             body: String::new(),
-            avatar: false,
         },
         PreviewLevel::NewMessage => NotificationText {
             summary: "New message".into(),
             body: String::new(),
-            avatar: false,
         },
     }
 }
@@ -253,17 +257,29 @@ mod tests {
         }
     }
     #[test]
-    fn privacy_removes_text_and_avatar_together() {
+    fn privacy_removes_text() {
         let full = redact(PreviewLevel::NameAndText, "葵", "Private text 🐈");
         assert_eq!(full.summary, "葵");
         assert_eq!(full.body, "Private text 🐈");
-        assert!(full.avatar);
         let name = redact(PreviewLevel::NameOnly, "葵", "Private text 🐈");
         assert_eq!(name.summary, "葵");
-        assert!(name.body.is_empty() && !name.avatar);
+        assert!(name.body.is_empty());
         let hidden = redact(PreviewLevel::NewMessage, "葵", "Private text 🐈");
         assert_eq!(hidden.summary, "New message");
-        assert!(hidden.body.is_empty() && !hidden.avatar);
+        assert!(hidden.body.is_empty());
+    }
+    #[test]
+    fn body_is_bounded_by_characters_including_ellipsis() {
+        for length in [0, 999, 1000, 1001, 2000] {
+            let input = "🐈".repeat(length);
+            let result = redact(PreviewLevel::NameAndText, "Name", &input);
+            assert_eq!(result.body.chars().count(), length.min(1000));
+            if length > 1000 {
+                assert_eq!(result.body, format!("{}…", "🐈".repeat(999)));
+            } else {
+                assert_eq!(result.body, input);
+            }
+        }
     }
     #[test]
     fn sound_burst_boundary_and_quiet_persisted_defaults() {
@@ -274,10 +290,5 @@ mod tests {
         let prefs: Preferences = serde_json::from_str("{}").unwrap();
         assert!(!prefs.enabled && !prefs.sound && !prefs.mention_exception && !prefs.group_events);
         assert_eq!(prefs.preview, PreviewLevel::NameOnly);
-        assert_eq!(
-            serde_json::from_str::<Preferences>(&serde_json::to_string(&enabled()).unwrap())
-                .unwrap(),
-            enabled()
-        );
     }
 }

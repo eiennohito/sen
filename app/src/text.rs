@@ -38,10 +38,6 @@ pub(crate) fn rejection(reason: &Refusal) -> String {
     .into()
 }
 
-pub(crate) fn viewer_failure(failure: Failure) -> String {
-    format!("media failure: {failure:?}")
-}
-
 pub(crate) fn create_failure(failure: &line::engine::CreateFailure) -> &str {
     use line::engine::CreateFailure;
     match failure {
@@ -64,26 +60,24 @@ pub(crate) fn profile_failure(failure: line::engine::ProfileFailure) -> &'static
     }
 }
 
-pub(crate) fn pairing_stage(stage: line::client::pairing::Stage) -> String {
+pub(crate) fn pairing_stage(stage: line::client::pairing::Stage) -> &'static str {
     use line::client::pairing::Stage;
     match stage {
-        Stage::WaitingKeyring => "Waiting for the keyring to unlock…".into(),
-        Stage::Authenticated => {
-            "SUCCESS: saved session authenticated and E2EE keys restored".into()
-        }
-        Stage::CreatingSession => "Creating Chrome QR pairing session".into(),
-        Stage::AwaitScan => "QR ready; waiting for phone scan".into(),
-        Stage::CheckingCertificate => "QR scanned; checking device certificate".into(),
-        Stage::AwaitPin => "Waiting for phone PIN verification".into(),
-        Stage::RequestCredentials => "Phone approved; requesting session credentials".into(),
-        Stage::UnwrappingKeys => {
-            "Session credentials received; unwrapping Letter Sealing keychain in WASM".into()
-        }
-        Stage::KeysVerified => "Letter Sealing keys unwrapped and export/import verified".into(),
-        Stage::CheckingKeys => "Authenticated getProfile succeeded; validating saved keys".into(),
-        Stage::Synthetic => "Synthetic sign-in".into(),
+        Stage::Authenticated | Stage::Synthetic => SIGNED_IN,
+        Stage::WaitingKeyring | Stage::CreatingSession => PREPARING_SIGN_IN,
+        Stage::AwaitScan | Stage::CheckingCertificate | Stage::AwaitPin => WAITING_FOR_PHONE,
+        Stage::RequestCredentials
+        | Stage::UnwrappingKeys
+        | Stage::KeysVerified
+        | Stage::CheckingKeys => SIGNING_IN,
     }
 }
+
+pub(crate) const SIGNED_IN: &str = "Signed in";
+pub(crate) const SIGNING_IN: &str = "Signing in…";
+pub(crate) const WAITING_FOR_PHONE: &str = "Waiting for your phone…";
+pub(crate) const PREPARING_SIGN_IN: &str = "Preparing sign-in…";
+pub(crate) const CANCELLING_SIGN_IN: &str = "Cancelling sign-in…";
 
 pub fn storage_failure(reason: line::engine::StorageFailure) -> &'static str {
     use line::engine::StorageFailure::*;
@@ -147,6 +141,37 @@ pub fn sign_out_reason(reason: &line::client::error::SignOutReason) -> String {
         TokenRefresh => "Your sign-in could not be renewed. Sign in again.".into(),
         IdentityChanged => {
             "The saved sign-in belongs to a different account. Sign in again.".into()
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use line::client::pairing::Stage;
+
+    #[test]
+    fn pairing_status_follows_phone_approval() {
+        for stage in [Stage::WaitingKeyring, Stage::CreatingSession] {
+            assert_eq!(pairing_stage(stage), PREPARING_SIGN_IN);
+        }
+        for stage in [
+            Stage::AwaitScan,
+            Stage::CheckingCertificate,
+            Stage::AwaitPin,
+        ] {
+            assert_eq!(pairing_stage(stage), WAITING_FOR_PHONE);
+        }
+        for stage in [
+            Stage::RequestCredentials,
+            Stage::UnwrappingKeys,
+            Stage::CheckingKeys,
+            Stage::KeysVerified,
+        ] {
+            assert_eq!(pairing_stage(stage), SIGNING_IN);
+        }
+        for stage in [Stage::Authenticated, Stage::Synthetic] {
+            assert_eq!(pairing_stage(stage), SIGNED_IN);
         }
     }
 }

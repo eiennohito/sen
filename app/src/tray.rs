@@ -406,9 +406,13 @@ mod tests {
         }
     }
     #[test]
-    #[ignore = "requires private dbus-run-session and LINE_DESKTOP_TEST_BUS=1"]
+    #[ignore = "requires a private dbus-run-session"]
     fn synthetic_tray_menu_and_host_loss_contract() {
-        assert_eq!(std::env::var("LINE_DESKTOP_TEST_BUS").as_deref(), Ok("1"));
+        assert_eq!(
+            std::env::var("LINE_DESKTOP_TEST_BUS").as_deref(),
+            Ok("1"),
+            "contract tests require LINE_DESKTOP_TEST_BUS=1 on a private session bus"
+        );
         let host = Arc::new(AtomicBool::new(true));
         let registered = Arc::new(std::sync::Mutex::new(None));
         let server = zbus::blocking::connection::Builder::session()

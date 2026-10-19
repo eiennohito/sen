@@ -248,8 +248,8 @@ buttons, the cover band in a 25 % `accent` tint, and so on. Panel 320 px,
   - one line in `text-secondary`: "Scan the code with LINE on your phone.";
   - the QR code at 220 px on white with a 16 px quiet zone and a 12 px radius
     card;
-  - a status line under it ("Waiting for your phone…", "Enter 1234 on your
-    phone", "Signed in").
+  - a status line under it ("Preparing sign-in…", "Waiting for your phone…",
+    "Enter 1234 on your phone", "Signing in…" after phone approval, "Signed in").
 - A primary Start / Try again button, and a text button Back.
 - One `text-secondary` caveat line under the buttons: "Signing in here signs
   LINE out in Chrome."

@@ -30,7 +30,6 @@ impl Notifications {
             summary: text.summary,
             body: text.body,
             sound: prefs.sound,
-            avatar: None,
             last_message: String::new(),
         });
     }
@@ -71,7 +70,6 @@ impl Notifications {
                 summary: text.summary,
                 body: text.body,
                 sound: actions.sound,
-                avatar: None,
                 last_message: m.server_id.as_str().to_owned(),
             });
         }
@@ -90,8 +88,7 @@ pub(crate) fn handle(event: attention::Event, ui: &AppWindow, desktop: &mut Desk
                     .set_notification_status("Notification service not available".into());
             }
         }
-        attention::Event::OpenChat { chat, token } => {
-            let _ = token;
+        attention::Event::OpenChat { chat } => {
             desktop.open_chat(ui, ChatId(chat));
             let _ = ui.show();
             ui.set_show_conversation(true);
@@ -220,14 +217,12 @@ mod tests {
             events
                 .send(attention::Event::OpenChat {
                     chat: chat_b.0.clone(),
-                    token: None,
                 })
                 .unwrap();
             // C is A again: both destinations exist in the fake's canned data.
             events
                 .send(attention::Event::OpenChat {
                     chat: chat_a.0.clone(),
-                    token: None,
                 })
                 .unwrap();
             desktop.drain_notifications(&ui);

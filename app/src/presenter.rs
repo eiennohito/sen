@@ -76,6 +76,9 @@ fn patch<K: PartialEq + Clone, R: Clone + PartialEq + 'static>(
 }
 impl Presenter {
     pub fn install(&self, ui: &AppWindow) {
+        let state = ui.global::<State>();
+        state.set_preparing_sign_in_text(text::PREPARING_SIGN_IN.into());
+        state.set_signed_in_text(text::SIGNED_IN.into());
         ui.set_chats(ModelRc::new(self.chats.clone()));
         ui.set_messages(ModelRc::new(self.messages.clone()));
         ui.set_friends(ModelRc::new(self.friends.clone()));
@@ -311,7 +314,6 @@ impl Presenter {
         }
         if let Some(failure) = self.failures.get(row.image_key.as_str()) {
             row.image_failed = true;
-            row.image_failure = format!("{failure:?}").into();
             row.image_error = text::image_text(*failure).into();
             row.image_retryable = failure.retry_read();
         }
@@ -507,7 +509,9 @@ impl Presenter {
         for (request, failure) in &state.refresh_failures {
             use line::{client::error::Failure, engine::Refresh};
             let message = match failure {
-                Failure::Refused(reason) => format!("Couldn't load this item: {reason}"),
+                Failure::Refused(reason) => {
+                    format!("Couldn't load this item: {}", text::rejection(reason))
+                }
                 Failure::Bug(_) => "Couldn't load this item.".into(),
                 _ => continue,
             };
@@ -1179,7 +1183,6 @@ fn patch_message_asset(
             row.has_picture = true;
         }
         row.image_failed = failure.is_some();
-        row.image_failure = failure.map(|f| format!("{f:?}")).unwrap_or_default().into();
         row.image_error = failure
             .map(|f| text::image_text(*f))
             .unwrap_or_default()

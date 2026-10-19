@@ -4,7 +4,6 @@ use crate::*;
 pub struct Background {
     tray: Option<tray::Tray>,
     events: Option<std::sync::mpsc::Receiver<tray::Event>>,
-    autostart: Option<autostart::Manager>,
     autostart_value: bool,
 }
 impl Background {
@@ -26,24 +25,12 @@ impl Background {
             s.set_tray_available(false);
         }
         if prefs.autostart != self.autostart_value {
-            if self.autostart.is_none()
-                && !cfg!(feature = "ui-debug")
-                && let (Ok(dir), Ok(exe)) = (autostart::directory(), std::env::current_exe())
-            {
-                let weak = ui.as_weak();
-                self.autostart = Some(autostart::Manager::start(dir, exe, move |_, _, result| {
-                    let _ = weak.upgrade_in_event_loop(move |ui| {
-                        ui.global::<State>()
-                            .set_autostart_status(result.err().unwrap_or_default().into())
-                    });
-                }));
-            }
-            if let Some(manager) = &self.autostart {
-                manager.request(prefs.autostart);
-                s.set_autostart_status(
-                    format!("Updating autostart ({})", manager.revision()).into(),
-                );
-            }
+            let result = autostart::directory().and_then(|directory| {
+                let executable = std::env::current_exe()
+                    .map_err(|_| "Could not find the executable for autostart.".to_owned())?;
+                autostart::set_enabled(&directory, &executable, prefs.autostart)
+            });
+            s.set_autostart_status(result.err().unwrap_or_default().into());
             self.autostart_value = prefs.autostart;
         }
     }
@@ -73,9 +60,6 @@ impl Background {
 
 impl Drop for Background {
     fn drop(&mut self) {
-        if let Some(manager) = self.autostart.take() {
-            manager.shutdown();
-        }
         if let Some(tray) = self.tray.take() {
             tray.shutdown();
         }
