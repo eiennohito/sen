@@ -78,7 +78,7 @@ accessible labels, and balanced spacing before adding decorative effects.
 | Sticker picker | Source + opener live | stickerPopup | Contents, categories, purchase/download states unobserved |
 | Message menus / reaction results | Source | actionGroup, reactionPopover, reactionResultPopup | Need live context-menu and ownership-state mapping |
 | Media viewer / attachment confirmation | Source | mediaViewPopup, sendFileModal | Need live viewer and file-selection mapping |
-| Login / QR / PIN | Source | loginForm, loginQr, pinCodeModal | Current auth CLI exists; native flow not designed |
+| Login / QR / PIN | Source | loginForm, loginQr, pinCodeModal | Native flow not designed |
 
 Opening a group name spawned a separate extension target, rather than an
 in-page member panel. The inspector must enumerate/attach popup targets and

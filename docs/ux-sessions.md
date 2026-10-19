@@ -29,7 +29,7 @@ credentials stay sealed (T11). The implemented ownership and storage model is de
 
 | ID | Problem | Where | Fix |
 | --- | --- | --- | --- |
-| T9 | wasmi executes every message encrypt/decrypt and request HMAC. The native trial measured roughly 11,000× faster message crypto, but replacing the blob remains blocked on SKB token/private-key loading and opaque MID conversion. | `src/runtime.rs`, `src/native_crypto.rs`, [crypto-port.md](crypto-port.md) | Open: complete the SKB boundary or retain the blob. The account net worker owns and directly calls one runtime for live decode, history and signing; sends and receives share cached keys/channels, and signing keys are cached per version/access token. |
+| T9 | wasmi executes every message encrypt/decrypt and request HMAC. The native trial measured roughly 11,000× faster message crypto, but replacing the blob remains blocked on SKB token/private-key loading and opaque MID conversion. | `src/runtime.rs`, [crypto-port.md](crypto-port.md) | The trial was removed; the blob remains in use. The account net worker owns and directly calls one runtime for live decode, history and signing; sends and receives share cached keys/channels, and signing keys are cached per version/access token. |
 
 ## P — Protocol gaps
 
@@ -103,10 +103,10 @@ Phase 7 basic chat flows follow [the decided visual design](visual-design.md#flo
 | M13 | Phases 1–2: stable message keys and monotonic store merges retain sends across chat switches and stale pages; engine/controller regression coverage. |
 | M14 | Phases 1–2: closed-chat arrivals persist; opening reads the same rows and schedules refresh when the store is behind; engine/controller regression coverage. |
 | T1 | RPCs go through one pooled `ureq` 3 agent per `Api` (rustls, HTTP/1.1, no async runtime) with the curl path's safety properties, prompt cancellation including DNS, and a single pre-body retry on stale reused connections. Live account unverified. |
-| T7 | QR encoded in-process with `qrcodegen` (PNG for the app and `--qr-file`, black-on-white ANSI or plain text in the CLI); kitty output removed. Verified by independent zxing decode. |
+| T7 | QR encoded in-process with `qrcodegen` (PNG for the app). Verified by independent zxing decode. |
 | T8 | Already correct at `05cd26d`: `app/src/links.rs` spawns `xdg-open` on a helper thread and waits on it. The audit row was stale. |
 | T11 | Desktop Secret Service seals session files with AES-256-GCM (format `line-desktop-sealed-session`, mode 0600). Its 32-byte key is one item in the default collection (`application=line-desktop`, `purpose=session-key`, `key-id`), reused by later saves. Keyring mode refuses plaintext with a typed saved-session failure. `LINE_DESKTOP_CREDENTIALS=plaintext-file` is the explicit development store and refuses sealed files; `tools/run-ui-debug.py` selects it for its private bus. Credential tests use in-memory keys and a synthetic Secret Service, never the real keyring. |
-| T10 | `line-auth` resolves defaults lazily through the app's fixed XDG `Locations` in `src/locations.rs`; `--state` and `--wasm` override individual paths. |
+| T10 | The app uses fixed XDG `Locations` in `src/locations.rs`; `--state` and `--wasm` override individual paths. |
 | V1 | Demo scenarios moved into an F12 dialog (`app/ui/demo-scenarios.slint`); the demo shell renders as production, apart from the title hint. MCP checks pass, each flag on a fresh instance. |
 | S1 | The profile is a panel that narrows only the conversation from 1060 px (rail + browser + 398 px conversation + 320 px panel, derived from shared widths); 740–1059 px it is a sheet over the conversation with the browser kept; below 740 px a full-window sheet. Always below the connection strip. |
 | S2 | The profile closes on destination switch and on navigation to any other chat; it stays only for its own chat. |

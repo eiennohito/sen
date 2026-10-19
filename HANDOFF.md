@@ -77,9 +77,9 @@ a prototype, not a daily-use or live-compatibility claim.
 [docs/chromium-ui-map.md](docs/chromium-ui-map.md) records source evidence.
 
 **Chrome owns the secondary-device slot and native authorization is invalid.**
-Do not run the default app, `line-auth status`, `--check-live`, pairing, sends,
+Do not run the default app, `--check-live`, pairing, sends,
 read markers, or server preference changes without a new device-slot assignment.
-Preserve `artifacts/auth/session.json` and all encrypted local state. CLI
+Preserve `artifacts/auth/session.json` and all encrypted local state. App
 defaults use `$XDG_DATA_HOME/line-desktop/session.json`
 (fallback `$HOME/.local/share/line-desktop/session.json`). Crypto comes from the newest installed LINE extension under `$XDG_CONFIG_HOME` (default `$HOME/.config`), at its version directory’s `static/js/ltsm.wasm`. Historical
 live results below do not prove current authorization.
@@ -199,39 +199,12 @@ agent configs are ignored. Preserve the official blob and state on disk.
   exercised real text, authenticated photo previews, stickers, and paid reactions
   as detailed above.
 
-## Historical resume commands — native auth currently invalid
+## Historical authentication checks — native auth currently invalid
 
-Do not run the native authenticated commands below during the Chrome audit.
-The following records the previous workflow. An HTTP response of any status from this connectivity
-probe establishes DNS/TLS/HTTPS connectivity; the gateway root need not return 200.
-
-```sh
-printenv CODEX_SANDBOX_NETWORK_DISABLED
-curl --silent --show-error --connect-timeout 10 --max-time 15 \
-  --output /tmp/line-gateway-connectivity.txt \
-  --write-out 'LINE gateway HTTP %{http_code}\n' \
-  https://line-chrome-gw.line-apps.com/
-target/release/line-auth status --state artifacts/auth/session.json --wasm artifacts/line-3.7.2/ltsm.wasm
-```
-
-`status` reimports the saved wrapped keys into WASM, signs and sends `getProfile`
-with the saved token, checks that a profile MID exists, and saves `validated=true`
-only after success. It does not print profile contents or tokens. On server
-rejection, diagnose the actual response before deciding whether re-pairing is
-necessary. The current source has a sourced token-refresh adapter; these
-historical checks do not validate it.
-
-`target/release/line-auth chat-check --state artifacts/auth/session.json --wasm
-artifacts/line-3.7.2/ltsm.wasm` reads at most ten chat previews with five
-messages each, tries at most five supported candidates, and stops on the first
-verified JSON payload. It reads credentials without rewriting them and does not
-send messages, mark them read, register keys, or persist chat data. Each candidate
-rebuilds the runtime only after a WASM exception poisons it; item-level key, RPC and parse failures preserve its caches.
-
-The desktop now extends this into real message retrieval, text display, and
-media decryption. Successful samples do not cover every direction, chat type,
-historical key, or content type. Current token refresh and live receive remain
-unverified against the account.
+The desktop now provides message retrieval, text display, and media decryption.
+Successful samples do not cover every direction, chat type, historical key, or
+content type. Current token refresh and live receive remain unverified against
+the account.
 
 ## Sensitive local state
 
@@ -244,8 +217,8 @@ Preserve it. Do not dump it, put it into prompts/logs, commit it, or copy its
 contents into documentation. HAR files under `dumps/` are sensitive too.
 
 Safe inspection: parse JSON and output only booleans, key counts, field names,
-and file modes. `artifacts/auth/session.progress.json` contains stage names and
-timestamps only; consult it for the latest run's stage.
+and file modes. The removed CLI wrote stage names and timestamps to
+`artifacts/auth/session.progress.json`; the app reports progress in its sign-in UI.
 `artifacts/` is ignored by `.gitignore`.
 
 ## Code and build
@@ -253,9 +226,9 @@ timestamps only; consult it for the latest run's stage.
 - `src/runtime.rs`: minimal WASM host, dynamic embind bindings, emval handling.
 - `src/lib.rs`: shared version/hash constants, runtime module, request signing.
 - `examples/crypto-harness.rs`: offline crypto/signature and benchmark harness.
-- `src/bin/line-auth.rs`: thin CLI wrapper. `src/client.rs` contains the shared
-  transport, QR flow, state restoration, and persistence.
-- `src/client/chat.rs`: shared chunk/key adapters and bounded decryption check.
+- `src/client.rs`: shared protocol and persistence helpers.
+- `src/client/pairing.rs`: app QR pairing flow.
+- `src/client/chat.rs`: shared chunk/key adapters.
 - `src/client/desktop.rs`: account operations used by the desktop worker.
 - `src/client/desktop/assets.rs`: authenticated media retrieval, decryption, and
   private disk/decoded-image caches.
@@ -324,7 +297,6 @@ Gateway: `https://line-chrome-gw.line-apps.com`. QR RPCs use JSON array bodies
 `SecondaryQrCodeLoginPermitNoticeService/`. QR HMACs use an empty token argument.
 Authenticated profile uses `/api/talk/thrift/Talk/TalkService/getProfile` with
 body `[0]`, access-token HMAC input, `x-line-access`, and cookie `lct`.
-The CLI contains the exact flow and headers.
 
 Installed Chrome reference scripts, if needed:
 `/home/eien/.config/google-chrome/Default/Extensions/ophjlpahpchlmihnnnihgmmeilfjmjjc/3.7.2_0/static/js/`.
@@ -383,8 +355,6 @@ directory is outside the writable roots; this was granted. Dependencies are now
 cached, and `--offline` builds/checks work. Do not reintroduce transport
 spooling/proxy workarounds.
 
-If another pairing is genuinely required, `line-auth login` refuses to overwrite
-an existing state. Preserve the current state and use a different `--state` path.
-It supports `--display ascii|none`, `--qr-file`, and `--wasm`. Pairing uses
-the Chrome secondary-device slot; this consequence was already discussed and
-authorized by the user.
+If another pairing is required, use the app's Sign in flow. It preserves the
+previous session before installing the newly validated one. Pairing uses the
+Chrome secondary-device slot and requires an explicit device-slot assignment.

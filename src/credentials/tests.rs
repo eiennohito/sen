@@ -1,6 +1,19 @@
 use super::*;
 use std::{os::unix::fs::PermissionsExt, path::PathBuf};
 
+/// In-memory keys for credential store tests.
+#[derive(Default)]
+struct MapKeys(std::sync::Mutex<std::collections::HashMap<String, [u8; 32]>>);
+impl Keys for MapKeys {
+    fn get(&self, id: &str) -> Result<Option<[u8; 32]>> {
+        Ok(self.0.lock().unwrap().get(id).copied())
+    }
+    fn put(&self, id: &str, key: &[u8; 32]) -> Result<()> {
+        self.0.lock().unwrap().insert(id.to_owned(), *key);
+        Ok(())
+    }
+}
+
 struct Unreachable;
 impl Keys for Unreachable {
     fn get(&self, _: &str) -> Result<Option<[u8; 32]>> {
@@ -19,17 +32,6 @@ fn root(name: &str) -> PathBuf {
 }
 fn synthetic() -> Value {
     json!({"format":1,"login_key":"c3ludGhldGljIG9ubHk=","token_v3_issue_result":{"refreshToken":"synthetic-refresh"}})
-}
-
-#[test]
-fn store_selection_is_explicit() {
-    assert_eq!(Store::parse(None).unwrap(), Store::Keyring);
-    assert_eq!(Store::parse(Some("keyring")).unwrap(), Store::Keyring);
-    assert_eq!(
-        Store::parse(Some("plaintext-file")).unwrap(),
-        Store::PlaintextFile
-    );
-    assert!(Store::parse(Some("plaintext")).is_err());
 }
 
 #[test]
@@ -66,32 +68,6 @@ fn sealed_file_hides_credentials_and_round_trips() {
 }
 
 #[test]
-fn keyring_refuses_plaintext_without_reading_keys_or_changing_file() {
-    let root = root("plaintext");
-    let path = root.join("session.json");
-    let bytes = serde_json::to_vec_pretty(&synthetic()).unwrap();
-    private_write(&path, &bytes).unwrap();
-    let result = load_with(&path, Store::Keyring, &Unreachable);
-    assert!(matches!(
-        result
-            .unwrap_err()
-            .downcast_ref::<crate::client::error::Error>(),
-        Some(crate::client::error::Error::SignIn(
-            crate::client::error::SignInFailure::SavedSession(
-                SavedSessionFailure::CredentialsStore
-            )
-        ))
-    ));
-    assert!(save_with(&path, &json!({}), Store::Keyring, &MapKeys::default()).is_err());
-    assert_eq!(fs::read(&path).unwrap(), bytes);
-    assert_eq!(
-        load_with(&path, Store::PlaintextFile, &Unreachable).unwrap(),
-        synthetic()
-    );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
 fn stores_refuse_downgrades_and_require_keys() {
     let root = root("downgrade");
     let path = root.join("session.json");
@@ -109,220 +85,60 @@ fn stores_refuse_downgrades_and_require_keys() {
     let dev = root.join("dev.json");
     save_with(&dev, &synthetic(), Store::PlaintextFile, &Unreachable).unwrap();
     assert_eq!(parse(&fs::read(&dev).unwrap()).unwrap(), synthetic());
+    let bytes = fs::read(&dev).unwrap();
+    let result = load_with(&dev, Store::Keyring, &Unreachable);
+    assert!(matches!(
+        result
+            .unwrap_err()
+            .downcast_ref::<crate::client::error::Error>(),
+        Some(crate::client::error::Error::SignIn(
+            crate::client::error::SignInFailure::SavedSession(
+                SavedSessionFailure::CredentialsStore
+            )
+        ))
+    ));
+    assert!(save_with(&dev, &json!({}), Store::Keyring, &MapKeys::default()).is_err());
+    assert_eq!(fs::read(&dev).unwrap(), bytes);
+    assert_eq!(
+        load_with(&dev, Store::PlaintextFile, &Unreachable).unwrap(),
+        synthetic()
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
-mod fake_service {
-    //! A synthetic org.freedesktop.secrets for a private bus. Only the calls
-    //! the client makes; every collection starts locked behind a prompt.
-    use std::{
-        collections::HashMap,
-        sync::{Arc, Mutex},
-    };
-    use zbus::{
-        object_server::SignalEmitter,
-        zvariant::{ObjectPath, OwnedObjectPath, OwnedValue, Value},
-    };
-    type Secret = (OwnedObjectPath, Vec<u8>, Vec<u8>, String);
-    pub const COLLECTION: &str = "/org/freedesktop/secrets/collection/login";
+#[test]
+fn missing_key_refuses_save_and_load_without_creating_a_key() {
+    let root = root("missing-key");
+    let path = root.join("session.json");
+    let keys = MapKeys::default();
+    save_with(&path, &synthetic(), Store::Keyring, &keys).unwrap();
+    let sealed_bytes = fs::read(&path).unwrap();
+    keys.0.lock().unwrap().clear();
 
-    #[derive(Default)]
-    pub struct Data {
-        pub items: Vec<(HashMap<String, String>, Vec<u8>)>,
-        pub locked: bool,
-        pub prompts: u32,
-    }
-    pub type Shared = Arc<Mutex<Data>>;
-    fn item(index: usize) -> OwnedObjectPath {
-        ObjectPath::try_from(format!("{COLLECTION}/{index}"))
-            .unwrap()
-            .into()
-    }
-
-    pub struct Service(pub Shared);
-    #[zbus::interface(name = "org.freedesktop.Secret.Service")]
-    impl Service {
-        fn open_session(
-            &self,
-            algorithm: &str,
-            _input: OwnedValue,
-        ) -> (OwnedValue, OwnedObjectPath) {
-            assert_eq!(algorithm, "plain");
-            (
-                Value::from("").try_into().unwrap(),
-                ObjectPath::try_from("/org/freedesktop/secrets/session/1")
-                    .unwrap()
-                    .into(),
-            )
-        }
-        fn read_alias(&self, name: &str) -> OwnedObjectPath {
-            assert_eq!(name, "default");
-            ObjectPath::try_from(COLLECTION).unwrap().into()
-        }
-        fn search_items(
-            &self,
-            attributes: HashMap<String, String>,
-        ) -> (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) {
-            let data = self.0.lock().unwrap();
-            let found = data
-                .items
-                .iter()
-                .enumerate()
-                .filter(|(_, (stored, _))| attributes.iter().all(|(k, v)| stored.get(k) == Some(v)))
-                .map(|(index, _)| item(index))
-                .collect();
-            if data.locked {
-                (Vec::new(), found)
-            } else {
-                (found, Vec::new())
-            }
-        }
-        async fn unlock(
-            &self,
-            objects: Vec<OwnedObjectPath>,
-            #[zbus(object_server)] server: &zbus::ObjectServer,
-        ) -> (Vec<OwnedObjectPath>, OwnedObjectPath) {
-            if !self.0.lock().unwrap().locked {
-                return (objects, ObjectPath::try_from("/").unwrap().into());
-            }
-            let path = ObjectPath::try_from("/org/freedesktop/secrets/prompt/1").unwrap();
-            let _ = server.remove::<Prompt, _>(path.clone()).await;
-            server
-                .at(path.clone(), Prompt(self.0.clone(), objects))
-                .await
-                .unwrap();
-            (Vec::new(), path.into())
-        }
-        fn get_secrets(
-            &self,
-            items: Vec<OwnedObjectPath>,
-            session: OwnedObjectPath,
-        ) -> HashMap<OwnedObjectPath, Secret> {
-            let data = self.0.lock().unwrap();
-            assert!(!data.locked, "secret read from a locked collection");
-            items
-                .into_iter()
-                .map(|path| {
-                    let index: usize = path.as_str().rsplit('/').next().unwrap().parse().unwrap();
-                    let value = data.items[index].1.clone();
-                    (
-                        path,
-                        (
-                            session.clone(),
-                            Vec::new(),
-                            value,
-                            "application/octet-stream".into(),
-                        ),
-                    )
-                })
-                .collect()
-        }
-    }
-
-    pub struct Collection(pub Shared);
-    #[zbus::interface(name = "org.freedesktop.Secret.Collection")]
-    impl Collection {
-        #[zbus(property)]
-        fn locked(&self) -> bool {
-            self.0.lock().unwrap().locked
-        }
-        fn create_item(
-            &self,
-            properties: HashMap<String, OwnedValue>,
-            secret: Secret,
-            replace: bool,
-        ) -> (OwnedObjectPath, OwnedObjectPath) {
-            assert!(replace);
-            let mut data = self.0.lock().unwrap();
-            assert!(!data.locked, "item created in a locked collection");
-            let attributes: HashMap<String, String> =
-                properties["org.freedesktop.Secret.Item.Attributes"]
-                    .try_clone()
-                    .unwrap()
-                    .try_into()
-                    .unwrap();
-            data.items.push((attributes, secret.2));
-            (
-                item(data.items.len() - 1),
-                ObjectPath::try_from("/").unwrap().into(),
-            )
-        }
-    }
-
-    pub struct Prompt(Shared, Vec<OwnedObjectPath>);
-    #[zbus::interface(name = "org.freedesktop.Secret.Prompt")]
-    impl Prompt {
-        async fn prompt(&self, _window: &str, #[zbus(signal_emitter)] emitter: SignalEmitter<'_>) {
-            {
-                let mut data = self.0.lock().unwrap();
-                data.locked = false;
-                data.prompts += 1;
-            }
-            let result = Value::from(self.1.clone());
-            Self::completed(&emitter, false, &result).await.unwrap();
-        }
-        fn dismiss(&self) {}
-        #[zbus(signal)]
-        async fn completed(
-            emitter: &SignalEmitter<'_>,
-            dismissed: bool,
-            result: &Value<'_>,
-        ) -> zbus::Result<()>;
-    }
-    pub struct Session;
-    #[zbus::interface(name = "org.freedesktop.Secret.Session")]
-    impl Session {
-        fn close(&self) {}
-    }
+    assert!(save_with(&path, &json!({}), Store::Keyring, &keys).is_err());
+    assert!(load_with(&path, Store::Keyring, &keys).is_err());
+    assert_eq!(fs::read(&path).unwrap(), sealed_bytes);
+    assert!(keys.0.lock().unwrap().is_empty());
+    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-#[ignore = "requires dbus-run-session and LINE_DESKTOP_TEST_BUS=1"]
-fn synthetic_secret_service_contract() {
-    assert_eq!(
-        std::env::var("LINE_DESKTOP_TEST_BUS").as_deref(),
-        Ok("1"),
-        "refusing to use the real desktop keyring"
-    );
-    use fake_service::*;
-    let data = Shared::default();
-    data.lock().unwrap().locked = true;
-    let _server = zbus::blocking::connection::Builder::session()
-        .unwrap()
-        .serve_at("/org/freedesktop/secrets", Service(data.clone()))
-        .unwrap()
-        .serve_at(COLLECTION, Collection(data.clone()))
-        .unwrap()
-        .serve_at("/org/freedesktop/secrets/session/1", Session)
-        .unwrap()
-        .name("org.freedesktop.secrets")
-        .unwrap()
-        .build()
-        .unwrap();
-    let root = root("service");
-    let path = root.join("session.json");
-    Keyring.reachable().unwrap();
-    // Locked collection: one unlock prompt, then the item is created.
-    save_with(&path, &synthetic(), Store::Keyring, &Keyring).unwrap();
-    assert_eq!(data.lock().unwrap().prompts, 1);
-    {
-        let data = data.lock().unwrap();
-        let (attributes, secret) = &data.items[0];
-        assert_eq!(attributes["application"], "line-desktop");
-        assert_eq!(attributes["purpose"], "session-key");
-        assert_eq!(secret.len(), 32);
+fn save_preserves_unreadable_or_invalid_existing_sessions() {
+    let root = root("invalid-existing");
+    let keys = MapKeys::default();
+    for store in [Store::Keyring, Store::PlaintextFile] {
+        let path = root.join("session.json");
+        let bytes = b"{incomplete session";
+        fs::write(&path, bytes).unwrap();
+        assert!(save_with(&path, &synthetic(), store, &keys).is_err());
+        assert_eq!(fs::read(&path).unwrap(), bytes);
+        fs::remove_file(&path).unwrap();
+        // A directory deterministically fails reads even when tests run as root.
+        fs::create_dir(&path).unwrap();
+        assert!(save_with(&path, &synthetic(), store, &keys).is_err());
+        assert!(path.is_dir());
+        fs::remove_dir(&path).unwrap();
     }
-    assert_eq!(
-        load_with(&path, Store::Keyring, &Keyring).unwrap(),
-        synthetic()
-    );
-    // Relock: reading the key prompts again and still succeeds.
-    data.lock().unwrap().locked = true;
-    assert_eq!(
-        load_with(&path, Store::Keyring, &Keyring).unwrap(),
-        synthetic()
-    );
-    assert_eq!(data.lock().unwrap().prompts, 2);
-    assert_eq!(Keyring.get("absent").unwrap(), None);
+    assert!(keys.0.lock().unwrap().is_empty());
     fs::remove_dir_all(root).unwrap();
 }

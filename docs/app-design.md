@@ -122,10 +122,9 @@ flowchart LR
 See [core-model.md](core-model.md) for the store, engine, controller and
 presenter. The UI drains deltas on a 16 ms event-loop timer.
 
-The desktop and CLI now share `src/client.rs` and `src/client/chat.rs`.
+The desktop uses `src/client.rs` and `src/client/chat.rs`.
 `src/client/desktop.rs` owns the account operations, and its `assets` module
-owns authenticated media retrieval and private thumbnail caching. The CLI is
-a thin frontend over the same transport, session, and WASM implementation.
+owns authenticated media retrieval and private thumbnail caching.
 
 The crypto module source is the installed LINE Chrome extension, ID
 `ophjlpahpchlmihnnnihgmmeilfjmjjc`. Startup searches
@@ -149,8 +148,7 @@ The GUI thread owns Slint models and text editing. The account net worker owns
 one runtime, tokens, key caches and RPC requests. Live decode, history and
 signing call that runtime directly;
 the stream thread borrows authorization and requests token refresh from the
-worker, never instantiating WASM. Runtime recovery runs only when a WASM exception poisons the store. It builds a new instance, then assigns it, propagating any failure. Missing device keys, RPC errors and parse errors fail only their item and preserve runtime caches. Latest peer and group keys are fetched per send; key-ID data and channels are cached. Media file crypto stays native, and the optional
-`native-crypto` trial feature is unchanged. Three blocking asset threads
+worker, never instantiating WASM. Runtime recovery runs only when a WASM exception poisons the store. It builds a new instance, then assigns it, propagating any failure. Missing device keys, RPC errors and parse errors fail only their item and preserve runtime caches. Latest peer and group keys are fetched per send; key-ID data and channels are cached. Media file crypto stays native. Three blocking asset threads
 share one asset HTTP agent and the thumbnail cache; they own media downloads,
 decryption and decoding. Three slots allow visible images to overlap while
 bounding simultaneous encoded downloads to 48 MiB. The asset agent uses the

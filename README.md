@@ -88,7 +88,7 @@ shown as a known server preference.
 
 Install LINE for Chrome, then launch `line-desktop` and choose **Sign in** to pair with your phone. At startup the app uses the newest installed extension (`ophjlpahpchlmihnnnihgmmeilfjmjjc`) across Chrome and Chromium profiles under `$XDG_CONFIG_HOME` (default `$HOME/.config`). It reads `static/js/ltsm.wasm` from the extension root and uses `manifest.json`'s version for requests and signing. No module copy or installation script is needed. Required crypto interfaces are checked before sign-in; unsupported changes appear on the sign-in screen and status strip and are logged. If the extension is missing, the app describes the Chrome and Chromium search locations.
 
-Session credentials use `$XDG_DATA_HOME/line-desktop/` (default `~/.local/share/line-desktop/`); cache uses `$XDG_CACHE_HOME/line-desktop/` (default `~/.cache/line-desktop/`). The desktop keyring seals saved sign-in credentials. Sessions survive extension updates. If the updated module cannot restore saved keys, the app explains that the saved session is unusable. LINE could refuse an old client; this appears as refused sign-in/session. `line-auth` shares these defaults. `--state FILE`, `--wasm FILE`, `--client-version VERSION` and the app's `--cache-dir DIR` are developer overrides. A WASM override outside an extension requires `--client-version`. Tests and crypto oracle fixtures may explicitly pin a module copy; the app never defaults to one. One account net worker owns and directly calls the runtime for live decode, history and signing. Send and receive share its channel and key caches; signing retains the HMAC and its derived key together until the access token changes. Latest peer and group keys are fetched for every send; caches retain only keys and channels identified by key ID. Media file crypto runs natively on background workers; the optional native-crypto trial remains experimental.
+Session credentials use `$XDG_DATA_HOME/line-desktop/` (default `~/.local/share/line-desktop/`); cache uses `$XDG_CACHE_HOME/line-desktop/` (default `~/.cache/line-desktop/`). The desktop keyring seals saved sign-in credentials. Sessions survive extension updates. If the updated module cannot restore saved keys, the app explains that the saved session is unusable. LINE could refuse an old client; this appears as refused sign-in/session. `--state FILE`, `--wasm FILE`, `--client-version VERSION` and `--cache-dir DIR` are developer overrides. A WASM override outside an extension requires `--client-version`. Tests and crypto oracle fixtures may explicitly pin a module copy; the app never defaults to one. One account net worker owns and directly calls the runtime for live decode, history and signing. Send and receive share its channel and key caches; signing retains the HMAC and its derived key together until the access token changes. Latest peer and group keys are fetched for every send; caches retain only keys and channels identified by key ID. Media file crypto runs natively on background workers.
 
 Private desktop state uses `$XDG_STATE_HOME/line-desktop` (normally under
 `~/.local/state`). Empty or relative XDG directories fall back to `$HOME`.
@@ -151,10 +151,9 @@ login. RPC HTTPS uses a persistent blocking `ureq` agent with rustls and WebPKI
 roots, without an async runtime. SSE uses a separate agent with the same
 transport and media uses the same pooled transport; `curl` is not required.
 QR encoding runs in Rust, with 10-pixel modules,
-a four-module quiet zone and Low error correction. The CLI supports
-`--qr-file FILE` for PNG output and `--display ascii|none` (default `ascii` on a
-TTY, `none` otherwise). Cancel clears the QR/PIN immediately; the current
-phone-verification request may need to finish before cancellation completes.
+a four-module quiet zone and Low error correction. Cancel clears the QR/PIN
+immediately; the current phone-verification request may need to finish before
+cancellation completes.
 Keep the app open to see success or a retriable error.
 
 A successful sign-in keeps the old session as
@@ -240,23 +239,16 @@ offline snapshot options.
 
 ## Protocol tools
 
-The root package remains the default Cargo target, so ordinary CLI builds do not
-compile the GUI. Install LINE for Chrome for automatic module discovery; the
-blob is not included in the repository. [HANDOFF.md](HANDOFF.md) records
-historical protocol verification and fixture details.
+The root library package remains the default Cargo target. Install LINE for
+Chrome for automatic module discovery; the blob is not included in the
+repository. [HANDOFF.md](HANDOFF.md) records historical protocol verification
+and fixture details. Sign in through the desktop app.
 
 ```sh
-cargo build --release --bins
-# CLI session: $XDG_DATA_HOME/line-desktop/session.json; WASM: newest installed LINE Chrome extension
-# Session directory fallback: $HOME/.local/share/line-desktop/.
-target/release/line-auth status
-target/release/line-auth chat-check
 cargo run --offline --release --features harness --example crypto-harness
 ```
 
-`login` performs QR pairing when needed; preserve an existing session. `status`
-checks saved authentication and key restoration. `chat-check` performs a bounded
-read-only decryption probe and reports counts without saving message contents.
+`LINE_DESKTOP_CREDENTIALS=plaintext-file` provides a plaintext credential store for development and headless checks without a keyring.
 
 Credentials and wrapped keys under `artifacts/auth/`, proprietary extension
 artifacts, and sensitive HAR captures under `dumps/` are ignored by Git. The

@@ -2,11 +2,10 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Protocol progress, independent of desktop wording. Display retains CLI logs.
+/// Protocol progress, independent of desktop wording.
 #[derive(Clone, Copy, Debug)]
 pub enum Stage {
     WaitingKeyring,
-    RecoveringKeys,
     Authenticated,
     CreatingSession,
     AwaitScan,
@@ -17,39 +16,6 @@ pub enum Stage {
     KeysVerified,
     CheckingKeys,
     Synthetic,
-    RestoredKeys(usize),
-}
-impl std::fmt::Display for Stage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::WaitingKeyring => f.write_str("Waiting for the keyring to unlock…"),
-            Self::RecoveringKeys => f.write_str("Recovering E2EE keys from saved pairing metadata"),
-            Self::Authenticated => {
-                f.write_str("SUCCESS: saved session authenticated and E2EE keys restored")
-            }
-            Self::CreatingSession => f.write_str("Creating Chrome QR pairing session"),
-            Self::AwaitScan => f.write_str("QR ready; waiting for phone scan"),
-            Self::CheckingCertificate => f.write_str("QR scanned; checking device certificate"),
-            Self::AwaitPin => f.write_str("Waiting for phone PIN verification"),
-            Self::RequestCredentials => {
-                f.write_str("Phone approved; requesting session credentials")
-            }
-            Self::UnwrappingKeys => f.write_str(
-                "Session credentials received; unwrapping Letter Sealing keychain in WASM",
-            ),
-            Self::KeysVerified => {
-                f.write_str("Letter Sealing keys unwrapped and export/import verified")
-            }
-            Self::CheckingKeys => {
-                f.write_str("Authenticated getProfile succeeded; validating saved keys")
-            }
-            Self::Synthetic => f.write_str("Synthetic sign-in"),
-            Self::RestoredKeys(count) => write!(
-                f,
-                "Restored {count} Letter Sealing key(s) in a fresh WASM instance"
-            ),
-        }
-    }
 }
 
 pub enum Event {
@@ -66,7 +32,7 @@ struct NativeLogin<'a, F> {
     emit: F,
     cancel: &'a AtomicBool,
 }
-impl<F: Fn(Event)> LoginUi for NativeLogin<'_, F> {
+impl<F: Fn(Event)> NativeLogin<'_, F> {
     fn check(&self) -> Result<()> {
         ensure!(!self.cancel.load(Ordering::Relaxed), "sign-in cancelled");
         Ok(())
@@ -76,7 +42,7 @@ impl<F: Fn(Event)> LoginUi for NativeLogin<'_, F> {
         (self.emit)(Event::Stage(stage));
         Ok(())
     }
-    fn qr(&self, _link: &str, png: &[u8]) -> Result<()> {
+    fn qr(&self, png: &[u8]) -> Result<()> {
         self.check()?;
         let image = image::load_from_memory(png)?.to_rgba8();
         (self.emit)(Event::Qr {
@@ -96,6 +62,117 @@ impl<F: Fn(Event)> LoginUi for NativeLogin<'_, F> {
         (self.emit)(Event::Pin(pin.into()));
         Ok(())
     }
+}
+
+fn login_with(
+    state_path: &Path,
+    api: &mut Api,
+    progress: &NativeLogin<'_, impl Fn(Event)>,
+) -> Result<()> {
+    progress.check()?;
+    ensure!(!state_path.exists(), "pairing session file already exists");
+    progress.set(Stage::CreatingSession)?;
+    let created = api.qr("createSession", json!({}), "", 0)?;
+    let session = required(&created, "authSessionId")?.to_owned();
+    let qr = api.qr("createQrCode", json!({"authSessionId":session}), "", 0)?;
+    let key = api.rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
+    let public = bytes_method(&mut api.rt, Call::Curve25519KeyGetPublicKey, key, &[])?;
+    let link = callback(required(&qr, "callbackUrl")?, &public)?;
+    let png = qr_png(&link)?;
+    progress.qr(&png)?;
+    progress.set(Stage::AwaitScan)?;
+    let interval = qr["longPollingIntervalSec"]
+        .as_u64()
+        .unwrap_or(30)
+        .clamp(1, 110);
+    let count = qr["longPollingMaxCount"]
+        .as_u64()
+        .unwrap_or(4)
+        .clamp(1, 120);
+    let started = Instant::now();
+    let mut verified = false;
+    for _ in 0..count {
+        progress.check()?;
+        match api.qr(
+            "checkQrCodeVerified",
+            json!({"authSessionId":session}),
+            &session,
+            interval,
+        ) {
+            Ok(_) => {
+                verified = true;
+                break;
+            }
+            Err(error) => {
+                let expired = error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|e| e.gateway == 10052 && e.status == 410);
+                if !expired || started.elapsed() > Duration::from_secs(300) {
+                    return Err(pairing::phone_error(error));
+                }
+            }
+        }
+    }
+    ensure!(verified, error::Error::SignIn(error::SignInFailure::Phone));
+    progress.check()?;
+    progress.scanned()?;
+    progress.set(Stage::CheckingCertificate)?;
+    match api.qr(
+        "verifyCertificate",
+        json!({"authSessionId":session,"certificate":""}),
+        "",
+        0,
+    ) {
+        Ok(_) => {}
+        Err(error) => {
+            ensure!(
+                error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|e| e.http == 400),
+                "certificate check failed: {error}"
+            );
+            let pin = api.qr("createPinCode", json!({"authSessionId":session}), "", 0)?;
+            let pin = required(&pin, "pinCode")?;
+            ensure!(
+                (4..=8).contains(&pin.len()) && pin.bytes().all(|b| b.is_ascii_digit()),
+                "invalid verification PIN format"
+            );
+            progress.pin(pin)?;
+            progress.set(Stage::AwaitPin)?;
+            api.qr(
+                "checkPinCodeVerified",
+                json!({"authSessionId":session}),
+                &session,
+                110,
+            )
+            .map_err(pairing::phone_error)?;
+        }
+    }
+    progress.check()?;
+    progress.set(Stage::RequestCredentials)?;
+    let result=api.qr("qrCodeLoginV2",json!({"authSessionId":session,"systemName":"CHROMEOS","modelName":"CHROME","autoLoginIsRequired":false}),"",0)?;
+    let mut token = result["tokenV3IssueResult"].clone();
+    if token["accessToken"].as_str().is_none_or(|s| s.is_empty()) {
+        token = json!({"accessToken":required(&result,"authToken")?});
+    }
+    let mut state = json!({"format":1,"token_v3_issue_result":token,"certificate":result["certificate"],"login_metadata":result["metaData"],"e2ee_keys":[]});
+    progress.set(Stage::UnwrappingKeys)?;
+    let keys = unwrap_keys(&mut api.rt, key, &state["login_metadata"])?;
+    state["e2ee_keys"] = json!(keys);
+    save_state(state_path, &state)?;
+    progress.set(Stage::KeysVerified)?;
+    api.rt.destroy("Curve25519Key", key)?;
+    api.state = state.clone();
+    let profile = api.profile()?;
+    ensure!(
+        profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
+        "authenticated profile missing"
+    );
+    state["profile"] = profile;
+    save_state(state_path, &state)?;
+    progress.set(Stage::CheckingKeys)?;
+    validate_keys(api, &state)?;
+    progress.set(Stage::Authenticated)
 }
 
 /// Never called at startup or on a network error: requires explicit user action.
@@ -360,7 +437,7 @@ mod tests {
             emit: |event| events.borrow_mut().push(event),
             cancel: &cancel,
         };
-        ui.qr("unused", &png)?;
+        ui.qr(&png)?;
         let Event::Qr {
             width,
             height,
@@ -382,7 +459,7 @@ mod tests {
         assert!(pixels.contains(&[0, 0, 0, 255]));
         assert!(pixels.contains(&[255, 255, 255, 255]));
         cancel.store(true, Ordering::Relaxed);
-        assert!(ui.qr("unused", &png).is_err());
+        assert!(ui.qr(&png).is_err());
         assert!(events.borrow().is_empty());
         Ok(())
     }

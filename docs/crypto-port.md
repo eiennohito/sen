@@ -1,5 +1,7 @@
 # T9 native crypto trial
 
+The native crypto trial and its tests were removed; the implementation lives in git history. This document retains the historical findings and commands.
+
 The message primitives are portable. A complete replacement for `ltsm.wasm`
 is **not established**: token loading, persisted private-key blobs and the MID
 key still depend on the proprietary SKB engine. This trial adds native
@@ -227,21 +229,6 @@ arbitrary-input ECDH parity is not claimed.
 
 ## Differential coverage and reproduction
 
-The unused T9 native-crypto trial, including its tests, is behind the
-non-default `native-crypto` Cargo feature. Native Go, padding and RFC-vector
-tests run with that feature without needing the WASM blob. Oracle suites are
-explicitly ignored by the harness with a fixture requirement, so missing
-coverage is reported as ignored rather than passed. To run an oracle suite:
-
-```sh
-cargo test --release --offline --features native-crypto aes_matches_oracle -- --ignored --nocapture
-```
-
-Explicit oracle runs require `artifacts/line-3.7.2/ltsm.wasm` or an explicit
-`LINE_CRYPTO_ORACLE_PATH` pointing to that fixture. A missing fixture fails loudly with the named
-`SKIP native crypto oracle` diagnostic; permission errors and wrong hashes
-also fail. There is no successful early return for an absent oracle.
-
 Four seeded suites each run 320 cases:
 
 * Derivation/HMAC: varying prefix, suffix and message bytes; direct HMAC
@@ -290,8 +277,6 @@ MAC verification succeeded before padding rejection.
 ```sh
 GOCACHE="$PWD/target/t9-fixture-go-cache" GOTELEMETRY=off GOPROXY=off \
   go run tools/generate-fixture.go fixtures/letter-sealing-v2.json fixtures/letter-sealing-v2.json
-cargo test --release --offline -p line --features native-crypto native_crypto -- --nocapture
-cargo test --release --offline -p line --features native-crypto native_crypto::tests::benchmark_decrypt -- --ignored --nocapture
 ```
 
 The round-2 benchmark on this worktree measured a 74-byte fixture message, reused
