@@ -264,9 +264,7 @@ fn statuses_keep_exact_classes_and_200_accepts_any_content_type() {
             let failure = crate::client::error::classify(&result.unwrap_err());
             assert_eq!(
                 failure,
-                crate::client::error::Failure::Refused(crate::client::error::Refusal::Code(
-                    i64::from(status)
-                ))
+                crate::client::error::Failure::Refused(crate::client::error::Refusal::Http(status))
             );
         } else {
             assert_eq!(result.unwrap(), status);
@@ -559,4 +557,59 @@ fn partial_line_trickle_expires_without_waiting_for_an_empty_poll() {
     assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
     assert!(elapsed < Duration::from_millis(800), "{elapsed:?}");
     server.join().unwrap();
+}
+
+#[test]
+fn empty_close_waits_before_reconnecting_and_delivers_next_stream() {
+    let (transport, server) = local_server(|listener| {
+        {
+            let mut first = BufReader::new(accept(&listener));
+            request(&mut first);
+            headers(&mut first);
+        }
+        let mut second = BufReader::new(accept(&listener));
+        request(&mut second);
+        headers(&mut second);
+        second
+            .get_mut()
+            .write_all(b"data: {\"revision\":13}\r\n\r\n")
+            .unwrap();
+    });
+    let stop = Arc::new(AtomicBool::new(false));
+    let mut events = Vec::new();
+    let mut waits = Vec::new();
+    receive_on(
+        &transport,
+        "9.8.7",
+        12,
+        &stop,
+        |_| Ok("synthetic-token".into()),
+        |event| {
+            if let Event::Resync { complete, .. } = &event {
+                complete.send(Ok(())).unwrap();
+            }
+            assert!(
+                !matches!(event, Event::Failure { .. }),
+                "unexpected stream failure: {event:?}"
+            );
+            if matches!(event, Event::Operation(_)) {
+                stop.store(true, Ordering::Relaxed);
+            }
+            events.push(event);
+            true
+        },
+        |_, delay| {
+            assert!(
+                waits.is_empty(),
+                "stream did not resume after the empty close"
+            );
+            waits.push(delay);
+        },
+    )
+    .unwrap();
+    server.join().unwrap();
+    assert_eq!(waits, [backoff(1)]);
+    assert!(
+        matches!(events.as_slice(), [Event::Resync { .. }, Event::State(SyncState::Connected), Event::State(SyncState::Reconnecting { attempt: 0 }), Event::Resync { .. }, Event::State(SyncState::Connected), Event::State(SyncState::Connected), Event::Operation(value)] if value["revision"] == 13)
+    );
 }

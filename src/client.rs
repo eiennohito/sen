@@ -297,9 +297,10 @@ impl Api {
         } else {
             "SecondaryQrCodeLoginService"
         };
-        self.call(
+        self.call_once(
             &format!("/api/talk/thrift/LoginQrCode/{service}/{method}"),
             &json!([args]),
+            "",
             session,
             poll_seconds,
         )
@@ -325,13 +326,14 @@ fn decode(value: &str) -> Result<Vec<u8>> {
             return Ok(b);
         }
     }
-    Err(anyhow::Error::new(error::Failure::Bug("decode")).context("invalid base64 key material"))
+    Err(anyhow::Error::new(error::Failure::Bug("decode".into()))
+        .context("invalid base64 key material"))
 }
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
         .as_str()
         .filter(|s| !s.is_empty())
-        .ok_or(error::Failure::Bug("decode"))
+        .ok_or(error::Failure::Bug("decode".into()))
         .with_context(|| format!("missing {field}"))
 }
 fn percent_encode(value: &str) -> String {
@@ -844,4 +846,14 @@ mod tests {
         assert!(url.ends_with("&e2eeVersion=1"));
         assert!(callback("file:///tmp/test", &[0; 32]).is_err());
     }
+}
+
+thread_local! {
+    static NETWORK_TOUCHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+pub(crate) fn network_touched() {
+    NETWORK_TOUCHED.set(true);
+}
+pub(crate) fn take_network_touched() -> bool {
+    NETWORK_TOUCHED.replace(false)
 }

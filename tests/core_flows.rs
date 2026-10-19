@@ -25,6 +25,7 @@ impl App {
                     retry_max: Duration::from_millis(50),
                     poll: Duration::from_millis(1),
                     offline_after: Duration::from_millis(100),
+                    health_now: Instant::now,
                 },
             ),
             state: AppState::default(),
@@ -343,7 +344,7 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
         (FakeRpc::Chats, Failure::Unanswered),
         (
             FakeRpc::Read(chat.clone()),
-            Failure::Refused(Refusal::Code(13)),
+            Failure::Refused(Refusal::Gateway(13)),
         ),
     ];
     for (rpc, error) in &failures {
@@ -588,7 +589,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
     let key = app.body_key("own confirmed");
     fake.fail_rpc(
         FakeRpc::Unsend(ServerId("11".into())),
-        Failure::Refused(Refusal::Code(13)),
+        Failure::Refused(Refusal::Gateway(13)),
     );
     app.send(Intent::Unsend(key));
     let mut failures = 0;
@@ -1150,7 +1151,10 @@ fn rename_contact_failure_then_success_updates_the_store_page() {
         mid: "alice".into(),
         name: "Aoi 🌿".into(),
     };
-    fake.fail_rpc(FakeRpc::Action(action.clone()), Failure::Bug("decode"));
+    fake.fail_rpc(
+        FakeRpc::Action(action.clone()),
+        Failure::Bug("decode".into()),
+    );
     profile_action(&mut app, action.clone());
     assert_eq!(app.state.contacts["alice"].name, "葵");
     assert_eq!(
@@ -1197,7 +1201,10 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
         mid: mid.clone(),
         chat: "weekend".into(),
     };
-    fake.fail_rpc(FakeRpc::Action(action.clone()), Failure::Bug("decode"));
+    fake.fail_rpc(
+        FakeRpc::Action(action.clone()),
+        Failure::Bug("decode".into()),
+    );
     profile_action(&mut app, action.clone());
     assert_eq!(app.state.contacts[&mid].profile.relation, Some(2));
     assert_eq!(
@@ -1225,7 +1232,10 @@ fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
         chat: chat.clone(),
         disabled: true,
     };
-    fake.fail_rpc(FakeRpc::Action(action.clone()), Failure::Bug("decode"));
+    fake.fail_rpc(
+        FakeRpc::Action(action.clone()),
+        Failure::Bug("decode".into()),
+    );
     profile_action(&mut app, action.clone());
     assert!(!app.state.chats[&chat].chat.muted);
     assert_eq!(
@@ -1248,7 +1258,10 @@ fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
     app.until(|s| !s.window_loading);
     let chat = ChatId("weekend".into());
     let action = ProfileAction::Leave { chat: chat.clone() };
-    fake.fail_rpc(FakeRpc::Action(action.clone()), Failure::Bug("decode"));
+    fake.fail_rpc(
+        FakeRpc::Action(action.clone()),
+        Failure::Bug("decode".into()),
+    );
     profile_action(&mut app, action.clone());
     assert!(!app.state.chats[&chat].chat.left);
     assert_eq!(

@@ -104,17 +104,38 @@ pub fn receive_with_auth(
     client_version: &str,
     revision: u64,
     stop: &Arc<AtomicBool>,
+    authorize: impl FnMut(bool) -> Result<String>,
+    deliver: impl FnMut(Event) -> bool,
+) -> Result<()> {
+    let transport = http::Transport::new(client_version)?;
+    receive_on(
+        &transport,
+        client_version,
+        revision,
+        stop,
+        authorize,
+        deliver,
+        pause,
+    )
+}
+
+fn receive_on(
+    transport: &http::Transport,
+    client_version: &str,
+    revision: u64,
+    stop: &Arc<AtomicBool>,
     mut authorize: impl FnMut(bool) -> Result<String>,
     mut deliver: impl FnMut(Event) -> bool,
+    mut wait: impl FnMut(&AtomicBool, Duration),
 ) -> Result<()> {
     set_request_cancel(stop.clone());
-    let transport = http::Transport::new(client_version)?;
     let mut revisions = Revisions { local: revision };
     let mut refreshed_once = false;
     let mut attempt = 0;
     while !stop.load(Ordering::Relaxed) {
+        let mut delivered = false;
         let mut result = stream(
-            &transport,
+            transport,
             client_version,
             &authorize(false)?,
             revisions.local,
@@ -124,7 +145,19 @@ pub fn receive_with_auth(
                 if matches!(name, "message" | "ping") {
                     refreshed_once = false;
                 }
-                dispatch(name, data, &mut revisions, &mut attempt, stop, &mut deliver)
+                dispatch(
+                    name,
+                    data,
+                    &mut revisions,
+                    &mut attempt,
+                    stop,
+                    &mut |event| {
+                        let message = matches!(event, Event::Operation(_));
+                        let accepted = deliver(event);
+                        delivered |= message && accepted;
+                        accepted
+                    },
+                )
             },
         );
         if stop.load(Ordering::Relaxed) {
@@ -155,7 +188,9 @@ pub fn receive_with_auth(
             if !deliver(Event::Failure { attempt, error }) || terminal {
                 break;
             }
-            pause(stop, backoff(attempt));
+            wait(stop, backoff(attempt));
+        } else if !delivered {
+            wait(stop, backoff(1));
         }
         if !stop.load(Ordering::Relaxed)
             && !deliver(Event::State(SyncState::Reconnecting { attempt }))
@@ -209,7 +244,7 @@ fn dispatch(
                     Ok(Err(error)) => return Err(error.into()),
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         return Err(crate::client::error::Failure::Bug(
-                            "resync worker disconnected",
+                            "resync worker disconnected".into(),
                         )
                         .into());
                     }
@@ -264,7 +299,7 @@ fn dispatch(
                     Ok(Err(error)) => return Err(error.into()),
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         return Err(crate::client::error::Failure::Bug(
-                            "resync worker disconnected",
+                            "resync worker disconnected".into(),
                         )
                         .into());
                     }
@@ -359,9 +394,6 @@ fn stream(
                     match event(&name, data) {
                         Ok(true) => {}
                         Ok(false) => break,
-                        Err(error) if crate::client::error::network_failure(&error).is_none() => {
-                            crate::client::error::classify(&error);
-                        }
                         Err(error) => return Err(error),
                     }
                 }

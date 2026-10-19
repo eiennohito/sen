@@ -46,7 +46,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             ];
             fake.fail_rpc(
                 line::backend::FakeRpc::Unsend(ServerId("6301".into())),
-                line::backend::Failure::Refused(line::client::error::Refusal::Code(13)),
+                line::backend::Failure::Refused(line::client::error::Refusal::Gateway(13)),
             );
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
         }
@@ -453,8 +453,11 @@ pub(crate) fn stage(
     if scene == "failed-send"
         && let Some(fake) = fake
     {
-        desktop
-            .update(|d| fake.fail_send(d.state.selected.clone().unwrap_or(ChatId("alice".into()))));
+        desktop.update(|d| {
+            if let Some(chat) = d.state.selected.clone() {
+                fake.fail_send(chat);
+            }
+        });
         ui.set_draft("See you soon! 🐈".into());
         ui.invoke_send();
     }

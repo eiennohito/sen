@@ -253,10 +253,7 @@ fn tls_reused_header_failure_returns_without_resending() {
         PollResolver::default(),
     );
     let server = thread::spawn(move || {
-        let mut accepts = 0;
-        let deliveries = 0;
         let mut first = tls_accept(&listener, &config);
-        accepts += 1;
         assert_eq!(read_post(&mut first), b"{}");
         respond(&mut first);
         wait_reset.recv_timeout(Duration::from_secs(3)).unwrap();
@@ -267,7 +264,6 @@ fn tls_reused_header_failure_returns_without_resending() {
             listener.accept().unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
-        (accepts, deliveries)
     });
     transport
         .request("/api/test", "{}", &[], Duration::from_millis(600))
@@ -275,7 +271,7 @@ fn tls_reused_header_failure_returns_without_resending() {
     control.armed.store(true, Ordering::Relaxed);
     let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
     done.send(()).unwrap();
-    assert_eq!(server.join().unwrap(), (1, 0));
+    server.join().unwrap();
     assert_eq!(
         crate::client::error::classify(&result.unwrap_err()),
         crate::client::error::Failure::NotDelivered
@@ -293,28 +289,23 @@ fn tls_failure_after_full_send_is_not_retried() {
     let (transport, listener, config) = fixture();
     let (done, wait_done) = mpsc::channel();
     let server = thread::spawn(move || {
-        let mut accepts = 0;
-        let mut deliveries = 0;
         let mut stream = tls_accept(&listener, &config);
-        accepts += 1;
         assert_eq!(read_post(&mut stream), b"{}");
         respond(&mut stream);
         assert_eq!(read_post(&mut stream), SECOND_BODY.as_bytes());
-        deliveries += 1;
         reset(stream);
         wait_done.recv_timeout(Duration::from_secs(2)).unwrap();
         assert_eq!(
             listener.accept().unwrap_err().kind(),
             io::ErrorKind::WouldBlock
         );
-        (accepts, deliveries)
     });
     transport
         .request("/api/test", "{}", &[], Duration::from_millis(600))
         .unwrap();
     let result = transport.request("/api/test", SECOND_BODY, &[], Duration::from_millis(600));
     done.send(()).unwrap();
-    assert_eq!(server.join().unwrap(), (1, 1));
+    server.join().unwrap();
     assert_eq!(
         result.unwrap_err().to_string(),
         "HTTPS transport failed; response not logged"

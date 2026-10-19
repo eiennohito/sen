@@ -52,6 +52,8 @@ impl Failures {
             key,
             Failed {
                 class,
+                retry: media_retry(class, false),
+                automatic_retry: media_retry(class, true),
                 at: Instant::now(),
                 job,
                 retried,
@@ -71,6 +73,8 @@ impl Failures {
 #[derive(Clone)]
 struct Failed {
     class: Failure,
+    retry: bool,
+    automatic_retry: bool,
     at: Instant,
     job: Job,
     retried: bool,
@@ -90,6 +94,7 @@ pub enum Payload {
 }
 
 pub struct Completion {
+    pub network: bool,
     pub key: String,
     pub purpose: Purpose,
     pub result: std::result::Result<Payload, Failure>,
@@ -196,10 +201,7 @@ impl Fetchers {
                                             .lock()
                                             .unwrap()
                                             .get(&key)
-                                            .filter(|f| {
-                                                !media_retry(f.class, false)
-                                                    || f.at.elapsed() < FAILURE_TTL
-                                            })
+                                            .filter(|f| !f.retry || f.at.elapsed() < FAILURE_TTL)
                                             .map(|f| f.class);
                                         let job = queue
                                             .entries
@@ -217,12 +219,14 @@ impl Fetchers {
                                         .0;
                                 }
                             };
+                            crate::client::take_network_touched();
                             let result = if let Some(class) = blacklisted.filter(|_| !job.bypass) {
                                 Err(class)
                             } else {
                                 fetch(&http, &cache, &job, || authorize(&job.asset, &shared.stop))
                                     .map_err(|error| media_failure(&error))
                             };
+                            let network = crate::client::take_network_touched();
                             if shared.stopped() {
                                 return;
                             }
@@ -250,6 +254,7 @@ impl Fetchers {
                                 }
                                 publish(
                                     Completion {
+                                        network,
                                         key: key.clone(),
                                         purpose,
                                         result: result.clone(),
@@ -283,7 +288,7 @@ impl Fetchers {
             .lock()
             .unwrap()
             .get(key)
-            .filter(|f| media_retry(f.class, false))
+            .filter(|f| f.retry)
             .map(|f| f.job.clone());
         job.is_some_and(|job| {
             self.enqueue_job(Job {
@@ -300,7 +305,7 @@ impl Fetchers {
             failures
                 .values_mut()
                 .filter_map(|failed| {
-                    if media_retry(failed.class, true)
+                    if failed.automatic_retry
                         && !failed.retried
                         && matches!(failed.job.purpose, Purpose::Thumbnail)
                     {
@@ -330,7 +335,7 @@ impl Fetchers {
                 .lock()
                 .unwrap()
                 .get(&asset.key())
-                .is_some_and(|f| media_retry(f.class, false));
+                .is_some_and(|f| f.retry);
         let key = asset.key();
         let job = Job {
             asset,

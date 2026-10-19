@@ -127,7 +127,7 @@ pub trait Backend: Send {
         _item: crate::attachments::Attachment,
         _seq: u32,
     ) -> Result<UploadJob> {
-        Err(Failure::Bug("protocol"))
+        Err(Failure::Bug("protocol".into()))
     }
     fn finish_attachment(
         &mut self,
@@ -135,7 +135,7 @@ pub trait Backend: Send {
         _uploaded: Value,
         _seq: u32,
     ) -> Result<MessageInput> {
-        Err(Failure::Bug("protocol"))
+        Err(Failure::Bug("protocol".into()))
     }
     fn send(&mut self, chat: &ChatId, text: &str, seq: u32) -> Result<MessageInput>;
     fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()>;
@@ -464,7 +464,7 @@ impl FakeBackend {
         s.pages.clear();
     }
     pub fn fail_send(&self, chat: ChatId) {
-        self.fail_rpc(FakeRpc::Send(chat), Failure::Refused(Refusal::Code(13)));
+        self.fail_rpc(FakeRpc::Send(chat), Failure::Refused(Refusal::Gateway(13)));
     }
     pub fn auth_expired(&self) {
         let d = self.0.lock().unwrap().deliver.clone();
@@ -554,6 +554,7 @@ impl FakeBackend {
         }
     }
     fn online(&self) -> Result<()> {
+        crate::client::network_touched();
         if self.0.lock().unwrap().offline {
             Err(Failure::NotDelivered)
         } else {
@@ -613,7 +614,7 @@ impl Backend for FakeBackend {
             let mut s = self.0.lock().unwrap();
             s.friends_calls += 1;
             if std::mem::take(&mut s.fail_friends) {
-                return Err(Failure::Refused(Refusal::Code(13)));
+                return Err(Failure::Refused(Refusal::Gateway(13)));
             }
         }
         if let Some(rows) = &self.0.lock().unwrap().friends {
@@ -665,9 +666,13 @@ impl Backend for FakeBackend {
                 let mut fake = fake.clone();
                 let output = output.clone();
                 std::thread::spawn(move || {
-                    if let Ok(Some(payload)) = fake.media(&asset, purpose.clone()) {
+                    crate::client::take_network_touched();
+                    let result = fake.media(&asset, purpose.clone());
+                    let network = crate::client::take_network_touched();
+                    if let Ok(Some(payload)) = result {
                         output(StreamEvent::Asset(
                             crate::client::desktop::assets::Completion {
+                                network,
                                 key: asset.key(),
                                 purpose,
                                 result: Ok(payload),
@@ -698,6 +703,7 @@ impl Backend for FakeBackend {
         };
         deliver(StreamEvent::Asset(
             crate::client::desktop::assets::Completion {
+                network: true,
                 key: key.into(),
                 purpose,
                 result: Ok(crate::client::desktop::assets::Payload::Image(Arc::new(
@@ -731,7 +737,10 @@ impl Backend for FakeBackend {
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>> {
         use crate::client::desktop::assets::{Payload, Pixels, Purpose};
-        if let Some(pixels) = asset.local_pixels().map_err(|_| Failure::Bug("decode"))? {
+        if let Some(pixels) = asset
+            .local_pixels()
+            .map_err(|_| Failure::Bug("decode".into()))?
+        {
             return Ok(Some(Payload::Image(Arc::new(pixels))));
         }
 
@@ -743,6 +752,7 @@ impl Backend for FakeBackend {
                 .get(&asset.key())
                 .copied()
         }) {
+            crate::client::network_touched();
             let deliver = {
                 let mut s = self.0.lock().unwrap();
                 s.failed_assets.insert(asset.key(), purpose.clone());
@@ -750,6 +760,7 @@ impl Backend for FakeBackend {
             };
             deliver(StreamEvent::Asset(
                 crate::client::desktop::assets::Completion {
+                    network: true,
                     key: asset.key(),
                     purpose,
                     result: Err(failure),
@@ -764,6 +775,7 @@ impl Backend for FakeBackend {
         if let Some(pixels) = self.0.lock().unwrap().pixels.get(&asset.key()).cloned() {
             return Ok(Some(Payload::Image(pixels)));
         }
+        crate::client::network_touched();
         Ok(Some(match purpose {
             Purpose::File { .. } => Payload::File(Arc::new(b"Synthetic attachment\n".to_vec())),
             Purpose::Original { .. } => Payload::Image(Arc::new(Pixels {
@@ -989,7 +1001,7 @@ impl Backend for FakeBackend {
                 std::thread::sleep(delay / 11);
             }
             if fake.0.lock().unwrap().upload_failures.remove(&item.name) {
-                return Err(Failure::Refused(Refusal::Code(13)));
+                return Err(Failure::Refused(Refusal::Gateway(13)));
             }
             Ok(Box::new(move |_backend: &mut dyn Backend| {
                 let row = fake.fake_send(&chat, item.content(), seq)?;
@@ -1156,12 +1168,17 @@ impl Backend for FakeBackend {
     }
     fn decode(&mut self, raw: Value) -> Result<LiveOp> {
         Ok(LiveOp {
-            revision: raw["revision"].as_i64().ok_or(Failure::Bug("decode"))?,
+            revision: raw["revision"]
+                .as_i64()
+                .ok_or(Failure::Bug("decode".into()))?,
             replay: raw["replay"].as_bool().unwrap_or(false),
             op: match raw["type"].as_u64() {
                 Some(139 | 140) => reaction_operation(&raw, "self")?,
                 Some(64 | 65) => Op::Withdraw(ServerId(
-                    raw["param2"].as_str().ok_or(Failure::Bug("decode"))?.into(),
+                    raw["param2"]
+                        .as_str()
+                        .ok_or(Failure::Bug("decode".into()))?
+                        .into(),
                 )),
                 _ => Op::Checkpoint,
             },
@@ -1467,7 +1484,7 @@ impl Backend for LineBackend {
     }
     fn profile(&mut self) -> Result<Profile> {
         let data = self.client()?.online_profile().map_err(rpc)?;
-        serde_json::from_value(data).map_err(|_| Failure::Bug("decode"))
+        serde_json::from_value(data).map_err(|_| Failure::Bug("decode".into()))
     }
     fn chats(&mut self, cursor: Option<String>) -> Result<ChatPage> {
         let (rows, more, cursor) = self.client()?.chats(cursor.as_deref()).map_err(rpc)?;
@@ -1674,7 +1691,7 @@ impl Backend for LineBackend {
         let revision = raw["revision"]
             .as_i64()
             .or_else(|| raw["revision"].as_str()?.parse().ok())
-            .ok_or(Failure::Bug("decode"))?;
+            .ok_or(Failure::Bug("decode".into()))?;
         let chat = || ChatId(raw["param1"].as_str().unwrap_or_default().into());
         let id = || ServerId(raw["param2"].as_str().unwrap_or_default().into());
         let op = match raw["type"].as_u64() {
@@ -1683,7 +1700,7 @@ impl Backend for LineBackend {
                     .client()?
                     .operation(&raw)
                     .map_err(rpc)?
-                    .ok_or(Failure::Bug("decode"))?;
+                    .ok_or(Failure::Bug("decode".into()))?;
                 m.request_seq = raw["reqSeq"]
                     .as_u64()
                     .or_else(|| raw["reqSeq"].as_str()?.parse().ok())
@@ -1693,7 +1710,12 @@ impl Backend for LineBackend {
             }
             Some(55) => Op::Receipt {
                 chat: chat(),
-                up_to: ServerId(raw["param3"].as_str().ok_or(Failure::Bug("decode"))?.into()),
+                up_to: ServerId(
+                    raw["param3"]
+                        .as_str()
+                        .ok_or(Failure::Bug("decode".into()))?
+                        .into(),
+                ),
             },
             Some(40) => Op::Read {
                 chat: chat(),
@@ -1715,13 +1737,17 @@ impl Backend for LineBackend {
 }
 
 fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
-    let data: Value = serde_json::from_str(raw["param2"].as_str().ok_or(Failure::Bug("decode"))?)
-        .map_err(|_| Failure::Bug("decode"))?;
+    let data: Value = serde_json::from_str(
+        raw["param2"]
+            .as_str()
+            .ok_or(Failure::Bug("decode".into()))?,
+    )
+    .map_err(|_| Failure::Bug("decode".into()))?;
     let chat = ChatId(
         data["chatMid"]
             .as_str()
             .filter(|s| !s.is_empty())
-            .ok_or(Failure::Bug("decode"))?
+            .ok_or(Failure::Bug("decode".into()))?
             .into(),
     );
     let actor = if raw["type"] == 139 {
@@ -1740,7 +1766,12 @@ fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
     };
     match actor.filter(|s| !s.is_empty()) {
         Some(actor) => Ok(Op::Reaction {
-            id: ServerId(raw["param1"].as_str().ok_or(Failure::Bug("decode"))?.into()),
+            id: ServerId(
+                raw["param1"]
+                    .as_str()
+                    .ok_or(Failure::Bug("decode".into()))?
+                    .into(),
+            ),
             actor: actor.into(),
             curr: crate::client::desktop::reaction_kind(&data["curr"]),
         }),

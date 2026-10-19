@@ -687,6 +687,7 @@ impl Transport {
         for (name, value) in validated {
             request = request.header(name, value);
         }
+        super::network_touched();
         let response = request.call();
         check_request().map_err(transport_error)?;
         let (parts, body) = response.map_err(transport_error)?.into_parts();
@@ -736,6 +737,7 @@ impl Transport {
         for (name, value) in validated {
             request = request.header(name, value);
         }
+        super::network_touched();
         let mut response = request.send(body.as_bytes()).map_err(transport_error)?;
         check_request().map_err(transport_error)?;
         let status = response.status().as_u16();
@@ -812,6 +814,7 @@ impl Transport {
             sent: 0,
             progress,
         };
+        super::network_touched();
         let response = request
             .header("content-length", bytes.len().to_string())
             .send(ureq::SendBody::from_reader(&mut body))
@@ -865,6 +868,7 @@ impl Transport {
             value.set_sensitive(true);
             request = request.header(*name, value);
         }
+        super::network_touched();
         let mut response = request.call().map_err(transport_error)?;
         ensure!(
             response.status() == 200,

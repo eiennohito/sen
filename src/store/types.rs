@@ -403,7 +403,7 @@ pub enum StoreError {
     Io(#[from] std::io::Error),
     #[error(transparent)]
     Json(#[from] serde_json::Error),
-    #[error("database schema {0} is newer than supported version 5")]
+    #[error("database schema {0} is newer than supported version 6")]
     NewerSchema(i64),
     #[error("invalid store operation: {0}")]
     Invalid(String),

@@ -460,7 +460,7 @@ impl Client {
             let state = self.api.state.clone();
             match chat::decrypt_body(&mut self.api, &state, &self.my_mid, raw) {
                 Ok(body) => merge_decrypted(&mut data, &body),
-                Err(error) if crate::client::error::network_failure(&error).is_some() => {
+                Err(error) if crate::client::error::transport_loss(&error) => {
                     return Err(error);
                 }
                 Err(_) => undecryptable = true,
@@ -656,7 +656,7 @@ impl Client {
     }
     pub fn send_sticker(&mut self, to: &str, sticker: &Content, seq: u32) -> Result<Message> {
         let Content::Sticker { pkg, id, ver, .. } = sticker else {
-            return Err(crate::client::error::Failure::Bug("invalid send payload").into());
+            return Err(crate::client::error::Failure::Bug("invalid send payload".into()).into());
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -753,7 +753,7 @@ impl Client {
             "invalid persisted send sequence"
         );
         if text.trim().is_empty() || text.len() > 10_000 {
-            return Err(crate::client::error::Failure::Bug("invalid send payload").into());
+            return Err(crate::client::error::Failure::Bug("invalid send payload".into()).into());
         }
         self.send_encrypted(to, 0, &json!({"text":text}), &json!({}), request_seq)
     }
@@ -782,7 +782,7 @@ impl Client {
             Err(error)
                 if matches!(
                     super::error::classify(&error),
-                    super::error::Failure::Refused(super::error::Refusal::Code(82 | 84))
+                    super::error::Failure::Refused(super::error::Refusal::Talk(82 | 84))
                 ) =>
             {
                 send(self)

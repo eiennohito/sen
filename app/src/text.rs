@@ -19,7 +19,9 @@ pub(crate) fn image_text(failure: Failure) -> &'static str {
 
 pub(crate) fn rejection(reason: &Refusal) -> String {
     match reason {
-        Refusal::Code(code) => return format!("server code {code}"),
+        Refusal::Http(code) => return format!("HTTP {code}"),
+        Refusal::Gateway(code) => return format!("gateway code {code}"),
+        Refusal::Talk(code) => return format!("server code {code}"),
         Refusal::SignedOut => "signed out",
         Refusal::Unanswered => "no answer received",
         Refusal::AppClosed => "app closed before sending",

@@ -58,9 +58,6 @@ enum AccountSession {
     },
 }
 impl AccountSession {
-    fn known(&self) -> bool {
-        matches!(self, Self::Ready)
-    }
     fn signing_in(&self) -> bool {
         matches!(self, Self::SigningIn { .. })
     }
@@ -72,6 +69,7 @@ pub struct Timing {
     pub retry_max: Duration,
     pub poll: Duration,
     pub offline_after: Duration,
+    pub health_now: fn() -> Instant,
 }
 impl Default for Timing {
     fn default() -> Self {
@@ -80,6 +78,7 @@ impl Default for Timing {
             retry_max: Duration::from_secs(60),
             poll: Duration::from_millis(100),
             offline_after: Duration::from_secs(15),
+            health_now: Instant::now,
         }
     }
 }
@@ -632,6 +631,7 @@ impl Worker {
                                             );
                                             let mut backend = None;
                                             while let Ok(job) = rx.recv() {
+                                                crate::client::take_network_touched();
                                                 let opened = if backend.is_none() {
                                                     match std::panic::catch_unwind(
                                                         std::panic::AssertUnwindSafe(&mut open),
@@ -643,7 +643,9 @@ impl Worker {
                                                         Ok(Err(error)) => Err(
                                                             crate::client::error::classify(&error),
                                                         ),
-                                                        Err(_) => Err(Failure::Bug("internal")),
+                                                        Err(_) => {
+                                                            Err(Failure::Bug("internal".into()))
+                                                        }
                                                     }
                                                 } else {
                                                     Ok(())
@@ -779,6 +781,11 @@ struct Engine {
 }
 type Result<T> = std::result::Result<T, StoreError>;
 impl Engine {
+    fn known(&self) -> bool {
+        matches!(self.account, AccountSession::Ready)
+            && self.store_mid.as_ref().is_some_and(|mid| !mid.is_empty())
+    }
+
     fn rpc<T: Send + 'static>(
         &mut self,
         run: impl FnOnce(&mut dyn Backend) -> std::result::Result<T, Failure> + Send + 'static,
@@ -799,20 +806,20 @@ impl Engine {
                     Ok(backend) => run(backend),
                     Err(error) => Err(error),
                 }))
-                .unwrap_or_else(|_| Err(Failure::Bug("network job panicked")))
+                .unwrap_or_else(|_| Err(Failure::Bug("network job panicked".into())))
             });
+            let touched = crate::client::take_network_touched();
             Box::new(move |engine| {
                 engine.operation = operation;
                 engine.net_pending -= 1;
-                let attempted = result.is_some();
                 let result =
                     result.unwrap_or_else(|| Err(Failure::SignedOut(SignOutReason::NoSession)));
                 let current = generation == engine.generation.load(Ordering::SeqCst);
-                if current && attempted {
+                if current && touched {
                     engine.network_outcome(&result);
                 }
                 if let Err(error) = &result
-                    && (matches!(error, Failure::Bug(_)) || current && engine.account.known())
+                    && (matches!(error, Failure::Bug(_)) || current && engine.known())
                 {
                     engine.error(error.clone());
                 }
@@ -820,7 +827,7 @@ impl Engine {
             })
         });
         if let Err(error) = self.net.send(job) {
-            let done = (error.0)(Err(Failure::Bug("network worker stopped")));
+            let done = (error.0)(Err(Failure::Bug("network worker stopped".into())));
             self.inbox.lanes.lock().unwrap().completed.push_back(done);
             self.inbox.wake.notify_all();
         }
@@ -844,6 +851,9 @@ impl Engine {
         });
     }
     fn start_assets(&mut self) {
+        if !self.known() {
+            return;
+        }
         let inbox = self.inbox.clone();
         let stop = Arc::new(AtomicBool::new(false));
         self.rpc(
@@ -909,7 +919,9 @@ impl Engine {
     fn network_outcome<T>(&mut self, result: &std::result::Result<T, Failure>) {
         match result {
             Ok(_) => self.network_success(),
-            Err(Failure::NotDelivered | Failure::Unanswered) => self.health.failure(Instant::now()),
+            Err(Failure::NotDelivered | Failure::Unanswered) => {
+                self.health.failure((self.timing.health_now)())
+            }
             Err(Failure::Refused(_) | Failure::SignedOut(_)) => self.network_success(),
             Err(Failure::Bug(_)) => {}
         }
@@ -917,7 +929,7 @@ impl Engine {
     fn network_success(&mut self) {
         self.health.success();
         if self.connection == Connection::Offline {
-            self.connection(if self.account.known() {
+            self.connection(if self.known() {
                 Connection::Online
             } else {
                 Connection::Local
@@ -964,7 +976,8 @@ impl Engine {
                     self.report_store_error(&error);
                 }
             }
-            Failure::Bug(_) => {
+            Failure::Bug(ref message) => {
+                crate::reporting::log(&self.operation, "bug", &Failure::Bug(message.clone()));
                 self.emit(Delta::InternalError("network protocol failure"));
             }
             Failure::Refused(_) => {}
@@ -1063,10 +1076,10 @@ impl Engine {
             let work = {
                 let mut q = self.inbox.lanes.lock().unwrap();
                 loop {
-                    if self.account.known()
+                    if self.known()
                         && self
                             .health
-                            .offline(Instant::now(), self.timing.offline_after)
+                            .offline((self.timing.health_now)(), self.timing.offline_after)
                         && self.connection != Connection::Offline
                     {
                         break Work::Health;
@@ -1083,12 +1096,14 @@ impl Engine {
                         break Work::Completed(done);
                     }
                     if self.net_pending == 0
-                        && self.account.known()
                         && let Some(r) = q
                             .refresh
                             .iter()
                             .filter(|r| {
-                                self.retry_after.get(r).is_none_or(|t| *t <= Instant::now())
+                                (self.known()
+                                    || matches!(r, Refresh::Profile)
+                                        && matches!(self.account, AccountSession::Ready))
+                                    && self.retry_after.get(r).is_none_or(|t| *t <= Instant::now())
                             })
                             .min_by_key(|r| self.priority(r))
                             .cloned()
@@ -1181,7 +1196,7 @@ impl Engine {
                             if result.is_err() {
                                 deliver(StreamEvent::Retry {
                                     attempt: 1,
-                                    error: Failure::Bug("stream worker panicked"),
+                                    error: Failure::Bug("stream worker panicked".into()),
                                 });
                             }
                             deliver(StreamEvent::Exited);
@@ -1203,7 +1218,7 @@ impl Engine {
         Ok(())
     }
     fn online(&mut self) -> Result<()> {
-        if !self.account.known() {
+        if !matches!(self.account, AccountSession::Ready) {
             return Ok(());
         }
         self.attempt = self.attempt.saturating_add(1);
@@ -1425,7 +1440,14 @@ impl Engine {
         Ok(())
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
-        if !self.account.known()
+        if !self.known()
+            && !(matches!(self.account, AccountSession::Ready)
+                && matches!(
+                    i,
+                    Intent::Send { .. }
+                        | Intent::SendAttachments { .. }
+                        | Intent::SendSticker { .. }
+                ))
             && !matches!(
                 i,
                 Intent::SignIn
@@ -1524,7 +1546,7 @@ impl Engine {
                         if result.is_err() && !matches!(engine.account, AccountSession::SigningIn { epoch, .. } if epoch == generation) { return Ok(()); }
                         match result {
                             Ok(paired) => {
-                                if !paired && engine.account.known() { return Ok(()); }
+                                if !paired && engine.known() { return Ok(()); }
                                 engine.account = AccountSession::Ready;
                                 engine.health.success();
                                 engine.connection(Connection::Connecting { attempt: engine.attempt.saturating_add(1) });
@@ -1554,7 +1576,6 @@ impl Engine {
                             }
                             Err(error) => {
                                 use crate::client::error::SignInFailure;
-                                crate::reporting::log("sign-in", "pairing", &error);
                                 let reason = if let Failure::SignedOut(SignOutReason::Unavailable(reason)) = error { reason } else { SignInFailure::Internal };
                                 let previous = match std::mem::replace(&mut engine.account, AccountSession::NoSession) {
                                     AccountSession::SigningIn { previous, .. } => *previous,
@@ -2006,6 +2027,9 @@ impl Engine {
         Ok(())
     }
     fn send(&mut self, key: Key) -> Result<()> {
+        if !self.known() {
+            return Ok(());
+        }
         let message = self.store.message(key)?;
         if message.delivery != Delivery::Pending {
             return Ok(());
@@ -2044,6 +2068,7 @@ impl Engine {
                     let live_generation = engine.generation.clone();
                     let progress_account = account.clone();
                     let failed_address = address.clone();
+                    let operation = engine.operation.clone();
                     let work = Box::new(move || {
                         if generation != live_generation.load(Ordering::SeqCst) {
                             upload_completed(
@@ -2059,6 +2084,7 @@ impl Engine {
                             );
                             return;
                         }
+                        crate::client::take_network_touched();
                         let mut last_percent = None;
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             upload(&mut |fraction| {
@@ -2079,13 +2105,18 @@ impl Engine {
                                 );
                             })
                         }))
-                        .unwrap_or_else(|_| Err(Failure::Bug("upload job panicked")));
+                        .unwrap_or_else(|_| Err(Failure::Bug("upload job panicked".into())));
+                        let touched = crate::client::take_network_touched();
                         upload_completed(
                             &inbox,
                             Box::new(move |engine| {
-                                engine.network_outcome(&result);
+                                engine.operation = operation;
+                                if touched {
+                                    engine.network_outcome(&result);
+                                }
                                 if let Err(error) = &result
-                                    && generation == engine.generation.load(Ordering::SeqCst)
+                                    && (matches!(error, Failure::Bug(_))
+                                        || generation == engine.generation.load(Ordering::SeqCst))
                                 {
                                     engine.error(error.clone());
                                 }
@@ -2119,10 +2150,11 @@ impl Engine {
                     });
                     engine.emit(Delta::UploadProgress { key, fraction: 0. });
                     if engine.uploads.send(work).is_err() {
+                        engine.error(Failure::Bug("upload worker stopped".into()));
                         engine.sent(
                             failed_address,
                             seq,
-                            Err(Failure::Bug("upload worker stopped")),
+                            Err(Failure::Bug("upload worker stopped".into())),
                             generation,
                         )?;
                     }
@@ -2165,8 +2197,7 @@ impl Engine {
         self.in_flight.remove(&address);
         let (account, key) = address;
         let active = self.account_mid() == account;
-        let same_session =
-            generation == self.generation.load(Ordering::SeqCst) && self.account.known();
+        let same_session = generation == self.generation.load(Ordering::SeqCst) && self.known();
         if active {
             self.emit(Delta::UploadFinished(key));
         }
@@ -2174,7 +2205,8 @@ impl Engine {
             && same_session
             && matches!(
                 result,
-                Err(Failure::NotDelivered | Failure::Refused(Refusal::Code(115 | 99999)))
+                Err(Failure::NotDelivered
+                    | Failure::Refused(Refusal::Talk(115) | Refusal::Gateway(99999)))
             )
         {
             self.retry_later(Refresh::Send(key));
@@ -2383,7 +2415,10 @@ impl Engine {
         self.inbox.refresh(r);
     }
     fn refresh(&mut self, r: Refresh) -> Result<()> {
-        if !self.account.known() {
+        if r == Refresh::Profile {
+            return self.online();
+        }
+        if !self.known() {
             return Ok(());
         }
         match r {
@@ -2631,13 +2666,16 @@ impl Engine {
         asset: crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<()> {
-        if !self.account.known() {
+        if !self.known() {
             let mid = self.store.account()?.own_mid;
             let mid = if mid.is_empty() {
                 self.store_mid.clone().unwrap_or_default()
             } else {
                 mid
             };
+            if mid.is_empty() {
+                return Ok(());
+            }
             let key = asset.key();
             let response_purpose = purpose.clone();
             self.rpc(
@@ -2648,6 +2686,7 @@ impl Engine {
                     }
                     use crate::client::desktop::assets::{Completion, Failure};
                     engine.emit(asset_delta(Completion {
+                        network: false,
                         key,
                         purpose: response_purpose,
                         result: result.ok().flatten().ok_or(Failure::Network),
@@ -2663,7 +2702,15 @@ impl Engine {
         Ok(())
     }
     fn live(&mut self, e: StreamEvent) -> Result<()> {
-        if !self.account.known() {
+        if !self.known() {
+            if let StreamEvent::Retry {
+                error: error @ Failure::Bug(_),
+                ..
+            }
+            | StreamEvent::Connection(Err(error @ Failure::Bug(_))) = &e
+            {
+                self.error(error.clone());
+            }
             match e {
                 StreamEvent::AssetRequests(media) => {
                     media.stop.store(true, Ordering::Relaxed);
@@ -2687,7 +2734,7 @@ impl Engine {
                     let _ = complete.send(Err(Failure::SignedOut(SignOutReason::NoSession)));
                     return Ok(());
                 }
-                _ if !self.account.known() => return Ok(()),
+                _ if !self.known() => return Ok(()),
                 _ => {}
             }
         }
@@ -2705,13 +2752,13 @@ impl Engine {
                 self.media = Some(media);
             }
             StreamEvent::Asset(c) => {
-                match &c.result {
-                    Ok(_) => self.network_success(),
-                    Err(failure) => {
-                        if let Some(failure) =
-                            crate::client::error::network_failure(&anyhow::Error::new(*failure))
-                        {
-                            self.network_outcome::<()>(&Err(failure));
+                if c.network {
+                    match &c.result {
+                        Ok(_) => self.network_success(),
+                        Err(failure) => {
+                            self.network_outcome::<()>(&Err(crate::client::error::classify(
+                                &anyhow::Error::new(*failure),
+                            )));
                         }
                     }
                 }

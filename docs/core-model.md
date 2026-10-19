@@ -295,20 +295,25 @@ after sign-in.
 `client::error::classify` is the sole network-policy boundary. It returns
 `Failure::{NotDelivered, Unanswered, SignedOut, Refused, Bug}`. Transport evidence
 distinguishes failure before any request byte was written from failure after
-writing started. Gateway and TalkException codes keep their separate namespaces.
+writing started. HTTP status, gateway and TalkException codes keep their
+separate namespaces.
 The engine reschedules reads after transport loss, retryable server failures and
-UNKNOWN_ERROR. Sends retry before delivery (NotDelivered or server code
-115/UNKNOWN_ERROR) in the same session. Unanswered sends require Retry/Delete;
+gateway UNKNOWN_ERROR. Sends retry before delivery (NotDelivered, TalkException
+115 or gateway UNKNOWN_ERROR) in the same session. Unanswered sends require Retry/Delete;
 other Refused and Bug terminate the item. One health object publishes Offline
-15 seconds after a transport failure. A received response, including 5xx, clears
-it. SignedOut cancels queued work, preserves in-flight completions for their
-account, and requires explicit sign-in. Store errors remain separate transaction
-errors.
+15 seconds after a transport failure. Successful network jobs and received
+refusals, including HTTP 5xx, clear it. Cached asset hits and local-only jobs do
+not affect health. SignedOut cancels queued work, preserves in-flight completions
+for their account, and requires explicit sign-in. Store errors remain separate transaction
+errors. Every Bug is logged at the engine error boundary with the operation,
+programmer-owned Bug text and context strings. Account-scoped dispatch requires
+both a ready session and a known account MID; pending local sends wait for profile validation.
+Authenticated API calls without an access token return SignedOut(NoSession).
 
 Each refresh intent (including stream startup/restart) has its own exponential backoff: 2 seconds, 4, 8, 16,
 32, then a 60-second cap, reset after success. Profile reconnection uses the
 same per-refresh policy without changing visible connection state during transient failures. `Timing` is
-passed at worker startup; tests inject millisecond delays and scheduler waits.
+passed at worker startup; tests inject delays, scheduler waits and the health clock.
 Transport configuration separately supplies connect, socket polling, pool-idle
 and asset budgets; each RPC and stream supplies a duration for its request or
 ping budget. Tests select short budgets explicitly.
@@ -327,9 +332,10 @@ diagnostics construct their own owner outside the desktop engine.
 
 The SSE thread reconnects after failures with backoff on its own thread; only
 SignedOut or shutdown stops it. Read and ping failures are Unanswered. A clean
-close or reconnect event immediately opens another stream without changing
-health or failure backoff. A malformed frame is skipped. The engine supervises
-unexpected stream exits and restarts them with backoff unless signed out. Live
+close that delivered no messages waits at least the initial retry delay before
+reopening, without changing health or failure backoff. Other clean closes and
+reconnect events also wait when no message was delivered. A malformed frame is
+skipped. The engine supervises unexpected stream exits and restarts them with backoff unless signed out. Live
 frames enter decoding in FIFO arrival order, before refresh work. The engine
 persists the revision in the same transaction that applies an operation, and
 seeds `localRev` from it on start (D5). Operations replayed during catch-up
@@ -419,5 +425,5 @@ The implementation has these specific constraints:
   account's MID-hashed database. Successful validation records profile identity
   in the session so subsequent launches can open that database before network
   access. Legacy message/state files are neither read nor imported.
-- RPC errors retain separate gateway and TalkException codes through classification. Media failures retain the
-  existing asset fetcher's typed failure enum.
+- RPC errors retain separate HTTP, gateway and TalkException namespaces through
+  classification. Media failures retain the asset fetcher's typed failure enum.

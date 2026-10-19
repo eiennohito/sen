@@ -20,6 +20,7 @@ impl App {
                 retry_max: Duration::from_millis(10),
                 poll: Duration::from_millis(1),
                 offline_after: Duration::from_millis(100),
+                health_now: Instant::now,
             },
         );
         let mut app = Self {
@@ -95,8 +96,12 @@ impl App {
 
 #[test]
 fn three_transient_stream_failures_have_no_visible_effect() {
+    static FROZEN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let mut app = App::new();
     let messages = app.state.messages.clone();
+    app.on_engine(|engine| {
+        engine.timing.health_now = || *FROZEN.get_or_init(Instant::now);
+    });
     for _ in 0..3 {
         app.worker.sender.0.live(StreamEvent::Retry {
             attempt: 1,
@@ -244,7 +249,7 @@ fn refresh_503_backoff_does_not_hold_a_send() {
 }
 
 #[test]
-fn live_frames_decode_in_arrival_order_before_refreshes() {
+fn live_withdrawals_update_both_loaded_messages() {
     let mut app = App::new();
     let chat = ChatId("alice".into());
     let rows = vec![
@@ -277,30 +282,35 @@ fn live_frames_decode_in_arrival_order_before_refreshes() {
 }
 
 #[test]
-fn stream_exit_restarts_and_subsequent_operations_arrive() {
+fn cached_thumbnail_does_not_clear_offline() {
+    use crate::client::desktop::assets::Pixels;
     let mut app = App::new();
-    let starts = app.fake.resumed_revisions().len();
-    app.worker.sender.0.live(StreamEvent::Retry {
-        attempt: 1,
-        error: Failure::Unanswered,
+    let asset = FakeBackend::asset(true);
+    app.fake.set_pixels(
+        &asset,
+        Pixels {
+            width: 1,
+            height: 1,
+            rgba: vec![0; 4],
+        },
+    );
+    app.on_engine(|engine| {
+        engine.health.failure((engine.timing.health_now)());
+        engine.connection(Connection::Offline);
     });
-    app.worker.sender.0.live(StreamEvent::Exited);
+    app.worker.sender.send(Intent::Asset(asset));
+    loop {
+        let delta = app
+            .worker
+            .deltas
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap();
+        let received = matches!(delta, Delta::Asset { .. });
+        app.state.apply(delta);
+        if received {
+            break;
+        }
+    }
     app.settle();
-    assert!(app.fake.resumed_revisions().len() > starts);
-    app.fake.inject(LiveOp {
-        revision: 9001,
-        replay: false,
-        op: Op::Message(Box::new(FakeBackend::message(
-            "alice",
-            9001,
-            "after reconnect",
-            false,
-        ))),
-    });
-    app.until(|state| {
-        state
-            .messages
-            .values()
-            .any(|row| row.body.as_text() == "after reconnect")
-    });
+    assert_eq!(app.state.connection, Connection::Offline);
 }

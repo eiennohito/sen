@@ -589,11 +589,11 @@ fn newer_schema_is_refused_without_migration() {
     let dir = TempDir::new();
     {
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 6).unwrap();
+        s.conn.pragma_update(None, "user_version", 7).unwrap();
     }
     assert!(matches!(
         Store::open(&dir.0),
-        Err(StoreError::NewerSchema(6))
+        Err(StoreError::NewerSchema(7))
     ));
 }
 
@@ -835,7 +835,7 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
 }
 
 #[test]
-fn opening_converts_uncertain_rows_to_not_sent() {
+fn migration_converts_uncertain_rows_to_not_sent() {
     let dir = TempDir::new();
     let key = {
         let mut store = Store::open(&dir.0).unwrap();
@@ -844,6 +844,7 @@ fn opening_converts_uncertain_rows_to_not_sent() {
             .conn
             .execute(r#"UPDATE message SET delivery='"Uncertain"'"#, [])
             .unwrap();
+        store.conn.pragma_update(None, "user_version", 5).unwrap();
         key
     };
     let store = Store::open(&dir.0).unwrap();

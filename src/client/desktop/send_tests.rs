@@ -57,7 +57,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
                 assert_eq!(decode(args[1]["chunks"][4].as_str().unwrap()).unwrap(), (id as u32).to_be_bytes());
                 sent.lock().unwrap().push(args[1].clone());
                 if id == 42 {
-                    (200, json!({"code":code,"data":{}}))
+                    (200, json!({"code":10051,"data":{"code":code}}))
                 } else {
                     (200, json!({"code":0,"data":{"id":"sent","from":"uself","to":"upeer","contentType":0,"text":"hello"}}))
                 }
@@ -71,7 +71,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
             let error = result.err().expect("stale sender key accepted");
             assert!(matches!(
                 super::super::error::classify(&error),
-                super::super::error::Failure::Refused(super::super::error::Refusal::Code(83))
+                super::super::error::Failure::Refused(super::super::error::Refusal::Talk(83))
             ));
         } else {
             assert_eq!(result?.id, "sent");
@@ -105,18 +105,29 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
 }
 
 #[test]
-fn undecryptable_history_and_live_messages_preserve_following_messages() -> Result<()> {
+fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Result<()> {
     let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
     let api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
     let (mut client, root) = client(api);
-    let encrypted =
-        json!({"id":"101","from":"upeer","to":"uself","chunks":["invalid"],"contentType":0});
+    let own = client
+        .api
+        .rt
+        .static_call(Call::Curve25519KeyGenerate, &[1])?;
+    client.api.own_keys.insert(99, own);
+    let encrypted = json!({"id":"101","from":"upeer","to":"uself","chunks":["", "", "", "AAAAKg==", "AAAAYw=="],"contentType":0});
     let valid = json!({"id":"102","from":"upeer","to":"uself","text":"still here","contentType":0});
     let page = json!({"code":0,"data":[encrypted.clone(),valid]});
-    let (http, server) = server_responses(vec![(
-        "getRecentMessagesV2",
-        Box::new(move |_| (200, page)),
-    )]);
+    let (http, server) = server_responses(vec![
+        ("getRecentMessagesV2", Box::new(move |_| (200, page))),
+        (
+            "getE2EEPublicKey",
+            Box::new(|_| (200, json!({"code":10051,"data":{"code":13}}))),
+        ),
+        (
+            "getE2EEPublicKey",
+            Box::new(|_| (200, json!({"code":10051,"data":{"code":1}}))),
+        ),
+    ]);
     client.api.http = http;
     let messages = client.messages("upeer")?;
     assert_eq!(messages[0].content, Content::Undecryptable);

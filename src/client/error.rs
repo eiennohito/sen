@@ -10,7 +10,7 @@ pub enum Failure {
     #[error("request refused: {0}")]
     Refused(Refusal),
     #[error("internal failure: {0}")]
-    Bug(&'static str),
+    Bug(String),
 }
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum SignOutReason {
@@ -44,9 +44,12 @@ pub(crate) struct TransportFailure {
 }
 
 pub fn classify(error: &anyhow::Error) -> Failure {
-    let failure = classification(error);
-    if matches!(failure, Failure::Bug(_)) {
-        crate::reporting::log("classify", "bug", error.as_ref());
+    let mut failure = classification(error);
+    if let Failure::Bug(message) = &mut failure {
+        for context in error.chain().take_while(|cause| cause.source().is_some()) {
+            message.push_str(": ");
+            message.push_str(&context.to_string());
+        }
     }
     failure
 }
@@ -59,9 +62,6 @@ fn classification(error: &anyhow::Error) -> Failure {
         return failure.clone();
     }
     for cause in error.chain() {
-        if let Some(failure) = cause.downcast_ref::<Failure>() {
-            return failure.clone();
-        }
         if let Some(error) = cause.downcast_ref::<TransportFailure>().or_else(|| {
             cause
                 .downcast_ref::<std::io::Error>()?
@@ -80,22 +80,22 @@ fn classification(error: &anyhow::Error) -> Failure {
                         Failure::NotDelivered
                     }
                 }
-                _ => Failure::Bug("HTTP protocol failure"),
+                _ => Failure::Bug("HTTP protocol failure".into()),
             };
         }
         if let Some(error) = cause.downcast_ref::<crate::client::RpcError>() {
             if error.gateway == 99999 {
-                return Failure::Refused(Refusal::Code(99999));
+                return Failure::Refused(Refusal::Gateway(99999));
             }
             return match error.code {
                 1 => Failure::SignedOut(SignOutReason::AuthenticationFailed),
                 7 => Failure::SignedOut(SignOutReason::NotAvailableUser),
                 8 => Failure::SignedOut(SignOutReason::NotAuthorizedDevice),
-                115 => Failure::Refused(Refusal::Code(115)),
-                code if code != 0 => Failure::Refused(Refusal::Code(code)),
-                _ if error.http != 200 => Failure::Refused(Refusal::Code(i64::from(error.http))),
-                _ if error.gateway != 0 => Failure::Refused(Refusal::Code(error.gateway)),
-                _ => Failure::Refused(Refusal::Code(99999)),
+                115 => Failure::Refused(Refusal::Talk(115)),
+                code if code != 0 => Failure::Refused(Refusal::Talk(code)),
+                _ if error.http != 200 => Failure::Refused(Refusal::Http(error.http)),
+                _ if error.gateway != 0 => Failure::Refused(Refusal::Gateway(error.gateway)),
+                _ => Failure::Refused(Refusal::Gateway(99999)),
             };
         }
         if let Some(error) = cause.downcast_ref::<super::desktop::assets::Failure>() {
@@ -103,16 +103,13 @@ fn classification(error: &anyhow::Error) -> Failure {
                 super::desktop::assets::Failure::Network
                 | super::desktop::assets::Failure::Timeout => Failure::Unanswered,
                 super::desktop::assets::Failure::Http(code) => {
-                    Failure::Refused(Refusal::Code(i64::from(*code)))
+                    Failure::Refused(Refusal::Http(*code))
                 }
-                _ => Failure::Bug("media response failure"),
+                _ => Failure::Bug("media response failure".into()),
             };
         }
-        if let Some(Error::SignIn(reason)) = cause.downcast_ref::<Error>() {
-            return Failure::SignedOut(SignOutReason::Unavailable(reason.clone()));
-        }
     }
-    Failure::Bug("decode, crypto, protocol or invariant failure")
+    Failure::Bug("decode, crypto, protocol or invariant failure".into())
 }
 
 /// Stable rejection categories; diagnostic errors never become row text.
@@ -120,8 +117,12 @@ fn classification(error: &anyhow::Error) -> Failure {
 pub enum Refusal {
     #[error("internal error")]
     Internal,
-    #[error("server code {0}")]
-    Code(i64),
+    #[error("HTTP {0}")]
+    Http(u16),
+    #[error("gateway code {0}")]
+    Gateway(i64),
+    #[error("TalkException code {0}")]
+    Talk(i64),
     #[error("signed out")]
     SignedOut,
     #[error("no answer received")]
@@ -210,7 +211,9 @@ impl super::Api {
         session: &str,
         poll_seconds: u64,
     ) -> anyhow::Result<serde_json::Value> {
-        let token = super::access(&self.state).unwrap_or("").to_owned();
+        let token = super::access(&self.state)
+            .map_err(|_| Failure::SignedOut(SignOutReason::NoSession))?
+            .to_owned();
         let result = self.call_once(path, args, &token, session, poll_seconds);
         if !needs_refresh(&result) {
             return result;
@@ -256,15 +259,15 @@ impl super::Api {
         let access = value["accessToken"]
             .as_str()
             .filter(|token| !token.is_empty())
-            .ok_or(Failure::Bug("refresh missing access token"))?
+            .ok_or(Failure::Bug("refresh missing access token".into()))?
             .to_owned();
         self.state["token_v3_issue_result"]
             .as_object_mut()
-            .ok_or(Failure::Bug("saved token"))?
+            .ok_or(Failure::Bug("saved token".into()))?
             .extend(
                 value
                     .as_object()
-                    .ok_or(Failure::Bug("refresh token response"))?
+                    .ok_or(Failure::Bug("refresh token response".into()))?
                     .clone(),
             );
         if let Some(path) = &self.session_path {
@@ -299,7 +302,7 @@ pub(crate) fn decode_response(
             }
             .into());
         }
-        Err(_) => return Err(Failure::Bug("response decode failed").into()),
+        Err(_) => return Err(Failure::Bug("response decode failed".into()).into()),
     };
     let gateway = response["code"]
         .as_i64()
@@ -308,7 +311,7 @@ pub(crate) fn decode_response(
         let code = if gateway == 10051 {
             response["data"]["code"]
                 .as_i64()
-                .ok_or(Failure::Bug("missing TalkException code"))?
+                .ok_or(Failure::Bug("missing TalkException code".into()))?
         } else {
             0
         };
@@ -324,7 +327,7 @@ pub(crate) fn decode_response(
     response
         .get("data")
         .cloned()
-        .ok_or_else(|| Failure::Bug("missing response data").into())
+        .ok_or_else(|| Failure::Bug("missing response data".into()).into())
 }
 
 #[cfg(test)]
@@ -346,21 +349,21 @@ mod tests {
                 Failure::SignedOut(reason)
             );
         }
-        for code in [13, 14, 17, 43, 44, 119, 120] {
+        for code in [13, 14, 17, 43, 44, 119, 120, 503] {
             let response = json!({"code": 10051, "data": {"code": code}}).to_string();
             assert_eq!(
                 classify(&decode_response("/api/test", 200, response.as_bytes()).unwrap_err()),
-                Failure::Refused(Refusal::Code(code))
+                Failure::Refused(Refusal::Talk(code))
             );
         }
-        for code in [10105, 10201, 10202, 99999] {
+        for code in [503, 10105, 10201, 10202, 99999] {
             let response = json!({"code":code});
             assert_eq!(
                 classify(
                     &decode_response("/api/test", 200, response.to_string().as_bytes())
                         .unwrap_err()
                 ),
-                Failure::Refused(Refusal::Code(code))
+                Failure::Refused(Refusal::Gateway(code))
             );
         }
         {
@@ -370,23 +373,23 @@ mod tests {
                     &decode_response("/api/test", 200, response.to_string().as_bytes())
                         .unwrap_err()
                 ),
-                Failure::Refused(Refusal::Code(115))
+                Failure::Refused(Refusal::Talk(115))
             );
         }
         assert_eq!(
             classify(&decode_response("/api/test", 200, b"{}").unwrap_err()),
-            Failure::Refused(Refusal::Code(99999))
+            Failure::Refused(Refusal::Gateway(99999))
         );
         for status in [400, 401, 403, 408, 429, 500, 503] {
             assert_eq!(
                 classify(
                     &decode_response("/api/test", status, b"gateway unavailable").unwrap_err()
                 ),
-                Failure::Refused(Refusal::Code(i64::from(status)))
+                Failure::Refused(Refusal::Http(status))
             );
             assert_eq!(
                 classify(&decode_response("/api/test", status, b"{}").unwrap_err()),
-                Failure::Refused(Refusal::Code(i64::from(status)))
+                Failure::Refused(Refusal::Http(status))
             );
         }
         for write_started in [false, true] {
@@ -407,6 +410,29 @@ mod tests {
             classify(&decode_response("/api/test", 200, b"broken JSON").unwrap_err()),
             Failure::Bug(_)
         ));
+    }
+
+    #[test]
+    fn missing_access_token_returns_signed_out_without_a_request() {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path()).unwrap();
+        let mut api = super::super::Api::new(&wasm, crate::test_support::FIXTURE_VERSION).unwrap();
+        api.http = super::super::http::Transport::local(
+            "synthetic",
+            format!("http://{}", listener.local_addr().unwrap()),
+        );
+        for token in [serde_json::Value::Null, json!("")] {
+            api.state = json!({"token_v3_issue_result":{"accessToken":token}});
+            assert_eq!(
+                classify(&api.call("/api/test", &json!([]), "", 0).unwrap_err()),
+                Failure::SignedOut(SignOutReason::NoSession)
+            );
+        }
+        assert_eq!(
+            listener.accept().unwrap_err().kind(),
+            std::io::ErrorKind::WouldBlock
+        );
     }
 
     #[test]
@@ -515,7 +541,11 @@ impl Failure {
             self,
             Self::NotDelivered
                 | Self::Unanswered
-                | Self::Refused(Refusal::Code(115 | 408 | 429 | 500..=599 | 99999))
+                | Self::Refused(
+                    Refusal::Talk(115)
+                        | Refusal::Gateway(99999)
+                        | Refusal::Http(408 | 429 | 500..=599)
+                )
         )
     }
 }
@@ -545,25 +575,23 @@ pub(crate) fn media_failure(error: &anyhow::Error) -> super::desktop::assets::Fa
                 Media::Network
             }
         }
-        Failure::Refused(Refusal::Code(code @ 100..=599)) => Media::Http(code as u16),
+        Failure::Refused(Refusal::Http(code)) => Media::Http(code),
         _ => Media::Decode,
     }
 }
 
 pub fn media_retry(failure: super::desktop::assets::Failure, automatic: bool) -> bool {
-    if failure == super::desktop::assets::Failure::Cancelled {
-        return !automatic;
-    }
-    match classification(&anyhow::Error::new(failure)) {
-        Failure::NotDelivered
-        | Failure::Unanswered
-        | Failure::Refused(Refusal::Code(500..=599)) => true,
-        Failure::Refused(Refusal::Code(403 | 408 | 429)) => !automatic,
+    use super::desktop::assets::Failure as Media;
+    match failure {
+        Media::Network | Media::Timeout | Media::Http(500..=599) => true,
+        Media::Cancelled | Media::Http(403 | 408 | 429) => !automatic,
         _ => false,
     }
 }
 
-pub(crate) fn network_failure(error: &anyhow::Error) -> Option<Failure> {
-    let failure = classification(error);
-    (!matches!(failure, Failure::Bug(_))).then_some(failure)
+pub(crate) fn transport_loss(error: &anyhow::Error) -> bool {
+    matches!(
+        classification(error),
+        Failure::NotDelivered | Failure::Unanswered
+    )
 }
