@@ -9,7 +9,7 @@ merge. "Branch" means the work exists but is not merged yet.
 |---|---|---|---|
 | 1 | Read markers (`sendChatChecked`) and reactions (`react`) failed on the real server: "response decode failed" | user log | merged; success is now the extension's `message == "OK"` rule. Needs confirmation in the real app |
 | 4 | Unread count with no visible messages (LINE official account) | user | merged; the read marker covers hidden events. Needs confirmation in the real app (depends on #1) |
-| 15 | God objects: `State` (213 properties), `AppWindow` with 85 forwarding aliases | user | R4, not started |
+| 15 | God objects: `State` (213 properties), `AppWindow` with 85 forwarding aliases | user | R4, not started. The demo reset copies ~180 State properties by hand; R4 replaces it with a per-feature-global reset |
 | 16 | Generated Slint Rust is 10 MB | user | R4: interpreter in dev builds, compiled releases cut by source rules |
 | 17 | Global deslop pass, including a whole-suite test audit | user | next |
 | 19 | History decrypt: newest first, show messages as they decrypt; measure a compiling WASM engine | user | after the deslop pass |
@@ -18,9 +18,8 @@ merge. "Branch" means the work exists but is not merged yet.
 | 22 | Untraced actions: block, report, invite, accept/reject invitations, remove member | found | not started |
 | 23 | Live account verification | constraint | needs the device slot (user's call) |
 | 25 | Opening a chat from a notification or D-Bus activation skips saving the current draft (6 copies of "open chat") | audit | deslop pass, desktop glue batch |
-| 26 | Deslop batches from the audit: store schema/unread model, transport rewrite, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1 merged (crypto/CLI, store, transport); wave 2 merged (backend/demo, client core, content model); wave 3: engine 7a dedup merged (behaviour-changing items moved to #32), check-ui restructure in review; reconnect-retry and the asset priority mailbox are deleted, not wired (desktop glue batch) |
+| 26 | Deslop batches from the audit: store schema/unread model, transport rewrite, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1 merged (crypto/CLI, store, transport); wave 2 merged (backend/demo, client core, content model); wave 3: engine 7a dedup merged (behaviour-changing items moved to #32), check-ui restructure merged; desktop glue in review fixes; reconnect-retry and the asset priority mailbox are deleted, not wired (desktop glue batch) |
 | 32 | Engine behaviour cleanups that need a design, not a dedup pass: the 100 ms health poll (wait until the next deadline without missed wakeups), raw live-op numbers in the engine (typed ops; empty `param1` must still checkpoint), nested catch_unwind boundaries (one boundary; panic payload reported; no abort on a poisoned lock), silent drops (clipboard prune, sticker/photo decode, start_assets failure), startup probe mapping every error to SessionUnusable, `NETWORK_TOUCHED` thread-local. Constraints learned: uploads stay off the net thread (a running upload must never delay sends, reads, refresh or the stream); queued intents (final draft) run before stop; cancelled RPCs still complete their UI state | engine 7a attempt (discarded) | after the narrow 7a dedup; one item per batch, each with a test that would have caught the regression |
-| 30 | UI check launch race: a group occasionally connects before the app listens (`Connection refused` at 0.2 s) | found | wave 3 check-ui restructure: wait for the server's "listening" line |
 
 ## Done (merged to main)
 
@@ -50,4 +49,5 @@ merge. "Branch" means the work exists but is not merged yet.
 - #24 Demo and the fake backend compile only with the `demo` feature (ui-debug implies it); the product binary has no demo code or flags. Backend/controller/reporting deslop; reporting logs real SQLite/OS codes. #29 one random helper.
 - Client core: LINE codes matched only in error.rs; typed saved session in the exact on-disk format (round-trips unknown fields); distinct saved-session failures (a locked keyring asks to unlock); QR drawn directly. #27 ServerId orders numerically. #31 crypto tests use the installed extension, no pinned fixture. Store schema 10 (local store discarded once).
 - Content model: one kind label table (compact for previews/notifications/reply bar, full for rows), grouping over typed messages, core contact/reply-target/profile rules, per-entity name fallbacks. #28 computed unread lives on the list item. Store schema 11.
+- UI checks: `check-ui-mcp.py --all` runs one instance per size, a seeded random group order and no sleeps (~53 s, was ~90 s); #30 the launch race is gone (waits for MCP initialize, verifies the instance). A focused IconButton that became disabled no longer keeps its focus ring.
 - #18 UI check `focus` 46 s → 11 s (95 → 14 s wide); all 16 groups ~80 s.
