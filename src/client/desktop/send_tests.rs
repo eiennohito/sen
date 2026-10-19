@@ -103,3 +103,29 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[test]
+fn undecryptable_history_and_live_messages_preserve_following_messages() -> Result<()> {
+    let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
+    let api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
+    let (mut client, root) = client(api);
+    let encrypted =
+        json!({"id":"101","from":"upeer","to":"uself","chunks":["invalid"],"contentType":0});
+    let valid = json!({"id":"102","from":"upeer","to":"uself","text":"still here","contentType":0});
+    let page = json!({"code":0,"data":[encrypted.clone(),valid]});
+    let (http, server) = server_responses(vec![(
+        "getRecentMessagesV2",
+        Box::new(move |_| (200, page)),
+    )]);
+    client.api.http = http;
+    let messages = client.messages("upeer")?;
+    assert_eq!(messages[0].content, Content::Undecryptable);
+    assert_eq!(messages[1].content.as_text(), "still here");
+    let (_, live) = client
+        .operation(&json!({"type":26,"message":encrypted}))?
+        .unwrap();
+    assert_eq!(live.content, Content::Undecryptable);
+    server.join().unwrap();
+    fs::remove_dir_all(root)?;
+    Ok(())
+}

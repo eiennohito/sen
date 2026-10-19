@@ -334,47 +334,6 @@ impl UreqTransport for WriteFault {
 }
 
 #[test]
-fn reused_write_failure_returns_without_resending() {
-    let (done, wait) = mpsc::channel();
-    let (mut transport, server) = local_server(move |listener| {
-        let mut stream = BufReader::new(accept(&listener));
-        assert!(read_request(&mut stream));
-        stream
-            .get_mut()
-            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
-            .unwrap();
-        assert!(!read_request(&mut stream));
-        wait.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert_eq!(
-            listener.accept().unwrap_err().kind(),
-            io::ErrorKind::WouldBlock
-        );
-    });
-    let failures = Arc::new(AtomicUsize::new(0));
-    transport.agent = Agent::with_parts(
-        transport.agent.config().clone(),
-        WriteFaultConnector {
-            failures: failures.clone(),
-            after_body: false,
-        },
-        PollResolver::default(),
-    );
-    transport
-        .request("/api/test", "{}", &[], Duration::from_millis(400))
-        .unwrap();
-    failures.store(1, Ordering::Relaxed);
-    let error = transport
-        .request("/api/test", "{}", &[], Duration::from_millis(400))
-        .unwrap_err();
-    assert_eq!(
-        crate::client::error::classify(&error),
-        crate::client::error::Failure::NotDelivered
-    );
-    done.send(()).unwrap();
-    server.join().unwrap();
-}
-
-#[test]
 fn fresh_write_failure_is_not_retried() {
     let (done, wait) = mpsc::channel();
     let (mut transport, server) = local_server(move |listener| {

@@ -835,71 +835,67 @@ impl Transport {
     }
 
     pub(super) fn asset(&self, url: &str, headers: &[(&str, &str)], cap: usize) -> Result<Vec<u8>> {
-        let result = (|| {
-            let timeout = self.config.asset_timeout;
-            let _scope = RequestScope::new(timeout, self.config);
-            ACTIVE.with(|slot| {
-                let mut slot = slot.borrow_mut();
-                let state = slot.as_mut().unwrap();
-                state.connect_deadline = Instant::now() + self.config.asset_connect;
-                state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
-            });
+        let timeout = self.config.asset_timeout;
+        let _scope = RequestScope::new(timeout, self.config);
+        ACTIVE.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let state = slot.as_mut().unwrap();
+            state.connect_deadline = Instant::now() + self.config.asset_connect;
+            state.attempt = NEXT_ATTEMPT.fetch_add(1, Ordering::Relaxed);
+        });
+        check_request().map_err(transport_error)?;
+        #[cfg(test)]
+        let local_url = format!(
+            "{}{}",
+            self.base,
+            url.split_once("://")
+                .unwrap()
+                .1
+                .split_once('/')
+                .map(|(_, path)| format!("/{path}"))
+                .unwrap_or_default()
+        );
+        #[cfg(test)]
+        let url = if self.base == BASE { url } else { &local_url };
+        let mut request = self.agent.get(url);
+        for (name, value) in headers {
+            ensure!(!value.contains(['\r', '\n']), "invalid media header");
+            let mut value = HeaderValue::from_str(value)
+                .map_err(|_| anyhow::anyhow!("invalid media header"))?;
+            value.set_sensitive(true);
+            request = request.header(*name, value);
+        }
+        let mut response = request.call().map_err(transport_error)?;
+        ensure!(
+            response.status() == 200,
+            super::desktop::assets::Failure::Http(response.status().as_u16())
+        );
+        ensure!(
+            response
+                .headers()
+                .get("content-length")
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .is_none_or(|n| n <= cap as u64),
+            super::desktop::assets::Failure::TooLarge
+        );
+        let mut reader = response.body_mut().as_reader();
+        let mut bytes = Vec::new();
+        let mut chunk = [0; 8192];
+        loop {
             check_request().map_err(transport_error)?;
-            #[cfg(test)]
-            let local_url = format!(
-                "{}{}",
-                self.base,
-                url.split_once("://")
-                    .unwrap()
-                    .1
-                    .split_once('/')
-                    .map(|(_, path)| format!("/{path}"))
-                    .unwrap_or_default()
-            );
-            #[cfg(test)]
-            let url = if self.base == BASE { url } else { &local_url };
-            let mut request = self.agent.get(url);
-            for (name, value) in headers {
-                ensure!(!value.contains(['\r', '\n']), "invalid media header");
-                let mut value = HeaderValue::from_str(value)
-                    .map_err(|_| anyhow::anyhow!("invalid media header"))?;
-                value.set_sensitive(true);
-                request = request.header(*name, value);
-            }
-            let mut response = request.call().map_err(transport_error)?;
+            let n = reader.read(&mut chunk[..(cap - bytes.len() + 1).min(8192)]);
+            check_request().map_err(transport_error)?;
+            let n = n.map_err(|error| transport_error(error.into()))?;
             ensure!(
-                response.status() == 200,
-                super::desktop::assets::Failure::Http(response.status().as_u16())
-            );
-            ensure!(
-                response
-                    .headers()
-                    .get("content-length")
-                    .and_then(|v| v.to_str().ok())
-                    .and_then(|v| v.parse::<u64>().ok())
-                    .is_none_or(|n| n <= cap as u64),
+                bytes.len() + n <= cap,
                 super::desktop::assets::Failure::TooLarge
             );
-            let mut reader = response.body_mut().as_reader();
-            let mut bytes = Vec::new();
-            let mut chunk = [0; 8192];
-            loop {
-                check_request().map_err(transport_error)?;
-                let n = reader.read(&mut chunk[..(cap - bytes.len() + 1).min(8192)]);
-                check_request().map_err(transport_error)?;
-                let n = n.map_err(|error| transport_error(error.into()))?;
-                ensure!(
-                    bytes.len() + n <= cap,
-                    super::desktop::assets::Failure::TooLarge
-                );
-                if n == 0 {
-                    return Ok(bytes);
-                }
-                bytes.extend_from_slice(&chunk[..n]);
+            if n == 0 {
+                return Ok(bytes);
             }
-        })();
-        super::error::network_result(&result.as_ref().map(|_| ()).map_err(super::error::classify));
-        result
+            bytes.extend_from_slice(&chunk[..n]);
+        }
     }
 
     #[cfg(test)]
@@ -935,21 +931,25 @@ impl StreamReader {
 
 impl Read for StreamReader {
     fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-        check_request().map_err(|e| io::Error::other(transport_error(e)))?;
+        check_request().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                transport_error(e).reallocate_into_boxed_dyn_error_without_backtrace(),
+            )
+        })?;
         let result = self.body.read(bytes);
-        check_request().map_err(|e| io::Error::other(transport_error(e)))?;
+        check_request().map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                transport_error(e).reallocate_into_boxed_dyn_error_without_backtrace(),
+            )
+        })?;
         result.map_err(|error| {
-            if error
-                .get_ref()
-                .is_some_and(|inner| inner.is::<PingExpired>())
-            {
-                error
-            } else {
-                io::Error::new(
-                    error.kind(),
-                    "HTTPS response read failed; response not logged",
-                )
-            }
+            io::Error::new(
+                error.kind(),
+                transport_error(ureq::Error::Io(error))
+                    .reallocate_into_boxed_dyn_error_without_backtrace(),
+            )
         })
     }
 }

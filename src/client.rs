@@ -259,41 +259,37 @@ impl Api {
         session: &str,
         poll_seconds: u64,
     ) -> Result<Value> {
-        let result = (|| {
-            let body = serde_json::to_string(args)?;
-            let signature = self.signature(path, &body, access)?;
-            let mut headers = vec![
-                ("Content-Type", "application/json"),
-                ("User-Agent", UA),
-                ("x-line-chrome-version", self.http.client_version.as_str()),
-                ("x-lal", "en_US"),
-                ("x-hmac", signature.as_str()),
-            ];
-            let cookie = format!("lct={access}");
-            if !access.is_empty() {
-                headers.extend([("x-line-access", access), ("Cookie", cookie.as_str())]);
-            }
-            if !session.is_empty() {
-                headers.push(("X-Line-Session-ID", session));
-            }
-            let millis = (poll_seconds * 1000).to_string();
-            if poll_seconds > 0 {
-                headers.push(("X-LST", millis.as_str()));
-            }
-            let (http, bytes) = self.http.request(
-                path,
-                &body,
-                &headers,
-                Duration::from_secs(if poll_seconds > 0 {
-                    poll_seconds + 10
-                } else {
-                    30
-                }),
-            )?;
-            error::decode_response(path, http, &bytes)
-        })();
-        error::network_result(&result.as_ref().map(|_| ()).map_err(error::classify));
-        result
+        let body = serde_json::to_string(args)?;
+        let signature = self.signature(path, &body, access)?;
+        let mut headers = vec![
+            ("Content-Type", "application/json"),
+            ("User-Agent", UA),
+            ("x-line-chrome-version", self.http.client_version.as_str()),
+            ("x-lal", "en_US"),
+            ("x-hmac", signature.as_str()),
+        ];
+        let cookie = format!("lct={access}");
+        if !access.is_empty() {
+            headers.extend([("x-line-access", access), ("Cookie", cookie.as_str())]);
+        }
+        if !session.is_empty() {
+            headers.push(("X-Line-Session-ID", session));
+        }
+        let millis = (poll_seconds * 1000).to_string();
+        if poll_seconds > 0 {
+            headers.push(("X-LST", millis.as_str()));
+        }
+        let (http, bytes) = self.http.request(
+            path,
+            &body,
+            &headers,
+            Duration::from_secs(if poll_seconds > 0 {
+                poll_seconds + 10
+            } else {
+                30
+            }),
+        )?;
+        error::decode_response(path, http, &bytes)
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {
         let service = if poll_seconds > 0 {
@@ -304,16 +300,14 @@ impl Api {
         self.call(
             &format!("/api/talk/thrift/LoginQrCode/{service}/{method}"),
             &json!([args]),
-            "",
             session,
             poll_seconds,
         )
     }
-    fn profile(&mut self, access: &str) -> Result<Value> {
+    fn profile(&mut self) -> Result<Value> {
         self.call(
             "/api/talk/thrift/Talk/TalkService/getProfile",
             &json!([0]),
-            access,
             "",
             0,
         )
@@ -331,14 +325,13 @@ fn decode(value: &str) -> Result<Vec<u8>> {
             return Ok(b);
         }
     }
-    Err(anyhow::Error::new(error::Failure::Bug("decode".into()))
-        .context("invalid base64 key material"))
+    Err(anyhow::Error::new(error::Failure::Bug("decode")).context("invalid base64 key material"))
 }
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
         .as_str()
         .filter(|s| !s.is_empty())
-        .ok_or(error::Failure::Bug("decode".into()))
+        .ok_or(error::Failure::Bug("decode"))
         .with_context(|| format!("missing {field}"))
 }
 fn percent_encode(value: &str) -> String {
@@ -480,7 +473,8 @@ fn status(
     let count =
         validate_keys(&mut api, &state).context(error::SavedSessionFailure::Keys.error())?;
     progress.set(pairing::Stage::RestoredKeys(count))?;
-    let profile = api.profile(access(&state)?)?;
+    api.state = state.clone();
+    let profile = api.profile()?;
     ensure!(
         profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
         "profile did not contain a user ID"
@@ -613,7 +607,7 @@ fn login_with(state_path: &Path, api: &mut Api, progress: &impl LoginUi) -> Resu
             Err(error) => {
                 let expired = error
                     .downcast_ref::<RpcError>()
-                    .is_some_and(|e| e.code == 10052 && e.status == 410);
+                    .is_some_and(|e| e.gateway == 10052 && e.status == 410);
                 if !expired || started.elapsed() > Duration::from_secs(300) {
                     return Err(pairing::phone_error(error));
                 }
@@ -672,7 +666,8 @@ fn login_with(state_path: &Path, api: &mut Api, progress: &impl LoginUi) -> Resu
     save_state(state_path, &state)?;
     progress.set(pairing::Stage::KeysVerified)?;
     api.rt.destroy("Curve25519Key", key)?;
-    let profile = api.profile(access(&state)?)?;
+    api.state = state.clone();
+    let profile = api.profile()?;
     ensure!(
         profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
         "authenticated profile missing"

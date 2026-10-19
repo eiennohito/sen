@@ -1,4 +1,5 @@
 use super::*;
+use crate::client::error::{media_failure, media_retry};
 use std::{
     collections::HashSet,
     sync::{
@@ -165,13 +166,9 @@ impl Fetchers {
                 let cache = cache.clone();
                 let publish = publish.clone();
                 let authorize = authorize.clone();
-                let observer = crate::client::error::current_network_observer();
                 thread::Builder::new()
                     .name(format!("line-asset-{index}"))
                     .spawn(move || {
-                        if let Some(observer) = observer {
-                            crate::client::error::set_network_observer(observer);
-                        }
                         set_cancellation_token(shared.stop.clone());
                         loop {
                             let (key, job, blacklisted) = {
@@ -200,7 +197,8 @@ impl Fetchers {
                                             .unwrap()
                                             .get(&key)
                                             .filter(|f| {
-                                                !f.class.retriable() || f.at.elapsed() < FAILURE_TTL
+                                                !media_retry(f.class, false)
+                                                    || f.at.elapsed() < FAILURE_TTL
                                             })
                                             .map(|f| f.class);
                                         let job = queue
@@ -223,7 +221,7 @@ impl Fetchers {
                                 Err(class)
                             } else {
                                 fetch(&http, &cache, &job, || authorize(&job.asset, &shared.stop))
-                                    .map_err(|error| Failure::from_error(&error))
+                                    .map_err(|error| media_failure(&error))
                             };
                             if shared.stopped() {
                                 return;
@@ -285,7 +283,7 @@ impl Fetchers {
             .lock()
             .unwrap()
             .get(key)
-            .filter(|f| f.class.retriable())
+            .filter(|f| media_retry(f.class, false))
             .map(|f| f.job.clone());
         job.is_some_and(|job| {
             self.enqueue_job(Job {
@@ -302,7 +300,7 @@ impl Fetchers {
             failures
                 .values_mut()
                 .filter_map(|failed| {
-                    if failed.class.automatic()
+                    if media_retry(failed.class, true)
                         && !failed.retried
                         && matches!(failed.job.purpose, Purpose::Thumbnail)
                     {
@@ -332,7 +330,7 @@ impl Fetchers {
                 .lock()
                 .unwrap()
                 .get(&asset.key())
-                .is_some_and(|f| f.class.retriable());
+                .is_some_and(|f| media_retry(f.class, false));
         let key = asset.key();
         let job = Job {
             asset,

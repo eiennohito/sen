@@ -122,6 +122,7 @@ impl Store {
         conn.execute_batch("CREATE INDEX IF NOT EXISTS message_pending_chat ON message(chat_id,delivery) WHERE server_id IS NULL;
             CREATE INDEX IF NOT EXISTS message_server_order ON message(chat_id,sort_id) WHERE server_id IS NOT NULL;
             CREATE INDEX IF NOT EXISTS message_incoming_order ON message(chat_id,sort_id) WHERE outgoing=0 AND server_id IS NOT NULL;")?;
+        conn.execute(r#"UPDATE message SET delivery='{"Rejected":{"reason":"Unanswered"}}' WHERE delivery='"Uncertain"'"#, [])?;
         Ok(Self {
             conn,
             writes: 0,

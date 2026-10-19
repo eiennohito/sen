@@ -280,6 +280,76 @@ mod tests {
     }
 
     #[test]
+    fn qr_gateway_poll_timeout_keeps_waiting_until_the_scan_event() -> Result<()> {
+        use crate::client::http::tests::{accept, local_server};
+        use std::io::{BufRead, BufReader, Read};
+        let (http, server) = local_server(|listener| {
+            for response in [
+                json!({"code":0,"data":{"authSessionId":"synthetic"}}),
+                json!({"code":0,"data":{"callbackUrl":"line://au/q/test","longPollingMaxCount":2}}),
+                json!({"code":10052,"data":{"statusCode":410}}),
+                json!({"code":0,"data":{}}),
+            ] {
+                let mut socket = BufReader::new(accept(&listener));
+                let mut line = String::new();
+                socket.read_line(&mut line).unwrap();
+                assert!(line.contains("SecondaryQrCodeLogin"));
+                let mut length = 0;
+                loop {
+                    line.clear();
+                    socket.read_line(&mut line).unwrap();
+                    if line == "\r\n" {
+                        break;
+                    }
+                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        length = value.trim().parse().unwrap();
+                    }
+                }
+                socket.read_exact(&mut vec![0; length]).unwrap();
+                let body = response.to_string();
+                write!(
+                    socket.get_mut(),
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
+            }
+        });
+        let wasm = crate::test_support::read_fixture(&crate::test_support::fixture_path())?;
+        let mut api = Api::new(&wasm, crate::test_support::FIXTURE_VERSION)?;
+        api.http = http;
+        let cancel = AtomicBool::new(false);
+        let events = std::cell::RefCell::new(Vec::new());
+        let ui = NativeLogin {
+            emit: |event| {
+                if matches!(event, Event::Scanned) {
+                    cancel.store(true, Ordering::Relaxed);
+                }
+                events.borrow_mut().push(event);
+            },
+            cancel: &cancel,
+        };
+        let root = std::env::temp_dir().join(format!("line-qr-poll-{}", std::process::id()));
+        fs::create_dir_all(&root)?;
+        assert!(login_with(&root.join("session.json"), &mut api, &ui).is_err());
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, Event::Qr { .. }))
+        );
+        assert!(
+            events
+                .borrow()
+                .iter()
+                .any(|event| matches!(event, Event::Scanned))
+        );
+        server.join().unwrap();
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+
+    #[test]
     fn qr_png_reaches_the_desktop_as_rgba() -> Result<()> {
         let link = "line://au/q/synthetic?secret=synthetic&e2eeVersion=1";
         let modules = qrcodegen::QrCode::encode_text(link, qrcodegen::QrCodeEcc::Low)?.size();

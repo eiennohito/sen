@@ -118,16 +118,14 @@ impl Client {
     }
 
     fn talk(&mut self, method: &str, args: Value) -> Result<Value> {
-        let token = access(&self.api.state)?.to_owned();
-        chat::talk(&mut self.api, &token, method, args)
+        chat::talk(&mut self.api, method, args)
     }
 
     pub fn local_mid(&self) -> &str {
         &self.my_mid
     }
     pub fn online_profile(&mut self) -> Result<Value> {
-        let token = access(&self.api.state)?.to_owned();
-        let profile = self.api.profile(&token)?;
+        let profile = self.api.profile()?;
         let mid = required(&profile, "mid")?;
         if !self.my_mid.is_empty() && mid != self.my_mid {
             return Err(crate::client::error::Failure::SignedOut(
@@ -288,19 +286,16 @@ impl Client {
         Ok(chats)
     }
 
-    pub fn contact(&mut self, mid: &str) -> Result<Friend> {
+    pub fn contact(&mut self, mid: &str) -> Result<Option<Friend>> {
         let response = self.talk("getContactsV2", json!([{"targetUserMids":[mid]}, 2]))?;
         let contact = &response["contacts"][mid]["contact"];
         let member = member_identity(mid, contact, &self.my_mid);
-        ensure!(member.resolved, "unresolved contact");
-        Ok(member.contact)
+        Ok(member.resolved.then_some(member.contact))
     }
     pub fn profile_notice(&mut self, mid: &str) -> Result<Value> {
-        let token = access(&self.api.state)?.to_owned();
         self.api.call(
             "/api/talk/thrift/Relation/RelationService/getTargetProfileNotice",
             &json!([{"targetUserMid":mid}]),
-            &token,
             "",
             0,
         )
@@ -310,8 +305,7 @@ impl Client {
         Ok(())
     }
     pub fn add_friend(&mut self, mid: &str, chat_mid: &str, seq: u32) -> Result<()> {
-        let token = access(&self.api.state)?.to_owned();
-        self.api.call("/api/talk/thrift/Relation/RelationService/addFriendByMid", &json!([{"reqSeq":seq,"userMid":mid,"tracking":{"reference":"","trackingMetaV2":{"chat":{"chatMid":chat_mid}}}}]), &token, "", 0)?;
+        self.api.call("/api/talk/thrift/Relation/RelationService/addFriendByMid", &json!([{"reqSeq":seq,"userMid":mid,"tracking":{"reference":"","trackingMetaV2":{"chat":{"chatMid":chat_mid}}}}]), "", 0)?;
         Ok(())
     }
     pub fn full_chat(&mut self, mid: &str) -> Result<Value> {
@@ -461,15 +455,23 @@ impl Client {
         let fingerprint = format!("{:x}", Sha256::digest(raw.to_string()));
         let mut data = raw.clone();
         let encrypted = raw["chunks"].as_array().is_some_and(|c| !c.is_empty());
+        let mut undecryptable = false;
         if encrypted {
             let state = self.api.state.clone();
-            let body = chat::decrypt_body(&mut self.api, &state, &self.my_mid, raw)?;
-            merge_decrypted(&mut data, &body);
+            match chat::decrypt_body(&mut self.api, &state, &self.my_mid, raw) {
+                Ok(body) => merge_decrypted(&mut data, &body),
+                Err(error) if crate::client::error::network_failure(&error).is_some() => {
+                    return Err(error);
+                }
+                Err(_) => undecryptable = true,
+            }
         }
         let meta = &data["contentMetadata"];
         let details = rich::parse(&data);
         let content = if details.withdrawn {
             Content::Withdrawn
+        } else if undecryptable {
+            Content::Undecryptable
         } else {
             match data["contentType"].as_i64().unwrap_or(0) {
                 0 => Content::Text {
@@ -654,7 +656,7 @@ impl Client {
     }
     pub fn send_sticker(&mut self, to: &str, sticker: &Content, seq: u32) -> Result<Message> {
         let Content::Sticker { pkg, id, ver, .. } = sticker else {
-            return Err(crate::client::error::Failure::Bug("invalid send payload".into()).into());
+            return Err(crate::client::error::Failure::Bug("invalid send payload").into());
         };
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -686,11 +688,9 @@ impl Client {
         })
     }
     pub fn sticker_packages(&mut self) -> Result<Vec<crate::store::StickerPackage>> {
-        let token = access(&self.api.state)?.to_owned();
         let value = self.api.call(
             "/api/shop/thrift/ShopService/ShopService/getOwnedProductSummaries",
             &json!(["STICKER", 0, 100, [1, 2, 3, 4]]),
-            &token,
             "",
             0,
         )?;
@@ -753,7 +753,7 @@ impl Client {
             "invalid persisted send sequence"
         );
         if text.trim().is_empty() || text.len() > 10_000 {
-            return Err(crate::client::error::Failure::Bug("invalid send payload".into()).into());
+            return Err(crate::client::error::Failure::Bug("invalid send payload").into());
         }
         self.send_encrypted(to, 0, &json!({"text":text}), &json!({}), request_seq)
     }

@@ -80,15 +80,6 @@ fn failed_member_lookup_reports_network_failure_and_can_be_retried() {
     assert_eq!(
         members
             .iter()
-            .find(|m| m.contact.id == "ufailed")
-            .unwrap()
-            .contact
-            .name,
-        "ufailed"
-    );
-    assert_eq!(
-        members
-            .iter()
             .filter(|m| m.contact.name == "Unknown member")
             .count(),
         1

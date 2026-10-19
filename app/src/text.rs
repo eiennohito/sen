@@ -25,10 +25,6 @@ pub(crate) fn rejection(reason: &Refusal) -> String {
         Refusal::AppClosed => "app closed before sending",
         Refusal::Internal => "internal error",
         Refusal::FileMissing => "File missing",
-        Refusal::SyntheticSend => "Synthetic send failure",
-        Refusal::SyntheticFriends => "Synthetic friends failure",
-        Refusal::ReadFailed => "read failed",
-        Refusal::SyntheticUnsend => "Synthetic unsend rejection",
         Refusal::NotAccepted => "Message was not accepted",
     }
     .into()

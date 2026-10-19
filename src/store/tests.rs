@@ -589,11 +589,11 @@ fn newer_schema_is_refused_without_migration() {
     let dir = TempDir::new();
     {
         let s = Store::open(&dir.0).unwrap();
-        s.conn.pragma_update(None, "user_version", 7).unwrap();
+        s.conn.pragma_update(None, "user_version", 6).unwrap();
     }
     assert!(matches!(
         Store::open(&dir.0),
-        Err(StoreError::NewerSchema(7))
+        Err(StoreError::NewerSchema(6))
     ));
 }
 
@@ -832,4 +832,25 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
     assert!(!orphan.exists());
     drop(current);
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn opening_converts_uncertain_rows_to_not_sent() {
+    let dir = TempDir::new();
+    let key = {
+        let mut store = Store::open(&dir.0).unwrap();
+        let key = pending(&mut store, 1);
+        store
+            .conn
+            .execute(r#"UPDATE message SET delivery='"Uncertain"'"#, [])
+            .unwrap();
+        key
+    };
+    let store = Store::open(&dir.0).unwrap();
+    assert_eq!(
+        store.message(key).unwrap().delivery,
+        Delivery::Rejected {
+            reason: crate::client::error::Refusal::Unanswered
+        }
+    );
 }

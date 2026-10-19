@@ -177,6 +177,10 @@ fn eof_and_reset_return_to_reconnect_without_waiting_for_ping() {
         if truncated {
             let error = result.unwrap_err();
             assert_eq!(
+                crate::client::error::classify(&error),
+                crate::client::error::Failure::Unanswered
+            );
+            assert_eq!(
                 error.downcast_ref::<io::Error>().unwrap().kind(),
                 io::ErrorKind::UnexpectedEof
             );
@@ -189,34 +193,38 @@ fn eof_and_reset_return_to_reconnect_without_waiting_for_ping() {
 }
 
 #[test]
-fn rejects_an_oversize_unterminated_line_while_server_stays_open() {
+fn bad_frame_is_skipped_and_the_next_operation_arrives() {
     let (transport, server) = local_server(|listener| {
         let mut socket = BufReader::new(accept(&listener));
         request(&mut socket);
         headers(&mut socket);
-        let block = [b'x'; 8192];
-        for _ in 0..MAX_LINE / block.len() as u64 {
-            socket.get_mut().write_all(&block).unwrap();
-        }
-        socket.get_mut().write_all(b"x").unwrap();
-        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        socket
+            .get_mut()
+            .write_all(b"data: broken JSON\n\ndata: {\"revision\":13}\n\n")
+            .unwrap();
     });
-    let error = stream(
+    let mut operations = Vec::new();
+    stream(
         &transport,
         "9.8.7",
         "synthetic-token",
         12,
         &Arc::new(AtomicBool::new(false)),
         PING_TIMEOUT,
-        |_, _| Ok(true),
+        |name, data| {
+            if name == "message" {
+                operations.push(data);
+            }
+            Ok(true)
+        },
     )
-    .unwrap_err();
-    assert_eq!(error.to_string(), "SSE line too large");
+    .unwrap();
+    assert_eq!(operations, vec![json!({"revision":13})]);
     server.join().unwrap();
 }
 
 #[test]
-fn statuses_preserve_auth_mapping_and_any_content_type_is_accepted_on_200() {
+fn statuses_keep_exact_classes_and_200_accepts_any_content_type() {
     for (status, content_type) in [
         (401, "text/event-stream"),
         (403, "text/html"),
@@ -254,10 +262,12 @@ fn statuses_preserve_auth_mapping_and_any_content_type_is_accepted_on_200() {
         );
         if status != 200 {
             let failure = crate::client::error::classify(&result.unwrap_err());
-            assert!(matches!(
+            assert_eq!(
                 failure,
-                crate::client::error::Failure::Unanswered | crate::client::error::Failure::Bug(_)
-            ));
+                crate::client::error::Failure::Refused(crate::client::error::Refusal::Code(
+                    i64::from(status)
+                ))
+            );
         } else {
             assert_eq!(result.unwrap(), status);
         }
@@ -538,7 +548,10 @@ fn partial_line_trickle_expires_without_waiting_for_an_empty_poll() {
     )
     .unwrap_err();
     let elapsed = started.elapsed();
-    assert_eq!(error.to_string(), "SSE ping expired");
+    assert_eq!(
+        crate::client::error::classify(&error),
+        crate::client::error::Failure::Unanswered
+    );
     assert_eq!(
         error.downcast_ref::<io::Error>().unwrap().kind(),
         io::ErrorKind::TimedOut

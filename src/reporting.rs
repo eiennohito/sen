@@ -32,7 +32,7 @@ fn chain(error: &(dyn Error + 'static)) -> String {
             format!("rpc:http={}:code={}", e.http, e.code)
         } else if let Some(e) = e.downcast_ref::<crate::client::error::Failure>() {
             match e {
-                crate::client::error::Failure::Bug(_) => "network-bug(details redacted)".into(),
+                crate::client::error::Failure::Bug(message) => format!("bug:{message}"),
                 _ => e.to_string(),
             }
         } else if let Some(e) = e.downcast_ref::<crate::client::error::Error>() {

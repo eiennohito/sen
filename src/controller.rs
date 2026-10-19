@@ -215,19 +215,18 @@ impl AppState {
                 }
             }
             Delta::RefreshFailed { request, error } => {
-                if let Some(error) = error {
-                    if matches!(
-                        request,
-                        crate::engine::Refresh::Recent(_)
-                            | crate::engine::Refresh::Older(..)
-                            | crate::engine::Refresh::Newer(..)
-                    ) {
-                        self.window_loading = false;
-                    }
-                    self.refresh_failures.insert(request, error);
-                } else {
-                    self.refresh_failures.remove(&request);
+                if matches!(
+                    request,
+                    crate::engine::Refresh::Recent(_)
+                        | crate::engine::Refresh::Older(..)
+                        | crate::engine::Refresh::Newer(..)
+                ) {
+                    self.window_loading = false;
                 }
+                self.refresh_failures.insert(request, error);
+            }
+            Delta::RefreshRecovered(request) => {
+                self.refresh_failures.remove(&request);
             }
             Delta::StickerPackages(rows) => self.sticker_packages = rows,
             Delta::ReactionFailed(key) => self.reaction_failure = Some(key),

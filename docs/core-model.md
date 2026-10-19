@@ -138,7 +138,7 @@ There is one total order everywhere: `(sort_ts, sort_id)`.
 | Server page (recent, older, newer) | Upsert by `server_id`. Content fields take the newer `reactions_rev`/edit; withdrawal is sticky; `delivery` only advances (Sent → Read). Never deletes rows. Extends or merges `segment`s. |
 | Live message op (25/26/43) | Upsert by `server_id`. Outgoing op 25 with a `request_seq` matching a pending row links to that row (sets `server_id`, `delivery=Sent`). Adjacent to the newest segment when the stream is continuous since the last applied revision; otherwise starts a new segment. |
 | Send result | Link the pending row by `request_seq` → `server_id`. If the echo already created a separate row, merge the two (keep the pending row's `key`, delete the duplicate, emit `Removed{key}`). |
-| Send failure | `delivery = Rejected{reason}` or `Uncertain`. The row stays until resolved. |
+| Send failure | `delivery = Rejected{reason}` (Not sent). Retry keeps the row; a late echo or success turns it Sent. |
 | Unsend op 64/65 | body becomes `Content::Withdrawn`, `delivery` untouched. |
 | Reaction op 139/140 | Replace `reactions_json` if the op's revision is newer. |
 | Receipt op 55 / read ranges | Advance `delivery` to Read for outgoing rows up to the marker. |
@@ -188,7 +188,7 @@ age expiry (D8).
 ### Outbox
 
 Pending sends are `message` rows whose `delivery` is one of `Pending`,
-`Rejected{reason}`, `Uncertain`, `Sent`, `Read` (a Rust enum serialised as
+`Rejected{reason}`, `Sent`, `Read` (a Rust enum serialised as
 JSON, never compared as a string). The submit flow is:
 
 1. Insert a pending row (a durable commit on the worker thread; the UI waits
@@ -197,8 +197,7 @@ JSON, never compared as a string). The submit flow is:
 3. Link it, or mark it failed.
 
 The actions on failed rows are Retry (same row, new `request_seq`), Discard
-(deletes the row) and Copy to composer. Resend after `Uncertain` creates a new
-row and discards the old one after a duplicate-risk confirmation. There is no
+(deletes the row) and Copy to composer. There is no
 count cap; a chat's failed rows are listed in its row badge until resolved.
 
 ### Existing files
@@ -297,13 +296,14 @@ after sign-in.
 `Failure::{NotDelivered, Unanswered, SignedOut, Refused, Bug}`. Transport evidence
 distinguishes failure before any request byte was written from failure after
 writing started. Gateway and TalkException codes keep their separate namespaces.
-The engine reschedules reads only for network failures, and sends only for
-NotDelivered in the same session. Unanswered sends require Retry/Delete; Refused
-and Bug terminate the item. One health object publishes Offline after 15 seconds
-without success following a network failure; success clears it. Refused and Bug
-do not affect health. SignedOut cancels queued work, preserves in-flight
-completions for their account, and requires explicit sign-in. Store errors remain
-separate transaction errors.
+The engine reschedules reads after transport loss, retryable server failures and
+UNKNOWN_ERROR. Sends retry before delivery (NotDelivered or server code
+115/UNKNOWN_ERROR) in the same session. Unanswered sends require Retry/Delete;
+other Refused and Bug terminate the item. One health object publishes Offline
+15 seconds after a transport failure. A received response, including 5xx, clears
+it. SignedOut cancels queued work, preserves in-flight completions for their
+account, and requires explicit sign-in. Store errors remain separate transaction
+errors.
 
 Each refresh intent (including stream startup/restart) has its own exponential backoff: 2 seconds, 4, 8, 16,
 32, then a 60-second cap, reset after success. Profile reconnection uses the
@@ -325,8 +325,12 @@ alone loads credentials, owns WASM, refreshes/persists tokens and updates that
 view; token values do not travel back through stream events. Standalone sync
 diagnostics construct their own owner outside the desktop engine.
 
-The SSE thread reconnects after network failures with backoff on its own thread.
-SignedOut, Refused, Bug and shutdown stop it without automatic restart. The engine
+The SSE thread reconnects after failures with backoff on its own thread; only
+SignedOut or shutdown stops it. Read and ping failures are Unanswered. A clean
+close or reconnect event immediately opens another stream without changing
+health or failure backoff. A malformed frame is skipped. The engine supervises
+unexpected stream exits and restarts them with backoff unless signed out. Live
+frames enter decoding in FIFO arrival order, before refresh work. The engine
 persists the revision in the same transaction that applies an operation, and
 seeds `localRev` from it on start (D5). Operations replayed during catch-up
 carry `replay=true`, which suppresses notifications and unread increments. The
@@ -392,7 +396,7 @@ store and controller:
 - Chat-list pagination survives live operations.
 - Updates during pointer-down are all applied, none lost.
 - Unsend, reaction and receipt each update the row in place.
-- Failed send: discard, retry, resend-after-uncertain.
+- Failed send: discard, retry and late echo confirmation.
 - Restart: history, drafts, failed outbox items and the scroll anchor are
   restored from the store.
 
@@ -415,6 +419,5 @@ The implementation has these specific constraints:
   account's MID-hashed database. Successful validation records profile identity
   in the session so subsequent launches can open that database before network
   access. Legacy message/state files are neither read nor imported.
-- RPC errors use `client::Error`; authorization expiry is a single `Auth`
-  variant rather than a separate `AuthCause` enum. Media failures retain the
+- RPC errors retain separate gateway and TalkException codes through classification. Media failures retain the
   existing asset fetcher's typed failure enum.

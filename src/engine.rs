@@ -36,9 +36,9 @@ impl Health {
     fn failure(&mut self, now: Instant) {
         self.failed_since.get_or_insert(now);
     }
-    fn offline(&self, now: Instant) -> bool {
+    fn offline(&self, now: Instant, threshold: Duration) -> bool {
         self.failed_since
-            .is_some_and(|since| now.saturating_duration_since(since) >= Duration::from_secs(15))
+            .is_some_and(|since| now.saturating_duration_since(since) >= threshold)
     }
 }
 /// Account facts have provenance; Connection is only the presentation/transport status.
@@ -51,7 +51,6 @@ enum AccountSession {
     SessionUnusable {
         reason: SignOutReason,
     },
-    Checking,
     Ready,
     SigningIn {
         epoch: u64,
@@ -59,7 +58,7 @@ enum AccountSession {
     },
 }
 impl AccountSession {
-    fn ready(&self) -> bool {
+    fn known(&self) -> bool {
         matches!(self, Self::Ready)
     }
     fn signing_in(&self) -> bool {
@@ -72,6 +71,7 @@ pub struct Timing {
     pub retry_initial: Duration,
     pub retry_max: Duration,
     pub poll: Duration,
+    pub offline_after: Duration,
 }
 impl Default for Timing {
     fn default() -> Self {
@@ -79,6 +79,7 @@ impl Default for Timing {
             retry_initial: Duration::from_secs(2),
             retry_max: Duration::from_secs(60),
             poll: Duration::from_millis(100),
+            offline_after: Duration::from_secs(15),
         }
     }
 }
@@ -319,8 +320,9 @@ pub enum Delta {
     MoreChats(bool),
     RefreshFailed {
         request: Refresh,
-        error: Option<Failure>,
+        error: Failure,
     },
+    RefreshRecovered(Refresh),
     Notify(crate::store::MessageInput),
     Friends(Vec<crate::store::Friend>),
     Members {
@@ -373,7 +375,6 @@ pub enum Delta {
 pub enum Refresh {
     Stream,
     Profile,
-    Decode(String),
     Send(Key),
     Friends,
     Contact(String),
@@ -394,7 +395,6 @@ impl Refresh {
         let (name, id) = match self {
             Self::Stream => ("stream", None),
             Self::Profile => ("profile", None),
-            Self::Decode(_) => ("decode", None),
             Self::Send(key) => return format!("send key={}", key.0),
             Self::Friends => ("friends", None),
             Self::Contact(id) => ("contact", Some(id.as_str())),
@@ -476,29 +476,14 @@ type Completion = Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>;
 type NetJob = Box<dyn FnOnce(std::result::Result<&mut dyn Backend, Failure>) -> Completion + Send>;
 
 type UploadTask = Box<dyn FnOnce() + Send>;
-fn network_observer(
-    inbox: Arc<Inbox>,
-) -> Arc<dyn Fn(std::result::Result<(), Failure>) + Send + Sync> {
-    Arc::new(move |result| {
-        upload_completed(
-            &inbox,
-            Box::new(move |engine| {
-                engine.network_outcome(&result);
-                Ok(())
-            }),
-        )
-    })
-}
-fn upload_workers(inbox: Arc<Inbox>) -> mpsc::Sender<UploadTask> {
+fn upload_workers() -> mpsc::Sender<UploadTask> {
     let (tx, rx) = mpsc::channel::<UploadTask>();
     let rx = Arc::new(Mutex::new(rx));
     for index in 0..2 {
         let rx = rx.clone();
-        let observer = network_observer(inbox.clone());
         thread::Builder::new()
             .name(format!("line-upload-{index}"))
             .spawn(move || {
-                crate::client::error::set_network_observer(observer);
                 loop {
                     let task = rx.lock().unwrap().recv();
                     match task {
@@ -645,9 +630,6 @@ impl Worker {
                                             crate::client::desktop::set_cancellation_token(
                                                 net_cancel,
                                             );
-                                            crate::client::error::set_network_observer(
-                                                network_observer(inbox.clone()),
-                                            );
                                             let mut backend = None;
                                             while let Ok(job) = rx.recv() {
                                                 let opened = if backend.is_none() {
@@ -661,9 +643,7 @@ impl Worker {
                                                         Ok(Err(error)) => Err(
                                                             crate::client::error::classify(&error),
                                                         ),
-                                                        Err(_) => {
-                                                            Err(Failure::Bug("internal".into()))
-                                                        }
+                                                        Err(_) => Err(Failure::Bug("internal")),
                                                     }
                                                 } else {
                                                     Ok(())
@@ -682,7 +662,7 @@ impl Worker {
                                     )?;
                                     jobs
                                 },
-                                uploads: upload_workers(inbox.clone()),
+                                uploads: upload_workers(),
                                 net_pending: 0,
                                 generation: Arc::new(AtomicU64::new(0)),
                                 health: Health::new(),
@@ -692,7 +672,7 @@ impl Worker {
                                 media: None,
                                 waiting_assets: VecDeque::new(),
                                 waiting_retries: Vec::new(),
-                                active_refresh: None,
+                                refresh_failures: BTreeSet::new(),
                                 account: AccountSession::Opening { epoch: 0 },
                                 operation: "startup".into(),
                                 force_list: true,
@@ -777,7 +757,7 @@ struct Engine {
         crate::client::desktop::assets::Purpose,
     )>,
     waiting_retries: Vec<String>,
-    active_refresh: Option<Refresh>,
+    refresh_failures: BTreeSet<Refresh>,
     account: AccountSession,
     operation: String,
     force_list: bool,
@@ -797,42 +777,16 @@ struct Engine {
     stream: Option<(Arc<AtomicBool>, thread::JoinHandle<()>)>,
     assets_stop: Arc<AtomicBool>,
 }
-fn begin_attempt(inbox: &Arc<Inbox>, address: (String, Key), generation: u64) -> bool {
-    let (reply, result) = mpsc::sync_channel(1);
-    upload_completed(
-        inbox,
-        Box::new(move |engine| {
-            let current =
-                generation == engine.generation.load(Ordering::SeqCst) && engine.account.ready();
-            if current {
-                engine.in_flight.insert(address);
-            }
-            let _ = reply.send(current);
-            Ok(())
-        }),
-    );
-    result.recv().unwrap_or(false)
-}
-enum JobOutcome<T> {
-    Cancelled,
-    Completed(std::result::Result<T, Failure>),
-}
-impl<T> From<std::result::Result<T, Failure>> for JobOutcome<T> {
-    fn from(result: std::result::Result<T, Failure>) -> Self {
-        Self::Completed(result)
-    }
-}
 type Result<T> = std::result::Result<T, StoreError>;
 impl Engine {
-    fn rpc<T: Send + 'static, R: Into<JobOutcome<T>>>(
+    fn rpc<T: Send + 'static>(
         &mut self,
-        run: impl FnOnce(&mut dyn Backend) -> R + Send + 'static,
+        run: impl FnOnce(&mut dyn Backend) -> std::result::Result<T, Failure> + Send + 'static,
         apply: impl FnOnce(&mut Engine, std::result::Result<T, Failure>, bool) -> Result<()>
         + Send
         + 'static,
     ) {
         let operation = self.operation.clone();
-        let refresh = self.active_refresh.take();
         let cancel = self.assets_stop.clone();
         self.net_pending += 1;
         let generation = self.generation.load(Ordering::SeqCst);
@@ -842,64 +796,59 @@ impl Engine {
             // Cancelled jobs have no network outcome and never enter the backend.
             let result = (generation == live_generation.load(Ordering::SeqCst)).then(|| {
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match backend {
-                    Ok(backend) => run(backend).into(),
-                    Err(error) => JobOutcome::Completed(Err(error)),
+                    Ok(backend) => run(backend),
+                    Err(error) => Err(error),
                 }))
-                .unwrap_or_else(|_| {
-                    JobOutcome::Completed(Err(Failure::Bug("network job panicked".into())))
-                })
+                .unwrap_or_else(|_| Err(Failure::Bug("network job panicked")))
             });
             Box::new(move |engine| {
                 engine.operation = operation;
                 engine.net_pending -= 1;
-                let Some(JobOutcome::Completed(result)) = result else {
-                    return Ok(());
-                };
+                let attempted = result.is_some();
+                let result =
+                    result.unwrap_or_else(|| Err(Failure::SignedOut(SignOutReason::NoSession)));
                 let current = generation == engine.generation.load(Ordering::SeqCst);
+                if current && attempted {
+                    engine.network_outcome(&result);
+                }
                 if let Err(error) = &result
-                    && (matches!(error, Failure::Bug(_))
-                        || current
-                            && matches!(
-                                engine.account,
-                                AccountSession::Ready | AccountSession::Checking
-                            ))
+                    && (matches!(error, Failure::Bug(_)) || current && engine.account.known())
                 {
                     engine.error(error.clone());
-                }
-                if current
-                    && result.is_ok()
-                    && let Some(request) = refresh
-                {
-                    engine.retry_attempts.remove(&request);
-                    engine.emit(Delta::RefreshFailed {
-                        request,
-                        error: None,
-                    });
                 }
                 apply(engine, result, current)
             })
         });
         if let Err(error) = self.net.send(job) {
-            let done = (error.0)(Err(Failure::Bug("network worker stopped".into())));
+            let done = (error.0)(Err(Failure::Bug("network worker stopped")));
             self.inbox.lanes.lock().unwrap().completed.push_back(done);
             self.inbox.wake.notify_all();
         }
     }
+    fn refresh_rpc<T: Send + 'static>(
+        &mut self,
+        request: Refresh,
+        run: impl FnOnce(&mut dyn Backend) -> std::result::Result<T, Failure> + Send + 'static,
+        apply: impl FnOnce(&mut Engine, std::result::Result<T, Failure>, bool) -> Result<()>
+        + Send
+        + 'static,
+    ) {
+        self.rpc(run, move |engine, result, current| {
+            if current && result.is_ok() {
+                engine.retry_attempts.remove(&request);
+                if engine.refresh_failures.remove(&request) {
+                    engine.emit(Delta::RefreshRecovered(request));
+                }
+            }
+            apply(engine, result, current)
+        });
+    }
     fn start_assets(&mut self) {
         let inbox = self.inbox.clone();
-        let tx = self.tx.clone();
         let stop = Arc::new(AtomicBool::new(false));
         self.rpc(
             move |backend| {
-                backend.start_assets(
-                    stop,
-                    Arc::new(move |event| {
-                        if let StreamEvent::Asset(c) = event {
-                            return tx.send(asset_delta(c));
-                        }
-                        inbox.live(event)
-                    }),
-                );
+                backend.start_assets(stop, Arc::new(move |event| inbox.live(event)));
                 Ok(())
             },
             |_, _, _| Ok(()),
@@ -936,7 +885,7 @@ impl Engine {
     }
     fn present_account(&mut self, report: bool) -> Result<()> {
         match &self.account {
-            AccountSession::Checking | AccountSession::Ready => {
+            AccountSession::Ready => {
                 self.start_assets();
                 self.online()?;
             }
@@ -961,13 +910,14 @@ impl Engine {
         match result {
             Ok(_) => self.network_success(),
             Err(Failure::NotDelivered | Failure::Unanswered) => self.health.failure(Instant::now()),
-            _ => {}
+            Err(Failure::Refused(_) | Failure::SignedOut(_)) => self.network_success(),
+            Err(Failure::Bug(_)) => {}
         }
     }
     fn network_success(&mut self) {
         self.health.success();
         if self.connection == Connection::Offline {
-            self.connection(if self.account.ready() {
+            self.connection(if self.account.known() {
                 Connection::Online
             } else {
                 Connection::Local
@@ -976,9 +926,7 @@ impl Engine {
     }
     fn error(&mut self, error: Failure) {
         match error {
-            Failure::NotDelivered | Failure::Unanswered => {
-                self.health.failure(Instant::now());
-            }
+            Failure::NotDelivered | Failure::Unanswered => {}
             Failure::SignedOut(reason) => {
                 if matches!(self.connection, Connection::SignedOut { .. }) {
                     return;
@@ -1017,7 +965,6 @@ impl Engine {
                 }
             }
             Failure::Bug(_) => {
-                crate::reporting::log(&self.operation, "bug", &error);
                 self.emit(Delta::InternalError("network protocol failure"));
             }
             Failure::Refused(_) => {}
@@ -1027,13 +974,11 @@ impl Engine {
         self.store_mid.clone().unwrap_or_default()
     }
     fn rpc_failed(&mut self, r: Refresh, error: Failure) {
-        if matches!(error, Failure::NotDelivered | Failure::Unanswered) {
+        if error.retry_read() {
             self.retry_later(r);
         } else if matches!(error, Failure::Refused(_) | Failure::Bug(_)) {
-            self.emit(Delta::RefreshFailed {
-                request: r,
-                error: Some(error),
-            });
+            self.refresh_failures.insert(r.clone());
+            self.emit(Delta::RefreshFailed { request: r, error });
         }
     }
     fn priority(&self, r: &Refresh) -> u8 {
@@ -1045,7 +990,6 @@ impl Engine {
             Refresh::ChatList | Refresh::MoreChats => 3,
             Refresh::Read(_) | Refresh::Older(..) | Refresh::Newer(..) | Refresh::Receipts(_) => 4,
             Refresh::Stream
-            | Refresh::Decode(_)
             | Refresh::Profile
             | Refresh::Friends
             | Refresh::Members(_)
@@ -1089,7 +1033,7 @@ impl Engine {
             |backend| backend.session(),
             move |engine, result, _| {
                 let fact = match result {
-                    Ok(true) => AccountSession::Checking,
+                    Ok(true) => AccountSession::Ready,
                     Ok(false) => AccountSession::NoSession,
                     Err(Failure::SignedOut(reason)) => AccountSession::SessionUnusable { reason },
                     Err(_) => AccountSession::SessionUnusable { reason: SignOutReason::Unavailable(crate::client::error::SignInFailure::Internal) },
@@ -1119,10 +1063,10 @@ impl Engine {
             let work = {
                 let mut q = self.inbox.lanes.lock().unwrap();
                 loop {
-                    if matches!(
-                        self.account,
-                        AccountSession::Ready | AccountSession::Checking
-                    ) && self.health.offline(Instant::now())
+                    if self.account.known()
+                        && self
+                            .health
+                            .offline(Instant::now(), self.timing.offline_after)
                         && self.connection != Connection::Offline
                     {
                         break Work::Health;
@@ -1139,16 +1083,12 @@ impl Engine {
                         break Work::Completed(done);
                     }
                     if self.net_pending == 0
-                        && matches!(
-                            self.account,
-                            AccountSession::Ready | AccountSession::Checking
-                        )
+                        && self.account.known()
                         && let Some(r) = q
                             .refresh
                             .iter()
                             .filter(|r| {
-                                (self.account.ready() || matches!(r, Refresh::Profile))
-                                    && self.retry_after.get(r).is_none_or(|t| *t <= Instant::now())
+                                self.retry_after.get(r).is_none_or(|t| *t <= Instant::now())
                             })
                             .min_by_key(|r| self.priority(r))
                             .cloned()
@@ -1173,7 +1113,6 @@ impl Engine {
                 }
                 Work::Refresh(r) => {
                     self.operation = r.diagnostic();
-                    self.active_refresh = Some(r.clone());
                     self.refresh(r)
                 }
                 Work::Completed(done) => done(self),
@@ -1242,7 +1181,7 @@ impl Engine {
                             if result.is_err() {
                                 deliver(StreamEvent::Retry {
                                     attempt: 1,
-                                    error: Failure::Bug("stream worker panicked".into()),
+                                    error: Failure::Bug("stream worker panicked"),
                                 });
                             }
                             deliver(StreamEvent::Exited);
@@ -1264,10 +1203,7 @@ impl Engine {
         Ok(())
     }
     fn online(&mut self) -> Result<()> {
-        if !matches!(
-            self.account,
-            AccountSession::Ready | AccountSession::Checking
-        ) {
+        if !self.account.known() {
             return Ok(());
         }
         self.attempt = self.attempt.saturating_add(1);
@@ -1277,7 +1213,8 @@ impl Engine {
             });
         }
 
-        self.rpc(
+        self.refresh_rpc(
+            Refresh::Profile,
             move |backend| backend.profile(),
             move |engine, result, current| {
                 if !current {
@@ -1488,14 +1425,7 @@ impl Engine {
         Ok(())
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
-        if (!self.account.ready() || self.account_mid().is_empty())
-            && !(matches!(self.account, AccountSession::Checking)
-                && matches!(
-                    i,
-                    Intent::Send { .. }
-                        | Intent::SendAttachments { .. }
-                        | Intent::SendSticker { .. }
-                ))
+        if !self.account.known()
             && !matches!(
                 i,
                 Intent::SignIn
@@ -1594,8 +1524,8 @@ impl Engine {
                         if result.is_err() && !matches!(engine.account, AccountSession::SigningIn { epoch, .. } if epoch == generation) { return Ok(()); }
                         match result {
                             Ok(paired) => {
-                                if !paired && engine.account.ready() { return Ok(()); }
-                                engine.account = AccountSession::Checking;
+                                if !paired && engine.account.known() { return Ok(()); }
+                                engine.account = AccountSession::Ready;
                                 engine.health.success();
                                 engine.connection(Connection::Connecting { attempt: engine.attempt.saturating_add(1) });
                                 engine.generation.fetch_add(1, Ordering::SeqCst);
@@ -1618,7 +1548,7 @@ impl Engine {
                                 engine.chat_keys.clear();
                                 engine.message_keys.clear();
                                 engine.emit(Delta::Reset);
-                                engine.account = AccountSession::Checking;
+                                engine.account = AccountSession::Ready;
                                 engine.online()?;
                                 engine.publish()?;
                             }
@@ -1630,7 +1560,7 @@ impl Engine {
                                     AccountSession::SigningIn { previous, .. } => *previous,
                                     other => other,
                                 };
-                                engine.account = if matches!(previous, AccountSession::Ready | AccountSession::Checking) {
+                                engine.account = if matches!(previous, AccountSession::Ready) {
                                     AccountSession::SessionUnusable { reason: SignOutReason::Unavailable(reason.clone()) }
                                 } else { previous };
                                 engine.connection(match &engine.account {
@@ -2063,7 +1993,7 @@ impl Engine {
                 let stored = self.store.prefs()?;
                 prefs.last_chat = stored.last_chat;
                 prefs.request_seq = stored.request_seq;
-                self.store.set_settings(&prefs)?;
+                self.store.set_prefs(&prefs)?;
                 self.emit(Delta::Prefs(prefs));
             }
             Intent::MarkRead { chat, id } => {
@@ -2091,19 +2021,12 @@ impl Engine {
             .or_else(|| message.body.attachment())
             .and_then(|asset| asset.local_attachment())
             .cloned();
-        let started_inbox = self.inbox.clone();
+        self.in_flight.insert(address.clone());
         let generation = self.generation.load(Ordering::SeqCst);
-        let started_address = address.clone();
-        let started = move || begin_attempt(&started_inbox, started_address, generation);
         if let Some(item) = attachment {
             let chat = message.chat_id;
             self.rpc(
-                move |backend| {
-                    if !started() {
-                        return JobOutcome::Cancelled;
-                    }
-                    backend.prepare_attachment(chat, item, seq).into()
-                },
+                move |backend| backend.prepare_attachment(chat, item, seq),
                 move |engine, result, current| {
                     let upload = match result {
                         Ok(upload) if current => upload,
@@ -2117,17 +2040,33 @@ impl Engine {
                         }
                         Err(error) => return engine.sent(address, seq, Err(error), generation),
                     };
-                    engine.in_flight.remove(&address);
                     let inbox = engine.inbox.clone();
-                    let upload_address = address.clone();
+                    let live_generation = engine.generation.clone();
                     let progress_account = account.clone();
                     let failed_address = address.clone();
                     let work = Box::new(move || {
-                        if !begin_attempt(&inbox, upload_address, generation) {
+                        if generation != live_generation.load(Ordering::SeqCst) {
+                            upload_completed(
+                                &inbox,
+                                Box::new(move |engine| {
+                                    engine.sent(
+                                        address,
+                                        seq,
+                                        Err(Failure::SignedOut(SignOutReason::NoSession)),
+                                        generation,
+                                    )
+                                }),
+                            );
                             return;
                         }
+                        let mut last_percent = None;
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             upload(&mut |fraction| {
+                                let percent = (fraction.clamp(0., 1.) * 100.) as u32;
+                                if last_percent == Some(percent) {
+                                    return;
+                                }
+                                last_percent = Some(percent);
                                 let account = progress_account.clone();
                                 upload_completed(
                                     &inbox,
@@ -2140,7 +2079,7 @@ impl Engine {
                                 );
                             })
                         }))
-                        .unwrap_or_else(|_| Err(Failure::Bug("upload job panicked".into())));
+                        .unwrap_or_else(|_| Err(Failure::Bug("upload job panicked")));
                         upload_completed(
                             &inbox,
                             Box::new(move |engine| {
@@ -2155,20 +2094,8 @@ impl Engine {
                                         if generation
                                             == engine.generation.load(Ordering::SeqCst) =>
                                     {
-                                        engine.in_flight.remove(&address);
-                                        let inbox = engine.inbox.clone();
-                                        let started_address = address.clone();
                                         engine.rpc(
-                                            move |backend| {
-                                                if !begin_attempt(
-                                                    &inbox,
-                                                    started_address,
-                                                    generation,
-                                                ) {
-                                                    return JobOutcome::Cancelled;
-                                                }
-                                                finish(backend).into()
-                                            },
+                                            move |backend| finish(backend),
                                             move |engine, result, _| {
                                                 engine.sent(address, seq, result, generation)
                                             },
@@ -2195,7 +2122,7 @@ impl Engine {
                         engine.sent(
                             failed_address,
                             seq,
-                            Err(Failure::Bug("upload worker stopped".into())),
+                            Err(Failure::Bug("upload worker stopped")),
                             generation,
                         )?;
                     }
@@ -2205,17 +2132,10 @@ impl Engine {
         } else {
             self.rpc(
                 move |backend| {
-                    if !started() {
-                        return JobOutcome::Cancelled;
-                    }
                     if matches!(message.body, Content::Sticker { .. }) {
-                        backend
-                            .send_sticker(&message.chat_id, &message.body, seq)
-                            .into()
+                        backend.send_sticker(&message.chat_id, &message.body, seq)
                     } else {
-                        backend
-                            .send(&message.chat_id, message.body.as_text(), seq)
-                            .into()
+                        backend.send(&message.chat_id, message.body.as_text(), seq)
                     }
                 },
                 move |engine, result, _| engine.sent(address, seq, result, generation),
@@ -2246,11 +2166,17 @@ impl Engine {
         let (account, key) = address;
         let active = self.account_mid() == account;
         let same_session =
-            generation == self.generation.load(Ordering::SeqCst) && self.account.ready();
+            generation == self.generation.load(Ordering::SeqCst) && self.account.known();
         if active {
             self.emit(Delta::UploadFinished(key));
         }
-        if active && same_session && matches!(result, Err(Failure::NotDelivered)) {
+        if active
+            && same_session
+            && matches!(
+                result,
+                Err(Failure::NotDelivered | Failure::Refused(Refusal::Code(115 | 99999)))
+            )
+        {
             self.retry_later(Refresh::Send(key));
             return Ok(());
         }
@@ -2318,7 +2244,12 @@ impl Engine {
         }
 
         let cursor = if next { self.list_cursor.clone() } else { None };
-        self.rpc(
+        self.refresh_rpc(
+            if next {
+                Refresh::MoreChats
+            } else {
+                Refresh::ChatList
+            },
             move |backend| backend.chats(cursor),
             move |engine, result, current| {
                 if !current {
@@ -2393,7 +2324,8 @@ impl Engine {
         }
         let net_chat = chat.clone();
         let net_kind = kind.clone();
-        self.rpc(
+        self.refresh_rpc(
+            Self::page_refresh(chat.clone(), kind.clone()),
             move |backend| backend.messages(&net_chat, &net_kind),
             move |engine, result, current| {
                 if !current {
@@ -2451,36 +2383,17 @@ impl Engine {
         self.inbox.refresh(r);
     }
     fn refresh(&mut self, r: Refresh) -> Result<()> {
-        if !self.account.ready() && !matches!(r, Refresh::Profile) {
+        if !self.account.known() {
             return Ok(());
         }
         match r {
-            Refresh::Decode(raw) => {
-                let frame = raw.clone();
-                self.rpc(
-                    move |backend| {
-                        backend.decode(
-                            serde_json::from_str(&frame)
-                                .map_err(|_| Failure::Bug("stored operation decode".into()))?,
-                        )
-                    },
-                    move |engine, result, current| {
-                        if current {
-                            match result {
-                                Ok(operation) => engine.live(StreamEvent::Operation(operation))?,
-                                Err(error) => engine.rpc_failed(Refresh::Decode(raw), error),
-                            }
-                        }
-                        Ok(())
-                    },
-                );
-            }
             Refresh::Stream => self.start_stream()?,
             Refresh::Profile => self.online()?,
             Refresh::Send(key) => self.send(key)?,
             Refresh::Notice(mid) => {
                 let net = mid.clone();
-                self.rpc(
+                self.refresh_rpc(
+                    Refresh::Notice(mid.clone()),
                     move |b| b.notice(&net),
                     move |engine, result, current| {
                         if !current {
@@ -2496,23 +2409,22 @@ impl Engine {
             }
             Refresh::Contact(mid) => {
                 let net = mid.clone();
-                self.rpc(
+                self.refresh_rpc(
+                    Refresh::Contact(mid.clone()),
                     move |b| b.contact(&net),
                     move |engine, result, current| {
                         if !current {
                             return Ok(());
                         }
                         match result {
-                            Ok(row) => {
+                            Ok(Some(row)) => {
                                 if row.profile.relation == Some(2) {
                                     engine.inbox.refresh(Refresh::Notice(mid.clone()));
                                 }
                                 engine.store.save_contacts(std::slice::from_ref(&row))?;
                                 engine.emit(Delta::Contact(row));
                             }
-                            // A contact the server returns without a profile (e.g. a deleted
-                            // account) is a final answer; retrying would loop forever.
-                            Err(Failure::Bug(_)) => {}
+                            Ok(None) => {}
                             Err(e) => engine.rpc_failed(Refresh::Contact(mid), e),
                         };
                         Ok(())
@@ -2521,7 +2433,8 @@ impl Engine {
             }
             Refresh::GroupInfo(chat) => {
                 let net = chat.clone();
-                self.rpc(
+                self.refresh_rpc(
+                    Refresh::GroupInfo(chat.clone()),
                     move |b| b.full_chat(&net),
                     move |engine, result, current| {
                         if !current {
@@ -2552,7 +2465,8 @@ impl Engine {
                 );
             }
             Refresh::Friends => {
-                self.rpc(
+                self.refresh_rpc(
+                    Refresh::Friends,
                     move |backend| backend.friends(),
                     move |engine, result, current| {
                         if !current {
@@ -2576,7 +2490,8 @@ impl Engine {
             }
             Refresh::Members(chat) => {
                 let net_chat = chat.clone();
-                self.rpc(
+                self.refresh_rpc(
+                    Refresh::Members(chat.clone()),
                     move |backend| backend.members(&net_chat),
                     move |engine, result, current| {
                         if !current {
@@ -2624,7 +2539,8 @@ impl Engine {
             Refresh::Newer(chat, after) => self.page(chat, PageKind::Newer { after })?,
             Refresh::Receipts(chat) => {
                 let net_chat = chat.clone();
-                self.rpc(
+                self.refresh_rpc(
+                    Refresh::Receipts(chat.clone()),
                     move |backend| backend.receipts(&net_chat),
                     move |engine, result, current| {
                         if !current {
@@ -2657,7 +2573,8 @@ impl Engine {
             Refresh::Recent(chat) => self.page(chat, PageKind::Recent)?,
             Refresh::Details(chat) => {
                 let net_chat = chat.clone();
-                self.rpc(
+                self.refresh_rpc(
+                    Refresh::Details(chat.clone()),
                     move |backend| backend.details(&net_chat),
                     move |engine, result, current| {
                         if !current {
@@ -2686,7 +2603,8 @@ impl Engine {
                     let net_chat = chat.clone();
                     let net_id = id.clone();
                     let seq = self.next_seq()?;
-                    self.rpc(
+                    self.refresh_rpc(
+                        Refresh::Read(chat.clone()),
                         move |backend| backend.mark_read(&net_chat, &net_id, seq),
                         move |engine, result, current| {
                             if !current {
@@ -2713,15 +2631,7 @@ impl Engine {
         asset: crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<()> {
-        if matches!(self.account, AccountSession::Checking) {
-            if let Some(media) = &self.media {
-                (media.request)(asset, purpose);
-            } else {
-                self.waiting_assets.push_back((asset, purpose));
-            }
-            return Ok(());
-        }
-        if !self.account.ready() {
+        if !self.account.known() {
             let mid = self.store.account()?.own_mid;
             let mid = if mid.is_empty() {
                 self.store_mid.clone().unwrap_or_default()
@@ -2753,15 +2663,7 @@ impl Engine {
         Ok(())
     }
     fn live(&mut self, e: StreamEvent) -> Result<()> {
-        if !self.account.ready()
-            && !(matches!(self.account, AccountSession::Checking)
-                && matches!(
-                    &e,
-                    StreamEvent::AssetRequests(_)
-                        | StreamEvent::Asset(_)
-                        | StreamEvent::Authorize { .. }
-                ))
-        {
+        if !self.account.known() {
             match e {
                 StreamEvent::AssetRequests(media) => {
                     media.stop.store(true, Ordering::Relaxed);
@@ -2785,7 +2687,7 @@ impl Engine {
                     let _ = complete.send(Err(Failure::SignedOut(SignOutReason::NoSession)));
                     return Ok(());
                 }
-                _ if !self.account.ready() => return Ok(()),
+                _ if !self.account.known() => return Ok(()),
                 _ => {}
             }
         }
@@ -2802,28 +2704,22 @@ impl Engine {
                 }
                 self.media = Some(media);
             }
-            StreamEvent::Asset(c) => self.emit(asset_delta(c)),
-            StreamEvent::Authorize { asset, reply } => {
-                let inbox = self.inbox.clone();
-                let generation = self.generation.load(Ordering::SeqCst);
-                self.rpc(
-                    move |backend| {
-                        let (ready, wait) = mpsc::sync_channel(1);
-                        upload_completed(
-                            &inbox,
-                            Box::new(move |engine| {
-                                let _ = ready.send(
-                                    engine.account.ready()
-                                        && generation == engine.generation.load(Ordering::SeqCst),
-                                );
-                                Ok(())
-                            }),
-                        );
-                        if !wait.recv().unwrap_or(false) {
-                            return JobOutcome::Cancelled;
+            StreamEvent::Asset(c) => {
+                match &c.result {
+                    Ok(_) => self.network_success(),
+                    Err(failure) => {
+                        if let Some(failure) =
+                            crate::client::error::network_failure(&anyhow::Error::new(*failure))
+                        {
+                            self.network_outcome::<()>(&Err(failure));
                         }
-                        backend.authorize(&asset).into()
-                    },
+                    }
+                }
+                self.emit(asset_delta(c));
+            }
+            StreamEvent::Authorize { asset, reply } => {
+                self.rpc(
+                    move |backend| backend.authorize(&asset),
                     move |_, result, _| {
                         let _ = reply.send(
                             result.map_err(|_| crate::client::desktop::assets::Failure::Network),
@@ -2919,7 +2815,15 @@ impl Engine {
                     }
                 }
 
-                self.inbox.refresh(Refresh::Decode(raw.to_string()));
+                self.rpc(
+                    move |backend| backend.decode(raw),
+                    move |engine, result, current| {
+                        if current && let Ok(operation) = result {
+                            engine.live(StreamEvent::Operation(operation))?;
+                        }
+                        Ok(())
+                    },
+                );
             }
             StreamEvent::RefreshToken { reply } => {
                 self.rpc(
@@ -2931,8 +2835,9 @@ impl Engine {
                 );
             }
             StreamEvent::Retry { attempt, error } => {
+                self.network_outcome::<()>(&Err(error.clone()));
                 self.attempt = self.attempt.max(attempt);
-                if matches!(error, Failure::Refused(_) | Failure::Bug(_)) {
+                if !error.retry_read() && matches!(error, Failure::Refused(_) | Failure::Bug(_)) {
                     self.rpc_failed(Refresh::Stream, error.clone());
                 }
                 self.error(error);
@@ -2940,6 +2845,9 @@ impl Engine {
             StreamEvent::Connecting(_) => {}
             StreamEvent::Connection(Ok(())) => {
                 self.retry_attempts.remove(&Refresh::Stream);
+                if self.refresh_failures.remove(&Refresh::Stream) {
+                    self.emit(Delta::RefreshRecovered(Refresh::Stream));
+                }
                 self.attempt = 0;
                 let reconnect = self.connection != Connection::Online;
                 self.network_success();
@@ -2951,10 +2859,13 @@ impl Engine {
                 }
             }
             StreamEvent::Connection(Err(e)) => {
+                self.network_outcome::<()>(&Err(e.clone()));
                 self.error(e);
             }
             StreamEvent::Exited => {
                 self.continuous = false;
+                self.stop_stream();
+                self.retry_later(Refresh::Stream);
             }
         };
         Ok(())

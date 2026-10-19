@@ -496,7 +496,10 @@ fn buffered_http_and_tls_bytes_survive_a_spent_watchdog_budget() {
                 body.ping();
                 let error = body.read(&mut [0]).unwrap_err();
                 assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-                assert_eq!(error.to_string(), "SSE ping expired");
+                assert_eq!(
+                    crate::client::error::classify(&error.into()),
+                    crate::client::error::Failure::Unanswered
+                );
                 Ok(())
             },
         )

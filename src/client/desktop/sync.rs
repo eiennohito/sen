@@ -148,22 +148,15 @@ pub fn receive_with_auth(
                 Err(error) => result = Err(error),
             }
         }
-        attempt = attempt.saturating_add(1);
-        let error = match result {
-            Err(error) => crate::client::error::classify(&error),
-            Ok(_) => crate::client::error::Failure::Unanswered,
-        };
-        let terminal = !matches!(
-            error,
-            crate::client::error::Failure::NotDelivered | crate::client::error::Failure::Unanswered
-        );
-        if !deliver(Event::Failure { attempt, error }) {
-            break;
+        if let Err(error) = result {
+            attempt = attempt.saturating_add(1);
+            let error = crate::client::error::classify(&error);
+            let terminal = matches!(error, crate::client::error::Failure::SignedOut(_));
+            if !deliver(Event::Failure { attempt, error }) || terminal {
+                break;
+            }
+            pause(stop, backoff(attempt));
         }
-        if terminal {
-            return Ok(());
-        }
-        pause(stop, backoff(attempt));
         if !stop.load(Ordering::Relaxed)
             && !deliver(Event::State(SyncState::Reconnecting { attempt }))
         {
@@ -216,7 +209,7 @@ fn dispatch(
                     Ok(Err(error)) => return Err(error.into()),
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         return Err(crate::client::error::Failure::Bug(
-                            "resync worker disconnected".into(),
+                            "resync worker disconnected",
                         )
                         .into());
                     }
@@ -271,7 +264,7 @@ fn dispatch(
                     Ok(Err(error)) => return Err(error.into()),
                     Err(mpsc::RecvTimeoutError::Disconnected) => {
                         return Err(crate::client::error::Failure::Bug(
-                            "resync worker disconnected".into(),
+                            "resync worker disconnected",
                         )
                         .into());
                     }
@@ -328,23 +321,48 @@ fn stream(
             let mut reader = BufReader::new(body);
             let mut decoder = Decoder::default();
             let mut line = Vec::new();
+            let mut discarding = false;
             while !stop.load(Ordering::Relaxed) {
                 line.clear();
                 let count = reader
                     .by_ref()
                     .take(MAX_LINE + 1)
                     .read_until(b'\n', &mut line)?;
-                ensure!(line.len() as u64 <= MAX_LINE, "SSE line too large");
+                if line.len() as u64 > MAX_LINE {
+                    decoder = Decoder::default();
+                    discarding = true;
+                    continue;
+                }
                 if count == 0 || stop.load(Ordering::Relaxed) {
                     break;
                 }
                 let line = String::from_utf8_lossy(&line);
-                if let Some((name, data)) = decoder.line(line.trim_end_matches(['\r', '\n']))? {
+                if discarding {
+                    if line.trim_end_matches(['\r', '\n']).is_empty() {
+                        discarding = false;
+                    }
+                    continue;
+                }
+                let frame = match decoder.line(line.trim_end_matches(['\r', '\n'])) {
+                    Ok(frame) => frame,
+                    Err(error) => {
+                        crate::reporting::log("stream-frame", "decode", error.as_ref());
+                        decoder = Decoder::default();
+                        discarding = !line.trim_end_matches(['\r', '\n']).is_empty();
+                        continue;
+                    }
+                };
+                if let Some((name, data)) = frame {
                     if name == "ping" {
                         reader.get_mut().ping();
                     }
-                    if !event(&name, data)? {
-                        break;
+                    match event(&name, data) {
+                        Ok(true) => {}
+                        Ok(false) => break,
+                        Err(error) if crate::client::error::network_failure(&error).is_none() => {
+                            crate::client::error::classify(&error);
+                        }
+                        Err(error) => return Err(error),
                     }
                 }
             }

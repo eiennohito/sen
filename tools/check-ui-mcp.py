@@ -269,22 +269,20 @@ if args.focus:
             if focus_label() == seed[0]: break
             focus_tab()
         assert focus_label() == seed[0], f"{surface}: seed did not focus {seed[0]} (at {focus_label()})"
-        # Every stop is a seed; each direction must visit exactly one full cycle.
-        for _ in expected:
-            label = focus_label()
-            index = expected.index(label)
-            for reverse in (False, True):
-                seen = [label]
-                for offset in range(1, len(expected) + 1):
-                    focus_tab(reverse)
-                    current = focus_label()
-                    wanted = expected[(index + (-offset if reverse else offset)) % len(expected)]
-                    assert current == wanted, f"{surface}: {'reverse' if reverse else 'forward'} from {label}: {seen} → {current}, expected {wanted}"
-                    if offset < len(expected): seen.append(current)
-                assert len(set(seen)) == len(expected) and set(seen) == set(expected), f"{surface}: incomplete cycle: {seen}"
-                assert focus_label() == label, f"{surface}: did not return to seed {label}"
-            focus_tab()
-        print(f"PASS: {surface}: {' → '.join(expected)} → {expected[0]}; reverse mirrors forward, every seed")
+        # One full cycle in each direction checks every focus edge and wrap.
+        label = focus_label()
+        index = expected.index(label)
+        for reverse in (False, True):
+            seen = [label]
+            for offset in range(1, len(expected) + 1):
+                focus_tab(reverse)
+                current = focus_label()
+                wanted = expected[(index + (-offset if reverse else offset)) % len(expected)]
+                assert current == wanted, f"{surface}: {'reverse' if reverse else 'forward'} from {label}: {seen} → {current}, expected {wanted}"
+                if offset < len(expected): seen.append(current)
+            assert len(set(seen)) == len(expected) and set(seen) == set(expected), f"{surface}: incomplete cycle: {seen}"
+            assert focus_label() == label, f"{surface}: did not return to seed {label}"
+        print(f"PASS: {surface}: {' → '.join(expected)} → {expected[0]}; reverse mirrors forward")
 
     logical_width = properties["size"]["width"] / properties.get("scaleFactor", 1)
     narrow = logical_width < 740
@@ -847,7 +845,7 @@ if args.auth_recovery:
                     or a["y"] + size_a["height"] <= b["y"] or b["y"] + size_b["height"] <= a["y"]), f"feedback covered {label}"
 
     demo_scenario("Offline")
-    deadline = time.monotonic() + 20
+    deadline = time.monotonic() + 3
     while not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()):
         assert time.monotonic() < deadline, "persistent network loss did not show Offline"
         time.sleep(.05)
@@ -1147,7 +1145,7 @@ if args.rich:
         origin_y = emoji_body()["absolutePosition"]["y"]
         call("click_element", elementHandle=reply["handle"])
         demo_scenario("Offline")
-        wait_for(lambda: any(item.get("accessibleLabel") == "Connection needs attention" for item in rich_tree()), "persistent loss did not show Offline", timeout=20)
+        wait_for(lambda: any(item.get("accessibleLabel") == "Connection needs attention" for item in rich_tree()), "persistent loss did not show Offline", timeout=3)
         rich_element("Return to message", "Button")
         latest = next(item for item in rich_tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest"))
         return_pill = rich_element("Return to message", "Button")

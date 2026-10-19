@@ -46,7 +46,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             ];
             fake.fail_rpc(
                 line::backend::FakeRpc::Unsend(ServerId("6301".into())),
-                line::backend::Failure::Refused(line::client::error::Refusal::SyntheticUnsend),
+                line::backend::Failure::Refused(line::client::error::Refusal::Code(13)),
             );
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
         }
@@ -201,7 +201,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             });
         }
         10 | 31 => {
-            fake.fail_send();
+            fake.fail_send(chat.clone());
             if kind == 10 {
                 d.sender.send(Intent::Send {
                     chat,
@@ -209,7 +209,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 });
             }
         }
-        30 => fake.fail_send(),
+        30 => fake.fail_send(chat.clone()),
         17 => fake.offline(true),
         16 => fake.offline(false),
         _ => {}
@@ -453,7 +453,8 @@ pub(crate) fn stage(
     if scene == "failed-send"
         && let Some(fake) = fake
     {
-        fake.fail_send();
+        desktop
+            .update(|d| fake.fail_send(d.state.selected.clone().unwrap_or(ChatId("alice".into()))));
         ui.set_draft("See you soon! 🐈".into());
         ui.invoke_send();
     }
@@ -477,7 +478,10 @@ pub(crate) fn worker(fake: FakeBackend, text_size: i32, assets: assets::Assets) 
     let worker = Worker::start_projected(
         StoreLocation::Memory,
         move || fake.open(),
-        Default::default(),
+        line::engine::Timing {
+            offline_after: std::time::Duration::from_millis(300),
+            ..Default::default()
+        },
         move |delta| {
             let delta = match delta {
                 Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {

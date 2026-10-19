@@ -537,11 +537,6 @@ impl Store {
             .query_row("SELECT value FROM preferences", [], |r| r.get(0))?;
         Ok(serde_json::from_str(&text)?)
     }
-    /// Settings changed before account validation must follow local drafts/outbox work.
-    pub fn set_settings(&mut self, prefs: &Prefs) -> Result<Changes> {
-        let changes = self.set_prefs(prefs)?;
-        Ok(changes)
-    }
     pub fn set_prefs(&mut self, prefs: &Prefs) -> Result<Changes> {
         self.mutate(|tx, _| {
             tx.execute(

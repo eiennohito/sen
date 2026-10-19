@@ -1109,7 +1109,7 @@ impl Runtime {
             self.indirect(self.bindings[index].invoker, &values)
                 .map(|v| v as u32)
         })()
-        .map_err(|error| error.context(crate::client::error::Failure::Bug("crypto".into())))
+        .map_err(|error| error.context(crate::client::error::Failure::Bug("crypto")))
     }
 
     pub fn destroy(&mut self, class: &str, ptr: u32) -> Result<()> {

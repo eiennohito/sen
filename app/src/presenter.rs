@@ -261,7 +261,7 @@ impl Presenter {
             row.image_failed = true;
             row.image_failure = format!("{failure:?}").into();
             row.image_error = text::image_text(*failure).into();
-            row.image_retryable = failure.retriable();
+            row.image_retryable = line::client::error::media_retry(*failure, false);
         }
         if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
             for i in 0..runs.row_count() {
@@ -422,7 +422,6 @@ impl Presenter {
                 Refresh::Recent(chat)
                 | Refresh::Older(chat, _)
                 | Refresh::Newer(chat, _)
-                | Refresh::Read(chat)
                 | Refresh::Receipts(chat)
                 | Refresh::Details(chat)
                     if state.selected.as_ref() == Some(chat) =>
@@ -437,7 +436,7 @@ impl Presenter {
                 {
                     detail_error = message
                 }
-                Refresh::Stream | Refresh::Decode(_) if state.selected.is_some() => {
+                Refresh::Stream if state.selected.is_some() => {
                     conversation_error = format!("Couldn't receive updates. {message}")
                 }
                 _ => {}
@@ -1093,7 +1092,7 @@ fn patch_message_asset(
             .map(|f| text::image_text(*f))
             .unwrap_or_default()
             .into();
-        row.image_retryable = failure.is_some_and(|f| f.retriable());
+        row.image_retryable = failure.is_some_and(|f| line::client::error::media_retry(*f, false));
     }
     if row.sender_key == key
         && let Some(image) = image

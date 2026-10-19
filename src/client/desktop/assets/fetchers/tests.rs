@@ -603,7 +603,7 @@ fn local_timeout_network_and_route_failures_are_typed() {
         }
         .unwrap();
         assert_eq!(
-            Failure::from_error(&asset.fetch(&http, None).unwrap_err()),
+            media_failure(&asset.fetch(&http, None).unwrap_err()),
             expected
         );
     }
@@ -648,7 +648,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
     for asset in &assets {
         fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
         assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retriable())
+            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !media_retry(class, false))
         );
         fetchers
             .shared
@@ -661,7 +661,7 @@ fn every_permanent_class_blocks_explicit_and_automatic_retries() {
             .at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
         fetchers.enqueue(asset.clone(), None, Purpose::Thumbnail);
         assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retriable())
+            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !media_retry(class, false))
         );
         assert!(!fetchers.retry(&asset.key()));
     }
@@ -928,7 +928,7 @@ fn photo_download_metadata_still_uses_obs_but_file_download_urls_are_refused() {
         let file = Asset::attachment(&json!({"id":"42", "contentType":14, "contentMetadata":meta}))
             .unwrap();
         assert_eq!(
-            Failure::from_error(&file.fetch(&http, Some("synthetic")).unwrap_err()),
+            media_failure(&file.fetch(&http, Some("synthetic")).unwrap_err()),
             Failure::UnsupportedHost
         );
         requests.recv_timeout(Duration::from_secs(10)).unwrap();

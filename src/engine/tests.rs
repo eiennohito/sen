@@ -19,6 +19,7 @@ impl App {
                 retry_initial: Duration::from_millis(1),
                 retry_max: Duration::from_millis(10),
                 poll: Duration::from_millis(1),
+                offline_after: Duration::from_millis(100),
             },
         );
         let mut app = Self {
@@ -97,7 +98,10 @@ fn three_transient_stream_failures_have_no_visible_effect() {
     let mut app = App::new();
     let messages = app.state.messages.clone();
     for _ in 0..3 {
-        app.retry(115);
+        app.worker.sender.0.live(StreamEvent::Retry {
+            attempt: 1,
+            error: Failure::Unanswered,
+        });
     }
     app.on_engine(|_| {});
     let deltas: Vec<_> = app.worker.deltas.try_iter().collect();
@@ -113,16 +117,17 @@ fn three_transient_stream_failures_have_no_visible_effect() {
 #[test]
 fn persistent_stream_loss_shows_offline_and_success_clears_it() {
     let mut app = App::new();
-    app.retry(115);
-    app.on_engine(|engine| {
-        // Advance the health clock; the production timer still decides Offline.
-        engine.health.failed_since = engine
-            .health
-            .failed_since
-            .map(|since| since - Duration::from_secs(15));
+    app.worker.sender.0.live(StreamEvent::Retry {
+        attempt: 1,
+        error: Failure::Unanswered,
     });
     app.until(|state| state.connection == Connection::Offline);
-    app.worker.sender.0.live(StreamEvent::Connection(Ok(())));
+    let response =
+        crate::client::error::decode_response("/api/test", 503, b"unavailable").unwrap_err();
+    app.worker.sender.0.live(StreamEvent::Retry {
+        attempt: 2,
+        error: classify(&response),
+    });
     app.until(|state| state.connection == Connection::Online);
 }
 
@@ -239,111 +244,63 @@ fn refresh_503_backoff_does_not_hold_a_send() {
 }
 
 #[test]
-fn late_success_after_sign_out_updates_its_own_account_store() {
-    use sha2::{Digest, Sha256};
-    let root = std::env::temp_dir().join(format!("line-completion-account-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&root);
-    let mut app = App::at(StoreLocation::Account {
-        root: root.clone(),
-        mid: Some("self".into()),
+fn live_frames_decode_in_arrival_order_before_refreshes() {
+    let mut app = App::new();
+    let chat = ChatId("alice".into());
+    let rows = vec![
+        FakeBackend::message("alice", 500, "first", false),
+        FakeBackend::message("alice", 501, "second", false),
+    ];
+    app.fake.set_page(chat.clone(), rows);
+    app.worker.sender.send(Intent::Page {
+        chat,
+        kind: PageKind::Recent,
     });
-    let (entered, release) = app.fake.block_send();
-    app.worker.sender.send(Intent::Send {
-        chat: ChatId("alice".into()),
-        text: "old account".into(),
+    app.until(|state| {
+        state
+            .messages
+            .values()
+            .any(|row| row.body.as_text() == "second")
     });
-    entered.recv_timeout(Duration::from_secs(3)).unwrap();
-    app.retry(1);
-    app.until(|state| matches!(state.connection, Connection::SignedOut { .. }));
-    let original_key = app
-        .state
-        .messages
-        .values()
-        .find(|row| row.body.as_text() == "old account")
-        .unwrap()
-        .key;
-    let target = root.join(format!("{:x}", Sha256::digest("other")));
-    // Give the active store a colliding row key before the real completion arrives.
-    let directory = target.clone();
-    app.on_engine(move |engine| {
-        let mut other = Store::open(&directory).unwrap();
-        other
-            .set_account(
-                "other",
-                Profile {
-                    mid: "other".into(),
-                    ..Default::default()
-                },
-            )
-            .unwrap();
-        for index in 1..original_key.0 {
-            let seq = index as u32 + 100;
-            other
-                .insert_pending(
-                    &ChatId("alice".into()),
-                    LocalId(format!("history-{index}")),
-                    seq,
-                    Content::text("other history"),
-                    index,
-                )
-                .unwrap();
-            other
-                .link_sent(seq, ServerId(format!("{}", index + 1000)), index)
-                .unwrap();
-        }
-        let (key, _) = other
-            .insert_pending(
-                &ChatId("alice".into()),
-                LocalId("other-row".into()),
-                1,
-                Content::text("other account"),
-                1,
-            )
-            .unwrap();
-        assert_eq!(key, original_key);
-        other
-            .mark_failed(
-                key,
-                Delivery::Rejected {
-                    reason: Refusal::AppClosed,
-                },
-            )
-            .unwrap();
-        engine.store = other;
-        engine.store_mid = Some("other".into());
+    app.fake
+        .inject_raw(serde_json::json!({"type":64,"param2":"501"}));
+    app.fake
+        .inject_raw(serde_json::json!({"type":64,"param2":"500"}));
+    app.until(|state| {
+        ["500", "501"].iter().all(|id| {
+            state.messages.values().any(|row| {
+                row.server_id.as_ref().is_some_and(|server| server.0 == *id)
+                    && row.body.is_withdrawn()
+            })
+        })
     });
-    release.send(()).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        assert!(Instant::now() < deadline, "send completion did not return");
-        let (done, wait) = mpsc::channel();
-        app.on_engine(move |engine| {
-            done.send(engine.net_pending == 0).unwrap();
-        });
-        if wait.recv().unwrap() {
-            break;
-        }
-        thread::yield_now();
-    }
-    let own = Store::open(&root.join(format!("{:x}", Sha256::digest("self")))).unwrap();
-    let rows = own
-        .window(&ChatId("alice".into()), Anchor::Latest, 100, 0)
-        .unwrap();
-    assert!(
-        rows.rows
-            .iter()
-            .any(|row| row.body.as_text() == "old account" && row.delivery == Delivery::Sent)
-    );
-    let other = Store::open(&target).unwrap();
-    let rows = other.all_pending().unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0].body.as_text(), "other account");
-    assert_eq!(
-        rows[0].delivery,
-        Delivery::Rejected {
-            reason: Refusal::AppClosed
-        }
-    );
-    drop((own, other, app));
-    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn stream_exit_restarts_and_subsequent_operations_arrive() {
+    let mut app = App::new();
+    let starts = app.fake.resumed_revisions().len();
+    app.worker.sender.0.live(StreamEvent::Retry {
+        attempt: 1,
+        error: Failure::Unanswered,
+    });
+    app.worker.sender.0.live(StreamEvent::Exited);
+    app.settle();
+    assert!(app.fake.resumed_revisions().len() > starts);
+    app.fake.inject(LiveOp {
+        revision: 9001,
+        replay: false,
+        op: Op::Message(Box::new(FakeBackend::message(
+            "alice",
+            9001,
+            "after reconnect",
+            false,
+        ))),
+    });
+    app.until(|state| {
+        state
+            .messages
+            .values()
+            .any(|row| row.body.as_text() == "after reconnect")
+    });
 }

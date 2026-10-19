@@ -1240,35 +1240,33 @@ mod tests {
             for size in [(980, 720), (360, 520)] {
                 for text_size in [15, 24] {
                     ui.set_text_size(text_size);
-                    {
-                        ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
-                            id: "failed".into(),
-                            body: "Meet at eleven.".into(),
-                            outgoing: true,
-                            recoverable: true,
-                            delivery: "Not sent".into(),
-                            time: "12:01".into(),
-                            clock: "12:01".into(),
-                            ..Default::default()
-                        }])));
-                        ui.invoke_show_history(0., false);
-                        let pixels = render(&window, size);
-                        let green: Vec<_> = pixels
-                            .enumerate_pixels()
-                            .filter(|(_, _, p)| p.0 == [199, 242, 164])
-                            .map(|(x, y, _)| (x, y))
-                            .collect();
-                        let right = green.iter().map(|p| p.0).max().unwrap();
-                        let top = green.iter().map(|p| p.1).min().unwrap();
-                        let bottom = green.iter().map(|p| p.1).max().unwrap();
-                        assert!(
-                            pixels.enumerate_pixels().any(|(x, y, p)| x > right
-                                && y >= top
-                                && y <= bottom
-                                && p.0 == [217, 48, 37]),
-                            "failure mark moved below the bubble"
-                        );
-                    }
+                    ui.set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
+                        id: "failed".into(),
+                        body: "Meet at eleven.".into(),
+                        outgoing: true,
+                        recoverable: true,
+                        delivery: "Not sent".into(),
+                        time: "12:01".into(),
+                        clock: "12:01".into(),
+                        ..Default::default()
+                    }])));
+                    ui.invoke_show_history(0., false);
+                    let pixels = render(&window, size);
+                    let green: Vec<_> = pixels
+                        .enumerate_pixels()
+                        .filter(|(_, _, p)| p.0 == [199, 242, 164])
+                        .map(|(x, y, _)| (x, y))
+                        .collect();
+                    let right = green.iter().map(|p| p.0).max().unwrap();
+                    let top = green.iter().map(|p| p.1).min().unwrap();
+                    let bottom = green.iter().map(|p| p.1).max().unwrap();
+                    assert!(
+                        pixels.enumerate_pixels().any(|(x, y, p)| x > right
+                            && y >= top
+                            && y <= bottom
+                            && p.0 == [217, 48, 37]),
+                        "failure mark moved below the bubble"
+                    );
                 }
             }
             ui.hide().unwrap();

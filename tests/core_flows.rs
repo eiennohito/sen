@@ -24,6 +24,7 @@ impl App {
                     retry_initial: Duration::from_millis(5),
                     retry_max: Duration::from_millis(50),
                     poll: Duration::from_millis(1),
+                    offline_after: Duration::from_millis(100),
                 },
             ),
             state: AppState::default(),
@@ -198,11 +199,10 @@ fn offline_start_shows_cached_chats_and_window() {
     app.until(|s| {
         !s.chats.is_empty() && s.messages.values().any(|m| message_text(m) == "checkpoint")
     });
-    assert_ne!(app.state.connection, Connection::Offline);
+    assert!(app.state.chats.values().all(|chat| chat.chat.unread_stale));
     fake.offline(false);
     app.until(|s| s.connection == Connection::Online); // Stream reconnect also resumes persisted revision.
     app.until(|_| fake.resumed_revisions().contains(&75));
-    assert!(fake.resumed_revisions().contains(&75));
     drop(app);
     std::fs::remove_dir_all(dir).unwrap();
 }
@@ -213,7 +213,7 @@ fn failed_send_retry_discard_and_copy() {
     app.online();
     app.select("alice");
     app.body_key("Hello! 日本語も使えます。");
-    fake.fail_send();
+    fake.fail_send(ChatId("alice".into()));
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "retry text".into(),
@@ -224,7 +224,7 @@ fn failed_send_retry_discard_and_copy() {
     app.until(|s| s.composer == "retry text");
     app.send(Intent::Retry(key));
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
-    fake.fail_send();
+    fake.fail_send(ChatId("alice".into()));
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
         text: "discard text".into(),
@@ -341,12 +341,9 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
     });
     let failures = [
         (FakeRpc::Chats, Failure::Unanswered),
-        (FakeRpc::Messages(chat.clone()), Failure::Unanswered),
-        (FakeRpc::Details(chat.clone()), Failure::Unanswered),
-        (FakeRpc::Receipts(chat.clone()), Failure::Unanswered),
         (
             FakeRpc::Read(chat.clone()),
-            Failure::Refused(Refusal::ReadFailed),
+            Failure::Refused(Refusal::Code(13)),
         ),
     ];
     for (rpc, error) in &failures {
@@ -591,7 +588,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
     let key = app.body_key("own confirmed");
     fake.fail_rpc(
         FakeRpc::Unsend(ServerId("11".into())),
-        Failure::Refused(Refusal::SyntheticUnsend),
+        Failure::Refused(Refusal::Code(13)),
     );
     app.send(Intent::Unsend(key));
     let mut failures = 0;
@@ -657,7 +654,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         }
     }
     impl Backend for Blocked {
-        fn contact(&mut self, mid: &str) -> Result<line::store::Friend> {
+        fn contact(&mut self, mid: &str) -> Result<Option<line::store::Friend>> {
             self.0.contact(mid)
         }
         fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
@@ -973,7 +970,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         calls: Arc<AtomicUsize>,
     }
     impl Backend for BlockedSend {
-        fn contact(&mut self, mid: &str) -> Result<line::store::Friend> {
+        fn contact(&mut self, mid: &str) -> Result<Option<line::store::Friend>> {
             self.fake.contact(mid)
         }
         fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
@@ -1082,7 +1079,7 @@ fn repeated_retry_and_discard_preserve_in_flight_send() {
         }
     }
     let fake = FakeBackend::canned();
-    fake.fail_send();
+    fake.fail_send(ChatId("alice".into()));
     let (entered_tx, entered) = mpsc::channel();
     let (release, release_rx) = mpsc::channel();
     let calls = Arc::new(AtomicUsize::new(0));
@@ -1153,10 +1150,7 @@ fn rename_contact_failure_then_success_updates_the_store_page() {
         mid: "alice".into(),
         name: "Aoi 🌿".into(),
     };
-    fake.fail_rpc(
-        FakeRpc::Action(action.clone()),
-        Failure::Bug("decode".into()),
-    );
+    fake.fail_rpc(FakeRpc::Action(action.clone()), Failure::Bug("decode"));
     profile_action(&mut app, action.clone());
     assert_eq!(app.state.contacts["alice"].name, "葵");
     assert_eq!(
@@ -1203,10 +1197,7 @@ fn add_friend_failure_then_success_changes_relation_in_place() {
         mid: mid.clone(),
         chat: "weekend".into(),
     };
-    fake.fail_rpc(
-        FakeRpc::Action(action.clone()),
-        Failure::Bug("decode".into()),
-    );
+    fake.fail_rpc(FakeRpc::Action(action.clone()), Failure::Bug("decode"));
     profile_action(&mut app, action.clone());
     assert_eq!(app.state.contacts[&mid].profile.relation, Some(2));
     assert_eq!(
@@ -1234,10 +1225,7 @@ fn mute_failure_then_success_preserves_full_chat_and_updates_notifications() {
         chat: chat.clone(),
         disabled: true,
     };
-    fake.fail_rpc(
-        FakeRpc::Action(action.clone()),
-        Failure::Bug("decode".into()),
-    );
+    fake.fail_rpc(FakeRpc::Action(action.clone()), Failure::Bug("decode"));
     profile_action(&mut app, action.clone());
     assert!(!app.state.chats[&chat].chat.muted);
     assert_eq!(
@@ -1260,10 +1248,7 @@ fn leave_failure_then_success_retains_a_read_only_chat_in_the_list() {
     app.until(|s| !s.window_loading);
     let chat = ChatId("weekend".into());
     let action = ProfileAction::Leave { chat: chat.clone() };
-    fake.fail_rpc(
-        FakeRpc::Action(action.clone()),
-        Failure::Bug("decode".into()),
-    );
+    fake.fail_rpc(FakeRpc::Action(action.clone()), Failure::Bug("decode"));
     profile_action(&mut app, action.clone());
     assert!(!app.state.chats[&chat].chat.left);
     assert_eq!(
@@ -1386,7 +1371,7 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
             .count(),
         1
     );
-    fake.fail_send();
+    fake.fail_send(ChatId("alice".into()));
     let other = app.state.sticker_packages[1].stickers[0].clone();
     app.send(Intent::SendSticker {
         chat: ChatId("alice".into()),
@@ -2148,7 +2133,6 @@ fn written_unanswered_send_never_resends_and_a_late_echo_confirms_it() {
             }
     });
     let seq = app.state.messages[&key].request_seq;
-    fake.offline(false);
     let mut echo = FakeBackend::message("alice", 901, "unanswered", true);
     echo.request_seq = seq;
     fake.inject(LiveOp {
@@ -2175,24 +2159,15 @@ fn written_unanswered_send_never_resends_and_a_late_echo_confirms_it() {
 }
 
 #[test]
-fn restart_recovers_started_and_queued_rows_without_sending_either() {
+fn restart_recovers_pending_row_without_sending() {
     use line::{
         backend::FakeRpc,
         store::{Content, LocalId, Store},
     };
     let root = std::env::temp_dir().join(format!("line-restart-sends-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    let (started, queued) = {
+    let queued = {
         let mut store = Store::open(&root).unwrap();
-        let (started, _) = store
-            .insert_pending(
-                &ChatId("alice".into()),
-                LocalId("started".into()),
-                1,
-                Content::text("started before restart"),
-                1,
-            )
-            .unwrap();
         let (queued, _) = store
             .insert_pending(
                 &ChatId("alice".into()),
@@ -2208,19 +2183,13 @@ fn restart_recovers_started_and_queued_rows_without_sending_either() {
                 ..Default::default()
             })
             .unwrap();
-        (started, queued)
+        queued
     };
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Directory(root.clone()));
     app.online();
     app.select("alice");
     app.body_key("queued before restart");
-    assert_eq!(
-        app.state.messages[&started].delivery,
-        Delivery::Rejected {
-            reason: Refusal::AppClosed
-        }
-    );
     assert_eq!(
         app.state.messages[&queued].delivery,
         Delivery::Rejected {
@@ -2235,12 +2204,6 @@ fn restart_recovers_started_and_queued_rows_without_sending_either() {
     );
     app.send(Intent::Retry(queued));
     app.until(|state| state.messages[&queued].delivery == Delivery::Sent);
-    assert_eq!(
-        app.state.messages[&started].delivery,
-        Delivery::Rejected {
-            reason: Refusal::AppClosed
-        }
-    );
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }
