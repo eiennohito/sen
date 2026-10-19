@@ -12,6 +12,7 @@ import { PreviewLine } from "preview-line.slint";
 import { SearchField } from "search-field.slint";
 
 export component Chats inherits Rectangle {
+    visible: State.section == 0;
     out property <bool> has-focus: search.contains-focus || chips-focus.has-focus || list-focus.has-focus;
     public function scroll(delta: length) { chat-list.scroll(delta); }
     public function jump(y: length) { chat-list.jump(y); }
@@ -183,6 +184,6 @@ for chat[i] in State.chats: Rectangle {
                 if State.more-chats: Button { text: "Load more"; clicked => { State.more(); } }
 
             }
-    if State.chats.length == 0: EmptyState { y: 160px; height: max(0px, parent.height - 160px); text: State.query == "" ? "No conversations yet" : "No results"; icon: @image-url("../assets/icons/search.svg"); }
+    if State.chats.length == 0: EmptyState { signed-out: !State.has-account; y: 160px; height: max(0px, parent.height - 160px); text: State.query == "" ? "No conversations yet" : "No results"; icon: State.query == "" ? @image-url("../assets/icons/chats.svg") : @image-url("../assets/icons/search.svg"); }
     public function focus-search() { search.focus(); }
 }

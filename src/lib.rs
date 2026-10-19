@@ -40,3 +40,4 @@ pub fn sign(rt: &mut Runtime, path: &str, body: &str, access: &str) -> Result<St
 }
 
 pub mod attachments;
+pub mod reporting;

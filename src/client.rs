@@ -584,12 +584,12 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
                     .downcast_ref::<RpcError>()
                     .is_some_and(|e| e.code == 10052 && e.status == 410);
                 if !expired || started.elapsed() > Duration::from_secs(300) {
-                    return Err(error);
+                    return Err(pairing::phone_error(error));
                 }
             }
         }
     }
-    ensure!(verified, "QR code expired before phone verification");
+    ensure!(verified, error::Error::SignIn(error::SignInFailure::Phone));
     progress.check()?;
     progress.scanned()?;
     progress.set(pairing::Stage::CheckingCertificate)?;
@@ -620,7 +620,8 @@ fn login_with(opts: &Options, wasm: &[u8], progress: &impl LoginUi) -> Result<()
                 json!({"authSessionId":session}),
                 &session,
                 110,
-            )?;
+            )
+            .map_err(pairing::phone_error)?;
         }
     }
     progress.check()?;

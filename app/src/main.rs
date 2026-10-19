@@ -103,7 +103,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 explicit_paths = true;
             }
             "--cache-dir" => locations.cache = args.next().ok_or("missing cache directory")?.into(),
-            "--demo-rich" | "--demo-photos" | "--demo-groups" | "--demo-friends" => {
+            "--demo-signed-out" | "--demo-rich" | "--demo-photos" | "--demo-groups"
+            | "--demo-friends" => {
                 demo = true;
                 scene = arg.trim_start_matches("--demo-").into();
             }

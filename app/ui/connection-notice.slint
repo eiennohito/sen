@@ -41,7 +41,7 @@ export component ConnectionNotice inherits Rectangle {
     width: 100%; height: State.connection-notice-height;
     visible: State.connection-feedback-visible;
     background: Tokens.warning-surface;
-    property <string> status: !State.connection-failed ? "Reconnected" : State.auth-expired || State.session-unavailable ? "Sign-in expired" : State.retrying-connection ? "Connecting…" : "Offline. Reconnecting…";
+    property <string> status: !State.connection-failed ? "Reconnected" : State.session-cause != "" ? State.session-cause : State.session-unavailable ? "Saved sign-in unavailable" : State.auth-expired ? "Sign-in expired" : State.retrying-connection ? "Connecting…" : "Offline. Reconnecting…";
     property <length> status-width: max(0px, root.width - 64px - (sign-in.visible ? sign-in.preferred-width + 8px : 0px));
     out property <string> compact-status: root.status;
     full-status := Text { visible: false; text: root.status; font-size: Tokens.base; }

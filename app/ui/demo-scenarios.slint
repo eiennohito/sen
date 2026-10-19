@@ -17,8 +17,9 @@ export component DemoScenarios inherits Rectangle {
         if event.text == Key.F12 && root.open() { return accept; }
         return reject;
     }
+    // Keyboard navigation can scroll to the final scenario. Reopen at the first row.
     public function open() -> bool {
-        if State.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; State.remember-demo-focus(); State.demo-scenarios-open = true; close.focus(); return true; }
+        if State.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; State.remember-demo-focus(); State.demo-scenarios-open = true; scenario-scroll.content-y = 0px; close.focus(); return true; }
         return false;
     }
     public function dismiss() { root.reset-focus(); State.demo-scenarios-open = false; root.media-menu = false; State.restore-demo-focus(); }
@@ -36,6 +37,8 @@ export component DemoScenarios inherits Rectangle {
         [{text:"Group preview",label:"Group preview",kind:7},{text:"Unread scenario",label:"Unread scenario",kind:14}],
         [{text:"Attachments",label:"Synthetic attachments",kind:34}],
         [{text:"Protocol fixtures",label:"Protocol fixtures",kind:32},{text:"Live reaction",label:"Live reaction",kind:33}],
+        [{text:"Crypto",label:"Sign-in crypto failure",kind:40},{text:"State",label:"Sign-in state failure",kind:41},{text:"Keyring",label:"Sign-in keyring failure",kind:42}],
+        [{text:"Network",label:"Sign-in network failure",kind:43},{text:"Server",label:"Sign-in server failure",kind:44},{text:"Phone",label:"Sign-in phone failure",kind:45},{text:"Cancelled",label:"Sign-in cancelled",kind:46}],
         [{text:"Expired sign-in",label:"Expired sign-in",kind:19}],
         [{text:"Reconnect",label:"Reconnect blip",kind:16},{text:"Offline",label:"Offline",kind:17}],
     ];
@@ -69,7 +72,7 @@ export component DemoScenarios inherits Rectangle {
                     padding: 16px; spacing: 12px;
                     Text { text: "Demo scenarios"; font-size: Tokens.heading; color: Tokens.foreground; }
                     close := Button { text: "Close demo scenarios"; accessible-description: self.has-focus ? "Focused" : ""; clicked => { root.dismiss(); } }
-                    ScrollView {
+                    scenario-scroll := ScrollView {
                         horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             padding-right: 12px; spacing: 8px; alignment: start;

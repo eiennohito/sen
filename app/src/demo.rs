@@ -4,6 +4,18 @@ use line_wasm_poc::backend::{LiveOp, Op};
 pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: i32) {
     let chat = d.state.selected.clone().unwrap_or(ChatId("alice".into()));
     match kind {
+        40..=46 => {
+            use line_wasm_poc::client::error::SignInFailure::*;
+            fake.fail_sign_in(match kind {
+                40 => CryptoModule("/demo/crypto.wasm".into()),
+                41 => StateDirectory("/demo/state".into()),
+                42 => Keyring,
+                43 => Network,
+                44 => Server,
+                45 => Phone,
+                _ => Cancelled,
+            });
+        }
         34 => {
             let directory =
                 std::env::temp_dir().join(format!("line-demo-attachments-{}", std::process::id()));
@@ -207,6 +219,16 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
 }
 
 pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
+    if scene == "signed-out" {
+        if case == Some("missing-module") {
+            fake.fail_open(Some(
+                line_wasm_poc::client::error::SignInFailure::CryptoModule(
+                    "/demo/crypto.wasm".into(),
+                ),
+            ));
+        }
+        return;
+    }
     demo_data::seed(fake);
     fake.upload_delay(std::time::Duration::from_millis(1800));
     if scene == "previews" {
@@ -392,7 +414,9 @@ pub(crate) fn stage(
     scene: &str,
     snapshot_profile: bool,
 ) {
-    ui.set_show_conversation(scene != "chats" && !scene.starts_with("friends"));
+    ui.set_show_conversation(
+        scene != "chats" && scene != "signed-out" && !scene.starts_with("friends"),
+    );
     if scene == "settings" {
         desktop.update(|d| {
             d.state.panel = Panel::Settings;
@@ -456,7 +480,7 @@ pub(crate) fn worker(fake: FakeBackend, text_size: i32, assets: assets::Assets) 
     let initial = AtomicBool::new(true);
     let worker = Worker::start_projected(
         StoreLocation::Memory,
-        move || Ok(fake),
+        move || fake.open(),
         Default::default(),
         move |delta| {
             let delta = match delta {

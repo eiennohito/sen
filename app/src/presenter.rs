@@ -713,22 +713,23 @@ impl Presenter {
         });
         ui.set_has_chat(state.selected.is_some());
         ui.set_storage_error(
-            if state.error.is_some() {
-                "Local data could not be saved."
-            } else {
-                ""
-            }
-            .into(),
+            state
+                .error
+                .map(crate::text::storage_failure)
+                .unwrap_or("")
+                .into(),
         );
         ui.global::<State>()
             .set_account_initial(name_initial(state.profile.display_name.as_str()));
+        ui.global::<State>()
+            .set_has_account(!state.profile.mid.is_empty());
         ui.set_account_name(state.profile.display_name.as_str().into());
         ui.global::<State>().set_connection(match state.connection {
             Connection::Local => ConnectionState::Local,
             Connection::Connecting { .. } => ConnectionState::Connecting,
             Connection::Online => ConnectionState::Online,
             Connection::Offline { .. } => ConnectionState::Offline,
-            Connection::AuthExpired => ConnectionState::AuthExpired,
+            Connection::SignedOut | Connection::AuthExpired => ConnectionState::AuthExpired,
             Connection::SessionInvalid | Connection::Fatal => ConnectionState::SessionInvalid,
             Connection::SigningIn => ConnectionState::SigningIn,
         });
@@ -738,6 +739,7 @@ impl Presenter {
                 Connection::Online => "Connected",
                 Connection::Connecting { .. } => "Connecting…",
                 Connection::Offline { .. } => "Offline — reconnecting automatically",
+                Connection::SignedOut => "Not signed in",
                 Connection::AuthExpired => "Sign in required",
                 Connection::SessionInvalid => "Session unavailable",
                 Connection::Fatal => "Something went wrong — restart",

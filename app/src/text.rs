@@ -39,10 +39,12 @@ pub(crate) fn viewer_failure(failure: Failure) -> String {
 pub(crate) fn create_failure(failure: &line_wasm_poc::engine::CreateFailure) -> &str {
     use line_wasm_poc::engine::CreateFailure;
     match failure {
-        CreateFailure::InvalidSelection => "invalid store operation: Select at least two friends.",
-        CreateFailure::Local(message) => message,
-        CreateFailure::Rejected => "Couldn't create group.",
-        CreateFailure::Uncertain => "The group may have been created.",
+        CreateFailure::InvalidSelection => "Select at least two friends to create a group.",
+        CreateFailure::Local => "Couldn't create group. Try again.",
+        CreateFailure::Rejected => "Couldn't create group. Try again.",
+        CreateFailure::Uncertain => {
+            "The group may have been created. Check your conversations before trying again."
+        }
     }
 }
 
@@ -59,6 +61,7 @@ pub(crate) fn profile_failure(failure: line_wasm_poc::engine::ProfileFailure) ->
 pub(crate) fn pairing_stage(stage: line_wasm_poc::client::pairing::Stage) -> String {
     use line_wasm_poc::client::pairing::Stage;
     match stage {
+        Stage::WaitingKeyring => "Waiting for the keyring to unlock…".into(),
         Stage::RecoveringKeys => "Recovering E2EE keys from saved pairing metadata".into(),
         Stage::Authenticated => {
             "SUCCESS: saved session authenticated and E2EE keys restored".into()
@@ -79,5 +82,35 @@ pub(crate) fn pairing_stage(stage: line_wasm_poc::client::pairing::Stage) -> Str
         Stage::RestoredKeys(count) => {
             format!("Restored {count} Letter Sealing key(s) in a fresh WASM instance")
         }
+    }
+}
+
+pub fn storage_failure(reason: line_wasm_poc::engine::StorageFailure) -> &'static str {
+    use line_wasm_poc::engine::StorageFailure::*;
+    match reason {
+        Full => "Can't save messages: disk is full. New messages are shown but won't be kept.",
+        ReadOnly => {
+            "Can't save messages: storage is read-only. New messages are shown but won't be kept."
+        }
+        Permission => {
+            "Can't save messages: permission denied. New messages are shown but won't be kept."
+        }
+        Io => "Can't save messages: disk I/O failed. New messages are shown but won't be kept.",
+    }
+}
+pub fn sign_in_failure(reason: &line_wasm_poc::client::error::SignInFailure) -> String {
+    use line_wasm_poc::client::error::SignInFailure::*;
+    match reason {
+        CryptoModule(path) => format!("Crypto module missing or unsupported. Install the supported module at {} and try again.", path.display()),
+        StateDirectory(path) => format!("State directory is not writable: {}. Grant write permission and try again.", path.display()),
+        Keyring => "Unlock your keyring (KWallet/GNOME Keyring) and try again. Ensure Secret Service is running with a default keyring.".into(),
+        Network => "Can't reach LINE. Check your network connection and try again.".into(),
+        Server => "LINE refused sign-in. Try again later.".into(),
+        Phone => "Phone approval was rejected or timed out. Start again and approve sign-in on your phone.".into(),
+        Cancelled => String::new(),
+        SavedSession(reason) => format!("Your saved sign-in can't be used: {reason}. Sign in again to replace it."),
+        Expired => "Sign-in expired. Sign in again.".into(),
+        SessionIdentity => "The saved sign-in belongs to a different account. Sign in again.".into(),
+        Internal => "Sign-in stopped because of an internal error. See the log and try again.".into(),
     }
 }

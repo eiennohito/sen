@@ -48,8 +48,8 @@ impl App {
             if matches!(d, Delta::Notify(_)) {
                 self.notifications += 1;
             }
-            if let Delta::Error(e) = &d {
-                panic!("engine: {e}");
+            if let Delta::StorageFailed(e) = &d {
+                panic!("engine: {e:?}");
             }
             self.state.apply(d);
         }
@@ -257,7 +257,9 @@ fn unrelated_fetch_failure_does_not_block_send() {
     assert!(app.state.can_send());
     // Even a storage banner does not disable an unrelated operation. A committed
     // write clears it; no controller reset or manual retry is needed.
-    app.state.apply(Delta::Error("store write failed".into()));
+    app.state.apply(Delta::StorageFailed(
+        line_wasm_poc::engine::StorageFailure::Full,
+    ));
     assert!(app.state.can_send());
     app.send(Intent::Prefs(Prefs {
         text_size: 37,
@@ -599,7 +601,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
             failures += 1;
             break;
         }
-        assert!(!matches!(delta, Delta::Error(_)));
+        assert!(!matches!(delta, Delta::StorageFailed(_)));
         app.state.apply(delta);
     }
     assert_eq!(failures, 1);
@@ -813,7 +815,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
         },
         move || {
             initialized.recv()?;
-            Ok(Blocked(fake, released, entered))
+            Ok(Blocked(fake.clone(), released.clone(), entered.clone()))
         },
     );
     let receive = |predicate: &dyn Fn(&Delta) -> bool| {
@@ -823,7 +825,7 @@ fn cached_intents_complete_while_backend_rpc_is_blocked() {
                 .deltas
                 .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                 .expect("cached work must finish before RPC is released");
-            assert!(!matches!(delta, Delta::Fatal | Delta::Error(_)));
+            assert!(!matches!(delta, Delta::Fatal | Delta::StorageFailed(_)));
             if predicate(&delta) {
                 return delta;
             }
@@ -1461,6 +1463,362 @@ fn compose_new_chat_local_friend_then_group_success_and_failure() {
 }
 
 #[test]
+fn signed_out_account_intents_never_reach_the_backend() {
+    let fake = FakeBackend::signed_out();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.until(|s| s.connection == Connection::SignedOut);
+    for intent in [
+        Intent::Friends,
+        Intent::Contact("unknown-account-id".into()),
+        Intent::GroupInfo(ChatId("unknown-chat-id".into())),
+        Intent::Members(ChatId("unknown-chat-id".into())),
+        Intent::StickerPackages,
+        Intent::Retry(Key(999)),
+        Intent::Send {
+            chat: ChatId("unknown-chat-id".into()),
+            text: "private text".into(),
+        },
+        Intent::SendAttachments {
+            chat: ChatId("unknown-chat-id".into()),
+            items: vec![line_wasm_poc::attachments::Attachment {
+                path: "/unread-signed-out-attachment".into(),
+                name: "private.txt".into(),
+                size: 1,
+                photo: None,
+                preview: vec![],
+                clipboard: false,
+            }],
+        },
+    ] {
+        app.send(intent);
+    }
+    // A preference acknowledgment is a FIFO barrier after all account intents.
+    app.send(Intent::Prefs(Prefs {
+        text_size: 29,
+        ..Default::default()
+    }));
+    app.until(|s| s.prefs.text_size == 29);
+    assert!(fake.calls().is_empty());
+    assert!(app.state.error.is_none());
+    assert!(app.state.messages.is_empty());
+}
+
+#[test]
+fn pairing_reasons_survive_the_engine() {
+    use line_wasm_poc::client::error::SignInFailure::*;
+    let fake = FakeBackend::signed_out();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.until(|s| s.connection == Connection::SignedOut);
+    for reason in [
+        CryptoModule("/missing/crypto.wasm".into()),
+        StateDirectory("/readonly/state".into()),
+        Keyring,
+        Network,
+        Server,
+        Phone,
+        Cancelled,
+    ] {
+        fake.fail_sign_in(reason.clone());
+        app.send(Intent::SignIn);
+        loop {
+            let delta = app
+                .worker
+                .deltas
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap();
+            if let Delta::PairFailed { reason: actual } = delta {
+                assert_eq!(actual, reason);
+                break;
+            }
+            assert!(!matches!(
+                delta,
+                Delta::Fatal | Delta::StorageFailed(_) | Delta::InternalError(_)
+            ));
+            app.state.apply(delta);
+        }
+    }
+    assert!(fake.calls().is_empty());
+}
+
+#[test]
+fn invariant_errors_are_never_storage_failures() {
+    use line_wasm_poc::{engine::StorageFailure, store::StoreError};
+    for error in [
+        StoreError::Invalid("impossible state".into()),
+        StoreError::Sql(rusqlite::Error::QueryReturnedNoRows),
+    ] {
+        assert_eq!(StorageFailure::classify(&error), None);
+    }
+    for (code, expected) in [
+        (rusqlite::ffi::SQLITE_FULL, StorageFailure::Full),
+        (rusqlite::ffi::SQLITE_READONLY, StorageFailure::ReadOnly),
+        (rusqlite::ffi::SQLITE_PERM, StorageFailure::Permission),
+        (rusqlite::ffi::SQLITE_IOERR, StorageFailure::Io),
+    ] {
+        let error = StoreError::Sql(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(code),
+            None,
+        ));
+        assert_eq!(StorageFailure::classify(&error), Some(expected));
+    }
+}
+
+#[test]
+fn unknown_key_reports_a_bug_and_keeps_the_worker_running() {
+    let fake = FakeBackend::canned();
+    let mut app = App::new(fake, StoreLocation::Memory);
+    app.online();
+    app.send(Intent::Copy(Key(i64::MAX)));
+    loop {
+        let delta = app
+            .worker
+            .deltas
+            .recv_timeout(Duration::from_secs(5))
+            .unwrap();
+        if let Delta::InternalError(kind) = delta {
+            assert_eq!(kind, "unknown key");
+            break;
+        }
+        assert!(!matches!(delta, Delta::StorageFailed(_) | Delta::Fatal));
+        app.state.apply(delta);
+    }
+    assert!(app.state.error.is_none());
+    app.send(Intent::Prefs(Prefs {
+        text_size: 31,
+        ..Default::default()
+    }));
+    app.until(|s| s.prefs.text_size == 31);
+}
+
+#[test]
+fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
+    use line_wasm_poc::client::error::SignInFailure;
+    let fake = FakeBackend::signed_out();
+    let reason = SignInFailure::CryptoModule("/missing/crypto.wasm".into());
+    fake.fail_open(Some(reason.clone()));
+    let opener = fake.clone();
+    let worker = Worker::start_with(StoreLocation::Memory, move || opener.open());
+    let failure = || loop {
+        let delta = worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap();
+        assert!(!matches!(delta, Delta::Fatal));
+        if let Delta::PairFailed { reason } = delta {
+            break reason;
+        }
+    };
+    assert_eq!(failure(), reason);
+    worker.sender.send(Intent::SignIn);
+    assert_eq!(failure(), reason);
+    fake.fail_open(None);
+    worker.sender.send(Intent::SignIn);
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::Fatal | Delta::PairFailed { .. } => panic!("repaired open did not recover"),
+            _ => {}
+        }
+    }
+    worker.sender.cancel_sign_in();
+    assert_eq!(failure(), SignInFailure::Cancelled);
+}
+
+#[test]
+fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
+    use line_wasm_poc::client::error::SignInFailure;
+    use std::sync::mpsc;
+    let fake = FakeBackend::signed_out();
+    let (started, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let mut first = true;
+    let worker = Worker::start_with(StoreLocation::Memory, move || {
+        if std::mem::take(&mut first) {
+            return Err(
+                line_wasm_poc::backend::Error::SignIn(SignInFailure::CryptoModule(
+                    "/missing/crypto.wasm".into(),
+                ))
+                .into(),
+            );
+        }
+        started.send(()).unwrap();
+        resume.recv().unwrap();
+        fake.open()
+    });
+    loop {
+        if matches!(
+            worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Delta::Connection(Connection::SessionInvalid)
+        ) {
+            break;
+        }
+    }
+    worker.sender.send(Intent::SignIn);
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    worker.sender.cancel_sign_in();
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap() {
+            Delta::PairFailed { reason } => {
+                assert_eq!(reason, SignInFailure::Cancelled);
+                break;
+            }
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Stage(
+                line_wasm_poc::client::pairing::Stage::WaitingKeyring,
+            )) => {}
+            Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
+            _ => {}
+        }
+    }
+    release.send(()).unwrap();
+    // A second attempt must get its own token and deliver QR after the old
+    // completion. No late cancellation may close this new attempt.
+    worker.sender.send(Intent::SignIn);
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::PairFailed { .. } | Delta::Fatal => panic!("late result escaped its generation"),
+            _ => {}
+        }
+    }
+    worker.sender.cancel_sign_in();
+}
+
+#[test]
+fn cancel_during_initial_open_does_not_wait_for_credentials() {
+    use line_wasm_poc::client::error::SignInFailure;
+    use std::sync::mpsc;
+    let (started, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let worker = Worker::start_with(StoreLocation::Memory, move || {
+        started.send(()).unwrap();
+        resume.recv().unwrap();
+        Ok(FakeBackend::signed_out())
+    });
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    worker.sender.send(Intent::Prefs(Prefs::default()));
+    worker.sender.send(Intent::SignIn);
+    worker.sender.cancel_sign_in();
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap() {
+            Delta::PairFailed { reason } => {
+                assert_eq!(reason, SignInFailure::Cancelled);
+                break;
+            }
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Stage(
+                line_wasm_poc::client::pairing::Stage::WaitingKeyring,
+            )) => {}
+            Delta::Pair(_) | Delta::Fatal => panic!("pairing must not start"),
+            _ => {}
+        }
+    }
+    release.send(()).unwrap();
+    // The startup fact belongs to the prior opening state. A fresh attempt
+    // must still reach QR without the cancelled attempt closing its screen.
+    worker.sender.send(Intent::SignIn);
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::PairFailed { .. } | Delta::Fatal => {
+                panic!("stale startup escaped its generation")
+            }
+            _ => {}
+        }
+    }
+    worker.sender.cancel_sign_in();
+}
+
+#[test]
+fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
+    use line_wasm_poc::client::error::SignInFailure;
+    let worker = Worker::start_with::<FakeBackend>(StoreLocation::Memory, || {
+        panic!("synthetic network worker crash")
+    });
+    loop {
+        if matches!(
+            worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Delta::PairFailed { .. }
+        ) {
+            break;
+        }
+    }
+    for _ in 0..2 {
+        worker.sender.send(Intent::SignIn);
+        loop {
+            if let Delta::PairFailed { reason } =
+                worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap()
+            {
+                assert_eq!(reason, SignInFailure::Internal);
+                break;
+            }
+        }
+    }
+}
+
+#[test]
+fn unusable_saved_session_allows_start_to_pair() {
+    use line_wasm_poc::client::error::{SavedSessionFailure, SignInFailure};
+    let fake = FakeBackend::signed_out();
+    let reason = SignInFailure::SavedSession(SavedSessionFailure::Keys);
+    fake.fail_open(Some(reason.clone()));
+    let opener = fake.clone();
+    let worker = Worker::start_with(StoreLocation::Memory, move || opener.open());
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::PairFailed { reason: actual } => {
+                assert_eq!(actual, reason);
+                break;
+            }
+            Delta::Fatal => panic!("saved session prevented backend startup"),
+            _ => {}
+        }
+    }
+    worker.sender.send(Intent::SignIn);
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_)) => break,
+            Delta::PairFailed { .. } | Delta::Fatal => panic!("unusable session blocked pairing"),
+            _ => {}
+        }
+    }
+    assert!(fake.calls().is_empty());
+    worker.sender.cancel_sign_in();
+}
+
+#[test]
+fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
+    use std::sync::mpsc;
+    let fake = FakeBackend::canned();
+    let (started, waiting) = mpsc::channel();
+    let (release, resume) = mpsc::channel();
+    let worker = Worker::start_with(StoreLocation::Memory, move || {
+        started.send(()).unwrap();
+        resume.recv().unwrap();
+        Ok(fake.clone())
+    });
+    waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+    worker.sender.send(Intent::SignIn);
+    worker.sender.cancel_sign_in();
+    loop {
+        if let Delta::PairFailed { reason } =
+            worker.deltas.recv_timeout(Duration::from_secs(1)).unwrap()
+        {
+            assert_eq!(
+                reason,
+                line_wasm_poc::client::error::SignInFailure::Cancelled
+            );
+            break;
+        }
+    }
+    release.send(()).unwrap();
+    loop {
+        match worker.deltas.recv_timeout(Duration::from_secs(3)).unwrap() {
+            Delta::Connection(Connection::Online) => break,
+            Delta::Pair(line_wasm_poc::backend::PairEvent::Qr(_))
+            | Delta::Fatal
+            | Delta::PairFailed { .. } => panic!("valid session lost after cancellation"),
+            _ => {}
+        }
+    }
+}
+
+#[test]
 fn attachments_preserve_order_progress_and_retry_identity() {
     use line_wasm_poc::{attachments::Attachment, store::Content};
     let root = std::env::temp_dir().join(format!("line-attachments-flow-{}", std::process::id()));
@@ -1618,11 +1976,71 @@ fn attachment_send_success_after_sign_in_still_confirms_the_row() {
     release.send(()).unwrap();
     // Sign-in runs behind the send on the FIFO network queue. Its failure is a barrier
     // proving the stale send completion has been applied, without relying on UI updates.
-    app.until(|s| s.connection == Connection::AuthExpired);
+    app.until(|s| s.connection == Connection::SessionInvalid);
     assert_eq!(store.message(key).unwrap().delivery, Delivery::Sent);
     assert_eq!(fake.page(&ChatId("alice".into())).len(), 2);
     assert!(!path.exists());
     drop(store);
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn expired_session_cancels_upload_even_if_connection_recovers_before_it_finishes() {
+    use line_wasm_poc::{
+        attachments::Attachment,
+        backend::{Error, FakeRpc},
+    };
+    let root = std::env::temp_dir().join(format!("line-upload-session-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let path = root.join("blocked.txt");
+    std::fs::write(&path, b"attachment").unwrap();
+    let fake = FakeBackend::canned();
+    let (entered, release) = fake.block_upload();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.send(Intent::SendAttachments {
+        chat: ChatId("alice".into()),
+        items: vec![Attachment::prepare(&path).unwrap()],
+    });
+    entered.recv_timeout(Duration::from_secs(5)).unwrap();
+    app.until(|s| s.messages.values().any(|m| m.outgoing));
+    let key = app
+        .state
+        .messages
+        .values()
+        .find(|m| m.outgoing)
+        .unwrap()
+        .key;
+    fake.fail_rpc(FakeRpc::StickerPackages, Error::Auth);
+    app.send(Intent::StickerPackages);
+    app.until(|s| s.connection == Connection::AuthExpired);
+    // Upload attempts while authorization is unusable are ignored.
+    app.send(Intent::SendAttachments {
+        chat: ChatId("alice".into()),
+        items: vec![Attachment::prepare(&path).unwrap()],
+    });
+    app.send(Intent::Prefs(Prefs {
+        text_size: 29,
+        ..Default::default()
+    }));
+    app.until(|s| s.prefs.text_size == 29);
+    fake.offline(false);
+    app.until(|s| s.connection == Connection::Online);
+    release.send(()).unwrap();
+    app.until(|s| s.messages[&key].delivery.is_failed());
+    assert_eq!(
+        app.state.messages.values().filter(|m| m.outgoing).count(),
+        1
+    );
+    assert_eq!(fake.page(&ChatId("alice".into())).len(), 1);
+    assert!(!app.state.uploads.contains_key(&key));
+    // Recovery allows a new attempt, without reviving the cancelled attempt.
+    app.send(Intent::Retry(key));
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+    assert_eq!(fake.page(&ChatId("alice".into())).len(), 2);
     drop(app);
     std::fs::remove_dir_all(root).unwrap();
 }

@@ -20,9 +20,34 @@ pub enum Connection {
     Connecting { attempt: u32 },
     Online,
     Offline { retry_at: Instant, cause: NetCause },
+    SignedOut,
     AuthExpired,
     SessionInvalid,
     SigningIn,
+}
+/// Account facts have provenance; Connection is only the presentation/transport status.
+#[derive(Clone, Debug)]
+enum AccountSession {
+    Opening {
+        epoch: u64,
+    },
+    NoSession,
+    SessionUnusable {
+        reason: crate::client::error::SignInFailure,
+    },
+    Ready,
+    SigningIn {
+        epoch: u64,
+        previous: Box<AccountSession>,
+    },
+}
+impl AccountSession {
+    fn ready(&self) -> bool {
+        matches!(self, Self::Ready)
+    }
+    fn signing_in(&self) -> bool {
+        matches!(self, Self::SigningIn { .. })
+    }
 }
 /// Retry policy and scheduler resolution, injectable for offline tests.
 #[derive(Clone, Copy, Debug)]
@@ -68,6 +93,7 @@ pub enum Intent {
     Window(WindowSub),
     MoreChats,
     SignIn,
+    CancelSignIn,
     Friends,
     Contact(String),
     GroupInfo(ChatId),
@@ -121,6 +147,81 @@ pub enum Intent {
     },
     Stop,
 }
+fn short_id(id: &str) -> String {
+    id.chars().take(6).filter(|c| !c.is_control()).collect()
+}
+impl Intent {
+    fn diagnostic(&self) -> String {
+        let name = match self {
+            Self::SearchChats { .. } => "search-chats",
+            Self::ChatList { .. } => "chat-list",
+            Self::Window(_) => "window",
+            Self::MoreChats => "more-chats",
+            Self::SignIn => "sign-in",
+            Self::CancelSignIn => "cancel-sign-in",
+            Self::Friends => "friends",
+            Self::Contact(_) => "contact",
+            Self::GroupInfo(_) => "group-info",
+            Self::ProfileAction(_) => "profile-action",
+            Self::Members(_) => "members",
+            Self::Asset(_) => "asset",
+            Self::Original(_) => "original",
+            Self::File { .. } => "file",
+            Self::RetryAsset(_) => "retry-asset",
+            Self::Page { .. } => "page",
+            Self::Send { .. } => "send",
+            Self::SendAttachments { .. } => "send-attachments",
+            Self::React { .. } => "react",
+            Self::StickerPackages => "sticker-packages",
+            Self::SendSticker { .. } => "send-sticker",
+            Self::CreateChat { .. } => "create-chat",
+            Self::Unsend(_) => "unsend",
+            Self::Retry(_) => "retry",
+            Self::Resend(_) => "resend",
+            Self::Discard(_) => "discard",
+            Self::Copy(_) => "copy",
+            Self::Draft { .. } => "draft",
+            Self::Prefs(_) => "prefs",
+            Self::MarkRead { .. } => "mark-read",
+            Self::Stop => "stop",
+        };
+        let ids = match self {
+            Self::Window(w) => format!(" chat={}", short_id(&w.chat.0)),
+            Self::GroupInfo(chat)
+            | Self::Members(chat)
+            | Self::Send { chat, .. }
+            | Self::SendSticker { chat, .. }
+            | Self::Draft { chat, .. }
+            | Self::MarkRead { chat, .. }
+            | Self::Page { chat, .. } => format!(" chat={}", short_id(&chat.0)),
+            Self::Contact(mid) => format!(" mid={}", short_id(mid)),
+            Self::ProfileAction(action) => match action {
+                ProfileAction::Rename { mid, .. } | ProfileAction::AddFriend { mid, .. } => {
+                    format!(" mid={}", short_id(mid))
+                }
+                ProfileAction::Mute { chat, .. } | ProfileAction::Leave { chat } => {
+                    format!(" chat={}", short_id(&chat.0))
+                }
+            },
+            Self::CreateChat { targets, .. } => format!(
+                " targets={}",
+                targets
+                    .iter()
+                    .map(|s| short_id(s))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            ),
+            Self::React { key, .. }
+            | Self::Unsend(key)
+            | Self::Retry(key)
+            | Self::Resend(key)
+            | Self::Discard(key)
+            | Self::Copy(key) => format!(" key={}", key.0),
+            _ => String::new(),
+        };
+        format!("{name}{ids}")
+    }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProfileFailure {
     Rename,
@@ -131,9 +232,40 @@ pub enum ProfileFailure {
 #[derive(Clone, Debug)]
 pub enum CreateFailure {
     InvalidSelection,
-    Local(String),
+    Local,
     Rejected,
     Uncertain,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StorageFailure {
+    Full,
+    ReadOnly,
+    Permission,
+    Io,
+}
+impl StorageFailure {
+    pub fn classify(error: &StoreError) -> Option<Self> {
+        use rusqlite::ErrorCode;
+        match error {
+            StoreError::Sql(e) => match e.sqlite_error_code()? {
+                ErrorCode::DiskFull => Some(Self::Full),
+                ErrorCode::ReadOnly => Some(Self::ReadOnly),
+                ErrorCode::PermissionDenied => Some(Self::Permission),
+                ErrorCode::SystemIoFailure | ErrorCode::CannotOpen => Some(Self::Io),
+                _ => None,
+            },
+            StoreError::Io(e) => Some(if e.raw_os_error() == Some(libc::ENOSPC) {
+                Self::Full
+            } else if e.raw_os_error() == Some(libc::EROFS) {
+                Self::ReadOnly
+            } else if e.kind() == std::io::ErrorKind::PermissionDenied {
+                Self::Permission
+            } else {
+                Self::Io
+            }),
+            _ => None,
+        }
+    }
 }
 #[derive(Clone)]
 pub enum Delta {
@@ -149,7 +281,7 @@ pub enum Delta {
     Reset,
     Pair(PairEvent),
     PairFailed {
-        cancelled: bool,
+        reason: crate::client::error::SignInFailure,
     },
     Submitted {
         chat: ChatId,
@@ -215,7 +347,8 @@ pub enum Delta {
         text: String,
     },
     UnsendFailed(Key),
-    Error(String),
+    StorageFailed(StorageFailure),
+    InternalError(&'static str),
     StoreSaved,
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -236,6 +369,32 @@ enum Refresh {
     Recent(ChatId),
     Read(ChatId),
 }
+impl Refresh {
+    fn diagnostic(&self) -> String {
+        let (name, id) = match self {
+            Self::Stream => ("stream", None),
+            Self::Send(key) => return format!("send key={}", key.0),
+            Self::Friends => ("friends", None),
+            Self::Contact(id) => ("contact", Some(id.as_str())),
+            Self::Notice(id) => ("notice", Some(id.as_str())),
+            Self::GroupInfo(id) => ("group-info", Some(id.0.as_str())),
+            Self::Members(id) => ("members", Some(id.0.as_str())),
+            Self::ChatList => ("chat-list", None),
+            Self::MoreChats => ("more-chats", None),
+            Self::Receipts(id) => ("receipts", Some(id.0.as_str())),
+            Self::Older(id, _) => ("older", Some(id.0.as_str())),
+            Self::Newer(id, _) => ("newer", Some(id.0.as_str())),
+            Self::Details(id) => ("details", Some(id.0.as_str())),
+            Self::Recent(id) => ("recent", Some(id.0.as_str())),
+            Self::Read(id) => ("read", Some(id.0.as_str())),
+        };
+        format!(
+            "refresh-{name}{}",
+            id.map(|id| format!(" id={}", short_id(id)))
+                .unwrap_or_default()
+        )
+    }
+}
 #[derive(Default)]
 struct Lanes {
     users: VecDeque<Intent>,
@@ -246,7 +405,7 @@ struct Lanes {
 }
 #[derive(Default)]
 struct Inbox {
-    pair_cancel: Arc<AtomicBool>,
+    pair_cancel: Mutex<Arc<AtomicBool>>,
     lanes: Mutex<Lanes>,
     wake: Condvar,
 }
@@ -254,7 +413,12 @@ struct Inbox {
 pub struct Sender(Arc<Inbox>);
 impl Sender {
     pub fn cancel_sign_in(&self) {
-        self.0.pair_cancel.store(true, Ordering::Relaxed);
+        self.0
+            .pair_cancel
+            .lock()
+            .unwrap()
+            .store(true, Ordering::Relaxed);
+        self.send(Intent::CancelSignIn);
     }
     pub fn send(&self, intent: Intent) {
         let mut q = self.0.lanes.lock().unwrap();
@@ -287,7 +451,7 @@ impl Inbox {
     }
 }
 type Completion = Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>;
-type NetJob = Box<dyn FnOnce(&mut dyn Backend) -> Completion + Send>;
+type NetJob = Box<dyn FnOnce(std::result::Result<&mut dyn Backend, Error>) -> Completion + Send>;
 
 type UploadTask = Box<dyn FnOnce() + Send>;
 fn upload_workers() -> mpsc::Sender<UploadTask> {
@@ -357,12 +521,17 @@ impl Worker {
         }
     }
     pub fn start(backend: impl Backend + 'static, location: StoreLocation) -> Self {
-        Self::start_with_timing(location, move || Ok(backend), Timing::default())
+        let mut backend = Some(backend);
+        Self::start_with_timing(
+            location,
+            move || Ok(backend.take().expect("backend already opened")),
+            Timing::default(),
+        )
     }
     /// Open the store before initializing credentials, WASM, or asset caches.
     pub fn start_with<B: Backend + 'static>(
         location: StoreLocation,
-        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
+        open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
     ) -> Self {
         Self::start_with_timing(location, open, Timing::default())
     }
@@ -371,11 +540,16 @@ impl Worker {
         location: StoreLocation,
         timing: Timing,
     ) -> Self {
-        Self::start_with_timing(location, move || Ok(backend), timing)
+        let mut backend = Some(backend);
+        Self::start_with_timing(
+            location,
+            move || Ok(backend.take().expect("backend already opened")),
+            timing,
+        )
     }
     pub fn start_with_timing<B: Backend + 'static>(
         location: StoreLocation,
-        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
+        open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
         timing: Timing,
     ) -> Self {
         Self::start_projected(location, open, timing, |delta| delta)
@@ -383,7 +557,7 @@ impl Worker {
     /// Project output on its publishing worker, before enqueueing or waking the UI.
     pub fn start_projected<B: Backend + 'static>(
         location: StoreLocation,
-        open: impl FnOnce() -> anyhow::Result<B> + Send + 'static,
+        mut open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
         timing: Timing,
         project: impl Fn(Delta) -> Delta + Send + Sync + 'static,
     ) -> Self {
@@ -401,8 +575,8 @@ impl Worker {
         let join = thread::spawn(move || {
             let fatal = tx.clone();
             let worker_inbox = inbox.clone();
-            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(
-                || -> anyhow::Result<()> {
+            let outcome =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> anyhow::Result<()> {
                     use sha2::{Digest, Sha256};
                     let mut account_root = None;
                     let mut store_mid = None;
@@ -428,39 +602,46 @@ impl Worker {
                                 net: {
                                     let (jobs, rx) = mpsc::channel::<NetJob>();
                                     let inbox = inbox.clone();
-                                    let fatal = tx.clone();
                                     let net_cancel = worker_cancel.clone();
                                     thread::Builder::new().name("line-net".into()).spawn(
                                         move || {
-                                            let outcome = std::panic::catch_unwind(
-                                                std::panic::AssertUnwindSafe(
-                                                    || -> anyhow::Result<()> {
-                                                        let Ok(first) = rx.recv() else {
-                                                            return Ok(());
-                                                        };
-                                                        crate::client::desktop::set_cancellation_token(net_cancel);
-                                                        let mut backend = open()?;
-                                                        let mut job = first;
-                                                        loop {
-                                                            let completed = job(&mut backend);
-                                                            let mut q = inbox.lanes.lock().unwrap();
-                                                            if q.stopped {
-                                                                break;
-                                                            }
-                                                            q.completed.push_back(completed);
-                                                            inbox.wake.notify_all();
-                                                            drop(q);
-                                                            match rx.recv() {
-                                                                Ok(next) => job = next,
-                                                                Err(_) => break,
-                                                            }
-                                                        }
-                                                        Ok(())
-                                                    },
-                                                ),
+                                            crate::client::desktop::set_cancellation_token(
+                                                net_cancel,
                                             );
-                                            if !matches!(outcome, Ok(Ok(()))) {
-                                                fatal.send(Delta::Fatal);
+                                            let mut backend = None;
+                                            while let Ok(job) = rx.recv() {
+                                                let opened = if backend.is_none() {
+                                                    match std::panic::catch_unwind(
+                                                        std::panic::AssertUnwindSafe(&mut open),
+                                                    ) {
+                                                        Ok(Ok(value)) => {
+                                                            backend = Some(value);
+                                                            Ok(())
+                                                        }
+                                                        Ok(Err(error)) => {
+                                                            crate::reporting::log(
+                                                                "backend-start",
+                                                                "open",
+                                                                error.as_ref(),
+                                                            );
+                                                            Err(crate::client::error::classify(
+                                                                &error,
+                                                            ))
+                                                        }
+                                                        Err(_) => Err(Error::Internal),
+                                                    }
+                                                } else {
+                                                    Ok(())
+                                                };
+                                                let completed = job(opened.map(|()| {
+                                                    backend.as_mut().unwrap() as &mut dyn Backend
+                                                }));
+                                                let mut q = inbox.lanes.lock().unwrap();
+                                                if q.stopped {
+                                                    break;
+                                                }
+                                                q.completed.push_back(completed);
+                                                inbox.wake.notify_all();
                                             }
                                         },
                                     )?;
@@ -477,6 +658,8 @@ impl Worker {
                                 waiting_assets: VecDeque::new(),
                                 waiting_retries: Vec::new(),
                                 active_refresh: None,
+                                account: AccountSession::Opening { epoch: 0 },
+                                operation: "startup".into(),
                                 force_list: true,
                                 force_window: false,
                                 search: String::new(),
@@ -508,10 +691,12 @@ impl Worker {
                         Err(e) => return Err(e.into()),
                     }
                     Ok(())
-                },
-            ));
+                }));
             worker_inbox.lanes.lock().unwrap().stopped = true;
             worker_inbox.wake.notify_all();
+            if let Ok(Err(error)) = &outcome {
+                crate::reporting::log("engine-start", "fatal", error.as_ref());
+            }
             if !matches!(outcome, Ok(Ok(()))) {
                 let _ = fatal.send(Delta::Fatal);
             }
@@ -560,6 +745,8 @@ struct Engine {
     )>,
     waiting_retries: Vec<String>,
     active_refresh: Option<Refresh>,
+    account: AccountSession,
+    operation: String,
     force_list: bool,
     force_window: bool,
     search: String,
@@ -581,8 +768,8 @@ type Result<T> = std::result::Result<T, StoreError>;
 impl Engine {
     fn rpc<T: Send + 'static>(
         &mut self,
-        run: impl FnOnce(&mut dyn Backend) -> T + Send + 'static,
-        apply: impl FnOnce(&mut Engine, T) -> Result<()> + Send + 'static,
+        run: impl FnOnce(&mut dyn Backend) -> std::result::Result<T, Error> + Send + 'static,
+        apply: impl FnOnce(&mut Engine, std::result::Result<T, Error>) -> Result<()> + Send + 'static,
     ) {
         self.rpc_completion(run, move |engine, result, current| {
             if current {
@@ -595,21 +782,42 @@ impl Engine {
     // The FIFO network queue completes mutations before sign-in can swap stores.
     fn rpc_completion<T: Send + 'static>(
         &mut self,
-        run: impl FnOnce(&mut dyn Backend) -> T + Send + 'static,
-        apply: impl FnOnce(&mut Engine, T, bool) -> Result<()> + Send + 'static,
+        run: impl FnOnce(&mut dyn Backend) -> std::result::Result<T, Error> + Send + 'static,
+        apply: impl FnOnce(&mut Engine, std::result::Result<T, Error>, bool) -> Result<()>
+        + Send
+        + 'static,
     ) {
+        let operation = self.operation.clone();
         self.net_pending += 1;
         let cancel = self.assets_stop.clone();
         let generation = self.generation;
-        let _ = self.net.send(Box::new(move |backend| {
+        let job: NetJob = Box::new(move |backend| {
             crate::client::desktop::set_cancellation_token(cancel);
-            let result = run(backend);
+            let result =
+                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| backend.and_then(run)))
+                    .unwrap_or(Err(Error::Internal));
+            if let Err(error) = &result {
+                crate::reporting::log(&operation, "rpc", error);
+            }
             Box::new(move |engine| {
+                engine.operation = operation;
                 engine.net_pending -= 1;
                 let current = generation == engine.generation;
+                if matches!(result, Err(Error::Internal)) {
+                    engine.emit(Delta::InternalError("network job panicked"));
+                }
+                if current && let Err(error) = &result {
+                    engine.error(error.clone());
+                }
                 apply(engine, result, current)
             })
-        }));
+        });
+        if let Err(error) = self.net.send(job) {
+            let done = (error.0)(Err(Error::Protocol));
+            // Keep failures on the same completion lane, including pending accounting.
+            self.inbox.lanes.lock().unwrap().completed.push_back(done);
+            self.inbox.wake.notify_all();
+        }
     }
     fn start_assets(&mut self) {
         let inbox = self.inbox.clone();
@@ -625,18 +833,69 @@ impl Engine {
                         }
                         inbox.live(event)
                     }),
-                )
+                );
+                Ok(())
             },
-            |_, ()| Ok(()),
+            |_, _| Ok(()),
         );
+    }
+
+    fn report_store_error(&self, error: &StoreError) {
+        let storage = StorageFailure::classify(error);
+        let kind = if storage.is_some() {
+            "local-write"
+        } else {
+            match error {
+                StoreError::Invalid(_) => "invalid store operation",
+                StoreError::Sql(rusqlite::Error::QueryReturnedNoRows) => "unknown key",
+                StoreError::Json(_) => "stored data decode",
+                StoreError::NewerSchema(_) => "unsupported schema",
+                _ => "store invariant",
+            }
+        };
+        crate::reporting::log(&self.operation, kind, error);
+        if let Some(failure) = storage {
+            self.emit(Delta::StorageFailed(failure));
+        } else {
+            self.emit(Delta::InternalError(kind));
+        }
     }
 
     fn emit(&self, d: Delta) {
         let _ = self.tx.send(d);
     }
     fn connection(&mut self, c: Connection) {
+        if !self.account.ready() {
+            self.upload_stop.store(true, Ordering::Relaxed);
+        } else if self.upload_stop.load(Ordering::Relaxed) {
+            self.upload_stop = Arc::new(AtomicBool::new(false));
+        }
         self.connection = c.clone();
         self.emit(Delta::Connection(c));
+    }
+    fn present_account(&mut self, report: bool) -> Result<()> {
+        match &self.account {
+            AccountSession::Ready => {
+                self.start_assets();
+                self.online()?;
+            }
+            AccountSession::SessionUnusable { reason } => {
+                let reason = reason.clone();
+                let expired = matches!(reason, crate::client::error::SignInFailure::Expired);
+                if report {
+                    self.emit(Delta::PairFailed { reason });
+                }
+                self.connection(if expired {
+                    Connection::AuthExpired
+                } else {
+                    Connection::SessionInvalid
+                });
+            }
+            AccountSession::NoSession => self.connection(Connection::SignedOut),
+            AccountSession::Opening { .. } => self.connection(Connection::Local),
+            AccountSession::SigningIn { .. } => {}
+        }
+        Ok(())
     }
     fn error(&mut self, e: Error) {
         let connection = match e {
@@ -655,6 +914,19 @@ impl Engine {
             self.reconnect_at = None;
         }
         self.continuous = false;
+        match connection {
+            Connection::AuthExpired => {
+                self.account = AccountSession::SessionUnusable {
+                    reason: crate::client::error::SignInFailure::Expired,
+                }
+            }
+            Connection::SessionInvalid => {
+                self.account = AccountSession::SessionUnusable {
+                    reason: crate::client::error::SignInFailure::SessionIdentity,
+                }
+            }
+            _ => {}
+        }
         self.connection(connection);
     }
     fn rpc_failed(&mut self, r: Refresh, e: Error) {
@@ -711,8 +983,30 @@ impl Engine {
                 after: 80,
             })?;
         }
-        self.start_assets();
-        self.online()?;
+        let probe_gen = self.generation;
+        self.rpc_completion(
+            |backend| backend.session(),
+            move |engine, result, _| {
+                let fact = match result {
+                    Ok(true) => AccountSession::Ready,
+                    Ok(false) => AccountSession::NoSession,
+                    Err(Error::SignIn(reason)) => AccountSession::SessionUnusable { reason },
+                    Err(_) => AccountSession::SessionUnusable { reason: crate::client::error::SignInFailure::Internal },
+                };
+                match &mut engine.account {
+                    AccountSession::Opening { epoch } if *epoch == probe_gen => {
+                        engine.account = fact;
+                        engine.present_account(true)?;
+                    }
+                    AccountSession::SigningIn { previous, .. }
+                        if matches!(previous.as_ref(), AccountSession::Opening { epoch } if *epoch == probe_gen) => {
+                        **previous = fact;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+        );
         loop {
             enum Work {
                 User(Intent),
@@ -724,7 +1018,8 @@ impl Engine {
             let work = {
                 let mut q = self.inbox.lanes.lock().unwrap();
                 loop {
-                    if let Some(i) = q.users.pop_front() {
+                    let user = q.users.pop_front();
+                    if let Some(i) = user {
                         break Work::User(i);
                     }
                     if let Some(e) = q.live.pop_front() {
@@ -735,6 +1030,7 @@ impl Engine {
                         break Work::Completed(done);
                     }
                     if self.net_pending == 0
+                        && self.account.ready()
                         && self.connection == Connection::Online
                         && let Some(r) = q
                             .refresh
@@ -750,6 +1046,7 @@ impl Engine {
                         break Work::Refresh(r);
                     }
                     if self.net_pending == 0
+                        && self.account.ready()
                         && (matches!(self.connection,Connection::Offline {retry_at,..} if Instant::now()>=retry_at)
                             || self.reconnect_at.is_some_and(|at| Instant::now() >= at))
                     {
@@ -761,13 +1058,23 @@ impl Engine {
             let writes = self.store.writes();
             let result = match work {
                 Work::User(Intent::Stop) => break,
-                Work::User(i) => self.intent(i),
-                Work::Live(e) => self.live(e),
+                Work::User(i) => {
+                    self.operation = i.diagnostic();
+                    self.intent(i)
+                }
+                Work::Live(e) => {
+                    self.operation = "live".into();
+                    self.live(e)
+                }
                 Work::Refresh(r) => {
+                    self.operation = r.diagnostic();
                     self.active_refresh = Some(r.clone());
                     self.refresh(r)
                 }
-                Work::Reconnect => self.online(),
+                Work::Reconnect => {
+                    self.operation = "reconnect-profile".into();
+                    self.online()
+                }
                 Work::Completed(done) => done(self),
             };
             if self.net_pending == 0
@@ -778,7 +1085,9 @@ impl Engine {
                 self.retry_attempts.remove(&r);
             }
             match result {
-                Err(error) => self.emit(Delta::Error(error.to_string())),
+                Err(error) => {
+                    self.report_store_error(&error);
+                }
                 Ok(()) if self.store.writes() != writes => self.emit(Delta::StoreSaved),
                 Ok(()) => {}
             }
@@ -829,7 +1138,7 @@ impl Engine {
                             deliver(StreamEvent::Exited);
                         }
                     })
-                    .map_err(StoreError::Io)?;
+                    .map_err(|_| StoreError::Invalid("sync worker could not start".into()))?;
                 engine.stream = Some((stop, j));
                 engine
                     .inbox
@@ -845,6 +1154,9 @@ impl Engine {
         Ok(())
     }
     fn online(&mut self) -> Result<()> {
+        if !self.account.ready() {
+            return Ok(());
+        }
         self.reconnect_at = None;
         self.attempt = self.attempt.saturating_add(1);
         self.connection(Connection::Connecting {
@@ -862,7 +1174,7 @@ impl Engine {
                             &account.own_mid
                         };
                         if !own_mid.is_empty() && own_mid != p.mid {
-                            engine.connection(Connection::SessionInvalid);
+                            engine.error(Error::SessionInvalid);
                             return Ok(());
                         }
                         if account.own_mid.is_empty()
@@ -1038,9 +1350,35 @@ impl Engine {
         Ok(())
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
+        if !self.account.ready()
+            && !matches!(
+                i,
+                Intent::SignIn
+                    | Intent::CancelSignIn
+                    | Intent::Prefs(_)
+                    | Intent::SearchChats { .. }
+                    | Intent::ChatList { .. }
+                    | Intent::Friends
+                    | Intent::Contact(_)
+                    | Intent::GroupInfo(_)
+                    | Intent::Members(_)
+                    | Intent::Window(_)
+                    | Intent::Page { .. }
+                    | Intent::Asset(_)
+                    | Intent::Original(_)
+                    | Intent::File { .. }
+                    | Intent::Draft { .. }
+                    | Intent::Copy(_)
+                    | Intent::Discard(_)
+                    | Intent::MoreChats
+                    | Intent::Stop
+            )
+        {
+            return Ok(());
+        }
         match i {
             Intent::SignIn => {
-                if self.connection == Connection::SigningIn {
+                if self.account.signing_in() {
                     return Ok(());
                 }
                 self.generation += 1;
@@ -1065,23 +1403,65 @@ impl Engine {
                     }
                 }
                 self.stop_stream();
-                self.inbox.pair_cancel.store(false, Ordering::Relaxed);
+                let cancel = Arc::new(AtomicBool::new(false));
+                *self.inbox.pair_cancel.lock().unwrap() = cancel.clone();
+                let previous = std::mem::replace(&mut self.account, AccountSession::NoSession);
+                let reuse = !matches!(
+                    previous,
+                    AccountSession::Ready
+                        | AccountSession::SessionUnusable {
+                            reason: crate::client::error::SignInFailure::Expired
+                                | crate::client::error::SignInFailure::SessionIdentity
+                        }
+                );
+                self.account = AccountSession::SigningIn {
+                    epoch: self.generation,
+                    previous: Box::new(previous),
+                };
                 self.connection(Connection::SigningIn);
-                let tx = self.tx.clone();
-                let cancel = self.inbox.pair_cancel.clone();
-                self.rpc(
+                self.emit(Delta::Pair(PairEvent::Stage(
+                    crate::client::pairing::Stage::WaitingKeyring,
+                )));
+                let inbox = self.inbox.clone();
+                let generation = self.generation;
+                self.rpc_completion(
                     move |backend| {
+                        if reuse && matches!(backend.session(), Ok(true)) { return Ok(false); }
+                        if cancel.load(Ordering::Relaxed) {
+                            return Err(Error::SignIn(
+                                crate::client::error::SignInFailure::Cancelled,
+                            ));
+                        }
                         backend.sign_in(
                             cancel,
                             Arc::new(move |e| {
-                                tx.send(Delta::Pair(e));
+                                let mut lanes = inbox.lanes.lock().unwrap();
+                                lanes.completed.push_back(Box::new(move |engine| {
+                                    if engine.generation == generation
+                                        && engine.account.signing_in()
+                                    {
+                                        engine.emit(Delta::Pair(e));
+                                    }
+                                    Ok(())
+                                }));
+                                inbox.wake.notify_all();
                             }),
-                        )
+                        ).map(|()| true)
                     },
-                    move |engine, result| {
+                    move |engine, result, _| {
+                        // Successful install is authoritative even when Cancel raced.
+                        // A reused startup session also survives cancellation.
+                        if result.is_err() && !matches!(engine.account, AccountSession::SigningIn { epoch, .. } if epoch == generation) { return Ok(()); }
                         match result {
-                            Ok(()) => {
+                            Ok(paired) => {
+                                if !paired && engine.account.ready() { return Ok(()); }
+                                engine.account = AccountSession::Ready;
+                                engine.connection(Connection::Connecting { attempt: engine.attempt.saturating_add(1) });
                                 engine.generation += 1;
+                                if !paired {
+                                    engine.start_assets();
+                                    return engine.online();
+                                }
                                 {
                                     let mut lanes = engine.inbox.lanes.lock().unwrap();
                                     lanes.live.clear();
@@ -1103,20 +1483,50 @@ impl Engine {
                                 engine.chat_keys.clear();
                                 engine.message_keys.clear();
                                 engine.emit(Delta::Reset);
+                                engine.account = AccountSession::Ready;
                                 engine.start_assets();
                                 engine.online()?;
                                 engine.publish()?;
                             }
-                            Err(_) => {
-                                engine.connection(Connection::AuthExpired);
-                                engine.emit(Delta::PairFailed {
-                                    cancelled: engine.inbox.pair_cancel.load(Ordering::Relaxed),
+                            Err(error) => {
+                                use crate::client::error::SignInFailure;
+                                crate::reporting::log("sign-in", "pairing", &error);
+                                let reason = if let Error::SignIn(reason) = error { reason } else { SignInFailure::Internal };
+                                let previous = match std::mem::replace(&mut engine.account, AccountSession::NoSession) {
+                                    AccountSession::SigningIn { previous, .. } => *previous,
+                                    other => other,
+                                };
+                                engine.account = previous;
+                                engine.connection(match &engine.account {
+                                    AccountSession::NoSession => Connection::SignedOut,
+                                    AccountSession::SessionUnusable { reason: SignInFailure::Expired } => Connection::AuthExpired,
+                                    _ => Connection::SessionInvalid,
                                 });
+                                engine.emit(Delta::PairFailed { reason });
                             }
                         }
                         Ok(())
                     },
                 );
+            }
+            Intent::CancelSignIn => {
+                if self.account.signing_in() {
+                    self.inbox
+                        .pair_cancel
+                        .lock()
+                        .unwrap()
+                        .store(true, Ordering::Relaxed);
+                    let previous =
+                        match std::mem::replace(&mut self.account, AccountSession::NoSession) {
+                            AccountSession::SigningIn { previous, .. } => *previous,
+                            other => other,
+                        };
+                    self.account = previous;
+                    self.present_account(false)?;
+                    self.emit(Delta::PairFailed {
+                        reason: crate::client::error::SignInFailure::Cancelled,
+                    });
+                }
             }
             Intent::Contact(mid) => {
                 if let Some(row) = self.store.contacts()?.into_iter().find(|v| v.id == mid) {
@@ -1300,7 +1710,10 @@ impl Engine {
                     let own = self
                         .store
                         .account()
-                        .map_err(|e| CreateFailure::Local(e.to_string()))?
+                        .map_err(|e| {
+                            self.report_store_error(&e);
+                            CreateFailure::Local
+                        })?
                         .own_mid;
                     let mut targets = targets
                         .into_iter()
@@ -1315,9 +1728,10 @@ impl Engine {
                     let seq = if let Some(seq) = self.group_requests.get(&identity) {
                         *seq
                     } else {
-                        let seq = self
-                            .next_seq()
-                            .map_err(|e| CreateFailure::Local(e.to_string()))?;
+                        let seq = self.next_seq().map_err(|e| {
+                            self.report_store_error(&e);
+                            CreateFailure::Local
+                        })?;
                         self.group_requests.insert(identity.clone(), seq);
                         seq
                     };
@@ -1349,7 +1763,8 @@ impl Engine {
                                             engine.group_requests.remove(&identity);
                                             Ok(chat.id)
                                         }
-                                        Err(_) => {
+                                        Err(error) => {
+                                            engine.report_store_error(&error);
                                             engine.inbox.refresh(Refresh::ChatList);
                                             Err(CreateFailure::Uncertain)
                                         }
@@ -1484,7 +1899,7 @@ impl Engine {
                 self.publish()?;
             }
             Intent::Unsend(key) => {
-                if self.connection == Connection::SigningIn {
+                if self.account.signing_in() {
                     self.emit(Delta::UnsendFailed(key));
                     return Ok(());
                 }
@@ -1554,48 +1969,87 @@ impl Engine {
             .and_then(|a| a.local_attachment())
             .cloned();
         if let Some(item) = attachment {
+            let cancel = self.upload_stop.clone();
+            let prepare_cancel = cancel.clone();
             self.rpc(
-                move |backend| backend.prepare_attachment(chat, item, seq),
+                move |backend| {
+                    if prepare_cancel.load(Ordering::Relaxed) {
+                        return Err(Error::Rejected(crate::backend::RejectReason::UploadFailed));
+                    }
+                    backend.prepare_attachment(chat, item, seq)
+                },
                 move |engine, prepared| {
                     let upload = match prepared {
                         Ok(upload) => upload,
                         Err(error) => return engine.sent(key, seq, Err(error), true),
                     };
+                    if !engine.account.ready() || cancel.load(Ordering::Relaxed) {
+                        return engine.sent(
+                            key,
+                            seq,
+                            Err(Error::Rejected(crate::backend::RejectReason::UploadFailed)),
+                            true,
+                        );
+                    }
                     let inbox = engine.inbox.clone();
                     let generation = engine.generation;
-                    let cancel = engine.upload_stop.clone();
                     let _ = engine.uploads.send(Box::new(move || {
                         crate::client::desktop::set_cancellation_token(cancel.clone());
-                        if cancel.load(Ordering::Relaxed) {
-                            return;
-                        }
                         let mut last_percent = -1;
-                        let result = upload(&mut |fraction| {
-                            let percent = (fraction.clamp(0., 1.) * 100.) as i32;
-                            if percent != last_percent {
-                                last_percent = percent;
-                                upload_completed(
-                                    &inbox,
-                                    Box::new(move |engine| {
-                                        if engine.generation == generation {
-                                            engine.emit(Delta::UploadProgress { key, fraction });
-                                        }
-                                        Ok(())
-                                    }),
-                                );
+                        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if cancel.load(Ordering::Relaxed) {
+                                return Err(Error::Rejected(
+                                    crate::backend::RejectReason::UploadFailed,
+                                ));
                             }
-                        });
+                            upload(&mut |fraction| {
+                                let percent = (fraction.clamp(0., 1.) * 100.) as i32;
+                                if percent != last_percent {
+                                    last_percent = percent;
+                                    let progress_cancel = cancel.clone();
+                                    upload_completed(
+                                        &inbox,
+                                        Box::new(move |engine| {
+                                            if engine.generation == generation
+                                                && engine.account.ready()
+                                                && !progress_cancel.load(Ordering::Relaxed)
+                                            {
+                                                engine
+                                                    .emit(Delta::UploadProgress { key, fraction });
+                                            }
+                                            Ok(())
+                                        }),
+                                    );
+                                }
+                            })
+                        }))
+                        .unwrap_or(Err(Error::Internal));
                         upload_completed(
                             &inbox,
                             Box::new(move |engine| {
                                 if generation != engine.generation {
                                     return Ok(());
                                 }
+                                if !engine.account.ready() || cancel.load(Ordering::Relaxed) {
+                                    return engine.sent(
+                                        key,
+                                        seq,
+                                        Err(Error::Rejected(
+                                            crate::backend::RejectReason::UploadFailed,
+                                        )),
+                                        true,
+                                    );
+                                }
+                                if matches!(result, Err(Error::Internal)) {
+                                    engine.emit(Delta::InternalError("upload job panicked"));
+                                }
                                 match result {
                                     Ok(finish) => engine.rpc_completion(
                                         move |backend| {
                                             if cancel.load(Ordering::Relaxed) {
-                                                return Err(Error::SessionInvalid);
+                                                return Err(Error::Rejected(
+                                                    crate::backend::RejectReason::UploadFailed,
+                                                ));
                                             }
                                             finish(backend)
                                         },
@@ -1824,7 +2278,7 @@ impl Engine {
         self.inbox.refresh(r);
     }
     fn refresh(&mut self, r: Refresh) -> Result<()> {
-        if self.connection == Connection::SigningIn {
+        if !self.account.ready() {
             return Ok(());
         }
         match r {
@@ -2041,7 +2495,28 @@ impl Engine {
         asset: crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<()> {
-        if let Some(media) = &self.media {
+        if !self.account.ready() {
+            let mid = self.store.account()?.own_mid;
+            let mid = if mid.is_empty() {
+                self.store_mid.clone().unwrap_or_default()
+            } else {
+                mid
+            };
+            let key = asset.key();
+            let response_purpose = purpose.clone();
+            self.rpc(
+                move |backend| backend.cached_media(&mid, &asset, purpose),
+                move |engine, result| {
+                    use crate::client::desktop::assets::{Completion, Failure};
+                    engine.emit(asset_delta(Completion {
+                        key,
+                        purpose: response_purpose,
+                        result: result.ok().flatten().ok_or(Failure::Network),
+                    }));
+                    Ok(())
+                },
+            );
+        } else if let Some(media) = &self.media {
             (media.request)(asset, purpose);
         } else {
             self.waiting_assets.push_back((asset, purpose));
@@ -2049,7 +2524,23 @@ impl Engine {
         Ok(())
     }
     fn live(&mut self, e: StreamEvent) -> Result<()> {
-        if self.connection == Connection::SigningIn {
+        // An authenticated connection from the still-current stream can recover
+        // expired authorization. A failed local load has no stream to recover it.
+        if matches!(&e, StreamEvent::Connection(Ok(())))
+            && matches!(
+                self.account,
+                AccountSession::SessionUnusable {
+                    reason: crate::client::error::SignInFailure::Expired
+                }
+            )
+            && self
+                .stream
+                .as_ref()
+                .is_some_and(|(stop, _)| !stop.load(Ordering::Relaxed))
+        {
+            self.account = AccountSession::Ready;
+        }
+        if !self.account.ready() {
             match e {
                 StreamEvent::Connection(_)
                 | StreamEvent::Connecting(_)
@@ -2068,6 +2559,7 @@ impl Engine {
                     let _ = complete.send(false);
                     return Ok(());
                 }
+                _ if !self.account.ready() => return Ok(()),
                 _ => {}
             }
         }
@@ -2087,10 +2579,13 @@ impl Engine {
             StreamEvent::Asset(c) => self.emit(asset_delta(c)),
             StreamEvent::Authorize { asset, reply } => {
                 self.rpc(
-                    move |backend| {
-                        let _ = reply.send(backend.authorize(&asset));
+                    move |backend| Ok(backend.authorize(&asset)),
+                    move |_, result| {
+                        let _ = reply.send(
+                            result.unwrap_or(Err(crate::client::desktop::assets::Failure::Network)),
+                        );
+                        Ok(())
                     },
-                    |_, ()| Ok(()),
                 );
             }
             StreamEvent::Operation(op) => {
@@ -2227,12 +2722,18 @@ impl Engine {
                     }
                 }
             }
-            StreamEvent::Connection(Err(e)) => self.error(e),
+            StreamEvent::Connection(Err(e)) => {
+                crate::reporting::log("connection", "rpc", &e);
+                self.error(e);
+            }
             StreamEvent::Exited => {
                 self.continuous = false;
                 if !matches!(
                     self.connection,
-                    Connection::AuthExpired | Connection::SessionInvalid | Connection::Fatal
+                    Connection::SignedOut
+                        | Connection::AuthExpired
+                        | Connection::SessionInvalid
+                        | Connection::Fatal
                 ) {
                     self.retry_later(Refresh::Stream);
                 }
@@ -2245,26 +2746,27 @@ impl Engine {
         self.rpc(
             move |backend| {
                 chat.map(|chat| {
-                    let result = backend.messages(&chat, &PageKind::Recent);
-                    (chat, result)
+                    backend
+                        .messages(&chat, &PageKind::Recent)
+                        .map(|page| (chat, page))
                 })
+                .transpose()
             },
             move |engine, result| {
-                if let Some((chat, result)) = result {
-                    match result {
-                        Ok(page) => {
-                            engine.store.apply_page(
-                                &chat,
-                                page.kind,
-                                &page.rows,
-                                page.reaches_start,
-                            )?;
-                        }
-                        Err(e) => {
-                            engine.rpc_failed(Refresh::Recent(chat), e);
-                            let _ = complete.send(false);
-                            return Ok(());
-                        }
+                match result {
+                    Ok(Some((chat, page))) => {
+                        engine.store.apply_page(
+                            &chat,
+                            page.kind,
+                            &page.rows,
+                            page.reaches_start,
+                        )?;
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        engine.error(error);
+                        let _ = complete.send(false);
+                        return Ok(());
                     }
                 }
                 engine.inbox.refresh(Refresh::ChatList);

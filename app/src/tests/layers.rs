@@ -96,7 +96,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             key("\n");
             assert!(!ui.global::<State>().get_modal_open());
             events.borrow_mut().clear();
-            for index in 0..19 {
+            for index in 0..26 {
                 key("\u{f70f}");
                 for _ in 0..=index {
                     key("\t");
@@ -118,7 +118,8 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             assert_eq!(
                 *events.borrow(),
                 [
-                    0, 1, 20, 10, 31, 3, 8, 12, 5, 6, 15, 7, 14, 34, 32, 33, 19, 16, 17
+                    0, 1, 20, 10, 31, 3, 8, 12, 5, 6, 15, 7, 14, 34, 32, 33, 40, 41, 42, 43, 44,
+                    45, 46, 19, 16, 17
                 ]
             );
             ui.invoke_focus_search();

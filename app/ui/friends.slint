@@ -96,6 +96,6 @@ export component Friends inherits Rectangle {
             }
         }
     }
-    if State.friends.length == 0: EmptyState { y: 100px; height: max(0px, parent.height - 100px); text: State.friend-query != "" ? "No results" : "No friends yet"; icon: @image-url("../assets/icons/friends.svg"); }
+    if State.friends.length == 0: EmptyState { signed-out: !State.has-account; y: 100px; height: max(0px, parent.height - 100px); text: State.friend-query != "" ? "No results" : "No friends yet"; icon: State.friend-query == "" ? @image-url("../assets/icons/friends.svg") : @image-url("../assets/icons/search.svg"); }
 
 }

@@ -3,9 +3,14 @@ use crate::*;
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     callback!(ui, actions, on_start_sign_in, |ui, d| {
         ui.set_auth_error("".into());
+        ui.set_auth_qr(slint::Image::default());
+        ui.set_auth_pin("".into());
+        ui.set_auth_stage("Preparing sign-in…".into());
+        ui.set_auth_cancelling(false);
         d.sender.send(Intent::SignIn);
     });
     callback!(ui, actions, on_cancel_sign_in, |ui, d| {
+        ui.set_auth_cancelling(true);
         d.sender.cancel_sign_in();
         ui.set_auth_stage("Cancelling sign-in…".into());
     });
