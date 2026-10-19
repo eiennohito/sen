@@ -129,28 +129,16 @@ impl Presenter {
             {
                 ui.global::<State>().set_chat_avatar(image.clone());
             }
-            let profile = match state.detail_page() {
-                Some(line::controller::DetailPage::Profile(id)) => state.contact(id),
-                _ => None,
-            };
-            if profile
-                .and_then(|f| f.avatar.as_ref())
-                .is_some_and(|a| a.key() == key)
-            {
-                ui.set_profile_avatar(image.clone());
-            }
-            let other_avatar = match state.detail_page() {
-                Some(line::controller::DetailPage::Profile(id)) if state.profile_own(id) => state
-                    .profile
-                    .picture_path
-                    .as_deref()
-                    .and_then(line::client::desktop::assets::Asset::avatar),
+            let avatar = match state.detail_page() {
+                Some(line::controller::DetailPage::Profile(id)) => {
+                    super::detail::profile_avatar(state, id)
+                }
                 Some(line::controller::DetailPage::GroupInfo(id)) => {
-                    state.chats.get(id).and_then(|c| c.chat.avatar.clone())
+                    super::detail::profile_avatar(state, &id.0)
                 }
                 _ => None,
             };
-            if other_avatar.is_some_and(|a| a.key() == key) {
+            if avatar.is_some_and(|a| a.key() == key) {
                 ui.set_profile_avatar(image.clone());
             }
         }

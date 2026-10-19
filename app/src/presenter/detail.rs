@@ -56,9 +56,7 @@ impl Presenter {
             let own = state.profile_own(id);
             let f = state.contact(id);
             let c = state.chats.get(&ChatId(id.into())).map(|c| &c.chat);
-            let name = if own {
-                state.profile.display_name.as_str()
-            } else if kind != 0 {
+            let name = if kind != 0 {
                 c.map(|c| c.title.as_str())
                     .filter(|name| !name.is_empty())
                     .or_else(|| f.and_then(|f| f.name.as_deref()))
@@ -80,11 +78,7 @@ impl Presenter {
             } else {
                 name
             };
-            let status = if own {
-                state.profile.status_message.as_str()
-            } else {
-                f.map(|f| f.status.as_str()).unwrap_or("")
-            };
+            let status = f.map(|f| f.status.as_str()).unwrap_or("");
             let friend = kind == 0 && state.profile_friend(id);
             ui.set_profile_id(id.into());
             ui.set_profile_name(name.into());
@@ -119,16 +113,7 @@ impl Presenter {
             );
             g.set_profile_name_runs(rich_content::runs(name, &[]));
             g.set_profile_status_runs(rich_content::runs(status, &[]));
-            let avatar = if own {
-                state
-                    .profile
-                    .picture_path
-                    .as_deref()
-                    .and_then(line::client::desktop::assets::Asset::avatar)
-            } else {
-                f.and_then(|f| f.avatar.clone())
-                    .or_else(|| c.and_then(|c| c.avatar.clone()))
-            };
+            let avatar = profile_avatar(state, id);
             ui.set_profile_avatar(
                 avatar
                     .as_ref()
@@ -152,4 +137,19 @@ impl Presenter {
             );
         }
     }
+}
+
+pub(crate) fn profile_avatar(
+    state: &AppState,
+    id: &str,
+) -> Option<line::client::desktop::assets::Asset> {
+    state
+        .contact(id)
+        .and_then(|f| f.avatar.clone())
+        .or_else(|| {
+            state
+                .chats
+                .get(&ChatId(id.into()))
+                .and_then(|c| c.chat.avatar.clone())
+        })
 }

@@ -71,6 +71,9 @@ impl Presenter {
             Panel::SignIn => PanelState::SignIn,
         });
         ui.set_has_chat(state.selected.is_some());
+        ui.global::<State>().set_window_sub(state.window_sub as i32);
+        ui.global::<State>()
+            .set_window_loading(state.window_loading);
         ui.set_storage_error(
             state
                 .error

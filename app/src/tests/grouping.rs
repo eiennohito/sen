@@ -77,3 +77,44 @@ fn grouping_uses_identity_time_and_delivery() {
     group_messages(&mut rows[..3], &[Some(&source[0]), None, Some(&source[1])]);
     assert!(rows[..3].iter().all(|row| row.run_position == Single));
 }
+
+#[test]
+fn own_member_uses_account_profile_and_keeps_you_note() {
+    std::thread::spawn(|| {
+        let _platform = snapshot::install().unwrap();
+        let ui = test_window();
+        let mut presenter = presenter::Presenter::default();
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        state.apply(Delta::Profile(Profile {
+            mid: "self".into(),
+            display_name: "Account name".into(),
+            status_message: "Account status".into(),
+            picture_path: Some("/own".into()),
+        }));
+        state.members.push(Member {
+            contact: Friend {
+                id: "self".into(),
+                ..Default::default()
+            },
+            is_self: true,
+        });
+        presenter.present(&ui, &state, "", 0);
+        let member = ui.get_members().row_data(0).unwrap();
+        assert_eq!(member.name, "Account name");
+        assert_eq!(member.status, "Account status");
+        assert!(member.is_self, "member row must keep its You note");
+        assert_eq!(
+            member.avatar_key,
+            state
+                .contact("self")
+                .unwrap()
+                .avatar
+                .as_ref()
+                .unwrap()
+                .key()
+        );
+    })
+    .join()
+    .unwrap();
+}

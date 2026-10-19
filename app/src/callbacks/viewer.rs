@@ -1,24 +1,12 @@
 use crate::*;
 
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
-    global_callback!(ui, actions, on_profile_photo, |ui, d| {
-        if ui.get_profile_avatar().size().width == 0 {
-            return;
-        }
-        ui.global::<State>().invoke_remember_detail_focus(false);
-        ui.global::<State>().set_viewer_from_detail(true);
-        ui.global::<State>().set_viewer_has_previous(false);
-        ui.global::<State>().set_viewer_has_next(false);
-        ui.set_viewer_loading(false);
-        ui.set_viewer_error("".into());
+    callback!(ui, actions, on_photo_closed, |_ui, d| {
         d.viewer_asset = None;
-        ui.set_viewer_key(format!("profile:{}", ui.get_profile_id()).into());
-        ui.invoke_reset_viewer();
-        ui.set_viewer_image(ui.get_profile_avatar());
-        ui.set_viewer_status(ui.get_profile_name());
-        d.state.panel = Panel::Viewer;
-        d.render(&ui);
-        ui.invoke_focus_viewer_close();
+        d.viewer_source = None;
+    });
+    global_callback!(ui, actions, on_profile_photo, |ui, d| {
+        d.open_profile_photo(&ui);
     });
     callback!(ui, actions, on_open_photo, |ui, d, key| {
         d.open_photo(&ui, key.as_str());
@@ -54,6 +42,6 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     global_callback!(ui, actions, on_save_photo, |ui, d| {
-        viewer::save_photo(&ui, d.destination.clone());
+        viewer::save_photo(&ui, d.destination.clone(), d.viewer_source.clone());
     });
 }

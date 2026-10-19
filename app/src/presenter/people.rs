@@ -96,35 +96,38 @@ impl Presenter {
         ordered_members.sort_by_key(|m| (m.contact.profile.invited, !m.is_self));
         let members = ordered_members
             .into_iter()
-            .filter(|m| {
+            .map(|m| {
+                let contact = if m.is_self {
+                    state.contact(&m.contact.id).unwrap_or(&m.contact)
+                } else {
+                    &m.contact
+                };
+                (m, contact)
+            })
+            .filter(|(m, contact)| {
                 let query = ui.get_member_query().to_lowercase();
-                text::member_name(m.contact.name.as_deref())
+                text::member_name(contact.name.as_deref())
                     .to_lowercase()
                     .contains(&query)
-                    || m.contact.status.to_lowercase().contains(&query)
+                    || contact.status.to_lowercase().contains(&query)
                     || (m.is_self && "you".contains(&query))
             })
-            .map(|m| MemberRow {
-                id: m.contact.id.clone().into(),
-                name: single_line(text::member_name(m.contact.name.as_deref())).into(),
-                initial: name_initial(text::member_name(m.contact.name.as_deref())),
-                status: single_line(&m.contact.status).into(),
+            .map(|(m, contact)| MemberRow {
+                id: contact.id.clone().into(),
+                name: single_line(text::member_name(contact.name.as_deref())).into(),
+                initial: name_initial(text::member_name(contact.name.as_deref())),
+                status: single_line(&contact.status).into(),
                 is_self: m.is_self,
-                friend: state
-                    .friends
-                    .iter()
-                    .any(|f| f.id == m.contact.id && !f.group)
-                    || m.contact.profile.relation == Some(0),
-                invited: m.contact.profile.invited,
-                avatar_key: m
-                    .contact
+                friend: state.friends.iter().any(|f| f.id == contact.id && !f.group)
+                    || contact.profile.relation == Some(0),
+                invited: contact.profile.invited,
+                avatar_key: contact
                     .avatar
                     .as_ref()
                     .map(|a| a.key())
                     .unwrap_or_default()
                     .into(),
-                avatar: m
-                    .contact
+                avatar: contact
                     .avatar
                     .as_ref()
                     .and_then(|a| self.images.get(&a.key()))

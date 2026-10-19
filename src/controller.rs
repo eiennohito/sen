@@ -37,6 +37,7 @@ pub struct AppState {
     pub connection: Connection,
     pub panel: Panel,
     pub profile: Profile,
+    pub self_contact: Friend,
     pub chats: BTreeMap<ChatId, ChatListItem>,
     pub chat_order: Vec<ChatId>,
     pub chat_sub: u64,
@@ -75,6 +76,7 @@ impl Default for AppState {
             connection: Connection::Local,
             panel: Panel::Chats,
             profile: Profile::default(),
+            self_contact: Friend::default(),
             chats: BTreeMap::new(),
             chat_order: vec![],
             chat_sub: 1,
@@ -99,6 +101,9 @@ impl Default for AppState {
 }
 impl AppState {
     pub fn contact(&self, mid: &str) -> Option<&Friend> {
+        if !mid.is_empty() && mid == self.profile.mid {
+            return Some(&self.self_contact);
+        }
         self.contacts
             .get(mid)
             .or_else(|| self.friends.iter().find(|f| f.id == mid))
@@ -208,6 +213,7 @@ impl AppState {
         }
         if self.selected.as_ref() != Some(&chat) {
             self.detail.clear();
+            self.panel = Panel::Chats;
         }
         self.window_sub += 1;
         self.window_anchor = Anchor::Unread;
@@ -260,8 +266,9 @@ impl AppState {
             }
             Delta::RefreshFailed { request, error } => {
                 if matches!(
-                    request,
-                    crate::engine::Refresh::Recent(_) | crate::engine::Refresh::Older(..)
+                    &request,
+                    crate::engine::Refresh::Recent(chat) | crate::engine::Refresh::Older(chat, _)
+                        if self.selected.as_ref() == Some(chat)
                 ) {
                     self.window_loading = false;
                 }
@@ -338,7 +345,19 @@ impl AppState {
                 self.members = rows
             }
             Delta::Connection(c) => self.connection = c,
-            Delta::Profile(p) => self.profile = p,
+            Delta::Profile(p) => {
+                self.self_contact = Friend {
+                    id: p.mid.clone(),
+                    name: Some(p.display_name.clone()),
+                    status: p.status_message.clone(),
+                    avatar: p
+                        .picture_path
+                        .as_deref()
+                        .and_then(crate::client::desktop::assets::Asset::avatar),
+                    ..Default::default()
+                };
+                self.profile = p;
+            }
             Delta::Chats {
                 sub,
                 upsert,
@@ -412,6 +431,7 @@ impl AppState {
             | Delta::CreatedChat(_)
             | Delta::Notify(_)
             | Delta::AssetEvicted { .. }
+            | Delta::Original { .. }
             | Delta::Asset { .. }
             | Delta::File { .. }
             | Delta::Pair(_)
@@ -442,6 +462,87 @@ impl AppState {
 mod content_model_tests {
     use super::*;
 
+    #[test]
+    fn stale_chat_failure_does_not_finish_selected_history_loading() {
+        let mut state = AppState::default();
+        let a = ChatId("a".into());
+        let b = ChatId("b".into());
+        state.select(a.clone());
+        state.select(b.clone());
+        state.apply(Delta::RefreshFailed {
+            request: Refresh::Recent(a),
+            error: crate::client::error::Failure::NotDelivered,
+        });
+        assert!(
+            state.window_loading,
+            "A's late failure exposed B's empty state"
+        );
+        state.apply(Delta::RefreshFailed {
+            request: Refresh::Recent(b),
+            error: crate::client::error::Failure::NotDelivered,
+        });
+        assert!(!state.window_loading);
+    }
+
+    #[test]
+    fn own_member_resolves_profile_and_survives_storage() {
+        let mut state = AppState::default();
+        state.apply(Delta::Profile(Profile {
+            mid: "self".into(),
+            display_name: "My name".into(),
+            status_message: "My status".into(),
+            picture_path: Some("/self-photo".into()),
+        }));
+        let member = Member {
+            contact: Friend {
+                id: "self".into(),
+                ..Default::default()
+            },
+            is_self: true,
+        };
+        state.members.push(member.clone());
+        let contact = state.contact("self").unwrap();
+        assert_eq!(contact.name.as_deref(), Some("My name"));
+        assert_eq!(contact.status, "My status");
+        assert_eq!(
+            contact.avatar,
+            crate::client::desktop::assets::Asset::avatar("/self-photo")
+        );
+        state.apply(Delta::Profile(Profile {
+            mid: "self".into(),
+            display_name: "Renamed".into(),
+            ..Default::default()
+        }));
+        let contact = state.contact("self").unwrap();
+        assert_eq!(contact.name.as_deref(), Some("Renamed"));
+        assert!(contact.avatar.is_none());
+        let mut store = Store::open_in_memory().unwrap();
+        let chat = ChatId("group".into());
+        store.save_members(&chat, &[member]).unwrap();
+        let members = store.members(&chat).unwrap();
+        assert_eq!(members.len(), 1);
+        assert!(members[0].is_self);
+    }
+    #[test]
+    fn selecting_from_detail_uses_chats_and_waits_for_matching_window() {
+        let mut state = AppState::default();
+        state.push_detail(DetailPage::Profile("member".into()), "opener".into());
+        state.select(ChatId("chat".into()));
+        assert_eq!(state.panel, Panel::Chats);
+        assert!(state.detail.is_empty());
+        assert!(state.window_loading);
+        state.apply(Delta::Window {
+            sub: state.window_sub,
+            upsert: vec![],
+            remove: vec![],
+            gaps: vec![],
+            reaches_start: true,
+            reaches_end: true,
+            replies: vec![],
+            unread_anchor: None,
+        });
+        assert!(!state.window_loading);
+    }
     #[test]
     fn profile_rules_keep_unnamed_friends_but_disable_unresolved_members() {
         let mut state = AppState::default();

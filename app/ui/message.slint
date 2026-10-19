@@ -35,7 +35,10 @@ export component Message inherits TouchArea {
     in property <MessageRow> message;
     in property <length> origin-y;
     property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.undecryptable;
-    property <length> bubble-limit: max(Tokens.bubble-min, min(Tokens.bubble-max, root.width - (!root.message.outgoing && root.message.sender-name != "" ? Tokens.message-avatar + Tokens.message-gap : 0px) - Tokens.message-actions - (root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8) - Tokens.space-6 - Tokens.space-4 - Tokens.space-1));
+    property <length> bubble-limit: max(Tokens.bubble-min, min(Tokens.bubble-max, root.width - (!root.message.outgoing && root.message.sender-name != "" ? Tokens.message-avatar + Tokens.message-gap : 0px) - (root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8) - Tokens.space-6 - Tokens.space-4 - Tokens.space-1));
+    property <bool> shows-time: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last;
+    property <length> bubble-x: message-content.x + message-column.x + message-bubble.x;
+    property <length> bubble-bottom: message-content.y + message-column.y + message-bubble.y + message-bubble.height;
     property <bool> selecting-rich: false;
     property <bool> rich-focused: false;
     property <bool> card-focused: false;
@@ -304,43 +307,47 @@ export component Message inherits TouchArea {
                                 }
                             }
                         }
-                        // Time appears once at the end of a run, beside the
-                        // bubble. Status has a fixed slot and never adds a row.
-                        Rectangle {
-                            width: root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8;
-                            HorizontalLayout {
-                                y: max(0px, message-column.y + message-bubble.y + message-bubble.height - self.height);
-                                height: max(16px, Tokens.time * 1.4); spacing: 2px;
-                                Text { text: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.clock : ""; accessible-label: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
-                                if root.message.outgoing && (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last): Image {
-                                    width: 16px; height: 16px;
-                                    source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/clock.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == "Not sent" ? @image-url("../assets/icons/error.svg") : @image-url("../assets/icons/check.svg");
-                                    accessible-role: image;
-                                    accessible-label: root.message.delivery == "Sending…" ? "Sending" : root.message.delivery == "" ? "Sent" : root.message.delivery;
-                                    colorize: root.message.delivery == "Not sent" ? Tokens.danger : root.message.delivery == "Read" ? Tokens.accent-strong : Tokens.secondary;
-                                }
-                            }
-                        }
-                        Rectangle {
-                            width: Tokens.message-actions; horizontal-stretch: 0;
-                            reply-button := IconButton {
-                                x: 28px; y: react-button.y; width: 28px; height: 28px; label: "Reply"; focus-description: "Focused";
-                                icon: @image-url("../assets/icons/reply.svg");
-                                visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus || react-button.has-focus);
-                                activated => { State.reply(root.message.id); }
-                                key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { react-button.focus-button(); } else { State.focus-composer(); } return accept; } reject }
-                            }
-                            react-button := IconButton {
-                                y: max(0px, message-column.y + message-bubble.y + message-bubble.height - 28px);
-                                width: 28px; height: 28px; border-radius: 14px;
-                                label: "React"; focus-description: "Focused"; icon: @image-url("../assets/icons/react.svg");
-                                visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus || reply-button.has-focus);
-                                activated => { reactions.show(); }
-                                key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { if root.card { State.focus-history(); } else { body.focus(); } } else { reply-button.focus-button(); } return accept; } reject }
-                            }
-                        }
                         if !root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
                         }
-                    
-}
+    }
+    // Time appears once at the end of a run, beside the
+    // bubble. Time and status use their content width without adding a row.
+    time-slot := Rectangle {
+        visible: !root.system-item;
+        x: root.message.outgoing ? root.bubble-x - self.width - 4px : root.bubble-x + message-bubble.width + 4px;
+        y: root.bubble-bottom - self.height;
+        width: root.shows-time ? time-content.preferred-width : 0px;
+        height: max(16px, Tokens.time * 1.4);
+        time-content := HorizontalLayout {
+            height: max(16px, Tokens.time * 1.4); spacing: 2px;
+            Text { text: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.clock : ""; accessible-label: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
+            if root.message.outgoing && (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last): Image {
+                width: 16px; height: 16px;
+                source: root.message.delivery == "Sending…" ? @image-url("../assets/icons/clock.svg") : root.message.delivery == "Read" ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == "Not sent" ? @image-url("../assets/icons/error.svg") : @image-url("../assets/icons/check.svg");
+                accessible-role: image;
+                accessible-label: root.message.delivery == "Sending…" ? "Sending" : root.message.delivery == "" ? "Sent" : root.message.delivery;
+                colorize: root.message.delivery == "Not sent" ? Tokens.danger : root.message.delivery == "Read" ? Tokens.accent-strong : Tokens.secondary;
+            }
+        }
+    }
+    Rectangle {
+        x: root.message.outgoing ? (root.shows-time ? time-slot.x : root.bubble-x) - self.width - 4px : (root.shows-time ? time-slot.x + time-slot.width : root.bubble-x + message-bubble.width) + 4px;
+        y: root.bubble-bottom - self.height;
+        width: 58px; height: 28px;
+        reply-button := IconButton {
+            x: 30px; y: 0px; width: 28px; height: 28px; label: "Reply"; focus-description: "Focused";
+            icon: @image-url("../assets/icons/reply.svg");
+            visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus || react-button.has-focus);
+            activated => { State.reply(root.message.id); }
+            key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { react-button.focus-button(); } else { State.focus-composer(); } return accept; } reject }
+        }
+        react-button := IconButton {
+            x: 0px; y: 0px;
+            width: 28px; height: 28px; border-radius: 14px;
+            label: "React"; focus-description: "Focused"; icon: @image-url("../assets/icons/react.svg");
+            visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus || reply-button.has-focus);
+            activated => { reactions.show(); }
+            key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { if root.card { State.focus-history(); } else { body.focus(); } } else { reply-button.focus-button(); } return accept; } reject }
+        }
+    }
 }

@@ -719,15 +719,16 @@ fn failure_marks_stay_beside_the_bubble() {
                     .filter(|(_, _, p)| p.0 == [199, 242, 164])
                     .map(|(x, y, _)| (x, y))
                     .collect();
-                let right = green.iter().map(|p| p.0).max().unwrap();
+                let left = green.iter().map(|p| p.0).min().unwrap();
                 let top = green.iter().map(|p| p.1).min().unwrap();
                 let bottom = green.iter().map(|p| p.1).max().unwrap();
                 assert!(
-                    pixels.enumerate_pixels().any(|(x, y, p)| x > right
+                    pixels.enumerate_pixels().any(|(x, y, p)| x < left
+                        && x + 24 >= left
                         && y >= top
                         && y <= bottom
                         && p.0 == [217, 48, 37]),
-                    "failure mark moved below the bubble"
+                    "failure mark must stay immediately left of an outgoing bubble"
                 );
             }
         }

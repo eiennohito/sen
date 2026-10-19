@@ -42,6 +42,10 @@ component HistoryPill inherits Rectangle {
 }
 
 export component Conversation inherits Rectangle {
+    property <bool> loading-delayed;
+    property <int> window-sub: State.window-sub;
+    changed window-sub => { root.loading-delayed = false; loading-timer.restart(); }
+    loading-timer := Timer { interval: 300ms; running: State.window-loading && !root.loading-delayed; triggered => { root.loading-delayed = true; } }
     property <int> demo-reset: State.demo-reset-generation;
     changed demo-reset => { more-menu.close(); }
     out property <FeedbackRect> header-bounds: { x: header.absolute-position.x, y: header.absolute-position.y, width: root.visible ? header.width : 0px, height: header.height };
@@ -185,7 +189,8 @@ export component Conversation inherits Rectangle {
                     for message in State.messages: Message { message: message; }
                 }
             }
-              if !State.has-chat || State.messages.length == 0: EmptyState { y: history.visible-top; height: parent.height - self.y; text: !State.has-chat ? "Choose a conversation" : "No messages yet"; name: State.has-chat ? State.chat-title : ""; identity: State.chat-id; initial: State.chat-initial; avatar: State.chat-avatar; icon: @image-url("../assets/icons/chats.svg"); }
+              if State.has-chat && State.window-loading && root.loading-delayed: Text { accessible-role: text; accessible-label: "Loading history…"; text: "Loading history…"; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+              if !State.has-chat || (!State.window-loading && State.messages.length == 0): EmptyState { y: history.visible-top; height: parent.height - self.y; text: !State.has-chat ? "Choose a conversation" : "No messages yet"; name: State.has-chat ? State.chat-title : ""; identity: State.chat-id; initial: State.chat-initial; avatar: State.chat-avatar; icon: @image-url("../assets/icons/chats.svg"); }
               history-pills := HorizontalLayout {
                 x: max(8px, parent.width - self.width - 16px); y: max(0px, parent.height - self.height - 16px);
                 width: min(parent.width - 16px, latest-button.preferred-width + return-button.preferred-width + (root.latest-visible && State.return-visible ? 8px : 0px));

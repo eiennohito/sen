@@ -6,6 +6,7 @@ publish = false
 description = "Generated Slint UI for the LINE desktop client"
 
 [features]
+testing = []
 ui-debug = ["slint/mcp"]
 
 [dependencies]

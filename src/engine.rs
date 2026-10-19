@@ -334,6 +334,11 @@ pub enum Delta {
         name: String,
         bytes: Arc<Vec<u8>>,
     },
+    Original {
+        key: String,
+        pixels: Arc<crate::client::desktop::assets::Pixels>,
+        bytes: Arc<Vec<u8>>,
+    },
     Asset {
         key: String,
         pixels: std::sync::Arc<crate::client::desktop::assets::Pixels>,
@@ -2951,6 +2956,11 @@ fn asset_delta(c: crate::client::desktop::assets::Completion) -> Delta {
     match c.result {
         Ok(Payload::Evicted) => Delta::AssetEvicted { key: c.key },
         Ok(Payload::Image(pixels)) => Delta::Asset { key: c.key, pixels },
+        Ok(Payload::Original { pixels, bytes }) => Delta::Original {
+            key: c.key,
+            pixels,
+            bytes,
+        },
         Ok(Payload::File(bytes)) => Delta::File {
             name: match c.purpose {
                 Purpose::File { name, .. } => name,

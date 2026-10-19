@@ -97,7 +97,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             key("\n");
             assert!(!ui.global::<State>().get_modal_open());
             events.borrow_mut().clear();
-            for index in 0..26 {
+            for index in 0..27 {
                 key("\u{f70f}");
                 for _ in 0..=index {
                     key("\t");
@@ -119,8 +119,8 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             assert_eq!(
                 *events.borrow(),
                 [
-                    0, 1, 20, 10, 31, 3, 8, 12, 5, 6, 15, 7, 14, 34, 32, 33, 40, 41, 42, 43, 44,
-                    45, 46, 19, 16, 17
+                    0, 1, 20, 10, 31, 3, 8, 12, 5, 6, 15, 7, 14, 47, 34, 32, 33, 40, 41, 42, 43,
+                    44, 45, 46, 19, 16, 17
                 ]
             );
             ui.invoke_focus_search();
@@ -231,6 +231,88 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
             .expect("member profile has no focus");
         assert!(focused.is_visible(), "member profile focus is hidden");
         ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn loading_history_never_renders_the_loaded_empty_identity() {
+    std::thread::spawn(|| {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = test_window();
+        ui.show().unwrap();
+        let mut presenter = presenter::Presenter::default();
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        let visible = |label| {
+            i_slint_backend_testing::ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .is_some()
+        };
+        let advance =
+            |ms| i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
+        state.select(ChatId("empty".into()));
+        presenter.present(&ui, &state, "", 0);
+        slint::platform::update_timers_and_animations();
+        assert!(!visible("Loading history…"));
+        assert!(!visible("No messages yet"));
+        advance(300);
+        assert!(visible("Loading history…"));
+        state.window_loading = false;
+        presenter.present(&ui, &state, "", 0);
+        slint::platform::update_timers_and_animations();
+        assert!(!visible("Loading history…"));
+        assert!(visible("No messages yet"));
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn selecting_another_loading_chat_restarts_the_indicator_delay() {
+    std::thread::spawn(|| {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = test_window();
+        ui.show().unwrap();
+        let mut presenter = presenter::Presenter::default();
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        let visible = || {
+            i_slint_backend_testing::ElementHandle::find_by_accessible_label(
+                &ui,
+                "Loading history…",
+            )
+            .next()
+            .is_some()
+        };
+        let advance =
+            |ms| i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
+        state.select(ChatId("a".into()));
+        presenter.present(&ui, &state, "", 0);
+        slint::platform::update_timers_and_animations();
+        advance(200);
+        state.select(ChatId("b".into()));
+        presenter.present(&ui, &state, "", 0);
+        slint::platform::update_timers_and_animations();
+        advance(100);
+        assert!(!visible(), "B inherited A's elapsed delay");
+        advance(200);
+        assert!(visible());
+        state.select(ChatId("c".into()));
+        presenter.present(&ui, &state, "", 0);
+        slint::platform::update_timers_and_animations();
+        assert!(!visible(), "C inherited the visible indicator");
+        advance(299);
+        assert!(!visible());
+        advance(1);
+        assert!(visible());
+        state.select(ChatId("c".into()));
+        presenter.present(&ui, &state, "", 0);
+        slint::platform::update_timers_and_animations();
+        assert!(!visible(), "reselecting C must restart its loading delay");
+        advance(300);
+        assert!(visible());
     })
     .join()
     .unwrap();

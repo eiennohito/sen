@@ -823,3 +823,30 @@ pub fn quote_review(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
     }
     rows
 }
+
+pub fn action_geometry(fake: &FakeBackend, chat: &str, base_id: i64) -> Vec<MessageInput> {
+    let incoming = concat!(
+        "Incoming middle: a longer bubble that wraps across several lines so the action ",
+        "strip follows the bubble edge while keeping the full available width."
+    );
+    let outgoing = concat!(
+        "Outgoing first: a longer bubble that wraps across several lines so the action ",
+        "strip follows the bubble edge while keeping the full available width."
+    );
+    [
+        ("Incoming first", false),
+        (incoming, false),
+        ("Incoming last", false),
+        (outgoing, true),
+        ("Outgoing middle", true),
+        ("Outgoing last", true),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, (body, outgoing))| {
+        let mut row = message(fake, chat, base_id + i as i64, body, "09:18", outgoing);
+        row.sender_id = if outgoing { "self" } else { "aoi" }.into();
+        row
+    })
+    .collect()
+}

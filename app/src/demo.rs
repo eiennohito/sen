@@ -227,6 +227,24 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             let row = demo_data::sticker(fake, "stickers");
             fixture(ui, d, fake, "stickers", "Sticker preview", vec![row]);
         }
+        47 => {
+            fixture(
+                ui,
+                d,
+                fake,
+                "action-group",
+                "Group actions",
+                demo_data::action_geometry(fake, "action-group", 9900),
+            );
+            fixture(
+                ui,
+                d,
+                fake,
+                "actions",
+                "Message actions",
+                demo_data::action_geometry(fake, "actions", 9800),
+            );
+        }
         7 => fixture(
             ui,
             d,
@@ -471,6 +489,7 @@ pub fn install(
                     d.category = 0;
                     d.reveal = None;
                     d.viewer_asset = None;
+                    d.viewer_source = None;
                     // Preserve geometry/derived bindings and instance identity; reset
                     // writable presentation state from the same defaults as a fresh UI.
                     let defaults = AppWindow::new().expect("create demo reset defaults");
@@ -707,11 +726,12 @@ fn fixture(
     rows: Vec<MessageInput>,
 ) {
     let chat = ChatId(id.into());
+    let is_group = matches!(id, "groups" | "action-group");
     fake.add_chat(ChatInput {
         id: chat.clone(),
         title: title.into(),
-        is_group: id == "groups",
-        member_count: (id == "groups").then_some(25),
+        is_group,
+        member_count: is_group.then_some(25),
         ..Default::default()
     });
     fake.set_page(chat.clone(), rows.clone());

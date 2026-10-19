@@ -32,6 +32,7 @@ export global State {
     pure callback avatar-tint(string) -> color;
     in-out property <string> account-initial;
     in-out property <string> chat-id;
+    in-out property <int> window-sub;
     in-out property <string> chat-initial;
     in-out property <image> chat-avatar;
     in-out property <PanelState> panel: none;
@@ -239,6 +240,7 @@ export global State {
     in-out property <string> viewer-name;
     in-out property <string> viewer-error;
     in-out property <bool> viewer-retryable;
+    in-out property <bool> window-loading;
     in-out property <bool> viewer-loading;
     in-out property <string> viewer-key;
     in-out property <float> viewer-zoom: 1;

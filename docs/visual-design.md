@@ -152,6 +152,12 @@ profile (U2).
 
 **History** (`bg`).
 
+React and Reply overlay beside the bubble, each 28 px with a 2 px gap.
+Incoming rows read bubble → time (when shown) → actions; outgoing rows mirror
+this as actions → time → bubble. Time uses its content width and disappears
+inside a run; actions reserve no layout width and sit directly beside the
+bubble when time is absent. Keyboard focus and traversal remain unchanged.
+
 - Incoming bubble: `surface-2`. Outgoing: `bubble-out`. No borders. Padding
   8×12, radius 16.
 - Runs: consecutive messages from one sender within 5 minutes, with no date
@@ -265,7 +271,7 @@ line in `text`, and optionally one line in `text-secondary`.
 ## Flows added after the audit
 
 **Reactions.** Hovering or focusing a bubble shows a 28 px round
-reaction button beside the time slot, and the context menu has React.
+reaction button beside the content-width time, and the context menu has React.
 Either opens a horizontal popover above the bubble: radius 20, `bg`, the menu
 border, six 32 px reaction buttons (NICE, LOVE, FUN, AMAZING, SAD, OMG) drawn
 as the existing Unicode substitutes until reaction images exist. The current
