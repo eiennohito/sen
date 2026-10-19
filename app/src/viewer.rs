@@ -1,5 +1,5 @@
 //! Photo navigation and deliberate local exports. No network operations here.
-use crate::{AppWindow, Content, Intent, State};
+use crate::{AppWindow, Content, Intent, Panel, State};
 use image::ImageEncoder;
 use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer};
 use std::{
@@ -16,7 +16,11 @@ pub(crate) enum Destination {
     #[cfg(feature = "demo")]
     Directory(PathBuf),
 }
-pub(crate) fn save_photo(ui: &AppWindow, destination: Destination) {
+pub(crate) fn save_photo(
+    ui: &AppWindow,
+    destination: Destination,
+    source: Option<std::sync::Arc<Vec<u8>>>,
+) {
     if ui.global::<State>().get_viewer_saving()
         || ui.get_viewer_loading()
         || !ui.get_viewer_error().is_empty()
@@ -31,8 +35,11 @@ pub(crate) fn save_photo(ui: &AppWindow, destination: Destination) {
     let key = ui.get_viewer_key();
     let weak = ui.as_weak();
     std::thread::spawn(move || {
-        let result =
-            encode_png(&pixels).and_then(|bytes| save_bytes(&bytes, "LINE photo.png", destination));
+        let result = export_photo(
+            &pixels,
+            source.as_deref().map(|b| b.as_slice()),
+            destination,
+        );
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ui.global::<State>().set_viewer_saving(false);
             if !ui.get_viewer_open() || ui.get_viewer_key() != key {
@@ -48,6 +55,21 @@ pub(crate) fn save_photo(ui: &AppWindow, destination: Destination) {
             );
         });
     });
+}
+fn export_photo(
+    pixels: &SharedPixelBuffer<Rgba8Pixel>,
+    source: Option<&[u8]>,
+    destination: Destination,
+) -> Result<Option<PathBuf>, String> {
+    if let Some(bytes) = source {
+        let extension = image::guess_format(bytes)
+            .ok()
+            .and_then(|f| f.extensions_str().first().copied())
+            .unwrap_or("img");
+        save_bytes(bytes, &format!("LINE photo.{extension}"), destination)
+    } else {
+        encode_png(pixels).and_then(|bytes| save_bytes(&bytes, "LINE photo.png", destination))
+    }
 }
 fn encode_png(pixels: &SharedPixelBuffer<Rgba8Pixel>) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
@@ -211,6 +233,40 @@ fn portal_destination(name: &str) -> Result<Option<PathBuf>, Box<dyn std::error:
     Ok(Some(path))
 }
 impl crate::Desktop {
+    pub(crate) fn open_profile_photo(&mut self, ui: &AppWindow) {
+        if ui.get_profile_avatar().size().width == 0 {
+            return;
+        }
+        ui.global::<State>().invoke_remember_detail_focus(false);
+        ui.global::<State>().set_viewer_from_detail(true);
+        ui.global::<State>().set_viewer_has_previous(false);
+        ui.global::<State>().set_viewer_has_next(false);
+        let id = ui.get_profile_id();
+        let asset = crate::presenter::detail::profile_avatar(&self.state, id.as_str())
+            .and_then(|a| a.original());
+        ui.set_viewer_key(format!("profile:{id}").into());
+        ui.invoke_reset_viewer();
+        ui.set_viewer_image(ui.get_profile_avatar());
+        ui.global::<State>().set_viewer_name(ui.get_profile_name());
+        ui.set_viewer_loading(asset.is_some());
+        ui.set_viewer_error("".into());
+        ui.set_viewer_status(
+            if asset.is_some() {
+                "Loading original…"
+            } else {
+                ""
+            }
+            .into(),
+        );
+        self.viewer_source = None;
+        self.viewer_asset = asset.as_ref().map(|a| a.key());
+        if let Some(asset) = asset {
+            self.sender.send(Intent::Original(asset));
+        }
+        self.state.panel = Panel::Viewer;
+        self.render(ui);
+        ui.invoke_focus_viewer_close();
+    }
     pub(crate) fn photos(&self) -> Vec<String> {
         self.state
             .rows()
@@ -237,6 +293,7 @@ impl crate::Desktop {
                 .set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
             ui.global::<State>()
                 .set_viewer_name(asset.display_name().into());
+            self.viewer_source = None;
             self.viewer_asset = Some(asset.key());
             if let Some(preview) = self.presenter.images.get(key) {
                 ui.set_viewer_image(preview.clone());
@@ -265,15 +322,30 @@ mod tests {
                 SharedPixelBuffer::<Rgba8Pixel>::new(1, 1),
             ));
             ui.set_viewer_loading(true);
-            save_photo(&ui, Destination::Directory(std::env::temp_dir()));
+            save_photo(&ui, Destination::Directory(std::env::temp_dir()), None);
             assert!(!ui.global::<State>().get_viewer_saving());
             ui.set_viewer_loading(false);
             ui.set_viewer_error("Original unavailable".into());
-            save_photo(&ui, Destination::Directory(std::env::temp_dir()));
+            save_photo(&ui, Destination::Directory(std::env::temp_dir()), None);
             assert!(!ui.global::<State>().get_viewer_saving());
         })
         .join()
         .unwrap();
+    }
+    #[cfg(feature = "demo")]
+    #[test]
+    fn source_export_preserves_bytes_instead_of_encoding_display_pixels() {
+        let root = std::env::temp_dir().join(format!("line-source-export-{}", std::process::id()));
+        let pixels = SharedPixelBuffer::<Rgba8Pixel>::new(2, 3);
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .encode_image(&image::RgbImage::new(3, 2))
+            .unwrap();
+        let path = export_photo(&pixels, Some(&jpeg), Destination::Directory(root.clone()))
+            .unwrap()
+            .unwrap();
+        assert_eq!(fs::read(path).unwrap(), jpeg);
+        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn png_export_and_unique_names() {

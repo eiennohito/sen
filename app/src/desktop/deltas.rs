@@ -32,6 +32,14 @@ impl Desktop {
         }
     }
     pub(crate) fn apply(&mut self, ui: &AppWindow, d: Delta) -> (bool, bool, Option<(i32, i32)>) {
+        let d = if let Delta::Original { key, pixels, bytes } = d {
+            if self.viewer_asset.as_ref() == Some(&key) {
+                self.viewer_source = Some(bytes);
+            }
+            Delta::Asset { key, pixels }
+        } else {
+            d
+        };
         // The engine may publish an unchanged window and a whole chat list on a
         // draft save. Keep that acknowledgement out of the conversation render.
         if let Delta::Window {
@@ -45,6 +53,7 @@ impl Desktop {
             unread_anchor,
         } = &d
             && *sub == self.state.window_sub
+            && !self.state.window_loading
             && remove.is_empty()
             && upsert.len() == self.state.messages.len()
             && upsert

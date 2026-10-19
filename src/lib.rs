@@ -6,6 +6,7 @@ pub mod controller;
 pub mod credentials;
 pub mod crypto_module;
 pub mod engine;
+pub mod images;
 pub mod locations;
 pub mod reporting;
 pub mod runtime;

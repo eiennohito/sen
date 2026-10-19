@@ -2753,6 +2753,7 @@ dependencies = [
  "arboard",
  "chrono",
  "i-slint-backend-selector",
+ "i-slint-backend-testing",
  "image",
  "line",
  "line-desktop-ui",

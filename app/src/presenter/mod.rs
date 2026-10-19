@@ -79,7 +79,7 @@ fn patch<K: PartialEq + Clone, R: Clone + PartialEq + 'static>(
 mod assets;
 pub(crate) mod chats;
 mod compose;
-mod detail;
+pub(crate) mod detail;
 pub(crate) mod messages;
 mod people;
 mod shell;

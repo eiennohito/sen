@@ -159,6 +159,7 @@ mod tests {
                 shown_composer: String::new(),
                 reveal: None,
                 viewer_asset: None,
+                viewer_source: None,
                 destination: viewer::Destination::Dialog,
                 notifications: None,
                 background: Default::default(),

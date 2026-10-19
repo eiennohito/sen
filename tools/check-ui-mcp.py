@@ -1215,7 +1215,52 @@ def check_unread():
     assert ", 2 unread" in element("Weekend plans","Button")["accessibleLabel"],"reading one chat cleared another chat"
 
 
+def check_action_geometry():
+    demo_scenario("Message actions")
+    for chat in ("Message actions", "Group actions"):
+        if chat == "Group actions":
+            click("Group actions")
+            wait_element("Members, 25")
+            wait_for(lambda: any(r.get("accessibleLabel", "").startswith("Profile: ") for r in tree()), "group sender avatars missing")
+        wait_for(lambda: len([b for b in bodies() if b.get("accessibleValue", "").startswith(("Incoming ", "Outgoing "))]) == 6, "action fixture did not load")
+        bubbles = call("find_elements_by_id", windowHandle=window, elementsId="Message::message-bubble")["elementHandles"]
+        bubble_bounds = [call("get_element_properties", elementHandle=h) for h in bubbles]
+        times = call("find_elements_by_id", windowHandle=window, elementsId="Message::time-slot")["elementHandles"]
+        time_bounds = [call("get_element_properties", elementHandle=h) for h in times]
+        for prefix in ("Incoming first", "Incoming middle", "Incoming last", "Outgoing first", "Outgoing middle", "Outgoing last"):
+            body = next(b for b in bodies() if b.get("accessibleValue", "").startswith(prefix))
+            call("hover_element", elementHandle=body["handle"])
+            rows = tree()
+            react = min((r for r in rows if r.get("accessibleRole") == "Button" and r.get("accessibleLabel") == "React"), key=lambda r: abs(r["absolutePosition"]["y"] - body["absolutePosition"]["y"]))
+            reply = min((r for r in rows if r.get("accessibleRole") == "Button" and r.get("accessibleLabel") == "Reply"), key=lambda r: abs(r["absolutePosition"]["y"] - react["absolutePosition"]["y"]))
+            rx, ry = react["absolutePosition"]["x"], react["absolutePosition"]["y"]
+            bubble = min(bubble_bounds, key=lambda b: abs(b["absolutePosition"]["y"] - body["absolutePosition"]["y"]))
+            outgoing = prefix.startswith("Outgoing")
+            bottom = bubble["absolutePosition"]["y"] + bubble["size"]["height"]
+            assert abs(ry + react["size"]["height"] - bottom) <= 1, f"{prefix}: actions left the bubble's bottom row"
+            time_slot = min(time_bounds, key=lambda t: abs(t["absolutePosition"]["y"] + t["size"]["height"] - bottom))
+            shows_time = time_slot["size"].get("width", 0) > 0
+            assert shows_time == prefix.endswith("last"), f"{prefix}: time must appear only at the end of the run"
+            anchor = time_slot if shows_time else bubble
+            ax, aw = anchor["absolutePosition"]["x"], anchor["size"]["width"]
+            edge = reply["absolutePosition"]["x"] + reply["size"]["width"] if outgoing else rx
+            distance = ax - edge if outgoing else edge - ax - aw
+            assert 0 <= distance <= 5, f"{prefix}: actions are not beside {'time' if shows_time else 'bubble'}: {distance} px"
+            assert abs(reply["absolutePosition"]["x"] - rx - react["size"]["width"] - 2) <= 1, f"{prefix}: React and Reply overlap or gap is not 2 px"
+            assert abs(reply["absolutePosition"]["y"] - ry) <= 1, f"{prefix}: actions are not side by side"
+            for action in (react, reply):
+                x, y = action["absolutePosition"]["x"], action["absolutePosition"]["y"]
+                right, bottom = x + action["size"]["width"], y + action["size"]["height"]
+                for other in bubble_bounds:
+                    if other == bubble:
+                        continue
+                    ox, oy = other["absolutePosition"]["x"], other["absolutePosition"]["y"]
+                    assert right <= ox or x >= ox + other["size"]["width"] or bottom <= oy or y >= oy + other["size"]["height"], f"{prefix}: {action['accessibleLabel']} overlaps another message bubble"
+            screenshot(chat.lower().replace(" ", "-") + "-" + prefix.lower().replace(" ", "-"))
+
+
 GROUPS = {
+    'action-geometry': check_action_geometry,
     'smoke': check_smoke,
     'focus': check_focus,
     'compose': check_compose,

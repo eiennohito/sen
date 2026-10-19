@@ -6,6 +6,7 @@ pub(crate) struct Desktop {
     pub(crate) shown_composer: String,
     pub(crate) reveal: Option<ChatId>,
     pub(crate) viewer_asset: Option<String>,
+    pub(crate) viewer_source: Option<std::sync::Arc<Vec<u8>>>,
     pub(crate) destination: viewer::Destination,
     pub(crate) notifications: Option<notifications::Notifications>,
     pub(crate) background: background::Background,
@@ -143,6 +144,26 @@ impl Desktop {
 mod tests {
     use super::*;
 
+    fn desktop(worker: &Worker) -> Desktop {
+        Desktop {
+            clipboard_root: std::env::temp_dir(),
+            history: Default::default(),
+            shown_composer: String::new(),
+            reveal: None,
+            viewer_asset: None,
+            viewer_source: None,
+            destination: viewer::Destination::Dialog,
+            notifications: None,
+            background: Default::default(),
+            assets: Default::default(),
+            state: AppState::default(),
+            presenter: Default::default(),
+            sender: worker.sender.clone(),
+            query: String::new(),
+            category: 0,
+        }
+    }
+
     #[test]
     fn asset_eviction_does_not_mark_desktop_dirty() {
         std::thread::spawn(|| {
@@ -153,22 +174,7 @@ mod tests {
             );
             let _window = crate::snapshot::install().unwrap();
             let ui = crate::window::create_app_window().unwrap();
-            let mut desktop = Desktop {
-                clipboard_root: std::env::temp_dir(),
-                history: Default::default(),
-                shown_composer: String::new(),
-                reveal: None,
-                viewer_asset: None,
-                destination: viewer::Destination::Dialog,
-                notifications: None,
-                background: Default::default(),
-                assets: Default::default(),
-                state: AppState::default(),
-                presenter: Default::default(),
-                sender: worker.sender.clone(),
-                query: String::new(),
-                category: 0,
-            };
+            let mut desktop = desktop(&worker);
             let avatar = line::client::desktop::assets::Asset::avatar("/visible-avatar").unwrap();
             assert!(desktop.assets.request(&avatar));
             let (dirty, window, editor) =
@@ -180,6 +186,129 @@ mod tests {
                 desktop.assets.request(&avatar),
                 "evicted asset must be requestable again"
             );
+        })
+        .join()
+        .unwrap();
+    }
+    #[test]
+    fn unchanged_empty_window_finishes_loading() {
+        std::thread::spawn(|| {
+            let worker = Worker::start(
+                StoreLocation::Memory,
+                || Ok(line::backend::FakeBackend::canned()),
+                Default::default(),
+            );
+            let _window = crate::snapshot::install().unwrap();
+            let ui = crate::window::create_app_window().unwrap();
+            let mut desktop = desktop(&worker);
+            desktop.state.select(ChatId("empty".into()));
+            desktop.apply(
+                &ui,
+                Delta::Window {
+                    sub: desktop.state.window_sub,
+                    upsert: vec![],
+                    remove: vec![],
+                    gaps: vec![],
+                    reaches_start: false,
+                    reaches_end: false,
+                    replies: vec![],
+                    unread_anchor: None,
+                },
+            );
+            assert!(
+                !desktop.state.window_loading,
+                "an unchanged empty window must finish loading"
+            );
+        })
+        .join()
+        .unwrap();
+    }
+    #[test]
+    fn profile_viewer_requests_original_and_swaps_preview() {
+        std::thread::spawn(|| {
+            let worker = Worker::start(
+                StoreLocation::Memory,
+                || Ok(line::backend::FakeBackend::canned()),
+                Default::default(),
+            );
+            let _window = crate::snapshot::install().unwrap();
+            let ui = crate::window::create_app_window().unwrap();
+            let mut desktop = desktop(&worker);
+            let avatar = line::client::desktop::assets::Asset::avatar("/own-photo").unwrap();
+            desktop.state.apply(Delta::Profile(Profile {
+                mid: "self".into(),
+                display_name: "Me".into(),
+                picture_path: Some("/own-photo".into()),
+                ..Default::default()
+            }));
+            ui.set_profile_id("self".into());
+            ui.set_profile_name("Me".into());
+            ui.set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
+                slint::Rgba8Pixel,
+            >::new(2, 3)));
+            desktop.open_profile_photo(&ui);
+            assert_eq!(desktop.viewer_asset, Some(avatar.original().unwrap().key()));
+            assert!(ui.get_viewer_loading());
+            assert_eq!(
+                (
+                    ui.get_viewer_image().size().width,
+                    ui.get_viewer_image().size().height
+                ),
+                (2, 3)
+            );
+            assert_eq!(ui.get_viewer_status(), "Loading original…");
+            let source = std::sync::Arc::new(vec![1, 2, 3]);
+            desktop.apply(
+                &ui,
+                Delta::Original {
+                    key: desktop.viewer_asset.clone().unwrap(),
+                    pixels: std::sync::Arc::new(line::client::desktop::assets::Pixels {
+                        width: 4,
+                        height: 6,
+                        rgba: vec![255; 4 * 6 * 4],
+                    }),
+                    bytes: source.clone(),
+                },
+            );
+            assert!(!ui.get_viewer_loading());
+            assert_eq!(
+                (
+                    ui.get_viewer_image().size().width,
+                    ui.get_viewer_image().size().height
+                ),
+                (4, 6)
+            );
+            assert_eq!(desktop.viewer_source, Some(source));
+        })
+        .join()
+        .unwrap();
+    }
+    #[test]
+    fn profile_viewer_opens_avatar_without_an_original() {
+        std::thread::spawn(|| {
+            let worker = Worker::start(
+                StoreLocation::Memory,
+                || Ok(line::backend::FakeBackend::canned()),
+                Default::default(),
+            );
+            let _window = crate::snapshot::install().unwrap();
+            let ui = crate::window::create_app_window().unwrap();
+            let mut desktop = desktop(&worker);
+            ui.set_profile_id("missing".into());
+            ui.set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
+                slint::Rgba8Pixel,
+            >::new(2, 3)));
+            desktop.open_profile_photo(&ui);
+            assert_eq!(desktop.state.panel, Panel::Viewer);
+            assert_eq!(
+                (
+                    ui.get_viewer_image().size().width,
+                    ui.get_viewer_image().size().height
+                ),
+                (2, 3)
+            );
+            assert!(!ui.get_viewer_loading());
+            assert!(desktop.viewer_asset.is_none());
         })
         .join()
         .unwrap();

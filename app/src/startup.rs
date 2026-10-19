@@ -192,6 +192,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         shown_composer: String::new(),
         reveal: None,
         viewer_asset: None,
+        viewer_source: None,
         destination,
         notifications: if !headless {
             Some(notifications::Notifications::start())

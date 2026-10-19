@@ -60,16 +60,8 @@ impl Attachment {
             .to_string();
             let (width, height) = reader.into_dimensions()?;
             if u64::from(width) * u64::from(height) <= 100_000_000 {
-                let mut photo = Photo {
-                    width,
-                    height,
-                    extension,
-                    animated: false,
-                    preview_width: 0,
-                    preview_height: 0,
-                };
                 let bytes = item.read()?;
-                photo.animated = match format {
+                let animated = match format {
                     image::ImageFormat::Gif => {
                         image::codecs::gif::GifDecoder::new(Cursor::new(&bytes))?
                             .into_frames()
@@ -89,9 +81,16 @@ impl Attachment {
                 let mut limits = image::Limits::default();
                 limits.max_alloc = Some(500_000_000);
                 reader.limits(limits);
-                let preview = reader.decode()?.thumbnail(384, 384);
-                photo.preview_width = preview.width();
-                photo.preview_height = preview.height();
+                let decoded = crate::images::decode(reader)?;
+                let preview = decoded.thumbnail(384, 384);
+                let photo = Photo {
+                    width: decoded.width(),
+                    height: decoded.height(),
+                    extension,
+                    animated,
+                    preview_width: preview.width(),
+                    preview_height: preview.height(),
+                };
                 let mut png = Cursor::new(Vec::new());
                 preview.write_to(&mut png, image::ImageFormat::Png)?;
                 item.preview = png.into_inner();

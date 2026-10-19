@@ -638,7 +638,7 @@ impl Store {
                     |r| r.get::<_, bool>(0),
                 )?;
                 if !exists {
-                    if row.contact.name.is_some() {
+                    if row.contact.name.is_some() || row.is_self {
                         upsert_contact(tx, &row.contact)?;
                     } else {
                         continue;

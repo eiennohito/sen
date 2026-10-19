@@ -278,7 +278,13 @@ impl Asset {
             return Some(original);
         }
         if !self.private {
-            return None;
+            if self.kind() != "avatar" {
+                return None;
+            }
+            let mut original = self.clone();
+            original.url = self.url.strip_suffix("/preview")?.to_owned();
+            original.dimension = 8192;
+            return Some(original);
         }
         let base = self
             .url
@@ -584,7 +590,7 @@ fn pixels(bytes: &[u8], dimension: u32) -> Result<Pixels> {
     limits.max_image_height = Some(8192);
     limits.max_alloc = Some(64 * 1024 * 1024);
     reader.limits(limits);
-    let decoded = reader.decode().map_err(|error| match error {
+    let decoded = crate::images::decode(reader).map_err(|error| match error {
         image::ImageError::Limits(_) => Failure::TooLarge,
         _ => Failure::Decode,
     })?;
@@ -646,6 +652,26 @@ mod tests {
         );
         fs::remove_dir_all(root)?;
         Ok(())
+    }
+    #[test]
+    fn avatar_original_and_exif_display() {
+        let preview = Asset::avatar("/profile-picture").unwrap();
+        let original = preview.original().unwrap();
+        assert_eq!(
+            preview.url,
+            "https://profile.line-scdn.net/profile-picture/preview"
+        );
+        assert_eq!(
+            original.url,
+            "https://profile.line-scdn.net/profile-picture"
+        );
+        assert_eq!(original.dimension, 8192);
+        assert_ne!(original.key(), preview.key());
+        let bytes = crate::test_support::oriented_jpeg();
+        for size in [256, 8192] {
+            let displayed = pixels(&bytes, size).unwrap();
+            assert_eq!((displayed.width, displayed.height), (2, 3));
+        }
     }
     #[test]
     fn original_photo_uses_source_object() -> Result<()> {

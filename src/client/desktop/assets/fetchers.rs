@@ -66,6 +66,10 @@ pub enum Purpose {
 pub enum Payload {
     Evicted,
     Image(Arc<Pixels>),
+    Original {
+        pixels: Arc<Pixels>,
+        bytes: Arc<Vec<u8>>,
+    },
     File(Arc<Vec<u8>>),
 }
 
@@ -431,7 +435,10 @@ fn fetch(
                 }
                 .as_deref(),
             )?;
-            Ok(Payload::Image(Arc::new(original_pixels(&bytes)?)))
+            Ok(Payload::Original {
+                pixels: Arc::new(original_pixels(&bytes)?),
+                bytes: Arc::new(bytes),
+            })
         }
         Purpose::File { .. } => Ok(Payload::File(Arc::new(
             job.asset.fetch(
