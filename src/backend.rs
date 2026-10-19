@@ -333,7 +333,7 @@ impl FakeBackend {
                 title: title.into(),
                 is_group: i != 0,
                 member_count: (i == 1).then_some(3),
-                last_message_id: Some(ServerId(if i == 0 { "10" } else { "2" }.into())),
+                last_message_id: Some(ServerId::new(if i == 0 { "10" } else { "2" }).unwrap()),
                 last_message_ms: Some(1792300000000 + if i == 0 { 10 } else { 2 }),
                 ..Default::default()
             })
@@ -364,7 +364,7 @@ impl FakeBackend {
     }
     pub fn message(chat: &str, id: i64, text: &str, outgoing: bool) -> MessageInput {
         MessageInput {
-            server_id: ServerId(id.to_string()),
+            server_id: ServerId::new(id.to_string()).unwrap(),
             chat_id: ChatId(chat.into()),
             created_ms: 1792300000000 + id,
             delivered_ms: None,
@@ -377,7 +377,7 @@ impl FakeBackend {
             request_seq: None,
             body: Content::text(text),
             reactions: vec![],
-            reactions_rev: id,
+            rev: id,
         }
     }
     pub fn offline(&self, offline: bool) {
@@ -534,7 +534,7 @@ impl FakeBackend {
     pub fn set_page(&self, chat: ChatId, rows: Vec<MessageInput>) {
         let mut s = self.0.lock().unwrap();
         for m in &rows {
-            s.next_id = s.next_id.max(m.server_id.0.parse().unwrap());
+            s.next_id = s.next_id.max(m.server_id.as_str().parse().unwrap());
         }
         s.pages.insert(chat, rows);
     }
@@ -563,7 +563,7 @@ impl FakeBackend {
             let mut s = self.0.lock().unwrap();
             s.next_revision = s.next_revision.max(op.revision);
             if let Op::Message(m) = &op.op {
-                s.next_id = s.next_id.max(m.server_id.0.parse().unwrap());
+                s.next_id = s.next_id.max(m.server_id.as_str().parse().unwrap());
             }
             s.deliver.clone()
         };
@@ -978,7 +978,7 @@ impl Backend for FakeBackend {
             .filter(|m| {
                 let cursor = Cursor {
                     sort_ts: m.created_ms,
-                    sort_id: format!("{:0>20}", m.server_id.0),
+                    sort_id: format!("{:0>20}", m.server_id.as_str()),
                 };
                 match kind {
                     PageKind::Recent | PageKind::Around { .. } => true,
@@ -1205,12 +1205,11 @@ impl Backend for FakeBackend {
             replay: raw["replay"].as_bool().unwrap_or(false),
             op: match raw["type"].as_u64() {
                 Some(139 | 140) => reaction_operation(&raw, "self")?,
-                Some(64 | 65) => Op::Withdraw(ServerId(
+                Some(64 | 65) => Op::Withdraw(decode_id(
                     raw["param2"]
                         .as_str()
-                        .ok_or(Failure::Bug("decode".into()))?
-                        .into(),
-                )),
+                        .ok_or(Failure::Bug("decode".into()))?,
+                )?),
                 _ => Op::Checkpoint,
             },
         })
@@ -1295,9 +1294,13 @@ fn rpc(error: anyhow::Error) -> Failure {
     }
     failure
 }
-fn message_input(chat: &ChatId, m: crate::client::desktop::Message, rev: i64) -> MessageInput {
-    MessageInput {
-        server_id: ServerId(m.id.clone()),
+fn message_input(
+    chat: &ChatId,
+    m: crate::client::desktop::Message,
+    rev: i64,
+) -> Result<MessageInput> {
+    Ok(MessageInput {
+        server_id: decode_id(&m.id)?,
         chat_id: chat.clone(),
         created_ms: m.timestamp_ms,
         delivered_ms: Some(m.delivered_time),
@@ -1310,11 +1313,11 @@ fn message_input(chat: &ChatId, m: crate::client::desktop::Message, rev: i64) ->
         request_seq: m.request_seq,
         reactions: m.reactions,
         body: m.content,
-        reactions_rev: rev,
-    }
+        rev,
+    })
 }
-fn chat_input(c: crate::client::desktop::Chat) -> ChatInput {
-    ChatInput {
+fn chat_input(c: crate::client::desktop::Chat) -> Result<ChatInput> {
+    Ok(ChatInput {
         id: ChatId(c.id),
         is_group: c.group,
         title: c.title,
@@ -1322,13 +1325,14 @@ fn chat_input(c: crate::client::desktop::Chat) -> ChatInput {
         member_count: c.member_count.map(|n| n as u32),
         muted: c.muted.unwrap_or(false),
         left: false,
-        last_message_id: c.last_message_id.map(ServerId),
+        last_message_id: c.last_message_id.as_deref().map(decode_id).transpose()?,
         last_message_ms: Some(c.timestamp_ms),
-        unread_count: c.unread.unwrap_or(0) as u32,
+        server_unread: c.unread.unwrap_or(0) as u32,
+        unread_count: 0,
         unread_stale: false,
-        last_read_server_id: c.last_read_message.map(ServerId),
+        last_read_server_id: c.last_read_message.as_deref().map(decode_id).transpose()?,
         list_rank: 0,
-    }
+    })
 }
 impl Backend for LineBackend {
     fn has_session(&self) -> bool {
@@ -1524,11 +1528,14 @@ impl Backend for LineBackend {
             .filter_map(|c| {
                 c.preview_message
                     .clone()
-                    .map(|m| message_input(&ChatId(c.id.clone()), m, 0))
+                    .and_then(|m| message_input(&ChatId(c.id.clone()), m, 0).ok())
             })
             .collect();
         Ok(ChatPage {
-            chats: rows.into_iter().map(chat_input).collect(),
+            chats: rows
+                .into_iter()
+                .filter_map(|c| chat_input(c).ok())
+                .collect(),
             previews,
             more,
             cursor,
@@ -1541,12 +1548,12 @@ impl Backend for LineBackend {
             .chat_detail(&chat.0)
             .map_err(rpc)?
             .into_iter()
-            .map(chat_input)
+            .filter_map(|c| chat_input(c).ok())
             .collect())
     }
     fn messages(&mut self, chat: &ChatId, kind: &PageKind) -> Result<Page> {
         let (rows, reaches_start) = match kind {
-            PageKind::Around { id } => self.client()?.around(&chat.0, &id.0).map_err(rpc)?,
+            PageKind::Around { id } => self.client()?.around(&chat.0, id.as_str()).map_err(rpc)?,
             PageKind::Older { before } => self
                 .client()?
                 .older(
@@ -1570,7 +1577,7 @@ impl Backend for LineBackend {
             kind: actual_kind,
             rows: rows
                 .into_iter()
-                .map(|m| message_input(chat, m, 0))
+                .filter_map(|m| message_input(chat, m, 0).ok())
                 .collect(),
             reaches_start,
         })
@@ -1604,7 +1611,7 @@ impl Backend for LineBackend {
         self.client()?
             .finish_attachment(&chat.0, uploaded, seq)
             .map_err(rpc)
-            .map(|m| message_input(chat, m, 0))
+            .and_then(|m| message_input(chat, m, 0))
     }
     fn send(
         &mut self,
@@ -1616,10 +1623,10 @@ impl Backend for LineBackend {
         self.client()?
             .send_text_with_request(&chat.0, text, seq, reply)
             .map_err(rpc)
-            .map(|m| message_input(chat, m, 0))
+            .and_then(|m| message_input(chat, m, 0))
     }
     fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
-        self.client()?.react(&id.0, kind, seq).map_err(rpc)
+        self.client()?.react(id.as_str(), kind, seq).map_err(rpc)
     }
     fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>> {
         self.client()?.sticker_packages().map_err(rpc)
@@ -1633,14 +1640,14 @@ impl Backend for LineBackend {
     ) -> Result<MessageInput> {
         self.client()?
             .send_sticker(&chat.0, sticker, seq, reply)
-            .map(|m| message_input(chat, m, 0))
             .map_err(rpc)
+            .and_then(|m| message_input(chat, m, 0))
     }
     fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
         self.client()?.create_chat(name, targets, seq).map_err(rpc)
     }
     fn unsend(&mut self, id: &ServerId, seq: u32) -> Result<()> {
-        self.client()?.unsend(&id.0, seq).map_err(rpc)
+        self.client()?.unsend(id.as_str(), seq).map_err(rpc)
     }
     fn receipts(&mut self, chat: &ChatId) -> Result<Vec<Option<ServerId>>> {
         Ok(self
@@ -1648,11 +1655,19 @@ impl Backend for LineBackend {
             .read_ranges(&chat.0)
             .map_err(rpc)?
             .into_iter()
-            .map(|r| (!r.open_end).then_some(ServerId(r.end)))
+            .filter_map(|r| {
+                if r.open_end {
+                    Some(None)
+                } else {
+                    decode_id(&r.end).ok().map(Some)
+                }
+            })
             .collect())
     }
     fn mark_read(&mut self, chat: &ChatId, id: &ServerId, seq: u32) -> Result<()> {
-        self.client()?.mark_read(&chat.0, &id.0, seq).map_err(rpc)
+        self.client()?
+            .mark_read(&chat.0, id.as_str(), seq)
+            .map_err(rpc)
     }
     fn stream(
         &mut self,
@@ -1737,7 +1752,7 @@ impl Backend for LineBackend {
             .or_else(|| raw["revision"].as_str()?.parse().ok())
             .ok_or(Failure::Bug("decode".into()))?;
         let chat = || ChatId(raw["param1"].as_str().unwrap_or_default().into());
-        let id = || ServerId(raw["param2"].as_str().unwrap_or_default().into());
+        let id = || decode_id(raw["param2"].as_str().unwrap_or_default());
         let op = match raw["type"].as_u64() {
             Some(25 | 26 | 43) => {
                 let (c, mut m) = self
@@ -1750,22 +1765,21 @@ impl Backend for LineBackend {
                     .or_else(|| raw["reqSeq"].as_str()?.parse().ok())
                     .map(|n| n as u32)
                     .or(m.request_seq);
-                Op::Message((message_input(&ChatId(c), m, revision)).into())
+                Op::Message((message_input(&ChatId(c), m, revision)?).into())
             }
             Some(55) => Op::Receipt {
                 chat: chat(),
-                up_to: ServerId(
+                up_to: decode_id(
                     raw["param3"]
                         .as_str()
-                        .ok_or(Failure::Bug("decode".into()))?
-                        .into(),
-                ),
+                        .ok_or(Failure::Bug("decode".into()))?,
+                )?,
             },
             Some(40) => Op::Read {
                 chat: chat(),
-                up_to: id(),
+                up_to: id()?,
             },
-            Some(64 | 65) => Op::Withdraw(id()),
+            Some(64 | 65) => Op::Withdraw(id()?),
             Some(139 | 140) => reaction_operation(&raw, self.client()?.local_mid())?,
             _ => Op::Checkpoint,
         };
@@ -1781,6 +1795,11 @@ impl Backend for LineBackend {
 }
 
 fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
+    let id = decode_id(
+        raw["param1"]
+            .as_str()
+            .ok_or(Failure::Bug("decode".into()))?,
+    )?;
     let data: Value = serde_json::from_str(
         raw["param2"]
             .as_str()
@@ -1810,15 +1829,40 @@ fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
     };
     match actor.filter(|s| !s.is_empty()) {
         Some(actor) => Ok(Op::Reaction {
-            id: ServerId(
-                raw["param1"]
-                    .as_str()
-                    .ok_or(Failure::Bug("decode".into()))?
-                    .into(),
-            ),
+            id,
             actor: actor.into(),
             curr: crate::client::desktop::reaction_kind(&data["curr"]),
         }),
         None => Ok(Op::Recent(chat)),
+    }
+}
+
+fn decode_id(value: &str) -> Result<ServerId> {
+    ServerId::new(value).map_err(|_| Failure::Bug("decode".into()))
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_wire_ids_fail_decoding() {
+        let mut backend = FakeBackend::canned();
+        for id in ["", "01", "-1", "x", "123456789012345678901"] {
+            assert!(
+                backend
+                    .decode(json!({"type":64,"revision":1,"param2":id}))
+                    .is_err()
+            );
+            assert!(
+                reaction_operation(
+                    &json!({
+                        "type":140,"param1":id,"param2":r#"{"chatMid":"chat"}"#
+                    }),
+                    "self"
+                )
+                .is_err()
+            );
+        }
     }
 }

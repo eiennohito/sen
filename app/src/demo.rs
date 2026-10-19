@@ -45,7 +45,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 FakeBackend::official_image("protocol", 6302),
             ];
             fake.fail_rpc(
-                line::backend::FakeRpc::Unsend(ServerId("6301".into())),
+                line::backend::FakeRpc::Unsend(ServerId::new("6301").unwrap()),
                 line::backend::Failure::Refused(line::client::error::Refusal::Gateway(13)),
             );
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
@@ -57,7 +57,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 .into_iter()
                 .find(|m| m.server_id.is_some() && !m.body.is_withdrawn())
             {
-                fake.inject_raw(serde_json::json!({"type":139,"param1":row.server_id.as_ref().unwrap().0,
+                fake.inject_raw(serde_json::json!({"type":139,"param1":row.server_id.as_ref().unwrap().as_str(),
                     "param2":serde_json::json!({"chatMid":chat.0,"curr":{"predefinedReactionType":2}}).to_string()}));
             }
         }
@@ -101,7 +101,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 // New ids must sort after everything already read.
                 let newest = rows
                     .iter()
-                    .filter_map(|m| m.server_id.0.parse::<i64>().ok())
+                    .filter_map(|m| m.server_id.as_str().parse::<i64>().ok())
                     .max()
                     .unwrap_or(0);
                 for n in 1..=count {
@@ -115,7 +115,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                     });
                 }
                 let mut snapshot = d.state.chats[&target].chat.clone();
-                snapshot.unread_count += count as u32;
+                snapshot.server_unread = snapshot.unread_count + count as u32;
                 snapshot.last_message_id = rows.last().map(|row| row.server_id.clone());
                 snapshot.last_message_ms = rows.last().map(|row| row.created_ms);
                 fake.add_chat(snapshot);

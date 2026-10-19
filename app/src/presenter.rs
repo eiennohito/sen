@@ -85,8 +85,16 @@ impl Presenter {
             state
                 .messages
                 .values()
-                .find(|m| m.server_id.as_ref().is_some_and(|s| s.0 == r.message_id))
-                .or_else(|| state.reply_targets.get(&ServerId(r.message_id.clone())))
+                .find(|m| {
+                    m.server_id
+                        .as_ref()
+                        .is_some_and(|s| s.as_str() == r.message_id)
+                })
+                .or_else(|| {
+                    ServerId::new(r.message_id.clone())
+                        .ok()
+                        .and_then(|id| state.reply_targets.get(&id))
+                })
         });
         let mut quote = reply
             .map(|m| self.row(m, state))
@@ -201,25 +209,27 @@ impl Presenter {
             })
             .cloned();
         let system_text = crate::system_events::text(&m.body, state, &m.sender_id);
-        let reply =
-            m.reply
-                .as_ref()
-                .and_then(|r| {
-                    state
-                        .reply_targets
-                        .get(&ServerId(r.message_id.clone()))
-                        .or_else(|| {
-                            state.messages.values().find(|m| {
-                                m.server_id.as_ref().is_some_and(|id| id.0 == r.message_id)
-                            })
+        let reply = m
+            .reply
+            .as_ref()
+            .and_then(|r| {
+                state
+                    .reply_targets
+                    .get(&ServerId::new(r.message_id.clone()).ok()?)
+                    .or_else(|| {
+                        state.messages.values().find(|m| {
+                            m.server_id
+                                .as_ref()
+                                .is_some_and(|id| id.as_str() == r.message_id)
                         })
-                })
-                .map(|target| {
-                    (
-                        target.clone(),
-                        crate::system_events::name(state, &target.sender_id),
-                    )
-                });
+                    })
+            })
+            .map(|target| {
+                (
+                    target.clone(),
+                    crate::system_events::name(state, &target.sender_id),
+                )
+            });
         let inputs = MessageInputs {
             message: m.clone(),
             sender: sender.clone(),

@@ -277,7 +277,9 @@ fn live_withdrawals_update_both_loaded_messages() {
     app.until(|state| {
         ["500", "501"].iter().all(|id| {
             state.messages.values().any(|row| {
-                row.server_id.as_ref().is_some_and(|server| server.0 == *id)
+                row.server_id
+                    .as_ref()
+                    .is_some_and(|server| server.as_str() == *id)
                     && row.body.is_withdrawn()
             })
         })
@@ -316,4 +318,23 @@ fn cached_thumbnail_does_not_clear_offline() {
     }
     app.settle();
     assert_eq!(app.state.connection, Connection::Offline);
+}
+
+#[test]
+fn request_sequence_wraps_without_persisting_preferences() {
+    let app = App::new();
+    app.on_engine(|engine| {
+        let prefs = engine.store.prefs().unwrap();
+        engine.seq = 0x7fff_fffe;
+        assert_eq!(engine.next_seq().unwrap(), 0x7fff_ffff);
+        assert_eq!(engine.next_seq().unwrap(), 0);
+        assert_eq!(engine.next_seq().unwrap(), 1);
+        assert_eq!(engine.store.prefs().unwrap(), prefs);
+        assert!(
+            serde_json::to_value(prefs)
+                .unwrap()
+                .get("request_seq")
+                .is_none()
+        );
+    });
 }
