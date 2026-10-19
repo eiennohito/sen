@@ -162,12 +162,9 @@ pub enum Intent {
     },
     Stop,
 }
-fn short_id(id: &str) -> String {
-    id.chars().take(6).filter(|c| !c.is_control()).collect()
-}
 impl Intent {
-    fn diagnostic(&self) -> String {
-        let name = match self {
+    fn name(&self) -> &'static str {
+        match self {
             Self::ChatList { .. } => "chat-list",
             Self::Window(_) => "window",
             Self::MoreChats => "more-chats",
@@ -197,41 +194,40 @@ impl Intent {
             Self::Prefs(_) => "prefs",
             Self::MarkRead { .. } => "mark-read",
             Self::Stop => "stop",
-        };
-        let ids = match self {
-            Self::Window(w) => format!(" chat={}", short_id(&w.chat.0)),
-            Self::GroupInfo(chat)
-            | Self::Members(chat)
-            | Self::Send { chat, .. }
-            | Self::SendSticker { chat, .. }
-            | Self::Draft { chat, .. }
-            | Self::MarkRead { chat, .. }
-            | Self::Page { chat, .. } => format!(" chat={}", short_id(&chat.0)),
-            Self::Contact(mid) => format!(" mid={}", short_id(mid)),
-            Self::ProfileAction(action) => match action {
-                ProfileAction::Rename { mid, .. } | ProfileAction::AddFriend { mid, .. } => {
-                    format!(" mid={}", short_id(mid))
-                }
-                ProfileAction::Mute { chat, .. } | ProfileAction::Leave { chat } => {
-                    format!(" chat={}", short_id(&chat.0))
-                }
-            },
-            Self::CreateChat { targets, .. } => format!(
-                " targets={}",
-                targets
-                    .iter()
-                    .map(|s| short_id(s))
-                    .collect::<Vec<_>>()
-                    .join(",")
-            ),
-            Self::React { key, .. }
-            | Self::Unsend(key)
-            | Self::Retry(key)
-            | Self::Discard(key)
-            | Self::Copy(key) => format!(" key={}", key.0),
-            _ => String::new(),
-        };
-        format!("{name}{ids}")
+        }
+    }
+}
+fn needs_account(intent: &Intent) -> bool {
+    match intent {
+        Intent::SignIn
+        | Intent::CancelSignIn
+        | Intent::Prefs(_)
+        | Intent::ChatList { .. }
+        | Intent::Friends
+        | Intent::Contact(_)
+        | Intent::GroupInfo(_)
+        | Intent::Members(_)
+        | Intent::Window(_)
+        | Intent::Page { .. }
+        | Intent::Asset(_)
+        | Intent::Original(_)
+        | Intent::File { .. }
+        | Intent::Draft { .. }
+        | Intent::Copy(_)
+        | Intent::Discard(_)
+        | Intent::MoreChats
+        | Intent::Stop => false,
+        Intent::ProfileAction(_)
+        | Intent::RetryAsset(_)
+        | Intent::Send { .. }
+        | Intent::SendAttachments { .. }
+        | Intent::React { .. }
+        | Intent::StickerPackages
+        | Intent::SendSticker { .. }
+        | Intent::CreateChat { .. }
+        | Intent::Unsend(_)
+        | Intent::Retry(_)
+        | Intent::MarkRead { .. } => true,
     }
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -388,32 +384,28 @@ pub enum Refresh {
     Read(ChatId),
 }
 impl Refresh {
-    fn diagnostic(&self) -> String {
-        let (name, id) = match self {
-            Self::Stream => ("stream", None),
-            Self::Profile => ("profile", None),
-            Self::Send(key) => return format!("send key={}", key.0),
-            Self::Friends => ("friends", None),
-            Self::Contact(id) => ("contact", Some(id.as_str())),
-            Self::Notice(id) => ("notice", Some(id.as_str())),
-            Self::GroupInfo(id) => ("group-info", Some(id.0.as_str())),
-            Self::Members(id) => ("members", Some(id.0.as_str())),
-            Self::ChatList => ("chat-list", None),
-            Self::MoreChats => ("more-chats", None),
-            Self::Receipts(id) => ("receipts", Some(id.0.as_str())),
-            Self::Around(id, _) => ("around", Some(id.0.as_str())),
-            Self::Older(id, _) => ("older", Some(id.0.as_str())),
-            Self::Details(id) => ("details", Some(id.0.as_str())),
-            Self::Recent(id) => ("recent", Some(id.0.as_str())),
-            Self::Read(id) => ("read", Some(id.0.as_str())),
-        };
-        format!(
-            "refresh-{name}{}",
-            id.map(|id| format!(" id={}", short_id(id)))
-                .unwrap_or_default()
-        )
+    fn name(&self) -> &'static str {
+        match self {
+            Self::Stream => "refresh-stream",
+            Self::Profile => "refresh-profile",
+            Self::Send(_) => "send",
+            Self::Friends => "refresh-friends",
+            Self::Contact(_) => "refresh-contact",
+            Self::Notice(_) => "refresh-notice",
+            Self::GroupInfo(_) => "refresh-group-info",
+            Self::Members(_) => "refresh-members",
+            Self::ChatList => "refresh-chat-list",
+            Self::MoreChats => "refresh-more-chats",
+            Self::Receipts(_) => "refresh-receipts",
+            Self::Around(_, _) => "refresh-around",
+            Self::Older(_, _) => "refresh-older",
+            Self::Details(_) => "refresh-details",
+            Self::Recent(_) => "refresh-recent",
+            Self::Read(_) => "refresh-read",
+        }
     }
 }
+
 #[derive(Default)]
 struct Lanes {
     users: VecDeque<Intent>,
@@ -517,6 +509,21 @@ impl DeltaSender {
         true
     }
 }
+pub struct WorkerOptions {
+    pub timing: Timing,
+    /// Project output on its publishing worker, before enqueueing or waking the UI.
+    #[cfg(feature = "demo")]
+    pub project: Arc<dyn Fn(Delta) -> Delta + Send + Sync>,
+}
+impl Default for WorkerOptions {
+    fn default() -> Self {
+        Self {
+            timing: Timing::default(),
+            #[cfg(feature = "demo")]
+            project: Arc::new(|delta| delta),
+        }
+    }
+}
 pub struct Worker {
     wake: DeltaWake,
     cancel: Arc<CancelToken>,
@@ -532,47 +539,17 @@ impl Worker {
             wake();
         }
     }
-    pub fn start(backend: impl Backend + 'static, location: StoreLocation) -> Self {
-        let mut backend = Some(backend);
-        Self::start_with_timing(
-            location,
-            move || Ok(backend.take().expect("backend already opened")),
-            Timing::default(),
-        )
-    }
     /// Open the store before initializing credentials, WASM, or asset caches.
-    pub fn start_with<B: Backend + 'static>(
-        location: StoreLocation,
-        open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
-    ) -> Self {
-        Self::start_with_timing(location, open, Timing::default())
-    }
-    pub fn start_timed(
-        backend: impl Backend + 'static,
-        location: StoreLocation,
-        timing: Timing,
-    ) -> Self {
-        let mut backend = Some(backend);
-        Self::start_with_timing(
-            location,
-            move || Ok(backend.take().expect("backend already opened")),
-            timing,
-        )
-    }
-    pub fn start_with_timing<B: Backend + 'static>(
-        location: StoreLocation,
-        open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
-        timing: Timing,
-    ) -> Self {
-        Self::start_projected(location, open, timing, |delta| delta)
-    }
-    /// Project output on its publishing worker, before enqueueing or waking the UI.
-    pub fn start_projected<B: Backend + 'static>(
+    pub fn start<B: Backend + 'static>(
         location: StoreLocation,
         mut open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
-        timing: Timing,
-        project: impl Fn(Delta) -> Delta + Send + Sync + 'static,
+        options: WorkerOptions,
     ) -> Self {
+        let timing = options.timing;
+        #[cfg(feature = "demo")]
+        let project = options.project;
+        #[cfg(not(feature = "demo"))]
+        let project = Arc::new(|delta| delta);
         let inbox = Arc::new(Inbox::default());
         let sender = Sender(inbox.clone());
         let (tx, deltas) = mpsc::channel();
@@ -580,7 +557,7 @@ impl Worker {
         let tx = DeltaSender {
             tx,
             wake: wake.clone(),
-            project: Arc::new(project),
+            project,
         };
         let cancel = Arc::new(CancelToken::new());
         let worker_cancel = cancel.clone();
@@ -726,6 +703,11 @@ impl Drop for Worker {
         }
     }
 }
+enum ReactionFlight {
+    InFlight,
+    Remove,
+    Set(u32),
+}
 struct Engine {
     timing: Timing,
     attempt: u32,
@@ -741,7 +723,7 @@ struct Engine {
     generation: Arc<AtomicU64>,
     health: Health,
     in_flight: BTreeSet<(String, Key)>,
-    reaction_flights: std::collections::BTreeMap<Key, Option<Option<u32>>>,
+    reaction_flights: std::collections::BTreeMap<Key, ReactionFlight>,
     group_requests: std::collections::BTreeMap<(String, Vec<String>), u32>,
     media: Option<AssetRequests>,
     waiting_assets: VecDeque<(
@@ -769,6 +751,24 @@ struct Engine {
     assets_stop: Arc<CancelToken>,
 }
 type Result<T> = std::result::Result<T, StoreError>;
+fn reject_pending(
+    mid: &str,
+    in_flight: &BTreeSet<(String, Key)>,
+    store: &mut Store,
+    reason: Refusal,
+) -> Result<()> {
+    for row in store.all_pending()? {
+        if row.delivery == Delivery::Pending && !in_flight.contains(&(mid.to_owned(), row.key)) {
+            store.mark_failed(
+                row.key,
+                Delivery::Rejected {
+                    reason: reason.clone(),
+                },
+            )?;
+        }
+    }
+    Ok(())
+}
 impl Engine {
     fn known(&self) -> bool {
         matches!(self.account, AccountSession::Ready)
@@ -825,18 +825,25 @@ impl Engine {
         &mut self,
         request: Refresh,
         run: impl FnOnce(&mut dyn Backend) -> std::result::Result<T, Failure> + Send + 'static,
-        apply: impl FnOnce(&mut Engine, std::result::Result<T, Failure>, bool) -> Result<()>
-        + Send
-        + 'static,
+        apply: impl FnOnce(&mut Engine, T) -> Result<()> + Send + 'static,
     ) {
         self.rpc(run, move |engine, result, current| {
-            if current && result.is_ok() {
-                engine.retry_attempts.remove(&request);
-                if engine.refresh_failures.remove(&request) {
-                    engine.emit(Delta::RefreshRecovered(request));
+            if !current {
+                return Ok(());
+            }
+            match result {
+                Ok(value) => {
+                    engine.retry_attempts.remove(&request);
+                    if engine.refresh_failures.remove(&request) {
+                        engine.emit(Delta::RefreshRecovered(request));
+                    }
+                    apply(engine, value)
+                }
+                Err(error) => {
+                    engine.rpc_failed(request, error);
+                    Ok(())
                 }
             }
-            apply(engine, result, current)
         });
     }
     fn start_assets(&mut self) {
@@ -946,18 +953,12 @@ impl Engine {
                 };
                 self.connection(Connection::SignedOut { reason });
                 let result = (|| -> Result<()> {
-                    for row in self.store.all_pending()? {
-                        if row.delivery == Delivery::Pending
-                            && !self.in_flight.contains(&(self.account_mid(), row.key))
-                        {
-                            self.store.mark_failed(
-                                row.key,
-                                Delivery::Rejected {
-                                    reason: Refusal::SignedOut,
-                                },
-                            )?;
-                        }
-                    }
+                    reject_pending(
+                        &self.account_mid(),
+                        &self.in_flight,
+                        &mut self.store,
+                        Refusal::SignedOut,
+                    )?;
                     self.publish()
                 })();
                 if let Err(error) = result {
@@ -1106,7 +1107,7 @@ impl Engine {
             let result = match work {
                 Work::User(Intent::Stop) => break,
                 Work::User(i) => {
-                    self.operation = i.diagnostic();
+                    self.operation = i.name().into();
                     self.intent(i)
                 }
                 Work::Live(e) => {
@@ -1114,7 +1115,7 @@ impl Engine {
                     self.live(e)
                 }
                 Work::Refresh(r) => {
-                    self.operation = r.diagnostic();
+                    self.operation = r.name().into();
                     self.refresh(r)
                 }
                 Work::Completed(done) => done(self),
@@ -1218,104 +1219,83 @@ impl Engine {
         self.refresh_rpc(
             Refresh::Profile,
             move |backend| backend.profile(),
-            move |engine, result, current| {
-                if !current {
+            move |engine, p| {
+                let account = engine.store.account()?;
+                let own_mid = if account.own_mid.is_empty() {
+                    engine.store_mid.as_deref().unwrap_or_default()
+                } else {
+                    &account.own_mid
+                };
+                if !own_mid.is_empty() && own_mid != p.mid {
+                    engine.error(Failure::SignedOut(SignOutReason::IdentityChanged));
                     return Ok(());
                 }
-                match result {
-                    Ok(p) => {
-                        let account = engine.store.account()?;
-                        let own_mid = if account.own_mid.is_empty() {
-                            engine.store_mid.as_deref().unwrap_or_default()
-                        } else {
-                            &account.own_mid
-                        };
-                        if !own_mid.is_empty() && own_mid != p.mid {
-                            engine.error(Failure::SignedOut(SignOutReason::IdentityChanged));
-                            return Ok(());
-                        }
-                        if account.own_mid.is_empty()
-                            && engine.store_mid.as_deref() != Some(p.mid.as_str())
-                            && let Some(root) = &engine.account_root
-                        {
-                            use sha2::{Digest, Sha256};
-                            let directory = root.join(format!("{:x}", Sha256::digest(&p.mid)));
-                            let first_identity = engine.store_mid.is_none()
-                                && !directory.join("store.sqlite3").exists();
-                            let target = if first_identity {
-                                engine.store.persist_to(&directory)?
-                            } else {
-                                let mut target = Store::open(&directory)?;
-                                for row in target.all_pending()? {
-                                    if row.delivery == Delivery::Pending
-                                        && !engine.in_flight.contains(&(p.mid.clone(), row.key))
-                                    {
-                                        target.mark_failed(
-                                            row.key,
-                                            Delivery::Rejected {
-                                                reason: Refusal::AppClosed,
-                                            },
-                                        )?;
-                                    }
-                                }
-                                target
-                            };
-                            engine.store = target;
-                            engine.store_mid = Some(p.mid.clone());
-                            engine
-                                .inbox
-                                .lanes
-                                .lock()
-                                .unwrap()
-                                .refresh
-                                .retain(|r| !matches!(r, Refresh::Send(_)));
-                            if first_identity {
-                                for row in engine.store.all_pending()? {
-                                    if row.delivery == Delivery::Pending {
-                                        engine.inbox.refresh(Refresh::Send(row.key));
-                                    }
-                                }
-                            }
-                            engine.emit(Delta::Prefs(engine.store.prefs()?));
-                            if engine.window.is_none()
-                                && let Some(chat) = engine.store.prefs()?.last_chat
-                            {
-                                engine.open(WindowSub {
-                                    sub: 1,
-                                    chat,
-                                    anchor: Anchor::Unread,
-                                    before: 80,
-                                    after: 80,
-                                })?;
+                if account.own_mid.is_empty()
+                    && engine.store_mid.as_deref() != Some(p.mid.as_str())
+                    && let Some(root) = &engine.account_root
+                {
+                    use sha2::{Digest, Sha256};
+                    let directory = root.join(format!("{:x}", Sha256::digest(&p.mid)));
+                    let first_identity =
+                        engine.store_mid.is_none() && !directory.join("store.sqlite3").exists();
+                    let target = if first_identity {
+                        engine.store.persist_to(&directory)?
+                    } else {
+                        let mut target = Store::open(&directory)?;
+                        reject_pending(&p.mid, &engine.in_flight, &mut target, Refusal::AppClosed)?;
+                        target
+                    };
+                    engine.store = target;
+                    engine.store_mid = Some(p.mid.clone());
+                    engine
+                        .inbox
+                        .lanes
+                        .lock()
+                        .unwrap()
+                        .refresh
+                        .retain(|r| !matches!(r, Refresh::Send(_)));
+                    if first_identity {
+                        for row in engine.store.all_pending()? {
+                            if row.delivery == Delivery::Pending {
+                                engine.inbox.refresh(Refresh::Send(row.key));
                             }
                         }
-                        engine.store_mid = Some(p.mid.clone());
-                        engine.store.set_account(&p.mid, p.clone())?;
-                        if let Some(root) = &engine.account_root {
-                            std::fs::create_dir_all(root)?;
-                            std::fs::write(root.join("last-mid.tmp"), &p.mid)?;
-                            std::fs::rename(root.join("last-mid.tmp"), root.join("last-mid"))?;
-                        }
-                        engine.emit(Delta::Profile(p));
-                        engine.account = AccountSession::Ready;
-                        if engine.media.is_none() {
-                            engine.start_assets();
-                        }
-                        engine.connection(Connection::Online);
-                        engine.inbox.refresh(Refresh::ChatList);
-                        for chat in engine.store.pending_reads()? {
-                            engine.inbox.refresh(Refresh::Read(chat));
-                        }
-                        if let Some(w) = &engine.window {
-                            engine.inbox.refresh(Refresh::Recent(w.chat.clone()));
-                            engine.inbox.refresh(Refresh::Receipts(w.chat.clone()));
-                        }
-                        engine.start_stream()?;
                     }
-                    Err(e) => {
-                        engine.rpc_failed(Refresh::Profile, e);
+                    engine.emit(Delta::Prefs(engine.store.prefs()?));
+                    if engine.window.is_none()
+                        && let Some(chat) = engine.store.prefs()?.last_chat
+                    {
+                        engine.open(WindowSub {
+                            sub: 1,
+                            chat,
+                            anchor: Anchor::Unread,
+                            before: 80,
+                            after: 80,
+                        })?;
                     }
-                };
+                }
+                engine.store_mid = Some(p.mid.clone());
+                engine.store.set_account(&p.mid, p.clone())?;
+                if let Some(root) = &engine.account_root {
+                    std::fs::create_dir_all(root)?;
+                    std::fs::write(root.join("last-mid.tmp"), &p.mid)?;
+                    std::fs::rename(root.join("last-mid.tmp"), root.join("last-mid"))?;
+                }
+                engine.emit(Delta::Profile(p));
+                engine.account = AccountSession::Ready;
+                if engine.media.is_none() {
+                    engine.start_assets();
+                }
+                engine.connection(Connection::Online);
+                engine.inbox.refresh(Refresh::ChatList);
+                for chat in engine.store.pending_reads()? {
+                    engine.inbox.refresh(Refresh::Read(chat));
+                }
+                if let Some(w) = &engine.window {
+                    engine.inbox.refresh(Refresh::Recent(w.chat.clone()));
+                    engine.inbox.refresh(Refresh::Receipts(w.chat.clone()));
+                }
+                engine.start_stream()?;
                 Ok(())
             },
         );
@@ -1334,12 +1314,19 @@ impl Engine {
         next: Option<u32>,
     ) -> Result<()> {
         let seq = self.next_seq()?;
-        self.reaction_flights.insert(key, None);
+        self.reaction_flights.insert(key, ReactionFlight::InFlight);
         let net_id = id.clone();
         self.rpc(
             move |backend| backend.react(&net_id, next, seq),
             move |engine, result, current| {
-                let queued = engine.reaction_flights.remove(&key).flatten();
+                let queued = engine
+                    .reaction_flights
+                    .remove(&key)
+                    .and_then(|flight| match flight {
+                        ReactionFlight::InFlight => None,
+                        ReactionFlight::Remove => Some(None),
+                        ReactionFlight::Set(kind) => Some(Some(kind)),
+                    });
                 let sent = next.map(ReactionKind::Predefined);
                 let failed = result.is_err();
                 if failed && current {
@@ -1427,27 +1414,7 @@ impl Engine {
                         | Intent::SendAttachments { .. }
                         | Intent::SendSticker { .. }
                 ))
-            && !matches!(
-                i,
-                Intent::SignIn
-                    | Intent::CancelSignIn
-                    | Intent::Prefs(_)
-                    | Intent::ChatList { .. }
-                    | Intent::Friends
-                    | Intent::Contact(_)
-                    | Intent::GroupInfo(_)
-                    | Intent::Members(_)
-                    | Intent::Window(_)
-                    | Intent::Page { .. }
-                    | Intent::Asset(_)
-                    | Intent::Original(_)
-                    | Intent::File { .. }
-                    | Intent::Draft { .. }
-                    | Intent::Copy(_)
-                    | Intent::Discard(_)
-                    | Intent::MoreChats
-                    | Intent::Stop
-            )
+            && needs_account(&i)
         {
             return Ok(());
         }
@@ -1457,18 +1424,12 @@ impl Engine {
                     return Ok(());
                 }
                 self.generation.fetch_add(1, Ordering::SeqCst);
-                for row in self.store.all_pending()? {
-                    if row.delivery == Delivery::Pending
-                        && !self.in_flight.contains(&(self.account_mid(), row.key))
-                    {
-                        self.store.mark_failed(
-                            row.key,
-                            Delivery::Rejected {
-                                reason: Refusal::SignedOut,
-                            },
-                        )?;
-                    }
-                }
+                reject_pending(
+                    &self.account_mid(),
+                    &self.in_flight,
+                    &mut self.store,
+                    Refusal::SignedOut,
+                )?;
                 self.stop_stream();
                 self.waiting_assets.clear();
                 self.waiting_retries.clear();
@@ -1741,7 +1702,10 @@ impl Engine {
                     .own_reaction(key, &actor, next.map(ReactionKind::Predefined))?;
                 self.publish()?;
                 if let Some(queued) = self.reaction_flights.get_mut(&key) {
-                    *queued = Some(next);
+                    *queued = match next {
+                        None => ReactionFlight::Remove,
+                        Some(kind) => ReactionFlight::Set(kind),
+                    };
                 } else {
                     self.send_reaction(key, id, actor, previous, next)?;
                 }
@@ -1855,15 +1819,7 @@ impl Engine {
                             pixels: Arc::new(pixels),
                         });
                     }
-                    let seq = self.next_seq()?;
-                    let (key, _) = self.store.insert_pending(
-                        &chat,
-                        LocalId(format!("{}-{seq}", now_ms())),
-                        seq,
-                        item.content(),
-                        now_ms(),
-                        None,
-                    )?;
+                    let key = self.enqueue(&chat, || item.content(), None)?;
                     self.inbox.refresh(Refresh::Send(key));
                 }
                 self.publish()?;
@@ -1878,46 +1834,20 @@ impl Engine {
                 {
                     return Ok(());
                 }
-                let seq = self.next_seq()?;
-                let (key, _) = self.store.insert_pending(
-                    &chat,
-                    LocalId(format!("{}-{seq}", now_ms())),
-                    seq,
-                    *sticker,
-                    now_ms(),
-                    reply,
-                )?;
+                let key = self.enqueue(&chat, || *sticker, reply)?;
                 if let Some(mut draft) = self.store.load_draft(&chat)? {
                     draft.reply = None;
                     self.store.save_draft(&chat, &draft)?;
                 }
-                self.publish()?;
-                self.emit(Delta::Submitted {
-                    chat: chat.clone(),
-                    text: String::new(),
-                });
-                self.inbox.refresh(Refresh::Send(key));
+                self.submitted(chat, String::new(), key)?;
             }
             Intent::Send { chat, text, reply } => {
                 if self.store.chat(&chat)?.is_some_and(|c| c.left) {
                     return Ok(());
                 }
-                let seq = self.next_seq()?;
-                let (key, _) = self.store.insert_pending(
-                    &chat,
-                    LocalId(format!("{}-{seq}", now_ms())),
-                    seq,
-                    Content::text(&text),
-                    now_ms(),
-                    reply,
-                )?;
+                let key = self.enqueue(&chat, || Content::text(&text), reply)?;
                 self.store.clear_draft(&chat)?;
-                self.publish()?;
-                self.emit(Delta::Submitted {
-                    chat: chat.clone(),
-                    text,
-                });
-                self.inbox.refresh(Refresh::Send(key));
+                self.submitted(chat, text, key)?;
             }
             Intent::Retry(key) => {
                 if self.in_flight.contains(&(self.account_mid(), key))
@@ -2002,6 +1932,29 @@ impl Engine {
             }
             Intent::Stop => {}
         };
+        Ok(())
+    }
+    fn enqueue(
+        &mut self,
+        chat: &ChatId,
+        content: impl FnOnce() -> Content,
+        reply: Option<ReplyReference>,
+    ) -> Result<Key> {
+        let seq = self.next_seq()?;
+        let (key, _) = self.store.insert_pending(
+            chat,
+            LocalId(format!("{}-{seq}", now_ms())),
+            seq,
+            content(),
+            now_ms(),
+            reply,
+        )?;
+        Ok(key)
+    }
+    fn submitted(&mut self, chat: ChatId, text: String, key: Key) -> Result<()> {
+        self.publish()?;
+        self.emit(Delta::Submitted { chat, text });
+        self.inbox.refresh(Refresh::Send(key));
         Ok(())
     }
     fn send(&mut self, key: Key) -> Result<()> {
@@ -2264,54 +2217,36 @@ impl Engine {
                 Refresh::ChatList
             },
             move |backend| backend.chats(cursor),
-            move |engine, result, current| {
-                if !current {
-                    return Ok(());
+            move |engine, mut page| {
+                for chat in &mut page.chats {
+                    if chat.title.trim().is_empty()
+                        && let Some(old) = engine.store.chat(&chat.id)?
+                    {
+                        chat.title = old.title;
+                        chat.avatar = old.avatar;
+                        chat.member_count = old.member_count;
+                    }
                 }
-                match result {
-                    Ok(mut page) => {
-                        for chat in &mut page.chats {
-                            if chat.title.trim().is_empty()
-                                && let Some(old) = engine.store.chat(&chat.id)?
-                            {
-                                chat.title = old.title;
-                                chat.avatar = old.avatar;
-                                chat.member_count = old.member_count;
-                            }
-                        }
-                        if !next {
-                            engine.list_sweep.clear();
-                        }
-                        engine.list_cursor = page.cursor;
-                        engine.list_more = page.more;
-                        engine.list_sweep.extend(page.chats.clone());
-                        engine.store.upsert_chats(&engine.list_sweep, !page.more)?;
-                        for m in page.previews {
-                            engine.store.apply_live(&m.chat_id, &m, false)?;
-                        }
-                        for c in &page.chats {
-                            if c.title.trim().is_empty() || (c.is_group && c.member_count.is_none())
-                            {
-                                engine.inbox.refresh(Refresh::Details(c.id.clone()));
-                            }
-                        }
-                        if page.more {
-                            engine.inbox.refresh(Refresh::MoreChats);
-                        }
-                        engine.emit(Delta::MoreChats(page.more));
-                        engine.publish()?;
+                if !next {
+                    engine.list_sweep.clear();
+                }
+                engine.list_cursor = page.cursor;
+                engine.list_more = page.more;
+                engine.list_sweep.extend(page.chats.clone());
+                engine.store.upsert_chats(&engine.list_sweep, !page.more)?;
+                for m in page.previews {
+                    engine.store.apply_live(&m.chat_id, &m, false)?;
+                }
+                for c in &page.chats {
+                    if c.title.trim().is_empty() || (c.is_group && c.member_count.is_none()) {
+                        engine.inbox.refresh(Refresh::Details(c.id.clone()));
                     }
-                    Err(e) => {
-                        engine.rpc_failed(
-                            if next {
-                                Refresh::MoreChats
-                            } else {
-                                Refresh::ChatList
-                            },
-                            e,
-                        );
-                    }
-                };
+                }
+                if page.more {
+                    engine.inbox.refresh(Refresh::MoreChats);
+                }
+                engine.emit(Delta::MoreChats(page.more));
+                engine.publish()?;
                 Ok(())
             },
         );
@@ -2347,39 +2282,26 @@ impl Engine {
         self.refresh_rpc(
             Self::page_refresh(chat.clone(), kind.clone()),
             move |backend| backend.messages(&net_chat, &net_kind),
-            move |engine, result, current| {
-                if !current {
-                    return Ok(());
-                }
-                match result {
-                    Ok(page) => {
-                        engine.resolve_senders(&page.rows)?;
-                        let recent = matches!(page.kind, PageKind::Recent);
-                        engine.store.apply_page(
-                            &chat,
-                            page.kind,
-                            &page.rows,
-                            page.reaches_start,
+            move |engine, page| {
+                engine.resolve_senders(&page.rows)?;
+                let recent = matches!(page.kind, PageKind::Recent);
+                engine
+                    .store
+                    .apply_page(&chat, page.kind, &page.rows, page.reaches_start)?;
+                if recent {
+                    // Page RPCs have no revision; a quiet refresh covers operations
+                    // already processed, including an actorless reaction operation.
+                    let revision = engine.store.sync_revision()?;
+                    for row in &page.rows {
+                        engine.store.set_reactions(
+                            &row.server_id,
+                            row.reactions.clone(),
+                            revision,
                         )?;
-                        if recent {
-                            // Page RPCs have no revision; a quiet refresh covers operations
-                            // already processed, including an actorless reaction operation.
-                            let revision = engine.store.sync_revision()?;
-                            for row in &page.rows {
-                                engine.store.set_reactions(
-                                    &row.server_id,
-                                    row.reactions.clone(),
-                                    revision,
-                                )?;
-                            }
-                        }
-                        engine.inbox.refresh(Refresh::Receipts(chat.clone()));
-                        engine.publish()?;
                     }
-                    Err(e) => {
-                        engine.rpc_failed(Self::page_refresh(chat, kind), e);
-                    }
-                };
+                }
+                engine.inbox.refresh(Refresh::Receipts(chat.clone()));
+                engine.publish()?;
                 Ok(())
             },
         );
@@ -2418,14 +2340,8 @@ impl Engine {
                 self.refresh_rpc(
                     Refresh::Notice(mid.clone()),
                     move |b| b.notice(&net),
-                    move |engine, result, current| {
-                        if !current {
-                            return Ok(());
-                        }
-                        match result {
-                            Ok(data) => engine.emit(Delta::Notice { mid, data }),
-                            Err(e) => engine.rpc_failed(Refresh::Notice(mid), e),
-                        };
+                    move |engine, data| {
+                        engine.emit(Delta::Notice { mid, data });
                         Ok(())
                     },
                 );
@@ -2435,21 +2351,14 @@ impl Engine {
                 self.refresh_rpc(
                     Refresh::Contact(mid.clone()),
                     move |b| b.contact(&net),
-                    move |engine, result, current| {
-                        if !current {
-                            return Ok(());
-                        }
-                        match result {
-                            Ok(Some(row)) => {
-                                if row.profile.relation == Some(2) {
-                                    engine.inbox.refresh(Refresh::Notice(mid.clone()));
-                                }
-                                engine.store.save_contacts(std::slice::from_ref(&row))?;
-                                engine.emit(Delta::Contact(row));
+                    move |engine, data| {
+                        if let Some(row) = data {
+                            if row.profile.relation == Some(2) {
+                                engine.inbox.refresh(Refresh::Notice(mid.clone()));
                             }
-                            Ok(None) => {}
-                            Err(e) => engine.rpc_failed(Refresh::Contact(mid), e),
-                        };
+                            engine.store.save_contacts(std::slice::from_ref(&row))?;
+                            engine.emit(Delta::Contact(row));
+                        }
                         Ok(())
                     },
                 );
@@ -2459,30 +2368,21 @@ impl Engine {
                 self.refresh_rpc(
                     Refresh::GroupInfo(chat.clone()),
                     move |b| b.full_chat(&net),
-                    move |engine, result, current| {
-                        if !current {
-                            return Ok(());
-                        }
-                        match result {
-                            Ok(data) => {
-                                engine.store.save_full_chat(&chat, data.clone())?;
-                                if let Some(members) = data
-                                    .pointer("/extra/groupExtra/memberMids")
-                                    .and_then(Value::as_object)
-                                {
-                                    let own = engine.store.account()?.own_mid;
-                                    if !own.is_empty() {
-                                        engine.store.set_chat_membership(
-                                            &chat,
-                                            !members.contains_key(&own),
-                                        )?;
-                                        engine.publish()?;
-                                    }
-                                }
-                                engine.emit(Delta::GroupInfo { chat, data });
+                    move |engine, data| {
+                        engine.store.save_full_chat(&chat, data.clone())?;
+                        if let Some(members) = data
+                            .pointer("/extra/groupExtra/memberMids")
+                            .and_then(Value::as_object)
+                        {
+                            let own = engine.store.account()?.own_mid;
+                            if !own.is_empty() {
+                                engine
+                                    .store
+                                    .set_chat_membership(&chat, !members.contains_key(&own))?;
+                                engine.publish()?;
                             }
-                            Err(e) => engine.rpc_failed(Refresh::GroupInfo(chat), e),
                         }
+                        engine.emit(Delta::GroupInfo { chat, data });
                         Ok(())
                     },
                 );
@@ -2491,22 +2391,14 @@ impl Engine {
                 self.refresh_rpc(
                     Refresh::Friends,
                     move |backend| backend.friends(),
-                    move |engine, result, current| {
-                        if !current {
-                            return Ok(());
-                        }
-                        match result {
-                            Ok(mut rows) => {
-                                for row in &mut rows {
-                                    if !row.group && row.profile.relation.is_none() {
-                                        row.profile.relation = Some(0);
-                                    }
-                                }
-                                engine.store.save_contacts(&rows)?;
-                                engine.emit_friends()?;
+                    move |engine, mut rows| {
+                        for row in &mut rows {
+                            if !row.group && row.profile.relation.is_none() {
+                                row.profile.relation = Some(0);
                             }
-                            Err(e) => engine.rpc_failed(Refresh::Friends, e),
-                        };
+                        }
+                        engine.store.save_contacts(&rows)?;
+                        engine.emit_friends()?;
                         Ok(())
                     },
                 );
@@ -2516,42 +2408,34 @@ impl Engine {
                 self.refresh_rpc(
                     Refresh::Members(chat.clone()),
                     move |backend| backend.members(&net_chat),
-                    move |engine, result, current| {
-                        if !current {
-                            return Ok(());
-                        }
-                        match result {
-                            Ok(mut rows) => {
-                                let existing = engine.store.contacts()?;
-                                for member in &mut rows {
-                                    if member.contact.name.is_none()
-                                        && let Some(old) =
-                                            existing.iter().find(|c| c.id == member.contact.id)
-                                    {
-                                        let invited = member.contact.profile.invited;
-                                        member.contact = old.clone();
-                                        member.contact.profile.invited = invited;
-                                    }
-                                }
-                                let contacts = rows
-                                    .iter()
-                                    .filter(|m| !m.is_self && m.contact.name.is_some())
-                                    .filter_map(|m| {
-                                        let mut contact = m.contact.clone();
-                                        contact.profile.invited = false;
-                                        let old = existing.iter().find(|v| v.id == contact.id);
-                                        if old.is_some_and(|v| v.profile.relation == Some(0)) {
-                                            return None;
-                                        }
-                                        Some(contact)
-                                    })
-                                    .collect::<Vec<_>>();
-                                engine.store.save_contacts(&contacts)?;
-                                engine.store.save_members(&chat, &rows)?;
-                                engine.emit(Delta::Members { chat, rows });
+                    move |engine, mut rows| {
+                        let existing = engine.store.contacts()?;
+                        for member in &mut rows {
+                            if member.contact.name.is_none()
+                                && let Some(old) =
+                                    existing.iter().find(|c| c.id == member.contact.id)
+                            {
+                                let invited = member.contact.profile.invited;
+                                member.contact = old.clone();
+                                member.contact.profile.invited = invited;
                             }
-                            Err(e) => engine.rpc_failed(Refresh::Members(chat), e),
-                        };
+                        }
+                        let contacts = rows
+                            .iter()
+                            .filter(|m| !m.is_self && m.contact.name.is_some())
+                            .filter_map(|m| {
+                                let mut contact = m.contact.clone();
+                                contact.profile.invited = false;
+                                let old = existing.iter().find(|v| v.id == contact.id);
+                                if old.is_some_and(|v| v.profile.relation == Some(0)) {
+                                    return None;
+                                }
+                                Some(contact)
+                            })
+                            .collect::<Vec<_>>();
+                        engine.store.save_contacts(&contacts)?;
+                        engine.store.save_members(&chat, &rows)?;
+                        engine.emit(Delta::Members { chat, rows });
                         Ok(())
                     },
                 );
@@ -2565,30 +2449,20 @@ impl Engine {
                 self.refresh_rpc(
                     Refresh::Receipts(chat.clone()),
                     move |backend| backend.receipts(&net_chat),
-                    move |engine, result, current| {
-                        if !current {
-                            return Ok(());
+                    move |engine, ids| {
+                        for id in ids {
+                            let id = match id {
+                                Some(id) => Some(id),
+                                None => engine
+                                    .store
+                                    .newest_confirmed(&chat)?
+                                    .and_then(|m| m.server_id),
+                            };
+                            if let Some(id) = id {
+                                engine.store.advance_read_receipt(&chat, id)?;
+                            }
                         }
-                        match result {
-                            Ok(ids) => {
-                                for id in ids {
-                                    let id = match id {
-                                        Some(id) => Some(id),
-                                        None => engine
-                                            .store
-                                            .newest_confirmed(&chat)?
-                                            .and_then(|m| m.server_id),
-                                    };
-                                    if let Some(id) = id {
-                                        engine.store.advance_read_receipt(&chat, id)?;
-                                    }
-                                }
-                                engine.publish()?;
-                            }
-                            Err(e) => {
-                                engine.rpc_failed(Refresh::Receipts(chat), e);
-                            }
-                        };
+                        engine.publish()?;
                         Ok(())
                     },
                 );
@@ -2599,19 +2473,9 @@ impl Engine {
                 self.refresh_rpc(
                     Refresh::Details(chat.clone()),
                     move |backend| backend.details(&net_chat),
-                    move |engine, result, current| {
-                        if !current {
-                            return Ok(());
-                        }
-                        match result {
-                            Ok(rows) => {
-                                engine.store.upsert_details(&rows)?;
-                                engine.publish()?;
-                            }
-                            Err(e) => {
-                                engine.rpc_failed(Refresh::Details(chat), e);
-                            }
-                        };
+                    move |engine, rows| {
+                        engine.store.upsert_details(&rows)?;
+                        engine.publish()?;
                         Ok(())
                     },
                 );
@@ -2629,18 +2493,8 @@ impl Engine {
                     self.refresh_rpc(
                         Refresh::Read(chat.clone()),
                         move |backend| backend.mark_read(&net_chat, &net_id, seq),
-                        move |engine, result, current| {
-                            if !current {
-                                return Ok(());
-                            }
-                            match result {
-                                Ok(()) => {
-                                    engine.store.confirm_read(&chat, &id)?;
-                                }
-                                Err(e) => {
-                                    engine.rpc_failed(Refresh::Read(chat), e);
-                                }
-                            };
+                        move |engine, ()| {
+                            engine.store.confirm_read(&chat, &id)?;
                             Ok(())
                         },
                     );
@@ -2722,8 +2576,7 @@ impl Engine {
                     let _ = complete.send(Err(Failure::SignedOut(SignOutReason::NoSession)));
                     return Ok(());
                 }
-                _ if !self.known() => return Ok(()),
-                _ => {}
+                StreamEvent::Asset(_) | StreamEvent::Operation(_) => return Ok(()),
             }
         }
         match e {

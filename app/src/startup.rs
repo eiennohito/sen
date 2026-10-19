@@ -96,14 +96,18 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     let assets = assets::Assets::default();
     let real_worker = || {
         let root = locations.session.parent().unwrap().join("accounts");
-        Worker::start_with(StoreLocation::Account { root, mid: None }, move || {
-            LineBackend::open_local(
-                &locations.session,
-                wasm_override.clone(),
-                &locations.cache,
-                client_version.clone(),
-            )
-        })
+        Worker::start(
+            StoreLocation::Account { root, mid: None },
+            move || {
+                LineBackend::open_local(
+                    &locations.session,
+                    wasm_override.clone(),
+                    &locations.cache,
+                    client_version.clone(),
+                )
+            },
+            line::engine::WorkerOptions::default(),
+        )
     };
     #[cfg(feature = "demo")]
     let worker = if let Some(fake) = &fake {

@@ -252,7 +252,14 @@ mod tests {
                 ..Default::default()
             });
             fake.set_page(chat.clone(), vec![hidden]);
-            let worker = Worker::start(fake, StoreLocation::Memory);
+            let worker = Worker::start(
+                StoreLocation::Memory,
+                {
+                    let mut backend = Some(fake);
+                    move || Ok(backend.take().expect("backend already opened"))
+                },
+                line::engine::WorkerOptions::default(),
+            );
             let mut state = AppState::default();
             worker.sender.send(state.select(chat.clone()));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);

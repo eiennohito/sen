@@ -12,15 +12,21 @@ impl App {
     }
     fn at(location: StoreLocation) -> Self {
         let fake = FakeBackend::canned();
-        let worker = Worker::start_timed(
-            fake.clone(),
+        let worker = Worker::start(
             location,
-            Timing {
-                retry_initial: Duration::from_millis(1),
-                retry_max: Duration::from_millis(10),
-                poll: Duration::from_millis(1),
-                offline_after: Duration::from_millis(100),
-                health_now: Instant::now,
+            {
+                let mut backend = Some(fake.clone());
+                move || Ok(backend.take().expect("backend already opened"))
+            },
+            WorkerOptions {
+                timing: Timing {
+                    retry_initial: Duration::from_millis(1),
+                    retry_max: Duration::from_millis(10),
+                    poll: Duration::from_millis(1),
+                    offline_after: Duration::from_millis(100),
+                    health_now: Instant::now,
+                },
+                ..Default::default()
             },
         );
         let mut app = Self {

@@ -593,19 +593,21 @@ pub(crate) fn settle(ui: &AppWindow, desktop: &Runtime, worker: &Worker) {
 pub(crate) fn worker(fake: FakeBackend, text_size: i32) -> Worker {
     use std::sync::atomic::{AtomicBool, Ordering};
     let initial = AtomicBool::new(true);
-    let worker = Worker::start_projected(
+    let worker = Worker::start(
         StoreLocation::Memory,
         move || fake.open(),
-        line::engine::Timing {
-            offline_after: std::time::Duration::from_millis(300),
-            ..Default::default()
-        },
-        move |delta| match delta {
-            Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
-                prefs.text_size = text_size;
-                Delta::Prefs(prefs)
-            }
-            other => other,
+        line::engine::WorkerOptions {
+            timing: line::engine::Timing {
+                offline_after: std::time::Duration::from_millis(300),
+                ..Default::default()
+            },
+            project: std::sync::Arc::new(move |delta| match delta {
+                Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
+                    prefs.text_size = text_size;
+                    Delta::Prefs(prefs)
+                }
+                other => other,
+            }),
         },
     );
     worker.sender.send(Intent::Prefs(Prefs {
