@@ -2,7 +2,7 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-/// Protocol progress, independent of desktop wording. Display retains CLI logs.
+/// Protocol progress, independent of desktop wording.
 #[derive(Clone, Copy, Debug)]
 pub enum Stage {
     WaitingKeyring,
@@ -66,7 +66,7 @@ struct NativeLogin<'a, F> {
     emit: F,
     cancel: &'a AtomicBool,
 }
-impl<F: Fn(Event)> LoginUi for NativeLogin<'_, F> {
+impl<F: Fn(Event)> NativeLogin<'_, F> {
     fn check(&self) -> Result<()> {
         ensure!(!self.cancel.load(Ordering::Relaxed), "sign-in cancelled");
         Ok(())
@@ -76,7 +76,7 @@ impl<F: Fn(Event)> LoginUi for NativeLogin<'_, F> {
         (self.emit)(Event::Stage(stage));
         Ok(())
     }
-    fn qr(&self, _link: &str, png: &[u8]) -> Result<()> {
+    fn qr(&self, png: &[u8]) -> Result<()> {
         self.check()?;
         let image = image::load_from_memory(png)?.to_rgba8();
         (self.emit)(Event::Qr {
@@ -96,6 +96,131 @@ impl<F: Fn(Event)> LoginUi for NativeLogin<'_, F> {
         (self.emit)(Event::Pin(pin.into()));
         Ok(())
     }
+}
+
+fn login_with(
+    state_path: &Path,
+    api: &mut Api,
+    progress: &NativeLogin<'_, impl Fn(Event)>,
+) -> Result<()> {
+    progress.check()?;
+    ensure!(!state_path.exists(), "pairing session file already exists");
+    let parent = state_path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let new_directory = !parent.exists();
+    fs::create_dir_all(parent)?;
+    if new_directory {
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700))?;
+    }
+    progress.set(pairing::Stage::CreatingSession)?;
+    let created = api.qr("createSession", json!({}), "", 0)?;
+    let session = required(&created, "authSessionId")?.to_owned();
+    let qr = api.qr("createQrCode", json!({"authSessionId":session}), "", 0)?;
+    let key = api.rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
+    let public = bytes_method(&mut api.rt, Call::Curve25519KeyGetPublicKey, key, &[])?;
+    let wrapped = bytes_method(&mut api.rt, Call::Curve25519KeyExportKey, key, &[])?;
+    let link = callback(required(&qr, "callbackUrl")?, &public)?;
+    let png = qr_png(&link)?;
+    progress.qr(&png)?;
+    progress.set(pairing::Stage::AwaitScan)?;
+    let interval = qr["longPollingIntervalSec"]
+        .as_u64()
+        .unwrap_or(30)
+        .clamp(1, 110);
+    let count = qr["longPollingMaxCount"]
+        .as_u64()
+        .unwrap_or(4)
+        .clamp(1, 120);
+    let started = Instant::now();
+    let mut verified = false;
+    for _ in 0..count {
+        progress.check()?;
+        match api.qr(
+            "checkQrCodeVerified",
+            json!({"authSessionId":session}),
+            &session,
+            interval,
+        ) {
+            Ok(_) => {
+                verified = true;
+                break;
+            }
+            Err(error) => {
+                let expired = error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|e| e.gateway == 10052 && e.status == 410);
+                if !expired || started.elapsed() > Duration::from_secs(300) {
+                    return Err(pairing::phone_error(error));
+                }
+            }
+        }
+    }
+    ensure!(verified, error::Error::SignIn(error::SignInFailure::Phone));
+    progress.check()?;
+    progress.scanned()?;
+    progress.set(pairing::Stage::CheckingCertificate)?;
+    match api.qr(
+        "verifyCertificate",
+        json!({"authSessionId":session,"certificate":""}),
+        "",
+        0,
+    ) {
+        Ok(_) => {}
+        Err(error) => {
+            ensure!(
+                error
+                    .downcast_ref::<RpcError>()
+                    .is_some_and(|e| e.http == 400),
+                "certificate check failed: {error}"
+            );
+            let pin = api.qr("createPinCode", json!({"authSessionId":session}), "", 0)?;
+            let pin = required(&pin, "pinCode")?;
+            ensure!(
+                (4..=8).contains(&pin.len()) && pin.bytes().all(|b| b.is_ascii_digit()),
+                "invalid verification PIN format"
+            );
+            progress.pin(pin)?;
+            progress.set(pairing::Stage::AwaitPin)?;
+            api.qr(
+                "checkPinCodeVerified",
+                json!({"authSessionId":session}),
+                &session,
+                110,
+            )
+            .map_err(pairing::phone_error)?;
+        }
+    }
+    progress.check()?;
+    progress.set(pairing::Stage::RequestCredentials)?;
+    let result=api.qr("qrCodeLoginV2",json!({"authSessionId":session,"systemName":"CHROMEOS","modelName":"CHROME","autoLoginIsRequired":false}),"",0)?;
+    let mut token = result["tokenV3IssueResult"].clone();
+    if token["accessToken"].as_str().is_none_or(|s| s.is_empty()) {
+        token = json!({"accessToken":required(&result,"authToken")?});
+    }
+    let mut state = json!({"format":1,"token_v3_issue_result":token,"certificate":result["certificate"],"login_key":STANDARD.encode(wrapped),"login_metadata":result["metaData"],"e2ee_keys":[],"validated":false});
+    // Preserve the successful session and wrapped login key before any new
+    // keychain operation, so a failure can be diagnosed/recovered with status.
+    save_state(state_path, &state)?;
+    progress.set(pairing::Stage::UnwrappingKeys)?;
+    let keys = unwrap_keys(&mut api.rt, key, &state["login_metadata"])?;
+    state["e2ee_keys"] = json!(keys);
+    save_state(state_path, &state)?;
+    progress.set(pairing::Stage::KeysVerified)?;
+    api.rt.destroy("Curve25519Key", key)?;
+    api.state = state.clone();
+    let profile = api.profile()?;
+    ensure!(
+        profile["mid"].as_str().is_some_and(|s| !s.is_empty()),
+        "authenticated profile missing"
+    );
+    state["profile"] = profile;
+    state["validated"] = json!(true);
+    save_state(state_path, &state)?;
+    progress.set(pairing::Stage::CheckingKeys)?;
+    validate_keys(api, &state)?;
+    progress.set(pairing::Stage::Authenticated)
 }
 
 /// Never called at startup or on a network error: requires explicit user action.
@@ -360,7 +485,7 @@ mod tests {
             emit: |event| events.borrow_mut().push(event),
             cancel: &cancel,
         };
-        ui.qr("unused", &png)?;
+        ui.qr(&png)?;
         let Event::Qr {
             width,
             height,
@@ -382,7 +507,7 @@ mod tests {
         assert!(pixels.contains(&[0, 0, 0, 255]));
         assert!(pixels.contains(&[255, 255, 255, 255]));
         cancel.store(true, Ordering::Relaxed);
-        assert!(ui.qr("unused", &png).is_err());
+        assert!(ui.qr(&png).is_err());
         assert!(events.borrow().is_empty());
         Ok(())
     }

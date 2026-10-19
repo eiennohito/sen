@@ -6,8 +6,6 @@ pub mod credentials;
 pub mod crypto_module;
 pub mod engine;
 pub mod locations;
-#[cfg(feature = "native-crypto")]
-pub mod native_crypto;
 pub mod runtime;
 pub mod store;
 pub mod system_events;

@@ -40,7 +40,7 @@ impl Store {
 }
 
 /// Where sealing keys are kept. The Secret Service in production; a map in tests.
-pub trait Keys {
+trait Keys {
     fn get(&self, id: &str) -> Result<Option<[u8; 32]>>;
     fn put(&self, id: &str, key: &[u8; 32]) -> Result<()>;
 }
@@ -77,7 +77,7 @@ fn sealed(value: &Value) -> bool {
     value["format"] == FORMAT
 }
 
-pub fn load_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
+fn load_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
     let envelope = parse(&fs::read(path).context(SavedSessionFailure::Io.error())?)
         .context(SavedSessionFailure::Corrupt.error())?;
     if !sealed(&envelope) {
@@ -103,9 +103,13 @@ pub fn load_with(path: &Path, store: Store, keys: &impl Keys) -> Result<Value> {
     })
 }
 
-pub fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Result<()> {
+fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Result<()> {
     let plain = serde_json::to_vec_pretty(state)?;
-    let existing = fs::read(path).ok().and_then(|bytes| parse(&bytes).ok());
+    let existing = match fs::read(path) {
+        Ok(bytes) => Some(parse(&bytes).context(SavedSessionFailure::Corrupt.error())?),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+        Err(error) => return Err(error).context(SavedSessionFailure::Io.error()),
+    };
     let existing_id = existing
         .as_ref()
         .filter(|value| sealed(value))
@@ -203,19 +207,6 @@ fn open(envelope: &Value, keys: &impl Keys) -> Result<Value> {
         )
         .map_err(|_| anyhow::anyhow!("sealed session failed authentication"))?;
     parse(&plain)
-}
-
-/// In-memory keys for credential store tests.
-#[derive(Default)]
-pub struct MapKeys(std::sync::Mutex<std::collections::HashMap<String, [u8; 32]>>);
-impl Keys for MapKeys {
-    fn get(&self, id: &str) -> Result<Option<[u8; 32]>> {
-        Ok(self.0.lock().unwrap().get(id).copied())
-    }
-    fn put(&self, id: &str, key: &[u8; 32]) -> Result<()> {
-        self.0.lock().unwrap().insert(id.to_owned(), *key);
-        Ok(())
-    }
 }
 
 mod secret_service;

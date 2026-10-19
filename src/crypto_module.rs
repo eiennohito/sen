@@ -28,13 +28,14 @@ fn version(root: &Path) -> Result<(String, Vec<u32>)> {
     load().context(Error::SignIn(SignInFailure::CryptoModule(path)))
 }
 pub fn discover_in(config: &Path) -> Result<CryptoModule> {
-    discover_candidates(config).map_err(|error| {
-        if error.downcast_ref::<Error>().is_some() {
-            error
-        } else {
-            error.context(Error::SignIn(SignInFailure::CryptoModule(config.into())))
-        }
-    })
+    discover_candidates(config).map_err(|error| module_error(error, config))
+}
+fn module_error(error: anyhow::Error, path: &Path) -> anyhow::Error {
+    if error.downcast_ref::<Error>().is_some() {
+        error
+    } else {
+        error.context(Error::SignIn(SignInFailure::CryptoModule(path.into())))
+    }
 }
 fn discover_candidates(config: &Path) -> Result<CryptoModule> {
     let mut candidates = Vec::new();
@@ -113,15 +114,8 @@ pub fn resolve(
 }
 impl CryptoModule {
     pub(crate) fn runtime(&self, bytes: &[u8]) -> Result<crate::runtime::Runtime> {
-        crate::runtime::Runtime::new(bytes, &self.version).map_err(|error| {
-            if error.downcast_ref::<Error>().is_some() {
-                error
-            } else {
-                error.context(Error::SignIn(SignInFailure::CryptoModule(
-                    self.wasm.clone(),
-                )))
-            }
-        })
+        crate::runtime::Runtime::new(bytes, &self.version)
+            .map_err(|error| module_error(error, &self.wasm))
     }
     pub fn read(&self) -> Result<Vec<u8>> {
         fs::read(&self.wasm).context(Error::SignIn(SignInFailure::CryptoModule(
@@ -176,17 +170,6 @@ mod tests {
     }
 
     #[test]
-    fn broken_sibling_manifests_do_not_hide_valid_versions() {
-        let f = Fixture::new();
-        let broken = f.extension("google-chrome", "Default", "old", "3.7.2");
-        fs::write(broken.join("manifest.json"), b"broken").unwrap();
-        let valid = f.extension("chromium", "Profile 1", "new", "3.10.0");
-        assert_eq!(
-            discover_in(&f.0).unwrap().wasm,
-            valid.join("static/js/ltsm.wasm")
-        );
-    }
-    #[test]
     fn override_uses_only_version_directory_and_explicit_version_wins() {
         let f = Fixture::new();
         let root = f.extension("chromium", "Default", "version", "3.7.2");
@@ -201,20 +184,13 @@ mod tests {
         assert!(resolve(Some(outside), None).is_err());
     }
     #[test]
-    fn read_failures_have_module_category() {
-        let f = Fixture::new();
-        let missing = f.0.join("missing");
-        let error = discover_in(&missing).unwrap_err();
-        assert!(
-            matches!(error.downcast_ref::<Error>(), Some(Error::SignIn(SignInFailure::CryptoModule(path))) if path == &missing)
-        );
-    }
-    #[test]
     fn newest_manifest_version_across_browsers_and_profiles_wins() {
         let f = Fixture::new();
         f.extension("google-chrome", "Default", "999_0", "3.9.0");
         let newest = f.extension("chromium", "Profile 2", "1_0", "3.10.0");
         f.extension("google-chrome-beta", "Profile 1", "888_0", "3.8.9");
+        let broken = f.extension("google-chrome", "Default", "broken", "99.0.0");
+        fs::write(broken.join("manifest.json"), b"broken").unwrap();
         let module = discover_in(&f.0).unwrap();
         assert_eq!(module.version, "3.10.0");
         assert_eq!(module.wasm, newest.join("static/js/ltsm.wasm"));

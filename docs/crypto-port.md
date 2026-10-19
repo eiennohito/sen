@@ -1,5 +1,7 @@
 # T9 native crypto trial
 
+The native crypto trial and its tests were removed; the implementation lives in git history. This document retains the historical findings and commands.
+
 The message primitives are portable. A complete replacement for `ltsm.wasm`
 is **not established**: token loading, persisted private-key blobs and the MID
 key still depend on the proprietary SKB engine. This trial adds native

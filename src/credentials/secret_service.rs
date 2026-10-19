@@ -129,7 +129,7 @@ impl Session {
             return Ok(unlocked);
         }
         let result = self.prompt(prompt)?;
-        Ok(Vec::<OwnedObjectPath>::try_from(result).unwrap_or_default())
+        Vec::<OwnedObjectPath>::try_from(result).context("invalid keyring unlock response")
     }
     fn prompt(&self, prompt: OwnedObjectPath) -> Result<OwnedValue> {
         let proxy = self.proxy(prompt.as_str(), "Prompt")?;
