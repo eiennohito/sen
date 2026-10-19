@@ -1958,3 +1958,35 @@ fn committed_write_clears_storage_banner_and_sending_still_works() {
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
     assert!(app.state.error.is_none());
 }
+
+#[test]
+fn chat_preview_resolves_system_actor_before_opening_conversation() {
+    let fake = FakeBackend::canned();
+    fake.set_contact(line::store::Friend {
+        id: "preview-actor".into(),
+        name: Some("葵".into()),
+        ..Default::default()
+    });
+    let mut preview = FakeBackend::message("alice", 99001, "", false);
+    // The event actor is distinct from the envelope sender, as in the demo seed.
+    preview.body = line::store::Content::System {
+        kind: Some("C_PI".into()),
+        params: Some("preview-actor".into()),
+        text: None,
+    };
+    fake.set_page(ChatId("alice".into()), vec![preview]);
+    let mut app = App::new(fake, StoreLocation::Memory);
+    app.online();
+    app.until(|s| {
+        s.chats
+            .get(&ChatId("alice".into()))
+            .and_then(|c| c.preview.as_ref())
+            .is_some()
+            && s.contact("preview-actor").is_some()
+    });
+    assert!(app.state.selected.is_none());
+    assert_eq!(
+        app.state.contact("preview-actor").unwrap().name.as_deref(),
+        Some("葵")
+    );
+}

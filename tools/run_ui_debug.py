@@ -13,6 +13,8 @@ import subprocess
 import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
+UI_TEMP = ROOT / "target" / "u"
+UI_TEMP.mkdir(parents=True, exist_ok=True)
 
 
 @contextlib.contextmanager
@@ -34,7 +36,7 @@ def launch_demo(binary, port, arguments=(), log=None):
     environment.update(LINE_UI_INSTANCE=token, LINE_DESKTOP_CREDENTIALS='plaintext-file',
                        SLINT_SCALE_FACTOR='1', SLINT_BACKEND='headless-software',
                        SLINT_MCP_PORT=str(port))
-    with tempfile.TemporaryDirectory(prefix='line-ui-automation-') as directory:
+    with tempfile.TemporaryDirectory(dir=UI_TEMP, prefix='d-') as directory:
         environment['LINE_DEMO_DIRECTORY'] = directory
         environment['TMPDIR'] = directory
         for name in ('XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',

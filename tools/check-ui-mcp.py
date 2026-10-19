@@ -15,7 +15,7 @@ import traceback
 import urllib.error
 import urllib.request
 
-from run_ui_debug import launch_demo
+from run_ui_debug import UI_TEMP, launch_demo
 
 ROOT = Path(__file__).resolve().parent.parent
 counter = 0
@@ -89,7 +89,7 @@ def wait_element(label, role="Button"):
 def bounds_by_id(qualified_id):
     handles = call("find_elements_by_id", windowHandle=window, elementsId=qualified_id)["elementHandles"]
     assert len(handles) == 1, f"non-unique geometry: {qualified_id}"
-    return call("get_element_properties", elementHandle=handles[0])
+    return {"handle": handles[0], **call("get_element_properties", elementHandle=handles[0])}
 
 def scenario_element(label):
     handles = call("find_elements_by_id", windowHandle=window, elementsId="DemoScenarios::scenario-panel").get("elementHandles", [])
@@ -254,6 +254,7 @@ def check_detail_stack():
 def check_smoke():
     global draft, before_shortcut
     show_chats()
+    wait_for(lambda: "葵 changed the group photo" in element("Weekend plans", "Button")["accessibleLabel"], "demo system preview did not resolve its known actor")
     draft = "日本語の下書き\nDraft with emoji 🐈"
     smoke_chat("葵")
     call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=draft)
@@ -496,7 +497,77 @@ def check_focus():
     check_focus_shell(True)
 
 
+def assert_reactor_popup_inside_window(chip):
+    popup = wait_element("Who reacted", "List")
+    # Slint's MCP absolutePosition excludes enclosing popup offsets. The demo
+    # marker binds to the popup's x/y/width/height in its chip's window tree.
+    bounds = next(item for item in tree(chip["handle"]) if any(
+        base.get("id") == "ReactionChip::popup-bounds" for base in item.get("typeNamesAndIds", [])))
+    assert bounds["size"] == popup["size"], "popup bounds marker disagrees with visible surface"
+    scale = properties.get("scaleFactor", 1)
+    for axis, extent in (("x", "width"), ("y", "height")):
+        start = bounds["absolutePosition"].get(axis, 0)
+        end = start + bounds["size"][extent]
+        assert start >= -0.5 and end <= properties["size"][extent] / scale + 0.5, f"reactor popup outside window: {bounds}"
+
+
+def check_reactor_popup(label):
+    chip = wait_element(label, "Button")
+    assert chip.get("accessibleItemSelected"), "own chip is not highlighted"
+    click(label)
+    wait_element("You", "Text")
+    assert_reactor_popup_inside_window(chip)
+    screenshot("reactors")
+    key("\x1b")
+    assert not any(r.get("accessibleLabel") == "You" and r.get("accessibleRole") == "Text" for r in tree()), "Escape left reactor popup open"
+    assert element(label, "Button").get("accessibleDescription") == "Focused reaction", "Escape did not return focus to chip"
+    for activation in ("\n", " "):
+        key(activation)
+        wait_element("You", "Text")
+        key("\x1b")
+        assert not any(r.get("accessibleLabel") == "You" and r.get("accessibleRole") == "Text" for r in tree()), "reactor popup did not close between activations"
+        assert element(label, "Button").get("accessibleDescription") == "Focused reaction"
+    assert element(label, "Button").get("accessibleItemSelected"), "opening reactors toggled own reaction"
+
+
+def check_pack_switch():
+    click("Happy shapes", "Tab")
+    wait_for(lambda: element("Happy shapes", "Tab").get("accessibleItemSelected"), "pack selection did not switch grid")
+    wait_element("Send sticker 1", "Button")
+    wait_element("Happy shapes stickers", "List")
+    screenshot("switched-pack")
+
+
+def check_pack_wheel():
+    strip = bounds_by_id("StickerPicker::strip")
+    call("scroll_element", elementHandle=strip["handle"], deltaX=0, deltaY=1000)
+    first = wait_element("Little shapes", "Tab")
+    assert first["absolutePosition"]["x"] >= strip["absolutePosition"]["x"], "vertical wheel did not reveal earlier packs"
+    call("scroll_element", elementHandle=strip["handle"], deltaX=0, deltaY=-1000)
+    last = wait_element("Shapes 12", "Tab")
+    assert last["absolutePosition"]["x"] + last["size"]["width"] <= strip["absolutePosition"]["x"] + strip["size"]["width"], "vertical wheel did not reveal later packs"
+    call("scroll_element", elementHandle=strip["handle"], deltaX=0, deltaY=1000)
+
+
+
+def check_composer_alignment():
+    for text, name in (("One line", "one-line"), ("Line one\nLine two\nLine three", "multiline")):
+        set_value("Message draft", text)
+        field = bounds_by_id("Composer::composer")
+        buttons = [element(label, "Button") for label in ("Stickers", "Attach", "Send")]
+        centers = [b["absolutePosition"]["y"] + b["size"]["height"] / 2 for b in buttons]
+        assert max(centers) - min(centers) <= 1, "composer buttons are not centred together"
+        if name == "one-line":
+            assert abs(centers[0] - field["absolutePosition"]["y"] - field["size"]["height"] / 2) <= 1, "buttons are not centred on the single-line field"
+            bottom_insets = [field["absolutePosition"]["y"] + field["size"]["height"] - b["absolutePosition"]["y"] - b["size"]["height"] for b in buttons]
+        else:
+            insets = [field["absolutePosition"]["y"] + field["size"]["height"] - b["absolutePosition"]["y"] - b["size"]["height"] for b in buttons]
+            assert all(abs(a - b) <= 1 for a, b in zip(insets, bottom_insets)), "buttons did not stay aligned with the bottom of the growing field"
+        screenshot(name)
+
+
 def check_compose():
+    check_composer_alignment()
     set_value("Message draft", before_shortcut)
     click("Send")
     wait_for(lambda: not element("Message draft", "TextInput").get("accessibleValue"), "compose fixture send did not finish")
@@ -517,6 +588,7 @@ def check_compose():
     open_reactions()
     wait_element("LOVE", "Button")
     click("LOVE")
+    check_reactor_popup("LOVE, 1 reactions")
     open_reactions()
     wait_for(lambda: element("LOVE", "Button").get("accessibleItemSelected"), "own reaction was not highlighted")
     screenshot("reactions")
@@ -565,6 +637,20 @@ def check_compose():
     wait_for(lambda: element("Sticker preview 1", "Image").get("accessibleDescription") == "Loaded", "picker images did not load")
     screenshot("stickers")
     wait_for(lambda: len([item for item in tree() if item.get("accessibleRole") == "Tab"]) >= 2, "owned packages missing")
+    check_pack_switch()
+    key("\uF703")
+    wait_for(lambda: element("Shapes 3", "Tab").get("accessibleItemSelected"), "Right did not select next pack")
+    for _ in range(9): key("\uF703")
+    last = wait_element("Shapes 12", "Tab")
+    assert last.get("accessibleItemSelected"), "keyboard did not reach last pack"
+    key("\uF702")
+    wait_for(lambda: element("Shapes 11", "Tab").get("accessibleItemSelected"), "Left did not select previous pack")
+    key("\uF703")
+    wait_for(lambda: element("Shapes 12", "Tab").get("accessibleItemSelected"), "Right did not restore last pack")
+    picker = bounds_by_id("StickerPicker::strip")
+    assert last["absolutePosition"]["x"] >= picker["absolutePosition"]["x"] and last["absolutePosition"]["x"] + last["size"]["width"] <= picker["absolutePosition"]["x"] + picker["size"]["width"], "selected pack is clipped"
+    check_pack_wheel()
+    click("Happy shapes", "Tab")
     click("Send sticker 1")
     wait_for(lambda: any("Sticker" in item.get("accessibleLabel", "") and item.get("accessibleRole") in ("Text", "Image") for item in tree()), "sticker did not reach history")
     assert not any(item.get("accessibleLabel") == "Send sticker 1" for item in tree()), "picker stayed open after send"
@@ -572,6 +658,10 @@ def check_compose():
     wait_for(lambda: element("Sticker preview 1", "Image").get("accessibleDescription") == "Loaded", "cached picker did not reopen")
     key("\x1b")
     assert not any(item.get("accessibleLabel") == "Send sticker 1" for item in tree()), "Escape did not close sticker picker"
+    click("Stickers")
+    wait_element("Send sticker 1", "Button")
+    click("Message draft", "TextInput")
+    assert not any(item.get("accessibleLabel") == "Send sticker 1" for item in tree()), "outside click did not close sticker picker"
     show_chats()
     click("New chat")
     wait_element("Find friends for new chat", "TextInput")
@@ -579,6 +669,8 @@ def check_compose():
     click("新しい友だち 🌸", "Checkbox")
     click("Chat")
     wait_for(lambda: any(item.get("accessibleLabel") == "新しい友だち 🌸" and item.get("accessibleRole") == "Button" for item in tree()), "friend conversation did not open")
+    wait_element("Conversation avatar", "Image")
+    screenshot("new-contact-header")
     draft_control = element("Message draft", "TextInput")
     call("click_element", elementHandle=draft_control["handle"])
     for char in "Hello from a new chat": key(char)
@@ -596,7 +688,7 @@ def check_compose():
     wait_for(lambda: any(item.get("accessibleLabel") == "Compose test group" for item in tree()), "created group did not open")
     # The portal is unavailable in headless runs; this guarded field injects local paths.
     import struct, zlib
-    with tempfile.TemporaryDirectory(prefix="line-attach-ui-") as directory:
+    with tempfile.TemporaryDirectory(dir=UI_TEMP, prefix="line-attach-ui-") as directory:
         directory = Path(directory)
         def png_chunk(kind, data):
             return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
@@ -866,6 +958,20 @@ def check_layers():
     demo_scenario("Live reaction")
     wait_element("👍", "Text")
     wait_element("1", "Text")
+    chip = wait_element("Emoji, 2 reactions", "Button")
+    rows = tree(chip["handle"])
+    assert not any(item.get("accessibleRole") == "Text" and item.get("accessibleLabel") == "Emoji" for item in rows), "paid chip displays its accessible name as text"
+    wait_for(lambda: element("Emoji reaction", "Image").get("accessibleDescription") == "Loaded", "paid reaction asset did not load")
+    mark = element("Emoji reaction", "Image")
+    assert mark["size"]["width"] <= chip["size"]["width"] and mark["size"]["height"] <= chip["size"]["height"], "reaction asset overflows its chip"
+    click("Emoji, 2 reactions")
+    wait_element("Unknown member", "Text")
+    wait_element("葵", "Text")
+    wait_element("You", "Text")
+    assert_reactor_popup_inside_window(chip)
+    screenshot("grouped-reactors")
+    key("\x1b")
+    assert element("Emoji, 2 reactions", "Button").get("accessibleDescription") == "Focused reaction"
 
     def unsend_menu(body):
         message = next(item for item in tree() if body in item.get("accessibleLabel", "") and item.get("accessibleRole") in ("Text", "TextInput"))
@@ -1058,6 +1164,17 @@ def check_reading():
 def check_rich():
     demo_scenario("Rich content")
     wait_element("[笑]", "Image")
+    title = "Rich content with a very long conversation name 日本語"
+    chat = wait_element(title, "Button")
+    rows = tree(chat["handle"])
+    name = next(r for r in rows if any(t.get("id", "").endswith("::name") for t in r.get("typeNamesAndIds", [])))
+    assert name.get("accessibleLabel") == title and name.get("accessibleDescription") == "Truncated", "long chat name did not elide with its full accessible name"
+    date = next(r for r in rows if any(t.get("id", "").endswith("::time") for t in r.get("typeNamesAndIds", [])))
+    assert date.get("accessibleLabel") == chat["accessibleLabel"].split(", ")[1], "chat date text is missing"
+    # Accessibility exposes full text even if clipped; check containment and separation too.
+    assert name["absolutePosition"]["x"] + name["size"]["width"] <= date["absolutePosition"]["x"], "name covers chat date"
+    assert date["absolutePosition"]["x"] + date["size"]["width"] <= chat["absolutePosition"]["x"] + chat["size"]["width"], "chat date is clipped"
+    screenshot("long-chat-name")
     metadata_rows = tree()
     labels = [item.get("accessibleLabel", "") for item in metadata_rows]
     call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=-800, deltaX=0)
@@ -1333,6 +1450,7 @@ def main():
     parser.add_argument('--seed', type=int, help='Reproduce the randomized --all group order')
     parser.add_argument('--all', action='store_true', help='Run the normal and wide behavioural matrix')
     parser.add_argument('--group', choices=GROUPS, action='append', help='Run a group (repeatable; defaults to smoke)')
+    parser.add_argument('--dark', action='store_true', help='Use the dark demo palette')
     parser.add_argument('--wide', action='store_true', help='Use a 1280×900 demo for selected groups')
     parser.add_argument('--binary', type=Path, default=ROOT / 'target/release/line-desktop')
     parser.add_argument('--screenshots', type=Path, help='Save group and intermediate surface screenshots in this directory')
@@ -1363,11 +1481,13 @@ def main():
             reservation.bind(('127.0.0.1', 0))
             args.port = reservation.getsockname()[1]
         flags = ['--demo-size', '1280x900' if wide else '980x720']
+        if args.dark:
+            flags += ['--demo-dark']
         if groups[0] in ('signed-out', 'missing-module'):
             flags += ['--demo-signed-out']
         if groups == ['missing-module']:
             flags += ['--snapshot-case', 'missing-module']
-        with tempfile.TemporaryFile(mode='w+') as log:
+        with tempfile.TemporaryFile(dir=UI_TEMP, mode='w+') as log:
             launch_started = time.monotonic()
             completed = 0
             try:

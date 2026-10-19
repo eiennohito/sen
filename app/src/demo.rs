@@ -123,6 +123,24 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             {
                 fake.inject_raw(serde_json::json!({"type":139,"param1":row.server_id.as_ref().unwrap().as_str(),
                     "param2":serde_json::json!({"chatMid":chat.0,"curr":{"predefinedReactionType":2}}).to_string()}));
+                let curr = serde_json::json!({"paidReactionType":{"productId":"demo", "emojiId":"reaction"}});
+                if let Some(ReactionKind::Paid(Some(asset))) =
+                    line::client::desktop::reaction_kind(&curr)
+                {
+                    let pixels = demo_data::avatar(1).to_rgba8().unwrap();
+                    fake.set_pixels(
+                        &asset,
+                        line::client::desktop::assets::Pixels {
+                            width: pixels.width(),
+                            height: pixels.height(),
+                            rgba: pixels.as_bytes().to_vec(),
+                        },
+                    );
+                }
+                for actor in ["alice", "unknown-reactor"] {
+                    fake.inject_raw(serde_json::json!({"type":140,"param1":row.server_id.as_ref().unwrap().as_str(), "param3":actor,
+                        "param2":serde_json::json!({"chatMid":chat.0,"curr":curr}).to_string()}));
+                }
             }
         }
         12 => {
@@ -131,7 +149,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 d,
                 fake,
                 "rich",
-                "Rich content",
+                "Rich content with a very long conversation name 日本語",
                 demo_data::rich_fixture(fake, "rich", 2000),
             );
         }

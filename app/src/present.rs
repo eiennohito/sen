@@ -131,9 +131,7 @@ pub(crate) fn relative_time(timestamp: i64, now: i64) -> String {
     let age = current.signed_duration_since(date).num_days();
     if age == 0 {
         time.format("%H:%M").to_string()
-    } else if age == 1 {
-        "Yesterday".into()
-    } else if age > 1
+    } else if age > 0
         && date >= current - chrono::Duration::days(current.weekday().num_days_from_monday().into())
     {
         time.format("%a").to_string()
@@ -252,40 +250,66 @@ pub(crate) fn emoji_views(content: &Content) -> Vec<EmojiView> {
         .collect()
 }
 
-pub(crate) fn reaction_views(reactions: &[Reaction]) -> Vec<ReactionRow> {
-    let mut groups: Vec<(String, String)> = vec![];
+pub(crate) const PREDEFINED_REACTIONS: [(u32, &str, &str); 6] = [
+    (2, "NICE", "👍"),
+    (3, "LOVE", "❤️"),
+    (4, "FUN", "😆"),
+    (5, "AMAZING", "😮"),
+    (6, "SAD", "😢"),
+    (7, "OMG", "😰"),
+];
+
+pub(crate) fn reaction_views(
+    reactions: &[Reaction],
+    mut actor: impl FnMut(&str) -> ReactorRow,
+    own_mid: &str,
+) -> Vec<ReactionRow> {
+    let mut groups: Vec<(ReactionRow, Vec<ReactorRow>)> = vec![];
     for reaction in reactions {
-        let (label, key) = match &reaction.kind {
-            ReactionKind::Predefined(id) => (
-                match id {
-                    2 => "👍",
-                    3 => "❤️",
-                    4 => "😆",
-                    5 => "😮",
-                    6 => "😢",
-                    7 => "😰",
-                    _ => "Reaction",
-                }
-                .to_owned(),
-                String::new(),
-            ),
-            ReactionKind::Emoji => ("Emoji".into(), String::new()),
+        let (label, glyph, key) = match &reaction.kind {
+            ReactionKind::Predefined(id) => {
+                let (_, label, glyph) = PREDEFINED_REACTIONS
+                    .iter()
+                    .find(|(kind, _, _)| kind == id)
+                    .copied()
+                    .unwrap_or((0, "Reaction", "◌"));
+                (label, glyph, String::new())
+            }
+            ReactionKind::Emoji => ("Emoji", "◌", String::new()),
             ReactionKind::Paid(asset) => (
-                "Emoji".into(),
+                "Emoji",
+                "",
                 asset.as_ref().map(|a| a.key()).unwrap_or_default(),
             ),
         };
-        if !groups.iter().any(|g| g.0 == label && g.1 == key) {
-            groups.push((label, key));
+        let own = reaction.actor == own_mid;
+        let reactor = actor(&reaction.actor);
+        if let Some((group, actors)) = groups
+            .iter_mut()
+            .find(|(g, _)| g.label == label && g.image_key == key)
+        {
+            group.count += 1;
+            group.own |= own;
+            actors.push(reactor);
+        } else {
+            groups.push((
+                ReactionRow {
+                    glyph: glyph.into(),
+                    label: label.into(),
+                    image_key: key.into(),
+                    count: 1,
+                    own,
+                    ..Default::default()
+                },
+                vec![reactor],
+            ));
         }
     }
     groups
         .into_iter()
-        .take(3)
-        .map(|(label, image_key)| ReactionRow {
-            label: label.into(),
-            image_key: image_key.into(),
-            ..Default::default()
+        .map(|(mut group, actors)| {
+            group.reactors = ModelRc::new(VecModel::from(actors));
+            group
         })
         .collect()
 }
@@ -306,11 +330,6 @@ pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> Messa
         _ => None,
     }
     .unwrap_or_default();
-    let reactions = if m.body.is_withdrawn() {
-        vec![]
-    } else {
-        reaction_views(&m.reactions)
-    };
     MessageRow {
         skip_badge: m.skip_badge,
         rich_fallback: kind == MessageKind::Text && !emoji.is_empty() && rich_runs.row_count() == 0,
@@ -333,7 +352,6 @@ pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> Messa
         time: display_time(m.sort.sort_ts).into(),
         outgoing: m.outgoing,
         image_key: m.body.image().map(|a| a.key()).unwrap_or_default().into(),
-        reactions: ModelRc::new(VecModel::from(reactions)),
         ..Default::default()
     }
 }
@@ -412,7 +430,7 @@ mod calendar_tests {
     fn list_time_uses_calendar_midnight_and_week_boundaries() {
         let now = at(2026, 10, 17, 0, 1);
         assert_eq!(relative_time(at(2026, 10, 17, 0, 0), now), "00:00");
-        assert_eq!(relative_time(at(2026, 10, 16, 23, 59), now), "Yesterday");
+        assert_eq!(relative_time(at(2026, 10, 16, 23, 59), now), "Fri");
         assert_eq!(relative_time(at(2026, 10, 15, 12, 0), now), "Thu");
         assert_eq!(relative_time(at(2026, 10, 11, 12, 0), now), "10/11");
         let tuesday = at(2026, 10, 20, 12, 0);
@@ -421,7 +439,7 @@ mod calendar_tests {
     #[test]
     fn list_time_and_dividers_handle_year_and_rolling_week_edges() {
         let now = at(2026, 1, 2, 0, 1);
-        assert_eq!(relative_time(at(2026, 1, 1, 23, 59), now), "Yesterday");
+        assert_eq!(relative_time(at(2026, 1, 1, 23, 59), now), "Thu");
         assert_eq!(relative_time(at(2025, 12, 30, 12, 0), now), "Tue");
         assert_eq!(relative_time(at(2025, 12, 20, 12, 0), now), "2025/12/20");
         assert_eq!(day_label(at(2026, 1, 2, 0, 0), now), "Today");

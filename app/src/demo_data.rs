@@ -367,6 +367,21 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
     rows
 }
 pub fn seed(fake: &FakeBackend) {
+    let mut packages = FakeBackend::demo_sticker_packages();
+    for index in 2..12 {
+        let mut package = packages[index % 2].clone();
+        package.id = format!("demo-{index}");
+        package.name = format!("Shapes {}", index + 1);
+        for (n, sticker) in package.stickers.iter_mut().enumerate() {
+            if let Content::Sticker { pkg, id, asset, .. } = sticker {
+                pkg.clone_from(&package.id);
+                *id = format!("9900{index}{n:02}");
+                *asset = Asset::sticker(&serde_json::json!({"STKID": id}));
+            }
+        }
+        packages.push(package);
+    }
+    fake.configure(|c| c.sticker_packages = Some(packages));
     let alice=[
         ("去年の秋の散歩、楽しかったね。","2025/10/18 15:20",false),
         ("今週も川沿いのカフェに行こう。","2026/10/15 18:30",true),
@@ -433,7 +448,7 @@ pub fn seed(fake: &FakeBackend) {
         name: Some("新しい友だち 🌸".into()),
         status: "まだ会話のない友だち".into(),
         group: false,
-        avatar: None,
+        avatar: Some(image_asset(fake, "new-friend-avatar", avatar(1))),
         member_count: None,
     });
     fake.set_friends(friends);

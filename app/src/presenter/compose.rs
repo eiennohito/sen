@@ -73,16 +73,18 @@ impl Presenter {
                 .unwrap_or_default()
         };
         global.set_stickers_failed(state.sticker_packages_failed);
-        global.set_sticker_tabs(ModelRc::new(VecModel::from(
-            state
-                .sticker_packages
-                .iter()
-                .map(|p| StickerTab {
-                    name: single_line(&p.name).into(),
-                    picture: p.stickers.first().map(picture).unwrap_or_default(),
-                })
-                .collect::<Vec<_>>(),
-        )));
+        let tabs = state
+            .sticker_packages
+            .iter()
+            .map(|p| StickerTab {
+                name: single_line(&p.name).into(),
+                picture: p.stickers.first().map(picture).unwrap_or_default(),
+            })
+            .collect::<Vec<_>>();
+        // Retain tab FocusScopes while selection and sticker assets change.
+        if global.get_sticker_tabs().iter().collect::<Vec<_>>() != tabs {
+            global.set_sticker_tabs(ModelRc::new(VecModel::from(tabs)));
+        }
         let items = state
             .sticker_packages
             .get(global.get_sticker_package() as usize)

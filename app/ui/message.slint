@@ -1,3 +1,4 @@
+import { ReactionChip } from "reaction-chip.slint";
 import { ReplyQuote } from "reply-quote.slint";
 import { IconButton } from "icon-button.slint";
 import { Avatar } from "avatar.slint";
@@ -96,17 +97,17 @@ export component Message inherits TouchArea {
                                             FocusScope {
                                                 key-pressed(event) => { if State.ime-active { return reject; } if event.text == Key.Escape { reactions.close(); return accept; } reject }
                                                 HorizontalLayout { padding: 6px; spacing: 2px;
-                                                    for label[i] in ["👍", "❤️", "😆", "😮", "😢", "😰"]: Rectangle {
+                                                    for kind in State.reaction-kinds: Rectangle {
                                                         width: 32px; height: 32px; border-radius: 16px;
-                                                        background: root.message.own-reaction == i + 2 ? Tokens.surface-selected : reaction-touch.has-hover ? Tokens.surface-hover : transparent;
-                                                        Text { text: label; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                                                        background: root.message.own-reaction == kind.id ? Tokens.surface-selected : reaction-touch.has-hover ? Tokens.surface-hover : transparent;
+                                                        Text { text: kind.glyph; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
                                                         FocusScope { accessible-description: self.has-focus ? "Focused" : "";
                                                             Rectangle { background: transparent; border-radius: 16px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
-                                                            accessible-role: button; accessible-label: ["NICE", "LOVE", "FUN", "AMAZING", "SAD", "OMG"][i]; accessible-item-selected: root.message.own-reaction == i + 2;
-                                                            accessible-action-default => { State.react(root.message.id, i + 2); reactions.close(); }
-                                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.react(root.message.id, i + 2); reactions.close(); return accept; } reject }
+                                                            accessible-role: button; accessible-label: kind.label; accessible-item-selected: root.message.own-reaction == kind.id;
+                                                            accessible-action-default => { State.react(root.message.id, kind.id); reactions.close(); }
+                                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.react(root.message.id, kind.id); reactions.close(); return accept; } reject }
                                                         }
-                                                        reaction-touch := TouchArea { clicked => { State.react(root.message.id, i + 2); reactions.close(); } }
+                                                        reaction-touch := TouchArea { clicked => { State.react(root.message.id, kind.id); reactions.close(); } }
                                                     }
                                                 }
                                             }
@@ -295,16 +296,9 @@ export component Message inherits TouchArea {
                                 }
                                 TextAction { text: "Delete"; clicked => { State.discard-message(root.message.id); } }
                             }
-                            if root.message.reaction-count > 0: Rectangle {
-                                height: 28px; width: reaction-pill.preferred-width + 16px; horizontal-stretch: 0;
-                                border-radius: 14px; background: Tokens.bg; border-width: 1px; border-color: Tokens.divider;
-                                reaction-pill := HorizontalLayout { padding-left: 8px; padding-right: 8px; spacing: 4px;
-                                    for reaction in root.message.reactions: HorizontalLayout {
-                                        if reaction.has-picture: Image { source: reaction.picture; width: 20px; height: 20px; image-fit: contain; }
-                                        Text { text: reaction.label; font-size: Tokens.small; color: Tokens.foreground; vertical-alignment: center; }
-                                    }
-                                    Text { text: root.message.reaction-count; font-size: Tokens.small; color: Tokens.foreground; vertical-alignment: center; }
-                                }
+                            if root.message.reaction-count > 0: HorizontalLayout {
+                                alignment: start; spacing: 4px;
+                                for reaction in root.message.reactions: ReactionChip { reaction: reaction; groups: root.message.reactions; }
                             }
                         }
                         if !root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }

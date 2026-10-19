@@ -24,6 +24,7 @@ pub enum FakeRpc {
 }
 #[derive(Default)]
 pub struct FakeConfig {
+    pub sticker_packages: Option<Vec<StickerPackage>>,
     pub members: Option<Vec<crate::store::Member>>,
     pub chats: Vec<ChatInput>,
     pub upload_delay: Duration,
@@ -885,7 +886,9 @@ impl Backend for FakeBackend {
     }
     fn sticker_packages(&mut self) -> Result<Vec<StickerPackage>> {
         self.rpc(FakeRpc::StickerPackages)?;
-        let packages = Self::demo_sticker_packages();
+        let packages = self
+            .configure(|c| c.sticker_packages.clone())
+            .unwrap_or_else(Self::demo_sticker_packages);
         for (p, package) in packages.iter().enumerate() {
             for (i, sticker) in package.stickers.iter().enumerate() {
                 let mut rgba = vec![0; 96 * 96 * 4];

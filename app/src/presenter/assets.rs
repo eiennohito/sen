@@ -123,8 +123,7 @@ impl Presenter {
             if state
                 .selected
                 .as_ref()
-                .and_then(|id| state.chats.get(id))
-                .and_then(|item| item.chat.avatar.as_ref())
+                .and_then(|id| chats::chat_avatar(state, id))
                 .is_some_and(|asset| asset.key() == key)
             {
                 ui.global::<State>().set_chat_avatar(image.clone());
@@ -163,7 +162,9 @@ fn uses_asset(row: &MessageRow, key: &str) -> bool {
         || row.image_key == key
         || row.sender_key == key
         || row.rich_runs.iter().any(|run| run.image_key == key)
-        || row.reactions.iter().any(|run| run.image_key == key)
+        || row.reactions.iter().any(|run| {
+            run.image_key == key || run.reactors.iter().any(|actor| actor.avatar_key == key)
+        })
 }
 fn patch_message_asset(
     row: &mut MessageRow,
@@ -207,6 +208,17 @@ fn patch_message_asset(
     {
         for i in 0..model.row_count() {
             let mut run = model.row_data(i).unwrap();
+            if let Some(actors) = run.reactors.as_any().downcast_ref::<VecModel<ReactorRow>>() {
+                for j in 0..actors.row_count() {
+                    let mut actor = actors.row_data(j).unwrap();
+                    if actor.avatar_key == key
+                        && let Some(image) = image
+                    {
+                        actor.avatar = image.clone();
+                        actors.set_row_data(j, actor);
+                    }
+                }
+            }
             if run.image_key == key
                 && let Some(image) = image
                 && run.picture != *image
