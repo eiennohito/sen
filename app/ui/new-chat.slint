@@ -47,7 +47,7 @@ export component NewChat inherits Dialog {
         if NewChatState.new-chat-error != "": Text { text: NewChatState.new-chat-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
         HorizontalLayout { alignment: end; spacing: 8px;
             Button { text: "Cancel"; enabled: !NewChatState.new-chat-busy; clicked => { NewChatState.new-chat-open = false; ShellState.focus-search(); } }
-            submit := Button { text: NewChatState.new-chat-busy ? "Creating…" : NewChatState.new-chat-uncertain ? "Check Chats" : NewChatState.new-chat-count > 1 ? "Create group" : "Chat"; primary: true; enabled: NewChatState.new-chat-count > 0 && !NewChatState.new-chat-busy; clicked => { NewChatState.new-chat-submit(); } }
+            submit := Button { text: NewChatState.submit-label; primary: true; enabled: NewChatState.new-chat-count > 0 && !NewChatState.new-chat-busy; clicked => { NewChatState.new-chat-submit(); } }
         }
     }
 }

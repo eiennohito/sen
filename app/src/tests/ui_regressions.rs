@@ -906,6 +906,7 @@ fn dialog_scrim_blocks_wheel_scrolling() {
         let chats = (0..30)
             .map(|i| ChatRow {
                 title: format!("Chat {i}").into(),
+                accessible_label: format!("Chat {i}, ").into(),
                 ..Default::default()
             })
             .collect::<Vec<_>>();

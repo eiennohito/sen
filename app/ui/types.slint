@@ -5,7 +5,7 @@ export struct RichRun { text: string, break-before: bool, url: string, link-star
 export enum RunPosition { single, first, middle, last }
 export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
 export struct LinkRow { label: string, url: string }
-export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, preview-mode: PreviewMode, draft-preview: string, failed: bool, muted: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, activity: string, time: string, avatar: image, avatar-key: string }
+export struct ChatRow { accessible-label: string, badge: string, unread: int, unread-unknown: bool, member-count: int, preview-mode: PreviewMode, preview-prefix: string, display-preview: string, failed: bool, muted: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, activity: string, time: string, avatar: image, avatar-key: string }
 export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, status-runs: [RichRun], group: bool, avatar: image, avatar-key: string }
 export struct ReactorRow { id: string, name: string, initial: string, avatar-key: string, avatar: image }
 export struct ReactionRow { id: int, label: string, glyph: string, count: int, own: bool, reactors: [ReactorRow], image-key: string, picture: image, has-picture: bool }

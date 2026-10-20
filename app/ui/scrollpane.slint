@@ -26,8 +26,8 @@ export component Pane inherits Rectangle {
     in-out property <length> content-y <=> root.offset;
     out property <length> visible-width: max(0px, root.width - 12px);
     property <bool> scrolling;
-    changed offset => { root.scrolling = true; hide.running = true; hide.restart(); if root.virtual && !root.seek-pending { root.scrolled(); } }
-    hide := Timer { interval: 1s; running: false; triggered => { self.running = false; root.scrolling = false; } }
+    changed offset => { root.scrolling = true; hide.restart(); if root.virtual && !root.seek-pending { root.scrolled(); } }
+    hide := Timer { interval: 1s; running: root.scrolling; triggered => { root.scrolling = false; } }
     clip: true;
     property <length> seek-y;
     property <bool> seek-pending;
@@ -97,8 +97,12 @@ export component Pane inherits Rectangle {
         background: transparent;
         visible: root.extent > 0px;
         thumb := Rectangle {
-            x: (parent.width - self.width) / 2; width: thumb-touch.has-hover || thumb-touch.pressed ? 10px : 6px;
-            visible: root.scrolling || thumb-touch.has-hover || thumb-touch.pressed;
+            x: (parent.width - self.width) / 2; width: 6px; opacity: 0;
+            animate width { duration: 120ms; easing: ease-out; }
+            states [ shown when root.scrolling || thumb-touch.has-hover || thumb-touch.pressed: {
+                opacity: 1; width: thumb-touch.has-hover || thumb-touch.pressed ? 10px : 6px;
+                in-out { animate opacity { duration: 120ms; easing: ease-out; } }
+            } ]
             height: min(track.height, max(32px, track.height * track.height / max(1px, root.height + root.extent)));
             y: (track.height - self.height) * (max(0px, min(root.extent, -root.offset)) / max(1px, root.extent));
             border-radius: 5px;

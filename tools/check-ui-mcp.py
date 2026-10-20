@@ -1245,25 +1245,30 @@ def check_layers():
     click("Previous", "Button")
     wait_for(lambda: any("1200 × 800" in item.get("accessibleLabel", "") for item in tree()), "Previous did not load the first photo")
     click("Original size")
+    wait_for(lambda: abs(element("Photo in viewer", "Image")["size"]["width"] - 1200) < .01, "original-size view did not settle")
     assert element("Photo in viewer", "Image")["size"]["width"] >= 1199, "original-size view only enlarged the thumbnail"
     click("Fit")
     key("1")
+    wait_for(lambda: abs(element("Photo in viewer", "Image")["size"]["width"] - 1200) < .01, "original-size shortcut did not settle")
     image = element("Photo in viewer", "Image")
     assert image["size"]["width"] >= 1199, "1 did not show original size"
     pointer = {"x": 400, "y": 300}
     call("dispatch_pointer_scroll", windowHandle=window, position=pointer, deltaY=80, modifiers={"control": True})
+    wait_for(lambda: abs(element("Photo in viewer", "Image")["size"]["width"] - image["size"]["width"] * 1.2) < .01, "wheel zoom did not settle")
     zoomed = element("Photo in viewer", "Image")
     assert zoomed["size"]["width"] > image["size"]["width"], "Ctrl+wheel did not zoom"
     fraction = (pointer["x"] - image["absolutePosition"]["x"]) / image["size"]["width"]
     assert abs(zoomed["absolutePosition"]["x"] + fraction * zoomed["size"]["width"] - pointer["x"]) < 3, "wheel zoom moved the point under the pointer"
     center = {"x": zoomed["absolutePosition"]["x"] + zoomed["size"]["width"] / 2 + 80, "y": 350}
     call("drag_element", elementHandle=zoomed["handle"], target=center)
-    assert abs(element("Photo in viewer", "Image")["absolutePosition"]["x"] - zoomed["absolutePosition"]["x"]) > 20, "drag did not pan"
+    assert abs(element("Photo in viewer", "Image")["absolutePosition"].get("x", 0) - zoomed["absolutePosition"]["x"]) > 20, "drag did not pan"
     click("Fit")
+    wait_for(lambda: element("Photo in viewer", "Image")["size"]["width"] <= properties["size"]["width"] + 1 and element("Photo in viewer", "Image")["size"]["height"] <= properties["size"]["height"] + 1, "fit did not settle")
     fitted = element("Photo in viewer", "Image")["size"]
     assert fitted["width"] <= properties["size"]["width"] + 1 and fitted["height"] <= properties["size"]["height"] + 1, "Fit did not restore a bounded view"
     key("1")
     key("0")
+    wait_for(lambda: element("Photo in viewer", "Image")["size"]["width"] <= properties["size"]["width"] + 1 and element("Photo in viewer", "Image")["size"]["height"] <= properties["size"]["height"] + 1, "fit did not settle")
     fitted = element("Photo in viewer", "Image")["size"]
     assert fitted["width"] <= properties["size"]["width"] + 1 and fitted["height"] <= properties["size"]["height"] + 1, "0 did not fit the photo"
     click("Save photo", "Button")

@@ -75,7 +75,7 @@ export component Layers inherits Rectangle {
                     Image { x: 16px; y: 16px; width: 220px; height: 220px; source: AuthState.auth-qr; image-fit: contain; accessible-role: image; accessible-label: "Scan this QR code with LINE on your phone"; }
                 }
             }
-            Text { text: AuthState.auth-pin != "" ? "Enter " + AuthState.auth-pin + " on your phone" : AuthState.auth-busy ? (AuthState.auth-stage != "" ? AuthState.auth-stage : AuthState.preparing-sign-in-text) : AuthState.auth-phase == AuthPhase.signed-in ? AuthState.auth-stage : ""; horizontal-alignment: center; color: Tokens.text; wrap: word-wrap; }
+            Text { text: AuthState.status; horizontal-alignment: center; color: Tokens.text; wrap: word-wrap; }
             if AuthState.auth-error != "": Text { text: AuthState.auth-error; wrap: word-wrap; color: Tokens.danger; horizontal-alignment: center; }
             HorizontalLayout { alignment: center; spacing: 8px;
                 auth-back := Button { text: (AuthState.auth-phase == AuthPhase.cancelling) ? "Cancelling…" : "Back"; text-button: true; enabled: !(AuthState.auth-phase == AuthPhase.cancelling); clicked => { root.dismiss-auth(); } }
@@ -127,8 +127,8 @@ export component Layers inherits Rectangle {
                             text-size := ComboBox {
                                 accessible-label: "Message text size";
                                 model: ["Small", "Default", "Large", "Extra large"];
-                                current-index: SettingsState.text-size <= 13 ? 0 : SettingsState.text-size <= 15 ? 1 : SettingsState.text-size <= 18 ? 2 : 3;
-                                selected(value) => { SettingsState.text-size = [13, 15, 18, 22][value]; SettingsState.settings-changed(); }
+                                current-index: SettingsState.text-size-index;
+                                selected(value) => { SettingsState.text-size = SettingsState.text-sizes[value]; SettingsState.settings-changed(); }
                             }
                             if ShellState.storage-error != "": Text { text: ShellState.storage-error; wrap: word-wrap; color: Tokens.danger; }
                             enter-sends := CheckBox { text: "Enter sends"; checked <=> SettingsState.enter-sends; toggled => { SettingsState.settings-changed(); } }
@@ -189,13 +189,16 @@ export component Layers inherits Rectangle {
             width: parent.width; height: parent.height; background: Tokens.viewer-bg;
             clip: true;
             property <float> fit: min(self.width / max(1px, ViewerState.viewer-image.width * 1px), self.height / max(1px, ViewerState.viewer-image.height * 1px));
+            property <length> photo-width: ViewerState.viewer-image.width * 1px * self.fit * root.viewer-zoom;
+            property <length> photo-height: ViewerState.viewer-image.height * 1px * self.fit * root.viewer-zoom;
             Image {
                 source: ViewerState.viewer-image; accessible-role: image; accessible-label: "Photo in viewer";
-                width: ViewerState.viewer-image.width * 1px * viewport.fit * root.viewer-zoom;
-                height: ViewerState.viewer-image.height * 1px * viewport.fit * root.viewer-zoom;
-                x: (parent.width - self.width) / 2 + root.pan-x;
-                y: (parent.height - self.height) / 2 + root.pan-y;
+                width: viewport.photo-width;
+                height: viewport.photo-height;
+                x: (parent.width - viewport.photo-width) / 2 + root.shown-pan-x;
+                y: (parent.height - viewport.photo-height) / 2 + root.shown-pan-y;
                 image-fit: contain;
+                animate x, y, width, height { duration: viewer-pointer.pressed ? 0ms : 120ms; easing: ease-out; }
             }
             viewer-pointer := TouchArea {
                 property <length> drag-x;
@@ -207,10 +210,10 @@ export component Layers inherits Rectangle {
                 pointer-event(event) => {
                     if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
                         self.drag-x = self.mouse-x; self.drag-y = self.mouse-y;
-                        self.start-x = root.pan-x; self.start-y = root.pan-y;
+                        self.start-x = root.shown-pan-x; self.start-y = root.shown-pan-y;
                     }
                 }
-                moved => { if self.pressed { root.pan-x = self.start-x + self.mouse-x - self.drag-x; root.pan-y = self.start-y + self.mouse-y - self.drag-y; root.bound-pan(); } }
+                moved => { if self.pressed { root.pan-x = self.start-x + self.mouse-x - self.drag-x; root.pan-y = self.start-y + self.mouse-y - self.drag-y; } }
             }
         }
         Rectangle { x: 0px; y: 0px; width: parent.width; height: 80px; background: @linear-gradient(180deg, #000000BB, #00000000); }
@@ -274,17 +277,15 @@ export component Layers inherits Rectangle {
     }
     property <length> pan-x;
     property <length> pan-y;
-    public function bound-pan() {
-        root.pan-x = max(-max(0px, (ViewerState.viewer-image.width * 1px * viewport.fit * root.viewer-zoom - viewport.width) / 2), min(max(0px, (ViewerState.viewer-image.width * 1px * viewport.fit * root.viewer-zoom - viewport.width) / 2), root.pan-x));
-        root.pan-y = max(-max(0px, (ViewerState.viewer-image.height * 1px * viewport.fit * root.viewer-zoom - viewport.height) / 2), min(max(0px, (ViewerState.viewer-image.height * 1px * viewport.fit * root.viewer-zoom - viewport.height) / 2), root.pan-y));
-    }
+    property <length> shown-pan-x: clamp(root.pan-x, -max(0px, (viewport.photo-width - viewport.width) / 2), max(0px, (viewport.photo-width - viewport.width) / 2));
+    property <length> shown-pan-y: clamp(root.pan-y, -max(0px, (viewport.photo-height - viewport.height) / 2), max(0px, (viewport.photo-height - viewport.height) / 2));
     public function zoom(factor: float, px: length, py: length) {
+        let x = root.shown-pan-x; let y = root.shown-pan-y;
         let previous = root.viewer-zoom;
         root.viewer-zoom = max(0.1, min(24, previous * factor));
         let ratio = root.viewer-zoom / previous;
-        root.pan-x = px - viewport.width / 2 - (px - viewport.width / 2 - root.pan-x) * ratio;
-        root.pan-y = py - viewport.height / 2 - (py - viewport.height / 2 - root.pan-y) * ratio;
-        root.bound-pan();
+        root.pan-x = px - viewport.width / 2 - (px - viewport.width / 2 - x) * ratio;
+        root.pan-y = py - viewport.height / 2 - (py - viewport.height / 2 - y) * ratio;
     }
     public function fit-photo() { root.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
     public function original-photo() { root.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }

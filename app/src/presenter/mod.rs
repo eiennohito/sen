@@ -128,7 +128,6 @@ impl Presenter {
     }
     pub fn install(&self, ui: &AppWindow) {
         let content = ui.global::<ContentState>();
-        let auth = ui.global::<AuthState>();
         let chats = ui.global::<ChatsState>();
         let conversation = ui.global::<ConversationState>();
         let friends = ui.global::<FriendsState>();
@@ -146,7 +145,6 @@ impl Presenter {
                 })
                 .collect::<Vec<_>>(),
         )));
-        auth.set_preparing_sign_in_text(text::PREPARING_SIGN_IN.into());
         chats.set_chats(self.images.map(self.chats.clone(), chats::chat_row));
         conversation.set_messages(self.images.map(self.messages.clone(), messages::project));
         friends.set_friends(self.images.map(self.friends.clone(), people::friend_row));

@@ -119,19 +119,18 @@ export component Chats inherits Rectangle {
                                 ]
                                 FocusRing { focused: (list-focus.has-focus || search.has-focus) && i == root.result-focus; border-radius: 8px; border-color: Tokens.accent; }
                                 identity: chat.id; initial: chat.initial; avatar: chat.avatar; title: chat.title; time: chat.time; muted: chat.muted;
-                                preview-mode: chat.preview-mode; draft-preview: chat.draft-preview;
-                                subtitle: chat.preview; subtitle-runs: chat.preview-runs;
+                                subtitle-prefix: chat.preview-prefix; subtitle: chat.display-preview; subtitle-runs: chat.preview-runs;
                                 trailing-width: markers.width + Tokens.space-1;
                                 show-preview: i * root.row-height + root.list-y + root.row-height >= 0px && i * root.row-height + root.list-y <= chat-list.visible-height;
                                 markers := HorizontalLayout {
                                     x: parent.width - self.width - Tokens.space-3; y: Tokens.space-2 + Tokens.base * 1.5 + 2px; spacing: 4px; width: self.preferred-width; height: 20px;
-                                    if !chat.failed && (chat.unread > 0 || chat.unread-unknown): Rectangle { width: 32px; height: 20px; states [ unknown when chat.unread-unknown: { width: 8px; height: 8px; unread-label.visible: false; } ] border-radius: self.height / 2; background: chat.muted ? Tokens.secondary : Tokens.accent; unread-label := RowText { text: chat.unread > 999 ? "999+" : "" + chat.unread; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
+                                    if !chat.failed && (chat.unread > 0 || chat.unread-unknown): Rectangle { width: 32px; height: 20px; states [ unknown when chat.unread-unknown: { width: 8px; height: 8px; unread-label.visible: false; } ] border-radius: self.height / 2; background: chat.muted ? Tokens.secondary : Tokens.accent; unread-label := RowText { text: chat.badge; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
                                     if chat.preview-mode == PreviewMode.draft: Image { source: @image-url("../assets/icons/draft.svg"); colorize: Tokens.accent; width: 16px; height: 16px; accessible-role: image; accessible-label: "Draft"; }
                                     if chat.failed: Image { source: @image-url("../assets/icons/error.svg"); colorize: Tokens.danger; width: 16px; height: 16px; accessible-role: image; accessible-label: "Send failed"; }
                                 }
                                 accessible-role: button; accessible-item-selectable: true;
                                 accessible-item-selected: chat.index == ChatsState.selected-chat;
-                                accessible-label: chat.title + (chat.time != "" ? ", " + chat.time : "") + ", " + self.preview + (chat.unread-unknown ? ", Unread count unavailable" : chat.unread > 0 ? ", " + chat.unread + " unread" : "") + (chat.failed ? ", Send failed" : "") + (chat.muted ? ", Muted" : "");
+                                accessible-label: chat.accessible-label;
                                 accessible-action-default => { root.result-focus = i; root.open-result(); }
                                 row-touch := TouchArea {
                                     clicked => { root.result-focus = i; root.open-result(); } }

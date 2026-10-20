@@ -86,7 +86,7 @@ export component Conversation inherits FocusScope {
                     y: 12px; height: 32px; padding-left: 16px; padding-right: 16px; spacing: 8px;
                     if ShellState.narrow: back-button := IconButton { label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { ShellState.show-conversation = false; if ShellState.section == Section.friends { ShellState.focus-friend-search(); } else { ShellState.focus-search(); } }
                         if ShellState.unread-conversations > 0: Rectangle { x: 20px; y: -4px; width: ShellState.unread-stale ? 8px : 20px; height: ShellState.unread-stale ? 8px : 20px; border-radius: self.height / 2; background: Tokens.accent;
-                            if !ShellState.unread-stale: Text { text: ShellState.unread-conversations > 999 ? "999+" : "" + ShellState.unread-conversations; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                            if !ShellState.unread-stale: Text { text: ShellState.unread-badge; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                     title-button := Rectangle {

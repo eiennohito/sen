@@ -1,6 +1,46 @@
 use super::Asset;
 use crate::*;
 
+pub(crate) fn install(ui: &AppWindow) {
+    let auth = ui.global::<AuthState>();
+    let detail = ui.global::<DetailState>();
+    let new_chat = ui.global::<NewChatState>();
+    detail.on_action_text(|action, running| {
+        let (idle, busy) = match action {
+            DetailAction::Rename => ("Rename", "Renaming…"),
+            DetailAction::Add => ("Add friend", "Adding…"),
+            DetailAction::Leave => ("Leave group", "Leaving…"),
+            DetailAction::Mute => ("Notifications", "Updating…"),
+            DetailAction::MemberChat => ("Chat", "Chat"),
+            DetailAction::None => ("", ""),
+        };
+        if action == running { busy } else { idle }.into()
+    });
+    auth.on_status_text(|pin, stage, busy, phase| {
+        if !pin.is_empty() {
+            format!("Enter {pin} on your phone").into()
+        } else if busy && stage.is_empty() {
+            text::PREPARING_SIGN_IN.into()
+        } else if busy || phase == AuthPhase::SignedIn {
+            stage
+        } else {
+            "".into()
+        }
+    });
+    new_chat.on_submit_text(|busy, uncertain, count| {
+        if busy {
+            "Creating…"
+        } else if uncertain {
+            "Check Chats"
+        } else if count > 1 {
+            "Create group"
+        } else {
+            "Chat"
+        }
+        .into()
+    });
+}
+
 pub struct EmojiView {
     pub span: line::store::InlineEmoji,
     pub image_key: String,
@@ -33,6 +73,14 @@ pub(crate) fn name_initial(name: &str) -> slint::SharedString {
         .next()
         .unwrap_or("·")
         .into()
+}
+
+pub(crate) fn unread_badge(count: i32) -> slint::SharedString {
+    if count > 999 {
+        "999+".into()
+    } else {
+        count.to_string().into()
+    }
 }
 
 pub(crate) fn single_line(text: &str) -> String {

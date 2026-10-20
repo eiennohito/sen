@@ -11,6 +11,7 @@ export global ShellState {
     callback request-panel(PanelState);
     in-out property <bool> window-active: false;
     in-out property <int> unread-conversations;
+    in-out property <string> unread-badge;
     in-out property <bool> unread-stale;
     in-out property <Section> section: Section.chats;
     public function browser-key(event: KeyEvent) -> EventResult {
@@ -202,6 +203,7 @@ export global DetailState {
     in-out property <DetailPageMode> detail-page;
     in-out property <bool> detail-busy;
     in-out property <DetailAction> detail-running;
+    pure callback action-text(DetailAction, DetailAction) -> string;
     in-out property <string> detail-error;
     in-out property <bool> profile-friend;
     in-out property <bool> profile-addable;
@@ -251,6 +253,8 @@ export enum NotificationPreview { name-and-text, name-only, new-message }
 export enum SettingsSection { chats, notifications, background, shortcuts, about }
 export global SettingsState {
     in-out property <int> text-size: 15;
+    out property <[int]> text-sizes: [13, 15, 18, 22];
+    out property <int> text-size-index: self.text-size <= self.text-sizes[0] ? 0 : self.text-size <= self.text-sizes[1] ? 1 : self.text-size <= self.text-sizes[2] ? 2 : 3;
     in-out property <bool> enter-sends: false;
     in-out property <bool> background-mode;
     in-out property <bool> autostart;
@@ -275,7 +279,8 @@ export global AuthState {
     out property <bool> auth-busy: ShellState.connection == ConnectionState.signing-in;
     in-out property <image> auth-qr;
     in-out property <string> auth-pin;
-    in property <string> preparing-sign-in-text;
+    pure callback status-text(string, string, bool, AuthPhase) -> string;
+    out property <string> status: self.status-text(self.auth-pin, self.auth-stage, self.auth-busy, self.auth-phase);
     in-out property <string> auth-stage;
     in-out property <string> auth-error;
     in-out property <string> session-cause;
@@ -311,6 +316,8 @@ export global NewChatState {
     in-out property <string> new-chat-name;
     in-out property <string> new-chat-placeholder;
     in-out property <int> new-chat-count;
+    pure callback submit-text(bool, bool, int) -> string;
+    out property <string> submit-label: self.submit-text(self.new-chat-busy, self.new-chat-uncertain, self.new-chat-count);
     in-out property <[ComposeFriend]> new-chat-friends;
     in-out property <[ComposeFriend]> new-chat-selected;
     callback new-chat-filter();

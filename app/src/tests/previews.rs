@@ -40,7 +40,7 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
                 failed_count: 0,
                 draft: None,
             },
-            title: String::new(),
+            title: "葵".into(),
             avatar: None,
             system_text: None,
             offline: false,
@@ -51,6 +51,7 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
     );
     assert_eq!(row.preview, "日😀[笑] again [笑] end");
     assert_eq!(row.preview_mode, PreviewMode::Outgoing);
+    assert_eq!(row.accessible_label, "葵, You: 日😀[笑] again [笑] end");
     assert!(message.accessible_label.ends_with(message.body.as_str()));
     assert_eq!(row.preview_runs.iter().filter(|r| r.emoji).count(), 2);
     assert_eq!(
