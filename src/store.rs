@@ -173,8 +173,7 @@ impl Store {
             messages::save(tx, &row)?;
             changes.chats_changed.insert(row.chat_id);
             Ok(())
-        })?;
-        Ok(())
+        })
     }
     pub fn writes(&self) -> u64 {
         self.writes
@@ -182,25 +181,18 @@ impl Store {
     pub fn take_changes(&mut self) -> Changes {
         std::mem::take(&mut self.changes)
     }
-    fn mutate(
-        &mut self,
-        f: impl FnOnce(&Connection, &mut Changes) -> Result<()>,
-    ) -> Result<Changes> {
+    fn mutate(&mut self, f: impl FnOnce(&Connection, &mut Changes) -> Result<()>) -> Result<()> {
         let tx = self.conn.savepoint()?;
         let mut changes = Changes::default();
         f(&tx, &mut changes)?;
         tx.commit()?;
         self.writes += 1;
-        self.changes
-            .chats_changed
-            .extend(changes.chats_changed.iter().cloned());
-        self.changes
-            .chats_removed
-            .extend(changes.chats_removed.iter().cloned());
+        self.changes.chats_changed.extend(changes.chats_changed);
+        self.changes.chats_removed.extend(changes.chats_removed);
         self.changes
             .messages_removed
-            .extend(changes.messages_removed.iter().copied());
-        Ok(changes)
+            .extend(changes.messages_removed);
+        Ok(())
     }
 }
 fn ensure_chat(tx: &Connection, chat: &ChatId) -> Result<()> {
@@ -213,11 +205,7 @@ pub(crate) fn server_sort(id: &ServerId) -> String {
 
 impl Store {
     /// Operation and checkpoint form one durable commit, including non-message ops.
-    pub fn apply_operation(
-        &mut self,
-        live: &LiveOperation,
-        continuous: bool,
-    ) -> types::Result<Changes> {
+    pub fn apply_operation(&mut self, live: &LiveOperation, continuous: bool) -> types::Result<()> {
         use Operation as Op;
         self.conn.execute_batch("SAVEPOINT live_operation")?;
         let result = (|| {
@@ -234,13 +222,12 @@ impl Store {
                 Op::Message(m) => !self.contains_server(&m.server_id)?,
                 _ => false,
             };
-            let mut changes = match &live.op {
+            match &live.op {
                 Op::Message(m) => self.apply_live(&m.chat_id, m, continuous)?,
                 Op::Receipt { chat, up_to } => self.advance_read_receipt(chat, up_to.clone())?,
                 Op::Read { chat, up_to } => {
-                    let changes = self.mark_read(chat, up_to.clone())?;
+                    self.mark_read(chat, up_to.clone())?;
                     self.confirm_read(chat, up_to)?;
-                    changes
                 }
                 Op::Withdraw(id) => self.withdraw(id)?,
                 Op::Reaction { id, actor, curr } => {
@@ -253,12 +240,10 @@ impl Store {
                                 kind: kind.clone(),
                             });
                         }
-                        self.set_reactions(id, entries, live.revision)?
-                    } else {
-                        Changes::default()
+                        self.set_reactions(id, entries, live.revision)?;
                     }
                 }
-                Op::Recent(_) | Op::Checkpoint => Changes::default(),
+                Op::Recent(_) | Op::Checkpoint => (),
             };
             if let Op::Message(m) = &live.op
                 && fresh
@@ -266,15 +251,13 @@ impl Store {
                 && !live.replay
                 && !m.skip_badge
             {
-                let marker: Option<String> = self.conn.query_row(
+                let marker: Option<ServerId> = self.conn.query_row(
                     "SELECT last_read_server_id FROM chat WHERE chat_id=?",
                     [&m.chat_id.0],
                     |r| r.get(0),
                 )?;
-                let marker = marker.map(ServerId::new).transpose()?;
                 if marker.is_none_or(|id| m.server_id > id) {
-                    let c = self.increment_unread(&m.chat_id)?;
-                    changes.chats_changed.extend(c.chats_changed);
+                    self.increment_unread(&m.chat_id)?;
                 }
                 if unknown_chat {
                     self.conn.execute(
@@ -284,12 +267,12 @@ impl Store {
                 }
             }
             self.set_sync_revision(live.revision)?;
-            Ok(changes)
+            Ok(())
         })();
         match result {
-            Ok(c) => {
+            Ok(()) => {
                 self.conn.execute_batch("RELEASE live_operation")?;
-                Ok(c)
+                Ok(())
             }
             Err(e) => {
                 self.conn

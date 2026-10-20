@@ -76,12 +76,6 @@ fn decode_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatInput> {
         last_read_server_id: r.get(11)?,
     })
 }
-fn chats(conn: &Connection) -> Result<Vec<ChatInput>> {
-    let mut stmt = conn.prepare(&format!("{CHAT_SELECT} FROM chat c"))?;
-    Ok(stmt
-        .query_map([], decode_chat)?
-        .collect::<std::result::Result<Vec<_>, _>>()?)
-}
 fn chat_record(conn: &Connection, id: &ChatId) -> Result<Option<ChatInput>> {
     Ok(conn
         .query_row(
@@ -279,8 +273,7 @@ impl Store {
         include_removed: bool,
     ) -> Result<Vec<ChatListItem>> {
         let mut stmt = self.conn.prepare(&format!(
-            "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,c.muted,c.left,c.last_message_id,
-             c.last_activity,c.server_unread,c.unread_stale,c.last_read_server_id,
+            "{CHAT_SELECT},
              m.key,m.chat_id,m.server_id,m.local_id,m.request_seq,m.sort_ts,m.sort_id,
              m.sender_id,m.outgoing,m.body_json,m.reactions_json,m.reactions_rev,
              m.delivery,m.created_at_local,m.body_rev,m.mentioned,m.skip_badge,m.reply_json,
@@ -335,7 +328,7 @@ impl Store {
         Ok(rows)
     }
 
-    pub fn upsert_chats(&mut self, list: &[ChatInput], complete_sweep: bool) -> Result<Changes> {
+    pub fn upsert_chats(&mut self, list: &[ChatInput], complete_sweep: bool) -> Result<()> {
         self.mutate(|tx, c| {
             for input in list {
                 let old = chat_record(tx, &input.id)?;
@@ -392,18 +385,21 @@ impl Store {
             }
             if complete_sweep {
                 let seen: std::collections::BTreeSet<_> = list.iter().map(|i| &i.id).collect();
-                for chat in chats(tx)? {
-                    if !seen.contains(&chat.id) {
-                        tx.execute("UPDATE chat SET removed=1 WHERE chat_id=?", [&chat.id.0])?;
-                        c.chats_changed.insert(chat.id.clone());
-                        c.chats_removed.insert(chat.id);
+                let mut stmt = tx.prepare("SELECT chat_id FROM chat")?;
+                let ids = stmt.query_map([], |r| Ok(ChatId(r.get(0)?)))?;
+                for id in ids {
+                    let id = id?;
+                    if !seen.contains(&id) {
+                        tx.execute("UPDATE chat SET removed=1 WHERE chat_id=?", [&id.0])?;
+                        c.chats_changed.insert(id.clone());
+                        c.chats_removed.insert(id);
                     }
                 }
             }
             Ok(())
         })
     }
-    pub fn increment_unread(&mut self, chat: &ChatId) -> Result<Changes> {
+    pub fn increment_unread(&mut self, chat: &ChatId) -> Result<()> {
         self.mutate(|tx, c| {
             ensure_chat(tx, chat)?;
             tx.execute(
@@ -414,17 +410,14 @@ impl Store {
             Ok(())
         })
     }
-    pub fn mark_read(&mut self, chat: &ChatId, up_to: ServerId) -> Result<Changes> {
+    pub fn mark_read(&mut self, chat: &ChatId, up_to: ServerId) -> Result<()> {
         self.mutate(|tx, c| {
             ensure_chat(tx, chat)?;
-            let old = tx
-                .query_row(
-                    "SELECT last_read_server_id FROM chat WHERE chat_id=?",
-                    [&chat.0],
-                    |r| r.get::<_, Option<String>>(0),
-                )?
-                .map(ServerId::new)
-                .transpose()?;
+            let old = tx.query_row(
+                "SELECT last_read_server_id FROM chat WHERE chat_id=?",
+                [&chat.0],
+                |r| r.get::<_, Option<ServerId>>(0),
+            )?;
             let marker = max(old.clone(), Some(up_to)).expect("marker supplied");
             let record = chat_record(tx, chat)?.expect("chat exists");
             let newest: Option<ServerId> = tx
@@ -446,9 +439,9 @@ impl Store {
             Ok(())
         })
     }
-    pub fn save_draft(&mut self, chat: &ChatId, draft: &Draft) -> Result<Changes> {
+    pub fn save_draft(&mut self, chat: &ChatId, draft: &Draft) -> Result<()> {
         if draft.text.is_empty() && self.chat(chat)?.is_none() {
-            return Ok(Changes::default());
+            return Ok(());
         }
         self.mutate(|tx, c| {
             ensure_chat(tx, chat)?;
@@ -486,7 +479,7 @@ impl Store {
             )
             .optional()?)
     }
-    pub fn clear_draft(&mut self, chat: &ChatId) -> Result<Changes> {
+    pub fn clear_draft(&mut self, chat: &ChatId) -> Result<()> {
         self.mutate(|tx, c| {
             tx.execute("DELETE FROM draft WHERE chat_id=?", [&chat.0])?;
             c.chats_changed.insert(chat.clone());
@@ -499,7 +492,7 @@ impl Store {
             .query_row("SELECT value FROM preferences", [], |r| r.get(0))?;
         Ok(serde_json::from_str(&text)?)
     }
-    pub fn set_prefs(&mut self, prefs: &Prefs) -> Result<Changes> {
+    pub fn set_prefs(&mut self, prefs: &Prefs) -> Result<()> {
         self.mutate(|tx, _| {
             tx.execute(
                 "UPDATE preferences SET value=?",
@@ -523,7 +516,7 @@ impl Store {
             )
             .map_err(Into::into)
     }
-    pub fn set_account(&mut self, own_mid: &str, profile: Profile) -> Result<Changes> {
+    pub fn set_account(&mut self, own_mid: &str, profile: Profile) -> Result<()> {
         self.mutate(|tx, _| {
             tx.execute(
                 "UPDATE account SET own_mid=?,profile_json=?",
@@ -535,7 +528,7 @@ impl Store {
     pub fn sync_revision(&self) -> Result<i64> {
         Ok(self.account()?.sync_revision)
     }
-    pub fn set_sync_revision(&mut self, revision: i64) -> Result<Changes> {
+    pub fn set_sync_revision(&mut self, revision: i64) -> Result<()> {
         self.mutate(|tx, _| {
             tx.execute(
                 "UPDATE account SET sync_revision=max(sync_revision,?)",
@@ -609,7 +602,7 @@ fn upsert_contact(tx: &Connection, row: &Friend) -> Result<()> {
     Ok(())
 }
 impl Store {
-    pub fn save_contacts(&mut self, rows: &[Friend]) -> Result<Changes> {
+    pub fn save_contacts(&mut self, rows: &[Friend]) -> Result<()> {
         self.mutate(|tx, _| {
             for row in rows {
                 upsert_contact(tx, row)?;
@@ -625,7 +618,7 @@ impl Store {
             .query_map([], decode_contact)?
             .collect::<std::result::Result<Vec<_>, _>>()?)
     }
-    pub fn save_members(&mut self, chat: &ChatId, rows: &[Member]) -> Result<Changes> {
+    pub fn save_members(&mut self, chat: &ChatId, rows: &[Member]) -> Result<()> {
         self.mutate(|tx, _| {
             ensure_chat(tx, chat)?;
             tx.execute("DELETE FROM member WHERE chat_id=?", [&chat.0])?;
@@ -656,34 +649,25 @@ impl Store {
         })
     }
     pub fn members(&self, chat: &ChatId) -> Result<Vec<Member>> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT mid,is_self,invited FROM member WHERE chat_id=? ORDER BY rowid")?;
-        let rows = stmt
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {CONTACT_COLUMNS},m.is_self,m.invited FROM member m
+             JOIN contact USING(mid) WHERE m.chat_id=? ORDER BY m.rowid"
+        ))?;
+        Ok(stmt
             .query_map([&chat.0], |r| {
-                Ok((
-                    r.get::<_, String>(0)?,
-                    r.get::<_, bool>(1)?,
-                    r.get::<_, bool>(2)?,
-                ))
+                let mut contact = decode_contact(r)?;
+                contact.profile.invited = r.get(13)?;
+                Ok(Member {
+                    contact,
+                    is_self: r.get(12)?,
+                })
             })?
-            .collect::<std::result::Result<Vec<_>, _>>()?;
-        rows.into_iter()
-            .map(|(id, is_self, invited)| {
-                let mut contact = self.conn.query_row(
-                    &format!("SELECT {CONTACT_COLUMNS} FROM contact WHERE mid=?"),
-                    [id],
-                    decode_contact,
-                )?;
-                contact.profile.invited = invited;
-                Ok(Member { contact, is_self })
-            })
-            .collect()
+            .collect::<std::result::Result<Vec<_>, _>>()?)
     }
 }
 
 impl Store {
-    pub fn upsert_details(&mut self, list: &[ChatInput]) -> Result<Changes> {
+    pub fn upsert_details(&mut self, list: &[ChatInput]) -> Result<()> {
         self.mutate(|tx, changes| {
             for input in list {
                 ensure_chat(tx, &input.id)?;
@@ -712,21 +696,17 @@ impl Store {
 }
 
 impl Store {
-    pub fn confirm_read(&mut self, chat: &ChatId, id: &ServerId) -> Result<Changes> {
+    pub fn confirm_read(&mut self, chat: &ChatId, id: &ServerId) -> Result<()> {
         self.mutate(|tx, _| {
             ensure_chat(tx, chat)?;
-            let old: Option<String> = tx.query_row(
+            let old: Option<ServerId> = tx.query_row(
                 "SELECT read_acked_server_id FROM chat WHERE chat_id=?",
                 [&chat.0],
                 |r| r.get(0),
             )?;
-            let marker = max(
-                old.clone().map(ServerId::new).transpose()?,
-                Some(id.clone()),
-            )
-            .unwrap();
+            let marker = max(old.clone(), Some(id.clone())).unwrap();
             let record = chat_record(tx, chat)?.expect("chat exists");
-            let previous: Option<ServerId> = old.map(ServerId::new).transpose()?;
+            let previous = old;
             let covered: u32 = tx.query_row(
                 "SELECT count(*) FROM (SELECT sort_id FROM message WHERE chat_id=?1
                  AND outgoing=0 AND server_id IS NOT NULL ORDER BY sort_id DESC LIMIT ?2)
@@ -813,7 +793,7 @@ impl Store {
             .transpose()?
             .unwrap_or(Value::Null))
     }
-    pub fn save_full_chat(&mut self, chat: &ChatId, raw: Value) -> Result<Changes> {
+    pub fn save_full_chat(&mut self, chat: &ChatId, raw: Value) -> Result<()> {
         self.mutate(|tx, _| {
             tx.execute(
                 "INSERT INTO chat_detail VALUES(?,?) ON CONFLICT(chat_id)
@@ -826,7 +806,7 @@ impl Store {
 }
 
 impl Store {
-    pub fn set_chat_membership(&mut self, chat: &ChatId, left: bool) -> Result<Changes> {
+    pub fn set_chat_membership(&mut self, chat: &ChatId, left: bool) -> Result<()> {
         self.mutate(|tx, c| {
             tx.execute(
                 "UPDATE chat SET left=? WHERE chat_id=?",
@@ -839,7 +819,7 @@ impl Store {
 }
 
 impl Store {
-    pub fn remove_chat(&mut self, chat: &ChatId) -> Result<Changes> {
+    pub fn remove_chat(&mut self, chat: &ChatId) -> Result<()> {
         self.mutate(|tx, c| {
             tx.execute("UPDATE chat SET removed=1 WHERE chat_id=?", [&chat.0])?;
             c.chats_changed.insert(chat.clone());
