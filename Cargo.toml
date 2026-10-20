@@ -53,6 +53,7 @@ sys-locale = "0.3"
 tempfile = "3"
 
 [dev-dependencies]
+zbus = { version = "5.19", default-features = false, features = ["p2p"] }
 sen = { path = ".", features = ["demo"] }
 socket2 = "0.6"
 rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }

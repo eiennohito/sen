@@ -9,6 +9,7 @@ pub enum FakeRpc {
     Send(ChatId),
     Friends,
     SignIn,
+    Logout,
     Upload(String),
     Stream(i64),
     Profile,
@@ -26,6 +27,8 @@ pub enum FakeRpc {
 }
 #[derive(Default)]
 pub struct FakeConfig {
+    pub mid: Option<String>,
+    pub complete_sign_in: bool,
     pub sticker_packages: Option<Vec<StickerPackage>>,
     pub members: Option<Vec<crate::store::Member>>,
     pub chats: Vec<ChatInput>,
@@ -541,6 +544,12 @@ impl FakeBackend {
     }
 }
 impl Backend for FakeBackend {
+    fn logout(&mut self) -> Result<()> {
+        let result = self.rpc(FakeRpc::Logout);
+        self.state.lock().unwrap().signed_out = true;
+        result
+    }
+
     fn set_network_activity(&mut self, activity: NetworkActivity) {
         self.activity = activity;
     }
@@ -558,6 +567,11 @@ impl Backend for FakeBackend {
             if let Some(reason) = state.sign_in_failure.take() {
                 return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)));
             }
+        }
+        if self.state.lock().unwrap().config.complete_sign_in {
+            self.state.lock().unwrap().signed_out = false;
+            deliver(PairEvent::Stage(Stage::Authenticated));
+            return Ok(());
         }
         deliver(PairEvent::Stage(Stage::Authenticated));
         if self.state.lock().unwrap().signed_out {
@@ -646,12 +660,19 @@ impl Backend for FakeBackend {
         let fake = self.clone();
         let retry = self.clone();
         let output = deliver.clone();
+        let workers = Arc::new(Mutex::new(Vec::<std::thread::JoinHandle<()>>::new()));
+        let join = workers.clone();
         deliver(StreamEvent::AssetRequests(AssetRequests {
+            join: Arc::new(move || {
+                for worker in join.lock().unwrap().drain(..) {
+                    let _ = worker.join();
+                }
+            }),
             stop,
             request: Arc::new(move |asset, purpose| {
                 let mut fake = fake.clone();
                 let output = output.clone();
-                std::thread::spawn(move || {
+                workers.lock().unwrap().push(std::thread::spawn(move || {
                     let activity = NetworkActivity::default();
                     fake.set_network_activity(activity.clone());
                     let result = match fake.media(&asset, purpose.clone()) {
@@ -668,7 +689,7 @@ impl Backend for FakeBackend {
                             result,
                         },
                     ));
-                });
+                }));
             }),
             retry: Arc::new(move |key| {
                 let mut fake = retry.clone();
@@ -818,7 +839,14 @@ impl Backend for FakeBackend {
             return Err(Failure::SignedOut(SignOutReason::AuthenticationFailed));
         }
         Ok(Profile {
-            mid: "self".into(),
+            mid: self
+                .state
+                .lock()
+                .unwrap()
+                .config
+                .mid
+                .clone()
+                .unwrap_or_else(|| "self".into()),
             display_name: "Offline preview".into(),
             picture_path: Some("/self-photo".into()),
             ..Default::default()
@@ -1231,4 +1259,16 @@ mod image_tests {
             matches!(fake.media(&sticker.original().unwrap(), Purpose::Original).unwrap(), Some(Payload::Original {path: cached, ..}) if cached == path)
         );
     }
+}
+
+#[cfg(test)]
+#[test]
+fn configured_mid_does_not_complete_pairing() {
+    let mut fake = FakeBackend::signed_out();
+    fake.configure(|config| config.mid = Some("other".into()));
+    let cancel = Arc::new(CancelToken::new());
+    cancel.cancel();
+    let reason = SignOutReason::Unavailable(crate::client::error::SignInFailure::Cancelled);
+    let result = fake.sign_in(cancel, Arc::new(|_| {}));
+    assert_eq!(result, Err(Failure::SignedOut(reason)));
 }

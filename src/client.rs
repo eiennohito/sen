@@ -236,6 +236,28 @@ impl Api {
         session: &str,
         poll_seconds: u64,
     ) -> Result<Value> {
+        self.call_once_timeout(
+            path,
+            args,
+            access,
+            session,
+            poll_seconds,
+            Duration::from_secs(if poll_seconds > 0 {
+                poll_seconds + 10
+            } else {
+                30
+            }),
+        )
+    }
+    fn call_once_timeout(
+        &mut self,
+        path: &str,
+        args: &Value,
+        access: &str,
+        session: &str,
+        poll_seconds: u64,
+        timeout: Duration,
+    ) -> Result<Value> {
         let body = serde_json::to_string(args)?;
         let signature = self.signature(path, &body, access)?;
         let mut headers = vec![
@@ -256,16 +278,7 @@ impl Api {
         if poll_seconds > 0 {
             headers.push(("X-LST", millis.as_str()));
         }
-        let (http, bytes) = self.http.request(
-            path,
-            &body,
-            &headers,
-            Duration::from_secs(if poll_seconds > 0 {
-                poll_seconds + 10
-            } else {
-                30
-            }),
-        )?;
+        let (http, bytes) = self.http.request(path, &body, &headers, timeout)?;
         decode_response(path, http, &bytes)
     }
     fn qr(&mut self, method: &str, args: Value, session: &str, poll_seconds: u64) -> Result<Value> {

@@ -40,6 +40,7 @@ def launch_demo(binary, port, arguments=(), log=None):
                        SLINT_SCALE_FACTOR='1', SLINT_BACKEND='headless-software',
                        SLINT_MCP_PORT=str(port))
     with tempfile.TemporaryDirectory(dir=UI_TEMP, prefix='d-') as directory:
+        environment['HOME'] = directory
         environment['SEN_DEMO_DIRECTORY'] = directory
         environment['TMPDIR'] = directory
         for name in ('XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',

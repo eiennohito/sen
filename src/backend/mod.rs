@@ -46,6 +46,7 @@ pub type PairDeliver = Arc<dyn Fn(PairEvent) + Send + Sync>;
 /// Asset queue handles are independent of the backend's RPC owner.
 #[derive(Clone)]
 pub struct AssetRequests {
+    pub join: Arc<dyn Fn() + Send + Sync>,
     pub stop: Arc<CancelToken>,
     pub request: Arc<
         dyn Fn(crate::client::desktop::assets::Asset, crate::client::desktop::assets::Purpose)
@@ -87,6 +88,7 @@ pub type UploadJob =
 pub trait Backend: Send {
     fn set_network_activity(&mut self, activity: NetworkActivity);
     fn session(&self) -> Result<bool>;
+    fn logout(&mut self) -> Result<()>;
     fn sign_in(&mut self, cancel: Arc<CancelToken>, deliver: PairDeliver) -> Result<()>;
     fn friends(&mut self) -> Result<Vec<crate::store::Friend>>;
     fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>>;
@@ -282,6 +284,22 @@ fn refresh_stream_token(stop: &CancelToken, deliver: &Deliver) -> Result<()> {
 }
 
 impl Backend for LineBackend {
+    fn logout(&mut self) -> Result<()> {
+        self.media_auth = None;
+        if let Some(fetchers) = self.fetchers.take() {
+            fetchers.stop_and_join();
+        }
+        self.images = None;
+        let result = if let SessionClient::Open(client) = &mut self.client {
+            client.logout().map_err(rpc)
+        } else {
+            Ok(())
+        };
+        self.client = SessionClient::Absent(NetworkActivity::default());
+        self.session_failure = None;
+        result
+    }
+
     fn set_network_activity(&mut self, activity: NetworkActivity) {
         match &mut self.client {
             SessionClient::Open(client) => client.set_network_activity(activity),
@@ -401,7 +419,9 @@ impl Backend for LineBackend {
         )));
         let requests = self.fetchers.as_ref().unwrap().clone();
         let retry = requests.clone();
+        let join = requests.clone();
         deliver(StreamEvent::AssetRequests(AssetRequests {
+            join: Arc::new(move || join.stop_and_join()),
             stop: queue_stop,
             request: Arc::new(move |asset, purpose| {
                 requests.enqueue(asset, purpose);

@@ -153,6 +153,19 @@ fn load_sticker_packages(
 }
 
 impl Client {
+    pub fn logout(&mut self) -> Result<()> {
+        let token = access(&self.api.state)?.to_owned();
+        self.api.call_once_timeout(
+            "/api/talk/thrift/Talk/AuthService/logoutV2",
+            &json!([]),
+            &token,
+            "",
+            0,
+            Duration::from_secs(3),
+        )?;
+        Ok(())
+    }
+
     pub(crate) fn network_activity(&self) -> super::NetworkActivity {
         self.api.http.activity.clone()
     }

@@ -8,6 +8,7 @@ pub mod crypto_module;
 pub mod engine;
 pub mod images;
 pub mod locations;
+mod logout;
 pub mod reporting;
 pub mod runtime;
 pub mod store;

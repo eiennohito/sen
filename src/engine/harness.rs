@@ -82,17 +82,19 @@ impl<T> App<T> {
             }
         }
     }
-    pub(super) fn on_engine(&self, run: impl FnOnce(&mut Engine) + Send + 'static) {
+    pub(super) fn on_engine<R: Send + 'static>(
+        &self,
+        run: impl FnOnce(&mut Engine) -> R + Send + 'static,
+    ) -> R {
         let (done, wait) = mpsc::channel();
         upload_completed(
             &self.worker.sender.0,
             Box::new(move |engine| {
-                run(engine);
-                done.send(()).unwrap();
+                done.send(run(engine)).unwrap();
                 Ok(())
             }),
         );
-        wait.recv_timeout(WAIT).expect("engine callback");
+        wait.recv_timeout(WAIT).expect("engine callback")
     }
     pub(super) fn wait_engine(&self, ready: impl Fn(&Engine) -> bool + Send + 'static) {
         let (done, wait) = mpsc::channel();
@@ -128,6 +130,9 @@ impl<T> App<T> {
                 && q.refresh.is_empty()
         });
         self.drain();
+    }
+    pub fn signed_out(&mut self) {
+        self.until(|s| matches!(s.connection, Connection::SignedOut { .. }));
     }
     pub fn online(&mut self) {
         self.until(|s| s.connection == Connection::Online && s.chats.len() == 2);

@@ -12,12 +12,26 @@ impl Locations {
     // remove after the first release
     pub fn copy_first_start(&self) -> anyhow::Result<()> {
         let old = self.data.parent().unwrap().join("line-desktop");
+        if self.data.join("auth/logged-out").exists()
+            || self.data.join("auth/logout-pending").exists()
+        {
+            return Ok(());
+        }
         copy_if_absent(&old.join("session.json"), &self.session)?;
         copy_if_absent(
             &old.join("accounts/last-mid"),
             &self.data.join("auth/last-account"),
         )?;
         Ok(())
+    }
+
+    pub(crate) fn account(data: PathBuf, cache: PathBuf) -> Self {
+        Self {
+            config_home: PathBuf::new(),
+            session: data.join("auth/session.json"),
+            data,
+            cache,
+        }
     }
 
     pub fn fonts(&self) -> PathBuf {
@@ -63,7 +77,8 @@ pub fn account_directory(
     root: &std::path::Path,
     mid: &str,
 ) -> Result<PathBuf, crate::store::StoreError> {
-    if mid.is_empty()
+    if matches!(mid, "auth" | "images" | "fonts" | "clipboard-attachments")
+        || mid.is_empty()
         || mid.len() > 256
         || !mid
             .bytes()
@@ -74,6 +89,31 @@ pub fn account_directory(
         ));
     }
     Ok(root.join(mid))
+}
+
+pub(crate) fn remove_file(path: &std::path::Path) -> anyhow::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+pub(crate) fn delete_account(root: &std::path::Path, mid: &str) -> anyhow::Result<()> {
+    let path = account_directory(root, mid)?;
+    if !path.try_exists()? {
+        return Ok(());
+    }
+    anyhow::ensure!(
+        !std::fs::symlink_metadata(&path)?.file_type().is_symlink(),
+        "account directory is a symlink"
+    );
+    anyhow::ensure!(
+        path.canonicalize()?.parent() == Some(root.canonicalize()?.as_path()),
+        "account directory escapes its root"
+    );
+    std::fs::remove_dir_all(path)?;
+    Ok(())
 }
 
 #[cfg(test)]

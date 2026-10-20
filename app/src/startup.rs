@@ -40,7 +40,11 @@ pub(crate) fn start(
     let real_worker = || {
         let root = locations.data.clone();
         Worker::start(
-            StoreLocation::Account { root, mid: None },
+            StoreLocation::Account {
+                root,
+                cache: locations.cache.clone(),
+                mid: None,
+            },
             move || {
                 LineBackend::open_local(
                     &locations.session,

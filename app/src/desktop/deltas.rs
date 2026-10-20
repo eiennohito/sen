@@ -114,6 +114,20 @@ impl Desktop {
                 | Delta::MediaFailed { .. }
                 | Delta::Draft { .. }
         );
+        if matches!(&d, Delta::Reset) {
+            if let Some(n) = &self.notifications {
+                n.withdraw_all();
+            }
+            if ui.global::<SettingsState>().get_logout_busy() {
+                ui.global::<SettingsState>().set_logout_open(false);
+                ui.global::<SettingsState>().set_logout_busy(false);
+                g.set_draft("".into());
+                self.shown_composer.clear();
+                ui.global::<ShellState>().set_section(Section::Chats);
+                ui.global::<ShellState>().set_show_conversation(false);
+                ui.invoke_focus_settings_opener();
+            }
+        }
         match &d {
             Delta::Connection(_) | Delta::Pair(_) | Delta::PairFailed { .. } => {
                 self.apply_auth(ui, &d)
@@ -311,6 +325,9 @@ impl Desktop {
                     conversation.set_unsend_feedback_id(key.0.to_string().into());
                 }
             }
+            Delta::LogoutCleanupFailed => ui
+                .global::<AuthState>()
+                .set_session_cause("Some local data could not be deleted".into()),
             #[cfg(feature = "ui-debug")]
             Delta::InternalError(kind) => dev::automation::internal_error(ui, kind),
             Delta::Notify(m) => {

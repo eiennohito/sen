@@ -1,29 +1,31 @@
 use super::*;
-use std::{os::unix::fs::PermissionsExt, path::PathBuf};
+use crate::test_support::TempDir;
+use std::os::unix::fs::PermissionsExt;
 
 /// In-memory keys for credential store tests.
 #[derive(Default)]
 struct MapKeys(std::sync::Mutex<std::collections::HashMap<(String, String), [u8; 32]>>);
 impl Keys for MapKeys {
+    fn delete(&self, id: &str) -> Result<()> {
+        self.0.lock().unwrap().remove(&("sen".into(), id.into()));
+        Ok(())
+    }
     fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>> {
-        Ok(self
-            .0
-            .lock()
-            .unwrap()
-            .get(&(application.into(), id.into()))
-            .copied())
+        let keys = self.0.lock().unwrap();
+        Ok(keys.get(&(application.into(), id.into())).copied())
     }
     fn put(&self, application: &str, id: &str, key: &[u8; 32]) -> Result<()> {
-        self.0
-            .lock()
-            .unwrap()
-            .insert((application.into(), id.to_owned()), *key);
+        let mut keys = self.0.lock().unwrap();
+        keys.insert((application.into(), id.into()), *key);
         Ok(())
     }
 }
 
 struct Unreachable;
 impl Keys for Unreachable {
+    fn delete(&self, _: &str) -> Result<()> {
+        bail!("no keyring")
+    }
     fn get(&self, _: &str, _: &str) -> Result<Option<[u8; 32]>> {
         bail!("no keyring")
     }
@@ -32,12 +34,6 @@ impl Keys for Unreachable {
     }
 }
 
-fn root(name: &str) -> PathBuf {
-    let root = std::env::temp_dir().join(format!("line-credentials-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&root);
-    fs::create_dir_all(&root).unwrap();
-    root
-}
 fn synthetic() -> Value {
     json!({"format":1,"login_key":"c3ludGhldGljIG9ubHk=","token_v3_issue_result":{"refreshToken":"synthetic-refresh"}})
 }
@@ -52,108 +48,77 @@ fn default_store_cannot_reach_the_desktop_keyring() {
 }
 
 #[test]
-fn sealed_file_hides_credentials_and_round_trips() {
-    let root = root("seal");
+fn credential_files_round_trip_and_refuse_destructive_writes() -> Result<()> {
+    let temp = TempDir::new("seal");
+    let root = &temp.0;
     let path = root.join("session.json");
     let keys = MapKeys::default();
-    save_with(&path, &synthetic(), Store::Keyring, &keys).unwrap();
-    let bytes = fs::read(&path).unwrap();
+    save_with(&path, &synthetic(), Store::Keyring, &keys)?;
+    let bytes = fs::read(&path)?;
     assert!(!String::from_utf8_lossy(&bytes).contains("synthetic-refresh"));
     assert!(!String::from_utf8_lossy(&bytes).contains("c3ludGhldGljIG9ubHk="));
-    assert_eq!(
-        fs::metadata(&path).unwrap().permissions().mode() & 0o777,
-        0o600
-    );
-    assert_eq!(
-        load_with(&path, Store::Keyring, &keys).unwrap(),
-        synthetic()
-    );
+    assert_eq!(fs::metadata(&path)?.permissions().mode() & 0o777, 0o600);
+    assert_eq!(load_with(&path, Store::Keyring, &keys)?, synthetic());
     // Later saves keep the same keyring item, so backups stay readable.
     let id = parse(&bytes).unwrap()["key_id"].clone();
     let mut refreshed = synthetic();
     refreshed["token_v3_issue_result"]["refreshToken"] = json!("rotated");
-    save_with(&path, &refreshed, Store::Keyring, &keys).unwrap();
-    assert_eq!(parse(&fs::read(&path).unwrap()).unwrap()["key_id"], id);
+    save_with(&path, &refreshed, Store::Keyring, &keys)?;
+    assert_eq!(parse(&fs::read(&path)?).unwrap()["key_id"], id);
     assert_eq!(keys.0.lock().unwrap().len(), 1);
-    assert_eq!(load_with(&path, Store::Keyring, &keys).unwrap(), refreshed);
-    // A tampered envelope or a missing key is an error, never a fallback.
-    let mut envelope = parse(&fs::read(&path).unwrap()).unwrap();
-    envelope["key_id"] = json!("00");
-    fs::write(&path, serde_json::to_vec(&envelope).unwrap()).unwrap();
-    assert!(load_with(&path, Store::Keyring, &keys).is_err());
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn stores_refuse_downgrades_and_require_keys() {
-    let root = root("downgrade");
-    let path = root.join("session.json");
-    let keys = MapKeys::default();
-    save_with(&path, &synthetic(), Store::Keyring, &keys).unwrap();
-    let sealed_bytes = fs::read(&path).unwrap();
+    assert_eq!(load_with(&path, Store::Keyring, &keys)?, refreshed);
+    let sealed_bytes = fs::read(&path)?;
     assert!(load_with(&path, Store::PlaintextFile, &keys).is_err());
     assert!(save_with(&path, &json!({}), Store::PlaintextFile, &keys).is_err());
     assert!(save_with(&path, &json!({}), Store::Keyring, &Unreachable).is_err());
-    assert_eq!(fs::read(&path).unwrap(), sealed_bytes);
+    assert_eq!(fs::read(&path)?, sealed_bytes);
     let fresh = root.join("fresh.json");
     assert!(save_with(&fresh, &synthetic(), Store::Keyring, &Unreachable).is_err());
     assert!(!fresh.exists());
     // The development store writes and reads plaintext.
     let dev = root.join("dev.json");
-    save_with(&dev, &synthetic(), Store::PlaintextFile, &Unreachable).unwrap();
-    assert_eq!(parse(&fs::read(&dev).unwrap()).unwrap(), synthetic());
-    let bytes = fs::read(&dev).unwrap();
+    save_with(&dev, &synthetic(), Store::PlaintextFile, &Unreachable)?;
+    assert_eq!(parse(&fs::read(&dev)?).unwrap(), synthetic());
+    let bytes = fs::read(&dev)?;
     let result = load_with(&dev, Store::Keyring, &Unreachable);
     assert!(matches!(
-        result
-            .unwrap_err()
-            .downcast_ref::<crate::client::error::SignInFailure>(),
-        Some(crate::client::error::SignInFailure::SessionStoreMismatch)
+        result.unwrap_err().downcast_ref::<SignInFailure>(),
+        Some(SignInFailure::SessionStoreMismatch)
     ));
     assert!(save_with(&dev, &json!({}), Store::Keyring, &MapKeys::default()).is_err());
-    assert_eq!(fs::read(&dev).unwrap(), bytes);
+    assert_eq!(fs::read(&dev)?, bytes);
     assert_eq!(
-        load_with(&dev, Store::PlaintextFile, &Unreachable).unwrap(),
+        load_with(&dev, Store::PlaintextFile, &Unreachable)?,
         synthetic()
     );
-    fs::remove_dir_all(root).unwrap();
-}
-
-#[test]
-fn missing_key_refuses_save_and_load_without_creating_a_key() {
-    let root = root("missing-key");
-    let path = root.join("session.json");
-    let keys = MapKeys::default();
-    save_with(&path, &synthetic(), Store::Keyring, &keys).unwrap();
-    let sealed_bytes = fs::read(&path).unwrap();
+    // A tampered envelope or a missing key is an error, never a fallback.
+    let mut envelope = parse(&fs::read(&path)?).unwrap();
+    envelope["key_id"] = json!("00");
+    fs::write(&path, serde_json::to_vec(&envelope)?).unwrap();
+    assert!(load_with(&path, Store::Keyring, &keys).is_err());
+    fs::write(&path, &sealed_bytes)?;
     keys.0.lock().unwrap().clear();
 
     assert!(save_with(&path, &json!({}), Store::Keyring, &keys).is_err());
     assert!(load_with(&path, Store::Keyring, &keys).is_err());
-    assert_eq!(fs::read(&path).unwrap(), sealed_bytes);
+    assert_eq!(fs::read(&path)?, sealed_bytes);
     assert!(keys.0.lock().unwrap().is_empty());
-    fs::remove_dir_all(root).unwrap();
-}
 
-#[test]
-fn save_preserves_unreadable_or_invalid_existing_sessions() {
-    let root = root("invalid-existing");
-    let keys = MapKeys::default();
     for store in [Store::Keyring, Store::PlaintextFile] {
         let path = root.join("session.json");
         let bytes = b"{incomplete session";
-        fs::write(&path, bytes).unwrap();
+        fs::write(&path, bytes)?;
         assert!(save_with(&path, &synthetic(), store, &keys).is_err());
-        assert_eq!(fs::read(&path).unwrap(), bytes);
-        fs::remove_file(&path).unwrap();
+        assert_eq!(fs::read(&path)?, bytes);
+        fs::remove_file(&path)?;
         // A directory deterministically fails reads even when tests run as root.
-        fs::create_dir(&path).unwrap();
+        fs::create_dir(&path)?;
         assert!(save_with(&path, &synthetic(), store, &keys).is_err());
         assert!(path.is_dir());
-        fs::remove_dir(&path).unwrap();
+        fs::remove_dir(&path)?;
     }
     assert!(keys.0.lock().unwrap().is_empty());
-    fs::remove_dir_all(root).unwrap();
+    Ok(())
 }
 
 #[test]
@@ -164,7 +129,8 @@ fn saved_session_fixtures_preserve_all_fields() -> Result<()> {
     // session-pre-format.json hand-writes that accepted shape without format or
     // refreshToken. No pre-format writer exists in git history: even the first
     // writer (6e058db0d8048abd2054fcdf2d15559656ef6730) wrote format: 1.
-    let root = root("session-fixtures");
+    let temp = TempDir::new("session-fixtures");
+    let root = &temp.0;
     let keys = MapKeys::default();
     keys.put("sen", "synthetic-session-fixture", &[0x42; 32])?;
     for (name, bytes, store) in [
@@ -204,13 +170,13 @@ fn saved_session_fixtures_preserve_all_fields() -> Result<()> {
             "{name}: reload changed a field"
         );
     }
-    fs::remove_dir_all(root)?;
     Ok(())
 }
 
 #[test]
 fn saved_session_failure_kinds_stay_distinct() -> Result<()> {
-    let root = root("failure-kinds");
+    let temp = TempDir::new("failure-kinds");
+    let root = &temp.0;
     let path = root.join("session.json");
     let keys = MapKeys::default();
     let kind = |result: Result<Value>| {
@@ -244,34 +210,16 @@ fn saved_session_failure_kinds_stay_distinct() -> Result<()> {
         kind(load_with(&path, Store::Keyring, &keys)),
         "saved-session-key-missing"
     );
-    fs::remove_dir_all(root)?;
     Ok(())
 }
 
 #[test]
-fn old_key_is_copied_without_replacing_or_removing_it() -> Result<()> {
-    let root = root("old-key");
-    let path = root.join("session.json");
-    let keys = MapKeys::default();
-    let id = "old-synthetic-key";
-    let key = [0x42; 32];
-    keys.0
-        .lock()
-        .unwrap()
-        .insert(("line-desktop".into(), id.into()), key);
-    private_write(&path, &seal(id, &key, &serde_json::to_vec(&synthetic())?)?)?;
-    assert_eq!(load_with(&path, Store::Keyring, &keys)?, synthetic());
-    assert_eq!(keys.get("sen", id)?, Some(key));
-    assert_eq!(keys.get("line-desktop", id)?, Some(key));
-    assert_eq!(keys.0.lock().unwrap().len(), 2);
-    fs::remove_dir_all(root)?;
-    Ok(())
-}
-
-#[test]
-fn old_key_load_survives_a_failed_put_and_retries_later() -> Result<()> {
+fn old_key_copy_survives_a_failed_put_and_retries_later() -> Result<()> {
     struct ReadOnly<'a>(&'a MapKeys);
     impl Keys for ReadOnly<'_> {
+        fn delete(&self, _: &str) -> Result<()> {
+            bail!("read only")
+        }
         fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>> {
             self.0.get(application, id)
         }
@@ -279,7 +227,7 @@ fn old_key_load_survives_a_failed_put_and_retries_later() -> Result<()> {
             bail!("collection locked")
         }
     }
-    let root = crate::test_support::TempDir::new("key-put-retry");
+    let root = TempDir::new("key-put-retry");
     let path = root.0.join("session.json");
     let keys = MapKeys::default();
     let id = "old-read-only";
@@ -294,5 +242,43 @@ fn old_key_load_survives_a_failed_put_and_retries_later() -> Result<()> {
     assert_eq!(load_with(&path, Store::Keyring, &keys)?, synthetic());
     assert_eq!(keys.get("sen", id)?, Some(key));
     assert_eq!(keys.get("line-desktop", id)?, Some(key));
+    assert_eq!(keys.0.lock().unwrap().len(), 2);
+    Ok(())
+}
+
+#[test]
+fn logout_removes_only_the_current_sen_key_and_session() -> anyhow::Result<()> {
+    let temp = TempDir::new("logout-key");
+    let locations = temp.locations();
+    let path = locations.session.clone();
+    let keys = MapKeys::default();
+    save_with(&path, &synthetic(), Store::Keyring, &keys)?;
+    let id = saved_key_id(&path)?.unwrap();
+    let id = id.as_str();
+    keys.put("sen", "other", &[2; 32])?;
+    keys.put("line-desktop", id, &[3; 32])?;
+    let (_, clean) = crate::logout::Pending::begin(&locations, Some("self".into()), false);
+    assert!(clean);
+    assert!(!path.exists());
+    assert!(keys.get("sen", id)?.is_some());
+    let marker = locations.data.join("auth/logout-pending");
+    let checkpoint = fs::read(&marker)?;
+    let pending: crate::logout::Pending = serde_json::from_slice(&checkpoint)?;
+    assert!(!pending.finish_with(&locations, true, |id| {
+        keys.delete(id)?;
+        fs::remove_file(&marker)?;
+        fs::create_dir(&marker)?;
+        Ok(())
+    }));
+    assert!(marker.is_dir());
+    fs::remove_dir(&marker)?;
+    private_write(&marker, &checkpoint)?;
+    assert!(pending.finish_with(&locations, true, |id| keys.delete(id)));
+    assert!(!marker.exists());
+    assert!(!path.exists());
+    assert_eq!(keys.get("sen", id)?, None);
+    assert_eq!(keys.get("sen", "other")?, Some([2; 32]));
+    assert_eq!(keys.get("line-desktop", id)?, Some([3; 32]));
+    assert!(Keyring.delete(id).is_err());
     Ok(())
 }

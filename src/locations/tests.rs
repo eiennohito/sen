@@ -49,12 +49,7 @@ fn first_start_copies_private_auth_and_keeps_both_existing_files() {
     let session = b"synthetic sealed session bytes";
     fs::write(old.join("session.json"), session).unwrap();
     fs::write(old.join("accounts/last-mid"), b"U123").unwrap();
-    let locations = Locations {
-        config_home: root.0.join("config"),
-        data: root.0.join("sen"),
-        session: root.0.join("sen/auth/session.json"),
-        cache: root.0.join("cache/sen"),
-    };
+    let locations = root.locations();
     locations.copy_first_start().unwrap();
     assert_eq!(fs::read(&locations.session).unwrap(), session);
     assert_eq!(
@@ -79,4 +74,34 @@ fn first_start_copies_private_auth_and_keeps_both_existing_files() {
     );
     assert_eq!(fs::read(old.join("session.json")).unwrap(), session);
     assert_eq!(fs::read(old.join("accounts/last-mid")).unwrap(), b"U123");
+    crate::client::private_write(&locations.data.join("auth/logged-out"), b"").unwrap();
+    remove_file(&locations.session).unwrap();
+    remove_file(&locations.data.join("auth/last-account")).unwrap();
+    locations.copy_first_start().unwrap();
+    assert!(!locations.session.exists());
+    assert!(!locations.data.join("auth/last-account").exists());
+}
+
+#[test]
+fn logout_deletion_stays_inside_the_account_roots() {
+    let temp = crate::test_support::TempDir::new("logout-paths");
+    for root in [temp.0.join("data/sen"), temp.0.join("cache/sen")] {
+        for mid in ["self", "other"] {
+            temp.write(&root.join(mid).join("history"), b"other");
+        }
+        delete_account(&root, "self").unwrap();
+        assert!(!root.join("self").exists());
+        assert_eq!(fs::read(root.join("other/history")).unwrap(), b"other");
+        assert!(delete_account(&root, "../other").is_err());
+        std::os::unix::fs::symlink(root.join("other"), root.join("self")).unwrap();
+        // Even a sibling symlink must not delete the target's data.
+        assert!(delete_account(&root, "self").is_err());
+        assert!(root.join("other/history").exists());
+    }
+
+    for name in ["auth", "images", "fonts", "clipboard-attachments"] {
+        temp.write(&temp.0.join(name).join("keep"), b"private");
+        assert!(delete_account(&temp.0, name).is_err(), "{name}");
+        assert!(temp.0.join(name).join("keep").exists());
+    }
 }

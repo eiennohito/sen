@@ -64,6 +64,22 @@ pub(crate) fn oriented_jpeg() -> Vec<u8> {
 /// A test directory removed when its owner drops.
 pub struct TempDir(pub std::path::PathBuf);
 impl TempDir {
+    #[cfg(test)]
+    pub(crate) fn old_account(&self, mid: &str) -> std::path::PathBuf {
+        use sha2::{Digest, Sha256};
+        self.0
+            .join("line-desktop/accounts")
+            .join(format!("{:x}", Sha256::digest(mid)))
+    }
+    #[cfg(test)]
+    pub(crate) fn locations(&self) -> crate::locations::Locations {
+        crate::locations::Locations::account(self.0.join("sen"), self.0.join("cache"))
+    }
+    #[cfg(test)]
+    pub(crate) fn write(&self, path: &std::path::Path, value: &[u8]) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, value).unwrap();
+    }
     pub fn new(name: &str) -> Self {
         static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))

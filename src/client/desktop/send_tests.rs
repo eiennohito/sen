@@ -479,3 +479,49 @@ fn cached_group_v2_text_decrypts_and_tampering_renders_undecryptable() -> Result
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[test]
+fn logout_request_and_three_second_timeout_without_retry() -> Result<()> {
+    use crate::client::http::test_support::{Clock, WAIT, accept, local_server, request};
+    use std::{io::Write, sync::mpsc};
+    for timeout in [false, true] {
+        let (release, finished) = mpsc::channel();
+        let (received, started) = mpsc::channel();
+        let (mut http, server) = local_server(move |listener| {
+            let mut socket = std::io::BufReader::new(accept(&listener));
+            let (path, body) = request(&mut socket).unwrap();
+            assert_eq!(
+                path,
+                "POST /api/talk/thrift/Talk/AuthService/logoutV2 HTTP/1.1"
+            );
+            assert_eq!(body, b"[]");
+            received.send(()).unwrap();
+            if timeout {
+                finished.recv_timeout(WAIT).unwrap();
+            } else {
+                socket
+                    .get_mut()
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 16\r\n\r\n{\"message\":\"OK\"}")
+                    .unwrap();
+            }
+        });
+        let (clock, waits) = Clock::new();
+        http.clock = http::Clock::Manual(clock.clone());
+        let advance = std::thread::spawn(move || {
+            started.recv_timeout(WAIT).unwrap();
+            if timeout {
+                assert_eq!(waits.recv_timeout(WAIT).unwrap(), Duration::from_secs(3));
+                clock.advance(Duration::from_secs(3));
+            }
+        });
+        let mut api = Api::without_crypto()?;
+        api.http = http;
+        let (mut client, root) = client(api);
+        assert_eq!(client.logout().is_err(), timeout);
+        advance.join().unwrap();
+        let _ = release.send(());
+        server.join().unwrap();
+        std::fs::remove_dir_all(root)?;
+    }
+    Ok(())
+}

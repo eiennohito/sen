@@ -1672,7 +1672,32 @@ def check_action_geometry():
 
 
 
+def check_logout():
+    click("Settings", "Button")
+    click("Account", "Tab")
+    click("Log out…", "Button")
+    wait_element("Log out?", "Text")
+    checkbox = element("Also delete this account's chats and drafts from this computer", "Checkbox")
+    assert not checkbox.get("accessibleChecked"), "Logout defaulted to deleting account data"
+    assert_restored_focus("Cancel", "Button")
+    for _ in range(7):
+        key("\t")
+        assert focused_control()["label"] in ("Cancel", "Log out", checkbox["accessibleLabel"]), "Logout let focus escape"
+    key("\x1b")
+    assert not any(item.get("accessibleLabel") == "Log out?" for item in tree())
+    assert_restored_focus("Settings section", "TabList")
+    click("Log out…", "Button")
+    click(checkbox["accessibleLabel"], "Checkbox")
+    click("Cancel", "Button")
+    click("Log out…", "Button")
+    assert not element(checkbox["accessibleLabel"], "Checkbox").get("accessibleChecked")
+    screenshot("logout-dialog")
+    click("Cancel", "Button")
+    key("\x1b")
+
+
 GROUPS = {
+    'logout': check_logout,
     'latency': check_latency,
     'action-geometry': check_action_geometry,
     'smoke': check_smoke,

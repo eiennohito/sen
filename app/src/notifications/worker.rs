@@ -561,6 +561,21 @@ mod service_tests {
             closes.recv_timeout(Duration::from_secs(3)).unwrap(),
             third.id
         );
+        attention.withdraw_all();
+        assert_eq!(attention.shared.latest.load(Ordering::Relaxed), 0);
+        assert_eq!(
+            closes.recv_timeout(Duration::from_secs(3)).unwrap(),
+            sentinel_id
+        );
+        loop {
+            let badge = badges.next().unwrap().unwrap();
+            let (_, mut properties): (String, HashMap<String, OwnedValue>) =
+                badge.body().deserialize().unwrap();
+            if i64::try_from(properties.remove("count").unwrap()).unwrap() == 0 {
+                assert!(!bool::try_from(properties.remove("count-visible").unwrap()).unwrap());
+                break;
+            }
+        }
         let stopped = Instant::now();
         drop(attention);
         assert!(

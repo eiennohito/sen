@@ -21,6 +21,9 @@ impl Notifications {
     pub fn set_unread_count(&self, count: u64) {
         self.service.set_unread_count(count);
     }
+    pub fn withdraw_all(&self) {
+        self.service.withdraw_all();
+    }
     pub fn withdraw(&self, chat: &str) {
         self.service.withdraw(chat);
     }
