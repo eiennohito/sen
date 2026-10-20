@@ -735,6 +735,7 @@ fn contact_actions_report_failure_then_update_in_place() {
                 if success { None } else { Some(action.clone()) }
             );
             match &action {
+                ProfileAction::EditName { .. } | ProfileAction::EditStatus { .. } => unreachable!(),
                 ProfileAction::Rename { .. } => {
                     assert_eq!(
                         app.state.contacts["alice"].name.as_deref(),

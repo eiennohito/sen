@@ -16,6 +16,8 @@ pub type Result<T> = std::result::Result<T, Failure>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProfileAction {
     Rename { mid: String, name: String },
+    EditName { name: String },
+    EditStatus { status: String },
     AddFriend { mid: String, chat: String },
     Mute { chat: ChatId, disabled: bool },
     Leave { chat: ChatId },
@@ -475,6 +477,12 @@ impl Backend for LineBackend {
     fn profile_action(&mut self, action: &ProfileAction, seq: u32) -> Result<()> {
         match action {
             ProfileAction::Rename { mid, name } => self.client()?.rename_contact(mid, name, seq),
+            ProfileAction::EditName { name } => {
+                self.client()?.update_profile_attribute(2, name, seq)
+            }
+            ProfileAction::EditStatus { status } => {
+                self.client()?.update_profile_attribute(16, status, seq)
+            }
             ProfileAction::AddFriend { mid, chat } => self.client()?.add_friend(mid, chat, seq),
             ProfileAction::Mute { chat, disabled } => {
                 self.client()?.mute_chat(&chat.0, *disabled, seq)
@@ -769,6 +777,65 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn own_profile_attribute_requests_match_extension_source() {
+        use crate::client::desktop::test_client::local_client;
+        use crate::client::http::test_support::{Reply, server_responses};
+        let root = tempfile::tempdir().unwrap();
+        let steps: Vec<(&str, Reply)> = vec![
+            (
+                "/api/talk/thrift/Talk/TalkService/updateProfileAttributes",
+                Box::new(|args| {
+                    assert_eq!(
+                        args,
+                        json!([7, {"profileAttributes":{"2":{"value":"新しい名前 🌸","meta":{}}}}])
+                    );
+                    (200, json!({"code":0,"message":"OK","data":{}}))
+                }),
+            ),
+            (
+                "/api/talk/thrift/Talk/TalkService/updateProfileAttributes",
+                Box::new(|args| {
+                    assert_eq!(
+                        args,
+                        json!([8, {"profileAttributes":{"16":{"value":"","meta":{}}}}])
+                    );
+                    (200, json!({"code":0,"message":"OK","data":{}}))
+                }),
+            ),
+        ];
+        let (transport, server) = server_responses(steps);
+        let client = local_client(root.path(), "self", transport).unwrap();
+        let mut backend = LineBackend {
+            cache: root.path().into(),
+            images: None,
+            session_failure: None,
+            fetchers: None,
+            media_auth: None,
+            client: SessionClient::Open(Box::new(client)),
+            state: root.path().join("session.json"),
+            wasm_override: None,
+            version_override: None,
+        };
+        backend
+            .profile_action(
+                &ProfileAction::EditName {
+                    name: "新しい名前 🌸".into(),
+                },
+                7,
+            )
+            .unwrap();
+        backend
+            .profile_action(
+                &ProfileAction::EditStatus {
+                    status: String::new(),
+                },
+                8,
+            )
+            .unwrap();
+        server.join().unwrap();
+    }
+
+    #[test]
     fn cached_thumbnail_is_available_without_an_open_client() {
         use crate::client::desktop::assets::{Asset, ImageCache, Payload, Pixels, Purpose};
 
@@ -809,12 +876,12 @@ mod tests {
 
     #[test]
     fn account_switch_restarts_asset_requests_after_permanent_failure() {
-        use crate::client::desktop::{assets, test_client::asset_client};
+        use crate::client::desktop::{assets, test_client::local_client};
         use crate::client::http::test_support::{WAIT, asset_server};
         use std::{io::Write, sync::mpsc};
 
         let root = tempfile::tempdir().unwrap();
-        let (base, _http, requests, server) = asset_server(2, |_, mut stream| {
+        let (base, http, requests, server) = asset_server(2, |_, mut stream| {
             stream
                 .write_all(
                     b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
@@ -837,8 +904,9 @@ mod tests {
         asset["url"] = format!("{base}/same-asset").into();
         let asset: assets::Asset = serde_json::from_value(asset).unwrap();
         for account in ["account-a", "account-b"] {
-            backend.client =
-                SessionClient::Open(Box::new(asset_client(root.path(), account, &base).unwrap()));
+            backend.client = SessionClient::Open(Box::new(
+                local_client(root.path(), account, http.clone()).unwrap(),
+            ));
             let stop = Arc::new(CancelToken::new());
             let (events, pending) = mpsc::channel();
             backend

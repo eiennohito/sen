@@ -196,11 +196,12 @@ export global ComposerState {
     callback send();
 }
 export enum DetailPageMode { profile, group, members }
-export enum DetailAction { none, rename, add, mute, leave, member-chat }
+export enum DetailAction { none, rename, edit-name, edit-status, add, mute, leave, member-chat }
 export global DetailState {
     in-out property <DetailAction> detail-dialog;
     callback pop-detail(bool);
     callback detail-action(DetailAction, string);
+    callback open-detail-dialog(DetailAction);
     callback profile-photo();
     in-out property <int> detail-depth;
     in-out property <DetailPageMode> detail-page;
@@ -208,6 +209,11 @@ export global DetailState {
     in-out property <DetailAction> detail-running;
     pure callback action-text(DetailAction, DetailAction) -> string;
     in-out property <string> detail-error;
+    in-out property <bool> profile-own;
+    pure callback profile-edit-limit(DetailAction) -> int;
+    pure callback profile-edit-count(string) -> int;
+    pure callback profile-edit-value(DetailAction, string) -> string;
+    pure callback profile-edit-valid(DetailAction, string) -> bool;
     in-out property <bool> profile-friend;
     in-out property <bool> profile-addable;
     in-out property <bool> profile-favourite;

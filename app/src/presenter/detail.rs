@@ -57,6 +57,8 @@ impl Presenter {
                 .as_ref()
                 .map(|a| match a {
                     sen::backend::ProfileAction::Rename { .. } => DetailAction::Rename,
+                    sen::backend::ProfileAction::EditName { .. } => DetailAction::EditName,
+                    sen::backend::ProfileAction::EditStatus { .. } => DetailAction::EditStatus,
                     sen::backend::ProfileAction::AddFriend { .. } => DetailAction::Add,
                     sen::backend::ProfileAction::Mute { .. } => DetailAction::Mute,
                     sen::backend::ProfileAction::Leave { .. } => DetailAction::Leave,
@@ -109,6 +111,7 @@ impl Presenter {
             g.set_profile_status(status.into());
             g.set_profile_initial(name_initial(name));
             g.set_profile_friend(friend);
+            g.set_profile_own(kind == DetailPageMode::Profile && state.profile_own(id));
             g.set_profile_addable(kind == DetailPageMode::Profile && state.profile_addable(id));
             g.set_profile_available(kind == DetailPageMode::Profile && state.profile_available(id));
             g.set_profile_original(

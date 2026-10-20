@@ -53,6 +53,8 @@ pub(crate) fn profile_failure(action: &sen::backend::ProfileAction) -> &'static 
     use sen::backend::ProfileAction;
     match action {
         ProfileAction::Rename { .. } => "Couldn't rename.",
+        ProfileAction::EditName { .. } => "Couldn't save name.",
+        ProfileAction::EditStatus { .. } => "Couldn't save status message.",
         ProfileAction::AddFriend { .. } => "Couldn't add friend.",
         ProfileAction::Mute { .. } => "Couldn't change notifications.",
         ProfileAction::Leave { .. } => "Couldn't leave group.",

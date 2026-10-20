@@ -1701,7 +1701,42 @@ def check_logout():
     key("\x1b")
 
 
+def check_own_profile():
+    click("Your profile")
+    click("Edit name")
+    set_value("Name", "Cancelled")
+    key("\x1b")
+    wait_element("Edit name")
+    click("Edit name")
+    set_value("Name", "")
+    assert not element("Save", "Button").get("accessibleEnabled"), element("Save", "Button")
+    key("\n")
+    wait_element("Name", "TextInput")
+    set_value("Name", "Preview name 🌸")
+    key("\n")
+    wait_element("Preview name 🌸", "Text")
+    wait_element("Edit name")
+    click("Edit status message")
+    set_value("Status message", "At the station")
+    key("\n")
+    wait_element("At the station", "Text")
+    click("Edit status message")
+    assert element("Status message", "TextInput").get("accessibleValue") == "At the station"
+    set_value("Status message", "")
+    key("\n")
+    wait_element("Edit status message")
+    assert not any(item.get("accessibleLabel") == "At the station" for item in tree())
+    click("Close details")
+    call("hover_element", elementHandle=element("Your profile", "Button")["handle"])
+    wait_element("Preview name 🌸", "Text")
+    click("Settings")
+    click("About", "Tab")
+    wait_element("Preview name 🌸", "Button")
+    key("\x1b")
+
+
 GROUPS = {
+    'own-profile': check_own_profile,
     'logout': check_logout,
     'latency': check_latency,
     'action-geometry': check_action_geometry,
@@ -1723,7 +1758,7 @@ GROUPS = {
     'signed-out': check_signed_out,
     'missing-module': check_missing_module,
 }
-WIDE_GROUPS = ('smoke', 'layers', 'focus', 'friends', 'scenarios')
+WIDE_GROUPS = ('smoke', 'layers', 'focus', 'friends', 'scenarios', 'own-profile')
 
 
 def connect(process):

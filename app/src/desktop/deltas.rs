@@ -41,6 +41,23 @@ impl Desktop {
     }
     pub(crate) fn apply(&mut self, ui: &AppWindow, d: Delta) -> (bool, bool, Option<(i32, i32)>) {
         let g = ui.global::<ComposerState>();
+        if let Delta::ProfileAction {
+            action,
+            error: false,
+        } = &d
+            && self.state.action.as_ref() == Some(action)
+        {
+            let detail = ui.global::<DetailState>();
+            let kind = match action {
+                ProfileAction::EditName { .. } => DetailAction::EditName,
+                ProfileAction::EditStatus { .. } => DetailAction::EditStatus,
+                _ => DetailAction::None,
+            };
+            if kind != DetailAction::None && detail.get_detail_dialog() == kind {
+                detail.set_detail_dialog(DetailAction::None);
+                ui.invoke_focus_profile_close();
+            }
+        }
         if let Delta::Original { key, path, source } = &d {
             if self.viewer_asset.as_ref() == Some(key) {
                 self.viewer_source = Some(source.clone());

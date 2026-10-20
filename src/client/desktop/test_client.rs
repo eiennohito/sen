@@ -21,10 +21,15 @@ pub(super) fn client(mut api: Api) -> (Client, PathBuf) {
     (client, root)
 }
 
-pub(crate) fn asset_client(root: &Path, mid: &str, base: &str) -> Result<Client> {
+pub(crate) fn local_client(
+    root: &Path,
+    mid: &str,
+    mut transport: http::Transport,
+) -> Result<Client> {
     let module = crate::test_support::installed_module();
     let mut api = Api::new(&module)?;
-    api.http = http::Transport::local_assets(base.to_owned());
+    transport.client_version = module.version;
+    api.http = transport;
     Client::from_api(
         &root.join("session.json"),
         |mid| Ok(Arc::new(std::sync::Mutex::new(ImageCache::new(root, mid)?))),

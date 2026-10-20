@@ -1749,6 +1749,21 @@ impl Engine {
                         let error = result.is_err();
                         if !error {
                             match &action {
+                                ProfileAction::EditName { .. }
+                                | ProfileAction::EditStatus { .. } => {
+                                    let mut profile = engine.store.account()?.profile;
+                                    match &action {
+                                        ProfileAction::EditName { name } => {
+                                            profile.display_name.clone_from(name)
+                                        }
+                                        ProfileAction::EditStatus { status } => {
+                                            profile.status_message.clone_from(status)
+                                        }
+                                        _ => unreachable!(),
+                                    }
+                                    engine.store.set_account(&profile.mid, profile.clone())?;
+                                    engine.emit(Delta::Profile(profile));
+                                }
                                 ProfileAction::Rename { mid, name }
                                 | ProfileAction::AddFriend { mid, chat: name } => {
                                     if let Some(raw) = engine.store.contact(mid)? {
@@ -2875,6 +2890,9 @@ impl Engine {
             }
             StreamEvent::Raw(raw) => {
                 let data = &raw.data;
+                if raw.kind == OperationType::UpdateProfile {
+                    self.inbox.refresh(Refresh::Profile);
+                }
                 if crate::client::wire_number(&data["revision"])
                     .is_some_and(|r: i64| r > self.store.sync_revision().unwrap_or(0))
                     && let Some(id) = data["param1"].as_str().filter(|id| !id.is_empty())

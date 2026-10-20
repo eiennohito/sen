@@ -1148,3 +1148,66 @@ fn startup_finishes_a_logout_interrupted_at_each_local_step() -> anyhow::Result<
     }
     Ok(())
 }
+
+#[test]
+fn own_profile_edits_persist_and_sync_without_reverting() {
+    let mut app = App::new();
+    app.state
+        .push_detail(crate::controller::DetailPage::Profile("self".into()));
+    for action in [
+        ProfileAction::EditName {
+            name: "新しい名前 🌸".into(),
+        },
+        ProfileAction::EditStatus {
+            status: "At the station".into(),
+        },
+        ProfileAction::EditStatus {
+            status: String::new(),
+        },
+    ] {
+        app.state.action = Some(action.clone());
+        app.send(Intent::ProfileAction(action.clone()));
+        app.until(|s| s.action.is_none());
+        assert!(app.state.action_error.is_none());
+        let saved = app.on_engine(|e| e.store.account().unwrap().profile);
+        assert_eq!(saved, app.state.profile);
+        match action {
+            ProfileAction::EditName { name } => assert_eq!(saved.display_name, name),
+            ProfileAction::EditStatus { status } => assert_eq!(saved.status_message, status),
+            _ => unreachable!(),
+        }
+        let reads = app
+            .fake
+            .calls()
+            .iter()
+            .filter(|c| **c == FakeRpc::Profile)
+            .count();
+        app.fake.inject_raw(serde_json::json!({"type":1}));
+        app.settle();
+        assert!(
+            app.fake
+                .calls()
+                .iter()
+                .filter(|c| **c == FakeRpc::Profile)
+                .count()
+                > reads
+        );
+        assert_eq!(app.state.profile, saved);
+        assert_eq!(
+            app.state.contact("self").unwrap().name.as_deref(),
+            Some(saved.display_name.as_str())
+        );
+    }
+    let old = app.state.profile.clone();
+    let failed = ProfileAction::EditName {
+        name: "Rejected".into(),
+    };
+    app.fake
+        .fail_rpc(FakeRpc::Action(failed.clone()), Failure::NotDelivered);
+    app.state.action = Some(failed.clone());
+    app.send(Intent::ProfileAction(failed.clone()));
+    app.until(|s| s.action.is_none());
+    assert_eq!(app.state.action_error, Some(failed));
+    assert_eq!(app.state.profile, old);
+    assert_eq!(app.on_engine(|e| e.store.account().unwrap().profile), old);
+}
