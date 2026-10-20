@@ -312,14 +312,14 @@ fn content_labels_agree_across_rows_previews_and_accessibility() {
 }
 
 #[test]
-fn startup_and_offline_keep_known_unread_counts_without_unknown_dots() {
+fn unread_counts_remain_visible_in_every_connection_state() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
         let ui = window::create_app_window().unwrap();
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
         let mut state = AppState::default();
-        for (id, unread, stale) in [("read", 0, false), ("unread", 3, false), ("gap", 0, true)] {
+        for (id, unread) in [("read", 0), ("unread", 3), ("arrivals", 2)] {
             let id = ChatId(id.into());
             state.chat_order.push(id.clone());
             state.chats.insert(
@@ -328,7 +328,6 @@ fn startup_and_offline_keep_known_unread_counts_without_unknown_dots() {
                     unread_count: unread,
                     ..chat_item(ChatInput {
                         id,
-                        unread_stale: stale,
                         ..Default::default()
                     })
                 },
@@ -338,15 +337,26 @@ fn startup_and_offline_keep_known_unread_counts_without_unknown_dots() {
             Connection::Local,
             Connection::Connecting,
             Connection::Offline,
+            Connection::Online,
+            Connection::SigningIn,
+            Connection::SignedOut {
+                reason: sen::client::error::SignOutReason::NoSession,
+            },
+            Connection::Fatal,
         ] {
             state.connection = connection;
             presenter.present(&ui, &state, ChatCategory::All);
             let rows: Vec<_> = ui.global::<ChatsState>().get_chats().iter().collect();
             let row = |id: &str| rows.iter().find(|row| row.id == id).unwrap();
-            assert!(!row("read").unread_unknown);
+
             assert_eq!(row("unread").unread, 3);
-            assert!(!row("unread").unread_unknown);
-            assert!(row("gap").unread_unknown);
+            assert_eq!(row("arrivals").badge, "2");
+            assert!(row("arrivals").accessible_label.contains("2 unread"));
+            assert_eq!(row("read").unread, 0);
+            assert!(!row("read").accessible_label.contains(" unread"));
+            assert_eq!(row("unread").badge, "3");
+            assert!(row("unread").accessible_label.contains("3 unread"));
+            assert_eq!(ui.global::<ShellState>().get_unread_badge(), "2");
         }
     })
     .join()

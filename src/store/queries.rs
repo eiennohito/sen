@@ -8,7 +8,7 @@ fn sql_limit(value: usize) -> i64 {
 }
 
 const CHAT_SELECT: &str = "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,
-    c.muted,c.left,c.last_message_id,c.last_activity,c.server_unread,c.unread_stale,
+    c.muted,c.left,c.last_message_id,c.last_activity,c.server_unread,
     c.last_read_server_id";
 const UNREAD_COLUMNS: &str = "c.read_acked_server_id,
     (SELECT server_id FROM message WHERE chat_id=c.chat_id AND server_id IS NOT NULL
@@ -73,8 +73,7 @@ fn decode_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatInput> {
         last_message_id: r.get(7)?,
         last_message_ms: r.get(8)?,
         server_unread: r.get(9)?,
-        unread_stale: r.get(10)?,
-        last_read_server_id: r.get(11)?,
+        last_read_server_id: r.get(10)?,
     })
 }
 fn chat_record(conn: &Connection, id: &ChatId) -> Result<Option<ChatInput>> {
@@ -299,29 +298,29 @@ impl Store {
                 ],
                 |r| {
                     let chat = decode_chat(r)?;
-                    let unread_count = unread(&decode_unread(r, &chat, 37)?);
+                    let unread_count = unread(&decode_unread(r, &chat, 36)?);
                     Ok(ChatListItem {
                         unread_count,
                         chat,
-                        preview: if r.get::<_, Option<i64>>(12)?.is_some() {
-                            Some(super::messages::decode_at(r, 12)?)
+                        preview: if r.get::<_, Option<i64>>(11)?.is_some() {
+                            Some(super::messages::decode_at(r, 11)?)
                         } else {
                             None
                         },
                         draft: r
-                            .get::<_, Option<String>>(30)?
+                            .get::<_, Option<String>>(29)?
                             .map(|text| -> rusqlite::Result<Draft> {
                                 Ok(Draft {
-                                    reply: super::messages::parse(r, 36)?,
+                                    reply: super::messages::parse(r, 35)?,
                                     text,
-                                    cursor: r.get(31)?,
-                                    anchor: r.get(32)?,
-                                    updated: r.get(33)?,
+                                    cursor: r.get(30)?,
+                                    anchor: r.get(31)?,
+                                    updated: r.get(32)?,
                                 })
                             })
                             .transpose()?,
-                        failed_count: r.get(34)?,
-                        activity_ms: r.get(35)?,
+                        failed_count: r.get(33)?,
+                        activity_ms: r.get(34)?,
                     })
                 },
             )?
@@ -349,12 +348,12 @@ impl Store {
                 };
                 tx.execute(
                     "INSERT INTO chat(chat_id, is_group, title, avatar, member_count, muted, left, last_message_id,
-                    last_activity, server_unread, unread_stale, last_read_server_id)
-                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(chat_id) DO UPDATE
+                    last_activity, server_unread, last_read_server_id)
+                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11) ON CONFLICT(chat_id) DO UPDATE
                     SET removed=0, is_group=excluded.is_group, title=excluded.title, avatar=excluded.avatar,
                     member_count=excluded.member_count, muted=excluded.muted, left=excluded.left,
                     last_message_id=excluded.last_message_id, last_activity=excluded.last_activity,
-                    server_unread=excluded.server_unread, unread_stale=excluded.unread_stale,
+                    server_unread=excluded.server_unread,
                     last_read_server_id=excluded.last_read_server_id",
                     params![
                         input.id.0,
@@ -367,7 +366,6 @@ impl Store {
                         last_id,
                         last_time,
                         input.server_unread,
-                        input.unread_stale,
                         read,
                     ],
                 )?;
@@ -432,7 +430,7 @@ impl Store {
             let reached_newest =
                 max(record.last_message_id, newest).is_some_and(|newest| marker >= newest);
             tx.execute(
-                "UPDATE chat SET last_read_server_id=?1,unread_stale=0,
+                "UPDATE chat SET last_read_server_id=?1,
                  server_unread=CASE WHEN ?2 THEN 0 ELSE server_unread END WHERE chat_id=?3",
                 params![marker, reached_newest, chat.0],
             )?;

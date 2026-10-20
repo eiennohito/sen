@@ -320,7 +320,6 @@ mod tests {
                 .find(|row| row.id == "alice")
                 .unwrap();
             assert_eq!(row.unread, 0);
-            assert!(!row.unread_unknown);
         })
         .join()
         .unwrap();

@@ -163,8 +163,6 @@ fn offline_cache_reconnect_resumes_without_duplicate_notifications() {
                 .values()
                 .any(|m| m.body.as_text() == "checkpoint")
     });
-    // Starting offline keeps the stored unread counts; only a detected sync gap is unknown.
-    assert!(app.state.chats.values().all(|chat| !chat.chat.unread_stale));
     fake.offline(false);
     app.until(|s| s.connection == Connection::Online); // Stream reconnect also resumes persisted revision.
     app.until(|_| fake.calls().contains(&FakeRpc::Stream(75)));

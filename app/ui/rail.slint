@@ -12,13 +12,12 @@ component RailButton inherits Rectangle {
     in property <bool> focused;
     in property <bool> selectable;
     in property <string> badge;
-    in property <bool> stale;
     callback activated();
     width: 44px; height: 44px;
     border-radius: 8px;
     background: root.selected ? Tokens.surface-selected : touch.pressed || touch.has-hover ? Tokens.surface-hover : transparent;
     Image { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; width: 24px; height: 24px; source: root.icon; colorize: root.selected ? Tokens.accent : Tokens.foreground; }
-    Rectangle { visible: root.badge != "" || root.stale; x: parent.width - 22px; y: 0px; width: root.stale ? 8px : 22px; height: root.stale ? 8px : 20px; border-radius: 10px; background: Tokens.accent; Text { visible: !root.stale; text: root.badge; color: Tokens.on-accent; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
+    Rectangle { visible: root.badge != ""; x: parent.width - 22px; y: 0px; width: 22px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: root.badge; color: Tokens.on-accent; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
     FocusRing { focused: root.focused; border-radius: root.border-radius; }
     touch := TouchArea { width: root.width; height: root.height; accessible-role: button; accessible-label: root.label; accessible-item-selectable: root.selectable; accessible-item-selected: root.selected; clicked => { root.activated(); } Tooltip { Text { text: root.label; color: Tokens.text; font-size: Tokens.small; } } }
 }
@@ -49,7 +48,7 @@ export component Rail inherits Rectangle {
             padding-left: ShellState.narrow ? 0px : 4px; padding-right: ShellState.narrow ? 0px : 8px;
             padding-top: ShellState.narrow ? 2px : 4px; padding-bottom: ShellState.narrow ? 2px : 8px;
             spacing: ShellState.narrow ? 0px : 4px;
-            Rectangle { horizontal-stretch: 1; vertical-stretch: 0; height: 44px; RailButton { x: (parent.width - self.width) / 2; label: "Chats"; selectable: true; focused: rail-focus.has-focus && root.cursor == RailCursor.chats; stale: ShellState.unread-stale && ShellState.unread-conversations > 0; badge: ShellState.unread-conversations > 0 && !ShellState.unread-stale ? ShellState.unread-badge : ""; icon: @image-url("../assets/icons/chats.svg"); selected: ShellState.section == Section.chats; activated => { rail-focus.focus(); root.cursor = RailCursor.chats; root.activate(RailCursor.chats); } } }
+            Rectangle { horizontal-stretch: 1; vertical-stretch: 0; height: 44px; RailButton { x: (parent.width - self.width) / 2; label: "Chats"; selectable: true; focused: rail-focus.has-focus && root.cursor == RailCursor.chats; badge: ShellState.unread-conversations > 0 ? ShellState.unread-badge : ""; icon: @image-url("../assets/icons/chats.svg"); selected: ShellState.section == Section.chats; activated => { rail-focus.focus(); root.cursor = RailCursor.chats; root.activate(RailCursor.chats); } } }
             Rectangle { horizontal-stretch: 1; vertical-stretch: 0; height: 44px; RailButton { x: (parent.width - self.width) / 2; label: "Friends"; selectable: true; focused: rail-focus.has-focus && root.cursor == RailCursor.friends; icon: @image-url("../assets/icons/friends.svg"); selected: ShellState.section == Section.friends; activated => { rail-focus.focus(); root.cursor = RailCursor.friends; root.activate(RailCursor.friends); } } }
             if !ShellState.narrow: Rectangle { vertical-stretch: 1; }
             if !ShellState.narrow && ShellState.account-mid != "": Rectangle { height: 44px; vertical-stretch: 0; FocusRing { focused: rail-focus.has-focus && root.cursor == RailCursor.profile; border-radius: 8px; }

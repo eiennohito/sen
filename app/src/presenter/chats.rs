@@ -72,8 +72,6 @@ pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         initial: name_initial(&inputs.title),
         unread: inputs.item.unread_count as i32,
         failed: inputs.item.failed_count > 0,
-        // Offline or connecting keeps the last known count; only a detected sync gap is unknown.
-        unread_unknown: inputs.item.chat.unread_stale,
         muted: inputs.item.chat.muted,
         group: inputs.item.chat.is_group,
         member_count: inputs.item.chat.member_count.unwrap_or(0) as i32,
@@ -110,9 +108,7 @@ pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         label.push(row.time.to_string());
     }
     label.push(row.display_preview.to_string());
-    if row.unread_unknown {
-        label.push("Unread count unavailable".into());
-    } else if row.unread > 0 {
+    if row.unread > 0 {
         label.push(format!("{} unread", row.unread));
     }
     if row.failed {

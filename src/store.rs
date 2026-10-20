@@ -11,7 +11,8 @@ use std::path::Path;
 use types::Result;
 pub use types::*;
 
-const SCHEMA_VERSION: i64 = 13;
+const SCHEMA_VERSION: i64 = 14;
+const MIGRATIONS: &[(i64, &str)] = &[(13, "ALTER TABLE chat DROP COLUMN unread_stale")];
 
 /// Sole-writer account store. Every mutation commits atomically before returning deltas.
 pub struct Store {
@@ -32,9 +33,14 @@ impl Store {
             .mode(0o700)
             .create(dir)?;
         let path = dir.join("store.sqlite3");
-        let conn = Connection::open(&path)?;
+        let mut conn = Connection::open(&path)?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        let conn = if version != SCHEMA_VERSION {
+        if version > SCHEMA_VERSION {
+            return Err(StoreError::Invalid(format!(
+                "store schema version {version} is newer than supported version {SCHEMA_VERSION}"
+            )));
+        }
+        let conn = if version < 13 {
             drop(conn);
             for path in [
                 path.clone(),
@@ -51,6 +57,16 @@ impl Store {
             Self::create_schema(&mut conn)?;
             conn
         } else {
+            if version < SCHEMA_VERSION {
+                let tx = conn.transaction()?;
+                for &(from, sql) in MIGRATIONS {
+                    if from >= version {
+                        tx.execute_batch(sql)?;
+                        tx.pragma_update(None, "user_version", from + 1)?;
+                    }
+                }
+                tx.commit()?;
+            }
             conn
         };
         Self::initialize(conn)
@@ -211,15 +227,6 @@ impl Store {
         use Operation as Op;
         self.conn.execute_batch("SAVEPOINT live_operation")?;
         let result = (|| {
-            let unknown_chat = if let Op::Message(m) = &live.op {
-                !self.conn.query_row(
-                    "SELECT EXISTS(SELECT 1 FROM chat WHERE chat_id=?)",
-                    [&m.chat_id.0],
-                    |r| r.get::<_, bool>(0),
-                )?
-            } else {
-                false
-            };
             let fresh = match &live.op {
                 Op::Message(m) => !self.contains_server(&m.server_id)?,
                 _ => false,
@@ -260,12 +267,6 @@ impl Store {
                 )?;
                 if marker.is_none_or(|id| m.server_id > id) {
                     self.increment_unread(&m.chat_id)?;
-                }
-                if unknown_chat {
-                    self.conn.execute(
-                        "UPDATE chat SET unread_stale=1 WHERE chat_id=?",
-                        [&m.chat_id.0],
-                    )?;
                 }
             }
             self.set_sync_revision(live.revision)?;

@@ -381,7 +381,6 @@ fn unread_read_markers_and_partial_acknowledgements() {
         &[ChatInput {
             id: chat(),
             server_unread: 9,
-            unread_stale: true,
             ..Default::default()
         }],
         false,
@@ -390,9 +389,7 @@ fn unread_read_markers_and_partial_acknowledgements() {
     s.increment_unread(&chat()).unwrap();
     assert_eq!(s.chat_list(1, 0).unwrap()[0].unread_count, 10);
     s.mark_read(&chat(), id(2)).unwrap();
-    let c = s.chat_list(1, 0).unwrap()[0].chat.clone();
     assert_eq!(s.chat_item(&chat()).unwrap().unwrap().unread_count, 8);
-    assert!(!c.unread_stale);
     s.upsert_details(&[ChatInput {
         id: chat(),
         server_unread: 99,
@@ -524,7 +521,6 @@ fn disk_reopen_preserves_state_and_permissions() {
             &[ChatInput {
                 id: chat(),
                 server_unread: 3,
-                unread_stale: true,
                 ..Default::default()
             }],
             false,
@@ -562,8 +558,8 @@ fn disk_reopen_preserves_state_and_permissions() {
     );
 }
 #[test]
-fn different_schema_discards_local_store() {
-    let version = SCHEMA_VERSION + 1;
+fn pre_migration_schema_discards_local_store() {
+    let version = 12;
     let dir = TempDir::new();
     {
         let mut s = Store::open(&dir.0).unwrap();
@@ -890,4 +886,157 @@ fn stored_unknown_flex_loads_and_is_filled_by_sync() {
         assert_eq!(all(&s)[0].body, refreshed.body);
         assert_eq!(all(&s)[0].body_rev, Some(revision));
     }
+}
+
+#[test]
+fn v13_migration_preserves_local_data() {
+    let dir = TempDir::new();
+    std::fs::create_dir_all(&dir.0).unwrap();
+    let conn = Connection::open(dir.0.join("store.sqlite3")).unwrap();
+    conn.execute_batch(include_str!("schema-v13.test.sql"))
+        .unwrap();
+    conn.pragma_update(None, "user_version", 13).unwrap();
+    let mut s = Store::initialize(conn).unwrap();
+    page(&mut s, &[1, 2], true);
+    pending(&mut s, 3);
+    s.upsert_chats(
+        &[ChatInput {
+            id: ChatId("other".into()),
+            title: "Other chat".into(),
+            server_unread: 7,
+            ..Default::default()
+        }],
+        false,
+    )
+    .unwrap();
+    for id in [chat(), ChatId("other".into())] {
+        s.save_draft(
+            &id,
+            &Draft {
+                text: format!("draft for {}", id.0),
+                cursor: 2,
+                anchor: 1,
+                updated: 10,
+                reply: None,
+            },
+        )
+        .unwrap();
+    }
+    s.set_prefs(&Prefs {
+        enter_sends: true,
+        ..Default::default()
+    })
+    .unwrap();
+    s.conn
+        .execute("UPDATE chat SET unread_stale=1", [])
+        .unwrap();
+    // Compare all persisted rows, omitting only the column being removed.
+    let snapshot = |conn: &Connection| {
+        let tables: Vec<String> = conn
+            .prepare("SELECT name FROM sqlite_schema WHERE type='table' ORDER BY name")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .collect::<std::result::Result<_, _>>()
+            .unwrap();
+        tables
+            .into_iter()
+            .map(|table| {
+                let columns: Vec<String> = conn
+                    .prepare(&format!(
+                        "SELECT name FROM pragma_table_info('{table}')
+                     WHERE name != 'unread_stale' ORDER BY cid"
+                    ))
+                    .unwrap()
+                    .query_map([], |r| r.get(0))
+                    .unwrap()
+                    .collect::<std::result::Result<_, _>>()
+                    .unwrap();
+                let mut stmt = conn
+                    .prepare(&format!(
+                        "SELECT {0} FROM {table} ORDER BY {0}",
+                        columns.join(",")
+                    ))
+                    .unwrap();
+                let count = stmt.column_count();
+                stmt.query_map([], |r| {
+                    (0..count)
+                        .map(|i| r.get::<_, rusqlite::types::Value>(i))
+                        .collect::<rusqlite::Result<Vec<_>>>()
+                })
+                .unwrap()
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .unwrap()
+            })
+            .collect::<Vec<_>>()
+    };
+    let before = snapshot(&s.conn);
+    drop(s);
+    let s = Store::open(&dir.0).unwrap();
+    assert_eq!(
+        s.conn
+            .pragma_query_value(None, "user_version", |r| r.get::<_, i64>(0))
+            .unwrap(),
+        14
+    );
+    assert_eq!(snapshot(&s.conn), before);
+    assert_eq!(
+        s.conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('chat') WHERE name='unread_stale'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+        0
+    );
+}
+
+#[test]
+fn newer_schema_is_refused_without_changing_file() {
+    let dir = TempDir::new();
+    let mut s = Store::open(&dir.0).unwrap();
+    page(&mut s, &[1, 2], true);
+    pending(&mut s, 1);
+    s.conn.pragma_update(None, "user_version", 15).unwrap();
+    drop(s);
+    let path = dir.0.join("store.sqlite3");
+    let before = std::fs::read(&path).unwrap();
+    let error = Store::open(&dir.0)
+        .err()
+        .expect("newer store must be refused");
+    assert!(error.to_string().contains("15"), "{error}");
+    assert!(error.to_string().contains("newer"), "{error}");
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
+#[test]
+fn unknown_chat_counts_arrivals_then_uses_metadata_count() {
+    let mut s = store();
+    for revision in 1..=3 {
+        s.apply_operation(
+            &LiveOperation {
+                revision,
+                replay: false,
+                op: Operation::Message(Box::new(input(revision as u64))),
+            },
+            true,
+        )
+        .unwrap();
+        let item = s.chat_item(&chat()).unwrap().unwrap();
+        assert_eq!(item.unread_count, revision as u32);
+    }
+    s.upsert_chats(
+        &[ChatInput {
+            id: chat(),
+            title: "Metadata arrived".into(),
+            server_unread: 9,
+            ..Default::default()
+        }],
+        false,
+    )
+    .unwrap();
+    let item = s.chat_item(&chat()).unwrap().unwrap();
+    assert_eq!(item.chat.server_unread, 9);
+    assert_eq!(item.unread_count, 9);
 }
