@@ -205,13 +205,41 @@ impl Default for Prefs {
         }
     }
 }
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "i32", into = "i32")]
+pub enum NotificationPreview {
+    NameAndText,
+    #[default]
+    NameOnly,
+    NewMessage,
+}
+impl TryFrom<i32> for NotificationPreview {
+    type Error = &'static str;
+    fn try_from(value: i32) -> std::result::Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::NameAndText),
+            1 => Ok(Self::NameOnly),
+            2 => Ok(Self::NewMessage),
+            _ => Err("Invalid notification preview preference"),
+        }
+    }
+}
+impl From<NotificationPreview> for i32 {
+    fn from(value: NotificationPreview) -> Self {
+        match value {
+            NotificationPreview::NameAndText => 0,
+            NotificationPreview::NameOnly => 1,
+            NotificationPreview::NewMessage => 2,
+        }
+    }
+}
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DesktopPrefs {
     pub background: bool,
     pub autostart: bool,
     pub notifications: bool,
-    pub preview: i32,
+    pub preview: NotificationPreview,
     pub sound: bool,
     pub mention_exception: bool,
     pub group_events: bool,
@@ -222,7 +250,7 @@ impl Default for DesktopPrefs {
             background: false,
             autostart: false,
             notifications: false,
-            preview: 1,
+            preview: NotificationPreview::NameOnly,
             sound: false,
             mention_exception: false,
             group_events: false,

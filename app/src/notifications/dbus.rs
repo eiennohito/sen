@@ -121,11 +121,7 @@ pub(super) fn listen(
                     }
                     Some("NotificationClosed") => {
                         if let Ok((id, _reason)) = message.body().deserialize::<(u32, u32)>() {
-                            let known = shared.ids.lock().unwrap().remove(&id);
-                            if let Some((chat, _)) = known {
-                                shared.closed.lock().unwrap().insert(id);
-                                shared.event(Event::Closed(chat));
-                            }
+                            shared.ids.lock().unwrap().remove(&id);
                         }
                     }
                     _ => {}

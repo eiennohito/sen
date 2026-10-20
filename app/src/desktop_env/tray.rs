@@ -257,16 +257,13 @@ fn watch_host(
 }
 pub(crate) struct Tray {
     commands: SyncSender<Command>,
-    stop: Arc<AtomicBool>,
     muted: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
 impl Tray {
     pub(crate) fn start(handler: impl Fn(Event) + Send + 'static) -> Self {
         let (commands, receiver) = mpsc::sync_channel(32);
-        let stop = Arc::new(AtomicBool::new(false));
         let muted = Arc::new(AtomicBool::new(false));
-        let cancelled = stop.clone();
         let mute = muted.clone();
         let methods = commands.clone();
         let host_events = commands.clone();
@@ -290,23 +287,6 @@ impl Tray {
                             },
                         )?
                         .build()?;
-                    let watcher = zbus::blocking::Proxy::new(
-                        &connection,
-                        "org.kde.StatusNotifierWatcher",
-                        "/StatusNotifierWatcher",
-                        "org.kde.StatusNotifierWatcher",
-                    )?;
-                    watcher.call::<_, _, ()>(
-                        "RegisterStatusNotifierItem",
-                        &("/StatusNotifierItem",),
-                    )?;
-                    let available = watcher
-                        .get_property::<bool>("IsStatusNotifierHostRegistered")
-                        .unwrap_or(false);
-                    if !available {
-                        let _ = connection.close();
-                        return Err(zbus::Error::Failure("No tray host".into()));
-                    }
                     Ok::<_, zbus::Error>(connection)
                 })();
                 let Ok(connection) = connection else {
@@ -314,20 +294,9 @@ impl Tray {
                     return;
                 };
                 let listeners = watch_host(&connection, host_events);
-                if !register(&connection) {
-                    handler(Event::Available(false));
-                    let _ = connection.close();
-                    for listener in listeners {
-                        let _ = listener.join();
-                    }
-                    return;
-                }
-                handler(Event::Available(true));
+                handler(Event::Available(register(&connection)));
                 let mut revision = 1u32;
                 while let Ok(command) = receiver.recv() {
-                    if cancelled.load(Ordering::Relaxed) {
-                        break;
-                    }
                     match command {
                         Command::Event(event) => handler(event),
                         Command::Refresh => {
@@ -342,10 +311,7 @@ impl Tray {
                         }
                         Command::Stop => break,
                         Command::HostChanged => {
-                            if !register(&connection) {
-                                handler(Event::Available(false));
-                                break;
-                            }
+                            handler(Event::Available(register(&connection)));
                         }
                     }
                 }
@@ -357,7 +323,6 @@ impl Tray {
             .expect("tray thread could not start");
         Self {
             commands,
-            stop,
             muted,
             worker: Some(worker),
         }
@@ -366,24 +331,12 @@ impl Tray {
         self.muted.store(muted, Ordering::Relaxed);
         let _ = self.commands.try_send(Command::Refresh);
     }
-    fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = self.commands.try_send(Command::Stop);
-    }
-    pub(crate) fn shutdown(mut self) {
-        self.stop();
-        if let Some(worker) = self.worker.take() {
-            let _ = worker.join();
-        }
-    }
 }
 impl Drop for Tray {
     fn drop(&mut self) {
-        self.stop();
+        let _ = self.commands.send(Command::Stop);
         if let Some(worker) = self.worker.take() {
-            std::thread::spawn(move || {
-                let _ = worker.join();
-            });
+            let _ = worker.join();
         }
     }
 }
@@ -393,7 +346,7 @@ mod tests {
     use super::*;
     struct Watcher {
         host: Arc<AtomicBool>,
-        registered: Arc<std::sync::Mutex<Option<(String, String)>>>,
+        registered: Arc<std::sync::Mutex<Vec<(String, String)>>>,
     }
     #[zbus::interface(name = "org.kde.StatusNotifierWatcher")]
     impl Watcher {
@@ -406,8 +359,10 @@ mod tests {
             service: &str,
             #[zbus(header)] header: zbus::message::Header<'_>,
         ) {
-            *self.registered.lock().unwrap() =
-                Some((header.sender().unwrap().to_string(), service.into()));
+            self.registered
+                .lock()
+                .unwrap()
+                .push((header.sender().unwrap().to_string(), service.into()));
         }
     }
     #[test]
@@ -419,7 +374,7 @@ mod tests {
             "contract tests require LINE_DESKTOP_TEST_BUS=1 on a private session bus"
         );
         let host = Arc::new(AtomicBool::new(true));
-        let registered = Arc::new(std::sync::Mutex::new(None));
+        let registered = Arc::new(std::sync::Mutex::new(Vec::new()));
         let server = zbus::blocking::connection::Builder::session()
             .unwrap()
             .serve_at(
@@ -442,7 +397,12 @@ mod tests {
             events.recv_timeout(Duration::from_secs(3)).unwrap(),
             Event::Available(true)
         ));
-        let (service, path) = registered.lock().unwrap().clone().unwrap();
+        assert_eq!(
+            registered.lock().unwrap().len(),
+            1,
+            "registered the tray twice"
+        );
+        let (service, path) = registered.lock().unwrap()[0].clone();
         assert_eq!(path, "/StatusNotifierItem");
         let item = zbus::blocking::Proxy::new(
             &server,
@@ -505,8 +465,27 @@ mod tests {
             events.recv_timeout(Duration::from_secs(3)).unwrap(),
             Event::Available(false)
         ));
+        host.store(true, Ordering::Relaxed);
+        server
+            .emit_signal(
+                None::<&str>,
+                "/StatusNotifierWatcher",
+                "org.kde.StatusNotifierWatcher",
+                "StatusNotifierHostRegistered",
+                &(),
+            )
+            .unwrap();
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Event::Available(true)
+        ));
+        item.call::<_, _, ()>("Activate", &(0i32, 0i32)).unwrap();
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Event::Open
+        ));
         let stopped = std::time::Instant::now();
-        tray.shutdown();
+        drop(tray);
         assert!(stopped.elapsed() < Duration::from_secs(3));
         let _ = server.close();
     }

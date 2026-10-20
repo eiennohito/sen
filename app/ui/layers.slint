@@ -162,7 +162,6 @@ export component Layers inherits Rectangle {
                             Text { text: "閃"; font-size: Tokens.heading; }
                             if (ShellState.account-mid != ""): Button { text: ShellState.account-name; text-button: true; clicked => { DetailState.open-profile(ShellState.account-mid); } }
                             Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
-                            if ShellState.desktop-warning != "": Text { text: ShellState.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
                         }
                     }
                 }

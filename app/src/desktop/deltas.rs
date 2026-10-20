@@ -233,7 +233,7 @@ impl Desktop {
                 let name = name.clone();
                 let bytes = bytes.clone();
                 std::thread::spawn(move || {
-                    let result = crate::viewer::save_bytes(&bytes, &name);
+                    let result = crate::export::save_bytes(&bytes, &name, "Save file");
                     let _ = weak.upgrade_in_event_loop(move |ui| {
                         let g = ui.global::<ContentState>();
                         g.set_file_saving(false);
@@ -278,7 +278,7 @@ impl Desktop {
             && !prefs.desktop.notifications
             && let Some(n) = &self.notifications
         {
-            n.service.withdraw_notifications();
+            n.withdraw_notifications();
         }
         self.background.preferences(ui, &prefs.desktop);
         g.set_text_size(prefs.text_size);
@@ -287,7 +287,17 @@ impl Desktop {
         g.set_background_mode(p.background);
         g.set_autostart(p.autostart);
         g.set_notifications_enabled(p.notifications);
-        g.set_notification_preview(p.preview.into());
+        g.set_notification_preview(match p.preview {
+            line::store::NotificationPreview::NameAndText => {
+                line_desktop_ui::NotificationPreview::NameAndText
+            }
+            line::store::NotificationPreview::NameOnly => {
+                line_desktop_ui::NotificationPreview::NameOnly
+            }
+            line::store::NotificationPreview::NewMessage => {
+                line_desktop_ui::NotificationPreview::NewMessage
+            }
+        });
         g.set_notification_sound(p.sound);
         g.set_notification_mention_exception(p.mention_exception);
         g.set_notification_group_events(p.group_events);

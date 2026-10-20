@@ -4,23 +4,14 @@ use crate::*;
 pub(crate) fn install_window(
     d: &mut Desktop,
     runtime: Runtime,
-    warning: &str,
 ) -> Result<AppWindow, slint::PlatformError> {
     let ui = create_app_window()?;
     ui.window().set_size(slint::LogicalSize::new(980., 720.));
-    configure(&ui, d, runtime, warning, true);
+    configure(&ui, d, runtime, true);
     Ok(ui)
 }
-pub(crate) fn configure(
-    ui: &AppWindow,
-    d: &mut Desktop,
-    runtime: Runtime,
-    warning: &str,
-    native_events: bool,
-) {
+pub(crate) fn configure(ui: &AppWindow, d: &mut Desktop, runtime: Runtime, native_events: bool) {
     install_events(ui, runtime.clone(), native_events);
-    ui.global::<ShellState>()
-        .set_desktop_warning(warning.into());
     let assets = d.assets.clone();
     let sender = d.sender.clone();
     d.presenter

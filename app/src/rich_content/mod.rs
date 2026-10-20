@@ -71,8 +71,6 @@ fn text_runs(text: &str, rows: &mut Vec<RichRun>) {
 pub(crate) mod flow;
 pub(crate) mod links;
 pub(crate) mod preview;
-pub(crate) mod spans;
-
 pub(crate) fn install(ui: &AppWindow) {
     ui.global::<ContentState>().on_rich_source(|rows| {
         rows.model_tracker().track_row_count_changes();

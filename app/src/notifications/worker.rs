@@ -1,6 +1,6 @@
 //! Coalescing desktop bus worker. UI callers never perform D-Bus I/O.
 use std::{
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -9,6 +9,8 @@ use std::{
     time::Instant,
 };
 use zbus::zvariant::OwnedValue;
+
+pub(crate) const TEST_CHAT: &str = "notification-test";
 
 use super::dbus::{close, connect, listen, notification_available, notify};
 #[derive(Clone, Debug)]
@@ -22,8 +24,7 @@ pub(crate) struct Notice {
 #[derive(Clone, Debug)]
 pub(crate) enum Event {
     Availability(bool),
-    Delivered(String),
-    Closed(String),
+    TestDelivered,
     OpenChat { chat: String },
     MarkRead { chat: String, message: String },
 }
@@ -34,13 +35,13 @@ struct Pending {
     probe: bool,
 }
 type Handler = Box<dyn Fn(Event) + Send>;
+#[derive(Default)]
 pub(super) struct Shared {
     latest: AtomicU64,
     pending: Mutex<Pending>,
     available: AtomicBool,
     handler: Mutex<Option<Handler>>,
     pub(super) ids: Mutex<HashMap<u32, (String, String)>>,
-    pub(super) closed: Mutex<HashSet<u32>>,
     stop: AtomicBool,
 }
 impl Shared {
@@ -49,9 +50,17 @@ impl Shared {
             handler(event);
         }
     }
-    fn availability(&self, value: bool) {
+    fn report_availability(&self, value: bool) {
         self.available.store(value, Ordering::Relaxed);
         self.event(Event::Availability(value));
+    }
+    fn availability(&self, value: bool) {
+        let handler = self.handler.lock().unwrap();
+        if self.available.swap(value, Ordering::Relaxed) != value
+            && let Some(handler) = handler.as_ref()
+        {
+            handler(Event::Availability(value));
+        }
     }
 }
 pub(crate) struct Attention {
@@ -64,30 +73,14 @@ impl Attention {
     pub(crate) fn disconnected() -> Self {
         let (wake, _) = mpsc::sync_channel(1);
         Self {
-            shared: Arc::new(Shared {
-                latest: AtomicU64::new(0),
-                pending: Mutex::new(Pending::default()),
-                available: AtomicBool::new(false),
-                handler: Mutex::new(None),
-                ids: Mutex::new(HashMap::new()),
-                closed: Mutex::new(HashSet::new()),
-                stop: AtomicBool::new(false),
-            }),
+            shared: Arc::new(Shared::default()),
             wake,
             worker: None,
         }
     }
     pub(crate) fn start() -> Self {
         let (wake, receiver) = mpsc::sync_channel(1);
-        let shared = Arc::new(Shared {
-            latest: AtomicU64::new(0),
-            pending: Mutex::new(Pending::default()),
-            available: AtomicBool::new(false),
-            handler: Mutex::new(None),
-            ids: Mutex::new(HashMap::new()),
-            closed: Mutex::new(HashSet::new()),
-            stop: AtomicBool::new(false),
-        });
+        let shared = Arc::new(Shared::default());
         let state = shared.clone();
         let worker = std::thread::Builder::new()
             .name("desktop-attention".into())
@@ -103,15 +96,16 @@ impl Attention {
         let _ = self.wake.try_send(());
     }
     pub(crate) fn on_event(&self, handler: impl Fn(Event) + Send + 'static) {
-        *self.shared.handler.lock().unwrap() = Some(Box::new(handler));
-        self.shared.event(Event::Availability(self.available()));
+        let mut slot = self.shared.handler.lock().unwrap();
+        handler(Event::Availability(
+            self.shared.available.load(Ordering::Relaxed),
+        ));
+        *slot = Some(Box::new(handler));
     }
     pub(crate) fn set_unread_count(&self, count: u64) {
-        self.shared.latest.store(count, Ordering::Relaxed);
-        self.wake();
-    }
-    pub(crate) fn available(&self) -> bool {
-        self.shared.available.load(Ordering::Relaxed)
+        if self.shared.latest.swap(count, Ordering::Relaxed) != count {
+            self.wake();
+        }
     }
     pub(crate) fn probe(&self) {
         self.shared.pending.lock().unwrap().probe = true;
@@ -154,7 +148,6 @@ struct Worker {
     state: Arc<Shared>,
     connection: Option<zbus::blocking::Connection>,
     listeners: Vec<std::thread::JoinHandle<()>>,
-    ids: HashMap<String, u32>,
     sounds: HashMap<String, u64>,
     started: Instant,
     last_badge: Option<u64>,
@@ -173,7 +166,6 @@ impl Worker {
             state,
             connection,
             listeners,
-            ids: HashMap::new(),
             sounds: HashMap::new(),
             started: Instant::now(),
             last_badge: None,
@@ -192,8 +184,6 @@ impl Worker {
             if self.state.stop.load(Ordering::Relaxed) {
                 break;
             }
-            let closed = std::mem::take(&mut *self.state.closed.lock().unwrap());
-            self.ids.retain(|_, id| !closed.contains(id));
             while receiver.try_recv().is_ok() {}
             self.process();
         }
@@ -205,18 +195,19 @@ impl Worker {
             self.connect();
         }
         let Some(connection) = self.connection.clone() else {
-            self.state.availability(false);
+            self.state.report_availability(false);
             return;
         };
         self.update_badge(&connection);
         if pending.probe {
-            self.state.availability(notification_available(&connection));
+            self.state
+                .report_availability(notification_available(&connection));
         }
         if pending.clear {
-            for (_, id) in self.ids.drain() {
+            let ids = std::mem::take(&mut *self.state.ids.lock().unwrap());
+            for id in ids.into_keys() {
                 close(&connection, id);
             }
-            self.state.ids.lock().unwrap().clear();
             self.sounds.clear();
         }
         self.apply_changes(&connection, pending.changes);
@@ -250,7 +241,8 @@ impl Worker {
                 break;
             }
             let Some(notice) = notice else {
-                if let Some(id) = self.ids.remove(&chat) {
+                let id = self.id_for(&chat);
+                if let Some(id) = id {
                     close(connection, id);
                     self.state.ids.lock().unwrap().remove(&id);
                 }
@@ -260,13 +252,12 @@ impl Worker {
             let now = self.started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
             let sound = notice.sound
                 && crate::notifications::policy::sound_due(self.sounds.get(&chat).copied(), now);
-            let previous = self.ids.get(&chat).copied().unwrap_or(0);
+            let previous = self.id_for(&chat).unwrap_or(0);
             match notify(connection, &notice, previous, sound) {
                 Ok(id) => {
                     if previous != id {
                         self.state.ids.lock().unwrap().remove(&previous);
                     }
-                    self.ids.insert(chat.clone(), id);
                     self.state
                         .ids
                         .lock()
@@ -276,25 +267,29 @@ impl Worker {
                         self.sounds.insert(chat.clone(), now);
                     }
                     self.state.availability(true);
-                    self.state.event(Event::Delivered(chat));
+                    if chat == TEST_CHAT {
+                        self.state.event(Event::TestDelivered);
+                    }
                 }
+                Err(_) if chat == TEST_CHAT => self.state.report_availability(false),
                 Err(_) => self.state.availability(false),
             }
         }
     }
-    fn shutdown(self) {
-        if let Some(connection) = self.connection {
-            let _ = connection.emit_signal(
-                None::<&str>,
-                crate::desktop_env::desktop_integration::OBJECT,
-                "com.canonical.Unity.LauncherEntry",
-                "Update",
-                &(
-                    crate::desktop_env::desktop_integration::APPLICATION_URI,
-                    badge_properties(0),
-                ),
-            );
-            for (_, id) in self.ids {
+    fn id_for(&self, chat: &str) -> Option<u32> {
+        self.state
+            .ids
+            .lock()
+            .unwrap()
+            .iter()
+            .find_map(|(id, (owner, _))| (owner == chat).then_some(*id))
+    }
+    fn shutdown(mut self) {
+        if let Some(connection) = self.connection.take() {
+            self.state.latest.store(0, Ordering::Relaxed);
+            self.update_badge(&connection);
+            let ids = std::mem::take(&mut *self.state.ids.lock().unwrap());
+            for id in ids.into_keys() {
                 close(&connection, id);
             }
             let _ = connection.close();
@@ -406,6 +401,54 @@ mod service_tests {
         panic!("expected notification event not delivered");
     }
     #[test]
+    fn unchanged_unread_count_does_not_wake_desktop_services() {
+        let (wake, receiver) = mpsc::sync_channel(1);
+        let attention = Attention {
+            shared: Arc::default(),
+            wake,
+            worker: None,
+        };
+        attention.set_unread_count(2);
+        receiver.try_recv().unwrap();
+        attention.set_unread_count(2);
+        assert!(matches!(
+            receiver.try_recv(),
+            Err(mpsc::TryRecvError::Empty)
+        ));
+        attention.set_unread_count(0);
+        receiver.try_recv().unwrap();
+    }
+    #[test]
+    #[ignore = "requires a private dbus-run-session"]
+    fn unavailable_service_reports_each_probe_and_test_outcome() {
+        assert_eq!(std::env::var("LINE_DESKTOP_TEST_BUS").as_deref(), Ok("1"));
+        let attention = Attention::start();
+        let (sender, events) = mpsc::channel();
+        attention.on_event(move |event| sender.send(event).unwrap());
+        assert!(matches!(
+            events.recv_timeout(Duration::from_secs(3)).unwrap(),
+            Event::Availability(false)
+        ));
+        for _ in 0..2 {
+            attention.probe();
+            assert!(matches!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                Event::Availability(false)
+            ));
+            attention.notify(Notice {
+                chat: TEST_CHAT.into(),
+                summary: "Test".into(),
+                body: String::new(),
+                sound: false,
+                last_message: String::new(),
+            });
+            assert!(matches!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                Event::Availability(false)
+            ));
+        }
+    }
+    #[test]
     #[ignore = "requires a private dbus-run-session"]
     fn synthetic_notification_service_contract() {
         assert_eq!(
@@ -472,28 +515,34 @@ mod service_tests {
         let second = wait_calls(&calls, 2)[1].clone();
         assert_eq!(second.replaces, first.id);
         assert!(!second.sound && second.suppressed);
-        server
-            .emit_signal(
-                None::<&str>,
-                "/org/freedesktop/Notifications",
-                "org.freedesktop.Notifications",
-                "ActionInvoked",
-                &(first.id, "default"),
-            )
-            .unwrap();
+        let invoke = |id, action: &str| {
+            server
+                .emit_signal(
+                    None::<&str>,
+                    "/org/freedesktop/Notifications",
+                    "org.freedesktop.Notifications",
+                    "ActionInvoked",
+                    &(id, action),
+                )
+                .unwrap();
+        };
+        invoke(first.id, "default");
         let opened = event(&events, |event| matches!(event, Event::OpenChat { .. }));
         assert!(matches!(opened, Event::OpenChat { chat } if chat == "synthetic-chat"));
-        server
-            .emit_signal(
-                None::<&str>,
-                "/org/freedesktop/Notifications",
-                "org.freedesktop.Notifications",
-                "ActionInvoked",
-                &(first.id, "mark-read"),
-            )
-            .unwrap();
+        invoke(first.id, "mark-read");
         assert!(
             matches!(event(&events,|event|matches!(event,Event::MarkRead{..})),Event::MarkRead{chat,message} if chat=="synthetic-chat"&&message=="42")
+        );
+        let mut sentinel = notice.clone();
+        sentinel.chat = TEST_CHAT.into();
+        attention.notify(sentinel);
+        let sentinel_id = wait_calls(&calls, 3)[2].id;
+        assert!(
+            matches!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                Event::TestDelivered
+            ),
+            "successful notifications repeated availability or delivered ordinary chat events"
         );
         server
             .emit_signal(
@@ -504,11 +553,16 @@ mod service_tests {
                 &(first.id, 2u32),
             )
             .unwrap();
-        event(&events, |event| matches!(event, Event::Closed(_)));
+        invoke(first.id, "default");
+        invoke(sentinel_id, "default");
+        assert!(
+            matches!(event(&events, |event| matches!(event, Event::OpenChat { .. })),
+            Event::OpenChat { chat } if chat == TEST_CHAT)
+        );
         let mut private = notice;
         private.body = String::new();
         attention.notify(private);
-        let third = wait_calls(&calls, 3)[2].clone();
+        let third = wait_calls(&calls, 4)[3].clone();
         assert_eq!(third.replaces, 0);
         assert!(third.body.is_empty());
         attention.withdraw("synthetic-chat");

@@ -18,6 +18,7 @@ mod viewer;
 use crate::ContentState as G;
 use crate::*;
 pub(crate) fn install(ui: &AppWindow, actions: Runtime) {
+    event_loop::set_runtime(actions.clone());
     shell::install(ui, &actions);
     friends::install(ui, &actions);
     auth::install(ui, &actions);

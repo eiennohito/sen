@@ -1,4 +1,4 @@
-use super::spans::url_break;
+use super::links::url_break;
 use crate::*;
 
 pub(crate) const METRIC_ENTRIES: usize = 4096;

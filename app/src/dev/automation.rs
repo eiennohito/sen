@@ -38,11 +38,10 @@ pub(super) fn install_reset(ui: &AppWindow, actions: &Runtime, session: &Rc<dev:
             d.viewer_asset = None;
             d.viewer_source = None;
             let size = old.window().size();
-            let warning = old.global::<ShellState>().get_desktop_warning();
             session.workers.replace(worker);
             session._store_directory.replace(Some(directory));
             let ui = session
-                .install_window(d, runtime.clone(), Some(&fresh), &warning)
+                .install_window(d, runtime.clone(), Some(&fresh))
                 .expect("recreate demo window");
             ui.window().set_size(size);
             ui.global::<Palette>()
@@ -100,7 +99,7 @@ pub(crate) fn inject_attachments(ui: &AppWindow, actions: &Runtime) {
                 {
                     let paths: Vec<std::path::PathBuf> =
                         serde_json::from_str(&paths).unwrap_or_default();
-                    crate::callbacks::attachments::begin(&ui, d, &d.attachments, move || Ok(paths));
+                    crate::callbacks::attachments::begin(&ui, d, move || Ok(paths));
                 }
             });
         });

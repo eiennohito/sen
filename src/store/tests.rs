@@ -837,3 +837,32 @@ fn room_identity_is_case_sensitive() {
         assert!(!ChatId(id.into()).is_room());
     }
 }
+
+#[test]
+fn integer_preview_preferences_load_without_losing_saved_fields() {
+    let mut store = Store::open_in_memory().unwrap();
+    for (value, preview) in [
+        (0, NotificationPreview::NameAndText),
+        (1, NotificationPreview::NameOnly),
+        (2, NotificationPreview::NewMessage),
+    ] {
+        let json = format!(
+            r#"{{"text_size":18,"enter_sends":true,"desktop":{{"background":true,"autostart":true,"notifications":true,"preview":{value},"sound":true,"mention_exception":true,"group_events":true}},"last_chat":"alice"}}"#
+        );
+        store
+            .conn
+            .execute("INSERT OR REPLACE INTO preferences VALUES(1,?1)", [&json])
+            .unwrap();
+        let prefs = store.prefs().unwrap();
+        assert_eq!(prefs.desktop.preview, preview);
+        store.set_prefs(&prefs).unwrap();
+        let saved: String = store
+            .conn
+            .query_row("SELECT value FROM preferences", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&saved).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&json).unwrap()
+        );
+    }
+}

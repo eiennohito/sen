@@ -1,17 +1,15 @@
 use std::path::PathBuf;
 
-pub(crate) fn path() -> Option<PathBuf> {
+fn path(fonts: &std::path::Path) -> Option<PathBuf> {
     #[cfg(any(debug_assertions, feature = "ui-debug"))]
     if let Some(path) = std::env::var_os("LINE_EMOJI_FONT") {
         return Some(path.into());
     }
-    line::locations::Locations::from_environment()
-        .ok()
-        .map(|locations| locations.fonts().join("NotoColorEmoji.ttf"))
+    Some(fonts.join("NotoColorEmoji.ttf"))
 }
 
-pub(crate) fn load() {
-    let result = path()
+pub(crate) fn load(fonts: &std::path::Path) {
+    let result = path(fonts)
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
         .and_then(std::fs::read);
     match result {
