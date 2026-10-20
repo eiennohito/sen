@@ -1171,6 +1171,11 @@ def check_auth_recovery():
 
 def check_layers():
     demo_scenario("Protocol fixtures")
+    wait_for(lambda: any("Synthetic login notice\nNew login on a desktop" in item.get("accessibleLabel", "") for item in tree()), "Flex login notice did not appear")
+    flex = next(item for item in tree() if "Synthetic login notice\nNew login on a desktop" in item.get("accessibleLabel", ""))
+    assert "line://app/login" in flex["accessibleLabel"], "Flex lost its phone action text"
+    wait_element("Open link https://example.org/login", "Button")
+    assert not any(item.get("accessibleRole") == "Button" and "Open link line://" in item.get("accessibleLabel", "") for item in tree()), "phone action became a desktop link"
     # Public OA metadata assets use the same offline media paths as other photos.
     click("Open photo", "Button")
     wait_element("Photo in viewer", "Image")

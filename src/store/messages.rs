@@ -237,6 +237,10 @@ fn merge_server_row(
         row.sender_id = input.sender_id.clone();
         row.outgoing = input.outgoing;
         row.body_rev = Some(input.rev);
+    } else if matches!(row.body, Content::Unknown { content_type: 22 })
+        && matches!(input.body, Content::Flex { .. })
+    {
+        row.body = input.body.clone();
     }
     if row.reactions_rev < input.rev || (first_content && row.reactions_rev == 0) {
         row.reactions = input.reactions.clone();

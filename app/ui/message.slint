@@ -53,7 +53,7 @@ export component Message inherits TouchArea {
     callback history-key(KeyEvent, bool) -> EventResult;
     in property <MessageRow> message;
     in property <length> origin-y;
-    property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.undecryptable;
+    property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.undecryptable || root.message.kind == MessageKind.unknown;
     property <length> avatar-gutter: !root.message.outgoing && root.message.sender-name != "" ? Tokens.message-avatar + Tokens.message-gap : 0px;
     property <length> time-gutter: Tokens.time * 3.8; property <color> bubble-surface: Tokens.surface-2;
     property <length> reaction-x;

@@ -1054,3 +1054,28 @@ fn locked_old_store_is_retried_without_a_new_file() {
     assert!(Store::open_account(&root, "U123").is_ok());
     assert!(root.join("U123/store.sqlite3").exists());
 }
+
+#[test]
+fn stored_unknown_flex_loads_and_is_filled_by_sync() {
+    for revision in [0, 10] {
+        let mut s = store();
+        page(&mut s, &[1], true);
+        s.conn
+            .execute(
+                "UPDATE message SET body_json=?,body_rev=? WHERE server_id='1'",
+                params![r#"{"Unknown":{"content_type":22}}"#, revision],
+            )
+            .unwrap();
+        assert_eq!(all(&s)[0].body, Content::Unknown { content_type: 22 });
+        let mut refreshed = input(1);
+        refreshed.body = Content::Flex {
+            alt_text: "Login notice".into(),
+            lines: vec!["New login".into()],
+            links: vec![],
+        };
+        s.apply_page(&chat(), PageKind::Recent, &[refreshed.clone()], true)
+            .unwrap();
+        assert_eq!(all(&s)[0].body, refreshed.body);
+        assert_eq!(all(&s)[0].body_rev, Some(revision));
+    }
+}

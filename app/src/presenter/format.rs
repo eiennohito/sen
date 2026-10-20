@@ -187,6 +187,7 @@ pub(crate) fn kind_label(content: &Content) -> (MessageKind, String) {
     use MessageKind::*;
     match content {
         Content::Text { text, .. } => (Text, text.clone()),
+        Content::Flex { alt_text, .. } => (Flex, alt_text.clone()),
         Content::Photo { .. } => (Photo, "Photo".into()),
         Content::Video { .. } => (Video, "Video".into()),
         Content::Voice { .. } => (Voice, "Voice message".into()),
@@ -215,6 +216,13 @@ pub(crate) fn kind_label(content: &Content) -> (MessageKind, String) {
 pub(crate) fn message_text(content: &Content) -> (MessageKind, String) {
     let (kind, mut body) = kind_label(content);
     match content {
+        Content::Flex { lines, .. } if !lines.is_empty() => body = lines.join("\n"),
+        Content::System { .. } if !sen::system_events::displayable(content) => {
+            return (
+                MessageKind::Unknown,
+                "This message type isn't supported yet".into(),
+            );
+        }
         Content::Photo {
             album_count,
             caption,
@@ -337,10 +345,30 @@ pub(crate) fn message_row(
             duration.map(crate::presenter::format::duration)
         }
         Content::File { size, .. } => size.map(crate::presenter::format::file_size),
+        Content::Flex { lines, .. } if lines.is_empty() => Some("Open on your phone".into()),
         _ => None,
     }
     .unwrap_or_default();
+    let (alt_text, links) = if let Content::Flex {
+        alt_text, links, ..
+    } = &m.body
+    {
+        (
+            alt_text.clone(),
+            links
+                .iter()
+                .map(|url| LinkRow {
+                    label: url.as_str().into(),
+                    url: url.as_str().into(),
+                })
+                .collect(),
+        )
+    } else {
+        (String::new(), Vec::new())
+    };
     MessageRow {
+        alt_text: alt_text.into(),
+        links: ModelRc::new(VecModel::from(links)),
         rich_fallback: kind == MessageKind::Text && !emoji.is_empty() && rich_runs.row_count() == 0,
         rich_runs,
         reply_id: m

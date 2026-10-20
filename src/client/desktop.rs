@@ -1,5 +1,6 @@
 //! Account API shared by the desktop worker and read-only diagnostics.
 pub mod assets;
+pub mod flex;
 #[cfg(test)]
 mod members_tests;
 pub mod read;
@@ -650,6 +651,7 @@ impl Client {
                     lat: data["location"]["latitude"].as_f64().unwrap_or_default(),
                     lon: data["location"]["longitude"].as_f64().unwrap_or_default(),
                 },
+                22 => flex::parse(&data),
                 18 => Content::System {
                     kind: details.system_key,
                     params: details.system_args,
