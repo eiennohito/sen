@@ -56,6 +56,7 @@ impl Desktop {
         );
 
         self.presenter.present(ui, &self.state, self.category);
+        self.refresh_photo_navigation(ui);
         if let Some(notifications) = &self.notifications {
             notifications
                 .set_unread_count(ui.global::<ShellState>().get_unread_conversations() as u64);
