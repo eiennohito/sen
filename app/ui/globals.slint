@@ -242,6 +242,8 @@ export global ViewerState {
     in-out property <string> viewer-status;
     in-out property <string> viewer-error;
     in-out property <bool> viewer-loading;
+    in-out property <bool> viewer-retryable;
+    callback retry-original();
     in-out property <string> viewer-key;
     in-out property <bool> viewer-has-previous;
     in-out property <bool> viewer-has-next;
@@ -265,6 +267,7 @@ export global SettingsState {
     out property <int> text-size-index: self.text-size <= self.text-sizes[0] ? 0 : self.text-size <= self.text-sizes[1] ? 1 : self.text-size <= self.text-sizes[2] ? 2 : 3;
     in-out property <bool> enter-sends: false;
     in-out property <bool> background-mode;
+    in-out property <string> background-status;
     in-out property <bool> autostart;
     in-out property <string> autostart-status;
     in-out property <bool> notifications-paused;

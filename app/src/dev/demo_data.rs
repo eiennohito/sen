@@ -610,6 +610,10 @@ pub fn photos(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
             row
         })
         .collect();
+    fake.set_asset_failure(
+        &rows[0].body.image().unwrap().original().unwrap(),
+        sen::client::desktop::assets::Failure::Network,
+    );
     rows.insert(1, text);
     rows
 }

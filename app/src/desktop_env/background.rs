@@ -22,6 +22,7 @@ impl Background {
             self.events = None;
             self.available = false;
         }
+        self.status(ui);
         if prefs.autostart != self.autostart_value {
             let result = desktop_env::autostart::directory().and_then(|directory| {
                 let executable = std::env::current_exe()
@@ -33,11 +34,24 @@ impl Background {
             self.autostart_value = prefs.autostart;
         }
     }
+    fn status(&self, ui: &AppWindow) {
+        ui.global::<SettingsState>().set_background_status(
+            if self.events.is_some() && !self.available {
+                "No tray available: closing the window will quit"
+            } else {
+                ""
+            }
+            .into(),
+        );
+    }
     pub fn drain(&mut self, ui: &AppWindow) {
         if let Some(events) = &self.events {
             for event in events.try_iter() {
                 match event {
-                    desktop_env::tray::Event::Available(v) => self.available = v,
+                    desktop_env::tray::Event::Available(v) => {
+                        self.available = v;
+                        self.status(ui);
+                    }
                     desktop_env::tray::Event::Open => {
                         let _ = ui.show();
                     }
@@ -55,5 +69,47 @@ impl Background {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn background_notice_tracks_tray_host_events() {
+        std::thread::spawn(|| {
+            i_slint_backend_testing::init_no_event_loop();
+            let (ui, _, _worker) =
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
+            let (tx, rx) = std::sync::mpsc::channel();
+            let mut background = Background {
+                events: Some(rx),
+                ..Default::default()
+            };
+            for available in [false, true, false] {
+                tx.send(desktop_env::tray::Event::Available(available))
+                    .unwrap();
+                background.drain(&ui);
+                assert_eq!(background.available, available);
+                assert_eq!(
+                    ui.global::<SettingsState>()
+                        .get_background_status()
+                        .as_str(),
+                    if available {
+                        ""
+                    } else {
+                        "No tray available: closing the window will quit"
+                    }
+                );
+            }
+            background.preferences(&ui, &DesktopPrefs::default());
+            assert!(
+                ui.global::<SettingsState>()
+                    .get_background_status()
+                    .is_empty()
+            );
+        })
+        .join()
+        .unwrap();
     }
 }

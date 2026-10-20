@@ -240,6 +240,13 @@ impl Desktop {
                     viewer.set_viewer_loading(false);
                     viewer.set_viewer_error(text::image_text(*failure).into());
                     viewer.set_viewer_status("Original unavailable".into());
+                    viewer.set_viewer_retryable(
+                        self.viewer_original(ui).is_some()
+                            && !matches!(
+                                failure,
+                                sen::client::desktop::assets::Failure::Http(404 | 410)
+                            ),
+                    );
                 }
             }
             Delta::File { name, bytes } => {

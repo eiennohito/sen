@@ -3,6 +3,8 @@ impl crate::Desktop {
     pub(crate) fn show_original(&self, ui: &AppWindow, path: &std::path::Path) {
         let viewer = ui.global::<ViewerState>();
         viewer.set_viewer_loading(false);
+        viewer.set_viewer_error("".into());
+        viewer.set_viewer_retryable(false);
         match slint::Image::load_from_path(path) {
             Ok(image) => {
                 let size = image.size();
@@ -13,6 +15,7 @@ impl crate::Desktop {
             }
             Err(_) => {
                 viewer.set_viewer_error("Could not load original".into());
+                viewer.set_viewer_retryable(self.viewer_original(ui).is_some());
                 viewer.set_viewer_status("Original unavailable".into());
             }
         }
@@ -30,6 +33,7 @@ impl crate::Desktop {
             .and_then(|a| a.original());
         ui.global::<ViewerState>()
             .set_viewer_key(format!("profile:{id}").into());
+        ui.global::<ViewerState>().set_viewer_retryable(false);
         ui.invoke_reset_viewer();
         ui.global::<ViewerState>()
             .set_viewer_image(slint::Image::default());
@@ -48,10 +52,51 @@ impl crate::Desktop {
         self.viewer_source = None;
         self.viewer_asset = asset.as_ref().map(|a| a.key());
         if let Some(asset) = asset {
-            self.sender.send(Intent::Original(asset));
+            self.sender.send(Intent::Original {
+                asset,
+                retry: false,
+            });
         }
         self.state.panel = Panel::Viewer;
         self.render(ui);
+    }
+    pub(crate) fn viewer_original(
+        &self,
+        ui: &AppWindow,
+    ) -> Option<sen::client::desktop::assets::Asset> {
+        let key = self.viewer_asset.as_ref()?;
+        if ui
+            .global::<ViewerState>()
+            .get_viewer_key()
+            .starts_with("profile:")
+        {
+            crate::presenter::detail::profile_avatar(
+                &self.state,
+                ui.global::<DetailState>().get_profile_id().as_str(),
+            )
+            .and_then(|a| a.original())
+            .filter(|a| a.key() == *key)
+        } else {
+            self.state
+                .rows()
+                .iter()
+                .filter_map(|m| m.body.image()?.original())
+                .find(|a| a.key() == *key)
+        }
+    }
+    pub(crate) fn retry_original(&mut self, ui: &AppWindow) {
+        let viewer = ui.global::<ViewerState>();
+        if !viewer.get_viewer_open() || !viewer.get_viewer_retryable() {
+            return;
+        }
+        let asset = self.viewer_original(ui);
+        viewer.set_viewer_retryable(false);
+        if let Some(asset) = asset {
+            viewer.set_viewer_error("".into());
+            viewer.set_viewer_loading(true);
+            viewer.set_viewer_status("Loading original…".into());
+            self.sender.send(Intent::Original { asset, retry: true });
+        }
     }
     pub(crate) fn photos(&self) -> Vec<String> {
         Self::photo_keys(&self.state.rows())
@@ -76,6 +121,7 @@ impl crate::Desktop {
                 .set_viewer_has_previous(index.is_some_and(|i| i > 0));
             ui.global::<ViewerState>()
                 .set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
+            ui.global::<ViewerState>().set_viewer_retryable(false);
             self.viewer_name = asset.display_name().to_owned();
             self.viewer_source = None;
             self.viewer_asset = Some(asset.key());
@@ -89,14 +135,99 @@ impl crate::Desktop {
             if !ui.global::<ViewerState>().get_viewer_open() {
                 ui.invoke_show_viewer(key.into());
             }
-            self.sender.send(Intent::Original(asset));
+            self.sender.send(Intent::Original {
+                asset,
+                retry: false,
+            });
         }
     }
 }
 
-#[cfg(all(test, feature = "demo"))]
+#[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn viewer_retry_returns_to_the_same_original_and_preserves_outside_focus() {
+        std::thread::spawn(|| {
+            use sen::backend::{FakeBackend, FakeRpc};
+            use sen::client::desktop::assets::Failure;
+            i_slint_backend_testing::init_no_event_loop();
+            let fake = FakeBackend::canned();
+            let asset = sen::client::desktop::assets::Asset::avatar("/retry-flow").unwrap();
+            let original = asset.original().unwrap();
+            let key = original.key();
+            fake.set_asset_failure(&original, Failure::Network);
+            let (ui, runtime, worker) = crate::tests::test_window(fake.clone(), |d, worker, _| {
+                while d.state.connection != Connection::Online {
+                    d.state.apply(
+                        worker.deltas.recv_timeout(std::time::Duration::from_secs(5)).unwrap(),
+                    );
+                }
+                let mut row = crate::tests::message("");
+                row.body = Content::Photo {
+                    asset: Some(asset.clone()), size: None, album_count: None, caption: None,
+                };
+                d.state.messages.insert(row.key, row);
+            });
+            ui.show().unwrap();
+            ui.global::<ViewerState>().invoke_open_photo(asset.key().into());
+            let receive = || loop {
+                let delta = worker.deltas.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+                let done = matches!(&delta, Delta::Original { key: k, .. } | Delta::MediaFailed { key: k, .. } if k == &key);
+                runtime.update(|d| { d.apply(&ui, delta); });
+                if done { break; }
+            };
+            receive();
+            slint::platform::update_timers_and_animations();
+            let viewer = ui.global::<ViewerState>();
+            assert!(!viewer.get_viewer_loading());
+            assert!(viewer.get_viewer_retryable());
+            let retry_visible = || {
+                i_slint_backend_testing::ElementHandle::find_by_accessible_label(&ui, "Retry")
+                    .next().is_some()
+            };
+            assert!(retry_visible());
+            assert_eq!(crate::tests::focus_label(&ui), "Retry");
+            crate::tests::chord(&ui, slint::platform::Key::Shift, slint::platform::Key::Tab.into());
+            assert_ne!(crate::tests::focus_label(&ui), "Retry");
+            crate::tests::press(&ui, slint::platform::Key::Tab);
+            assert_eq!(crate::tests::focus_label(&ui), "Retry");
+            crate::tests::press(&ui, slint::platform::Key::Return);
+            assert!(viewer.get_viewer_loading());
+            assert!(viewer.get_viewer_error().is_empty());
+            viewer.invoke_retry_original(); // A second activation while loading is ignored.
+            receive();
+            assert!(viewer.get_viewer_error().is_empty());
+            assert!(!viewer.get_viewer_loading());
+            assert!(viewer.get_viewer_image().size().width > 0);
+            runtime.update(|d| assert!(d.viewer_source.is_some()));
+            assert_eq!(
+                fake.calls().iter().filter(|call| **call == FakeRpc::Asset(key.clone())).count(),
+                2,
+            );
+            for failure in [Failure::Http(404), Failure::Http(410), Failure::Decode, Failure::Http(500)] {
+                runtime.update(|d| { d.apply(&ui, Delta::MediaFailed { key: key.clone(), failure }); });
+                slint::platform::update_timers_and_animations();
+                assert_eq!(retry_visible(), !matches!(failure, Failure::Http(404 | 410)));
+            }
+            viewer.set_viewer_retryable(false);
+            ui.global::<ShellState>().set_panel(PanelState::None);
+            slint::platform::update_timers_and_animations();
+            ui.invoke_focus_search();
+            assert_eq!(crate::tests::focus_label(&ui), "Find a conversation");
+            let before = crate::tests::focus_item(&ui);
+            runtime.update(|d| { d.apply(&ui, Delta::MediaFailed { key, failure: Failure::Network }); });
+            slint::platform::update_timers_and_animations();
+            assert_eq!(crate::tests::focus_item(&ui), before);
+            runtime.update(|d| {
+                d.state.messages.clear();
+                d.apply(&ui, Delta::MediaFailed {
+                    key: d.viewer_asset.clone().unwrap(), failure: Failure::Network,
+                });
+            });
+            assert!(!viewer.get_viewer_retryable());
+        }).join().unwrap();
+    }
     #[test]
     fn viewer_original_failures_end_loading_and_profiles_wait_for_the_uncropped_image() {
         std::thread::spawn(|| {
@@ -153,6 +284,7 @@ mod tests {
                     ui.global::<ViewerState>().get_viewer_error(),
                     "Could not load original"
                 );
+                assert!(ui.global::<ViewerState>().get_viewer_retryable());
                 assert_eq!(
                     ui.global::<ViewerState>().get_viewer_status(),
                     "Original unavailable"

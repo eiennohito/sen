@@ -6,6 +6,7 @@ use std::{sync::Mutex, time::Duration};
 pub enum FakeRpc {
     // Asset worker initialization is independent of RPC and download failures.
     StartAssets,
+    Asset(String),
     Send(ChatId),
     Friends,
     SignIn,
@@ -669,7 +670,17 @@ impl Backend for FakeBackend {
                 }
             }),
             stop,
-            request: Arc::new(move |asset, purpose| {
+            request: Arc::new(move |asset, purpose, retry| {
+                fake.state
+                    .lock()
+                    .unwrap()
+                    .calls
+                    .push(FakeRpc::Asset(asset.key()));
+                if retry {
+                    let mut state = fake.state.lock().unwrap();
+                    state.asset_failures.remove(&asset.key());
+                    state.failed_assets.remove(&asset.key());
+                }
                 let mut fake = fake.clone();
                 let output = output.clone();
                 workers.lock().unwrap().push(std::thread::spawn(move || {
