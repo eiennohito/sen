@@ -183,3 +183,14 @@ pub(crate) fn rendered() {
     #[cfg(feature = "ui-debug")]
     latency::RENDERS.set(latency::RENDERS.get() + 1);
 }
+
+fn image_mut(
+    content: &mut line::store::Content,
+) -> &mut Option<line::client::desktop::assets::Asset> {
+    use line::store::Content;
+    match content {
+        Content::Photo { asset, .. } | Content::Sticker { asset, .. } => asset,
+        Content::Video { preview, .. } => preview,
+        _ => panic!("content has no image"),
+    }
+}

@@ -31,7 +31,7 @@ impl Presenter {
         g.set_account_name(state.profile.display_name.as_str().into());
         g.set_connection(match state.connection {
             Connection::Local => ConnectionState::Local,
-            Connection::Connecting { .. } => ConnectionState::Connecting,
+            Connection::Connecting => ConnectionState::Connecting,
             Connection::Online => ConnectionState::Online,
             Connection::Offline => ConnectionState::Offline,
             Connection::SignedOut { .. } => ConnectionState::SignedOut,

@@ -618,7 +618,7 @@ fn empty_close_waits_three_seconds_without_resync_and_delivers_next_stream() {
     server.join().unwrap();
     assert_eq!(waits, [Duration::from_secs(3)]);
     assert!(
-        matches!(events.as_slice(), [Event::State(SyncState::Connected), Event::State(SyncState::Reconnecting { attempt: 0 }), Event::State(SyncState::Connected), Event::State(SyncState::Connected), Event::Operation(value)] if value.data["revision"] == 13)
+        matches!(events.as_slice(), [Event::State(SyncState::Connected), Event::State(SyncState::Reconnecting), Event::State(SyncState::Connected), Event::State(SyncState::Connected), Event::Operation(value)] if value.data["revision"] == 13)
     );
 }
 
@@ -661,7 +661,7 @@ fn repeated_empty_closes_back_off_to_cap_and_events_reset_delay() {
                 Event::State(SyncState::Connected) => {
                     opens_after_waits.push(waits.borrow().len());
                 }
-                Event::State(SyncState::Reconnecting { .. }) => {}
+                Event::State(SyncState::Reconnecting) => {}
                 _ => panic!("unexpected event: {event:?}"),
             }
             true

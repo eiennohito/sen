@@ -33,7 +33,6 @@ pub(crate) fn rejection(reason: &Refusal) -> String {
         Refusal::AppClosed => "app closed before sending",
         Refusal::Internal => "internal error",
         Refusal::FileMissing => "File missing",
-        Refusal::NotAccepted => "Message was not accepted",
     }
     .into()
 }
@@ -109,7 +108,6 @@ pub fn sign_in_failure(reason: &line::client::error::SignInFailure) -> String {
         SessionKeyMissing => "Unlock your keyring and try again. This saved sign-in needs its original keyring item; restore it if missing.".into(),
         SessionIo => "Can't read or write your saved sign-in file. Check file permissions and storage, then try again.".into(),
         Expired => "Sign-in expired. Sign in again.".into(),
-        SessionIdentity => "The saved sign-in belongs to a different account. Sign in again.".into(),
         Internal => "Sign-in stopped because of an internal error. See the log and try again.".into(),
     }
 }

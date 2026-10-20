@@ -18,7 +18,6 @@ CREATE TABLE chat(
     server_unread INTEGER NOT NULL DEFAULT 0,
     last_read_server_id TEXT,
     unread_stale INTEGER NOT NULL DEFAULT 0,
-    list_rank INTEGER NOT NULL DEFAULT 0,
     removed INTEGER NOT NULL DEFAULT 0,
     read_acked_server_id TEXT,
     receipt_server_id TEXT

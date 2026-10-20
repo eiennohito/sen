@@ -11,7 +11,7 @@ use std::path::Path;
 use types::Result;
 pub use types::*;
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 
 /// Sole-writer account store. Every mutation commits atomically before returning deltas.
 pub struct Store {
@@ -171,7 +171,6 @@ impl Store {
                 });
             }
             messages::save(tx, &row)?;
-            changes.messages_upserted.insert(key);
             changes.chats_changed.insert(row.chat_id);
             Ok(())
         })?;
@@ -198,9 +197,6 @@ impl Store {
         self.changes
             .chats_removed
             .extend(changes.chats_removed.iter().cloned());
-        self.changes
-            .messages_upserted
-            .extend(changes.messages_upserted.iter().copied());
         self.changes
             .messages_removed
             .extend(changes.messages_removed.iter().copied());

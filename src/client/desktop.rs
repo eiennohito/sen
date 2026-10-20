@@ -22,7 +22,6 @@ pub struct Chat {
     pub timestamp_ms: i64,
     pub avatar: Option<Asset>,
     pub unread: Option<u64>,
-    pub muted: Option<bool>,
     pub last_read_message: Option<String>,
     pub last_message_id: Option<String>,
     pub member_count: Option<usize>,
@@ -68,7 +67,6 @@ pub fn set_cancellation_token(cancel: std::sync::Arc<crate::client::http::Cancel
 
 pub struct Client {
     api: Api,
-    cache_root: PathBuf,
     my_mid: String,
     obs_access: Option<String>,
     sequence: u64,
@@ -207,7 +205,6 @@ impl Client {
         let sequence = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         Ok(Self {
             api,
-            cache_root: cache_root.into(),
             my_mid: my_mid.clone(),
             obs_access: None,
             sequence,
@@ -229,18 +226,11 @@ impl Client {
     pub fn online_profile(&mut self) -> Result<Value> {
         let profile = self.api.profile()?;
         let mid = required(&profile, "mid")?;
-        if !self.my_mid.is_empty() && mid != self.my_mid {
+        if mid != self.my_mid {
             return Err(crate::client::error::Failure::SignedOut(
                 crate::client::error::SignOutReason::IdentityChanged,
             )
             .into());
-        }
-        if self.my_mid.is_empty() {
-            self.my_mid = mid.into();
-            self.cache = Arc::new(std::sync::Mutex::new(ImageCache::new(
-                &self.cache_root,
-                mid,
-            )?));
         }
         *self.api.stream_access.write().unwrap() = access(&self.api.state)?.to_owned();
         self.api.state.profile = serde_json::from_value(profile.clone())?;
@@ -382,7 +372,6 @@ impl Client {
                 unread: entry["unreadCount"]
                     .as_u64()
                     .or_else(|| entry["unreadCount"].as_str()?.parse().ok()),
-                muted: None,
                 last_read_message: entry["lastSeenMessageId"].as_str().map(str::to_owned),
                 last_message_id: last.and_then(|m| m["id"].as_str().map(str::to_owned)),
                 id,
@@ -515,10 +504,6 @@ impl Client {
     pub fn members(&mut self, chat: &str) -> Result<Vec<Member>> {
         let my_mid = self.my_mid.clone();
         load_members(chat, &my_mid, |method, args| self.talk(method, args))
-    }
-
-    pub fn messages(&mut self, chat_mid: &str) -> Result<Vec<Message>> {
-        self.refresh_messages(chat_mid)
     }
 
     pub fn around(&mut self, chat: &str, id: &str) -> Result<(Vec<Message>, bool)> {
@@ -679,15 +664,6 @@ impl Client {
         })
     }
 
-    pub fn image(&mut self, asset: &Asset) -> Result<Arc<assets::Pixels>> {
-        if let Some(pixels) = ImageCache::read_shared(&self.cache, asset)? {
-            return Ok(pixels);
-        }
-        self.authorize_media(asset)?;
-        let data = asset.fetch(&self.api.http, self.obs_access.as_deref())?;
-        ImageCache::store_shared(&self.cache, asset, &data)
-    }
-
     fn authorize_media(&mut self, asset: &Asset) -> Result<()> {
         if asset.local_attachment().is_none() && asset.private && self.obs_access.is_none() {
             let result = self.talk("acquireEncryptedAccessToken", json!([2]))?;
@@ -732,38 +708,6 @@ impl Client {
             authorize,
             publish,
         )
-    }
-
-    pub fn file_asset(&mut self, chat: &str, message: &str) -> Result<(String, Asset)> {
-        let item = self
-            .messages(chat)?
-            .into_iter()
-            .find(|m| m.id == message)
-            .ok_or(assets::Failure::Http(404))?;
-        ensure!(
-            !matches!(item.content, Content::Withdrawn),
-            assets::Failure::Http(404)
-        );
-        ensure!(
-            match &item.content {
-                Content::File { size, .. } => *size,
-                _ => None,
-            }
-            .is_none_or(|size| size <= 16 * 1024 * 1024),
-            assets::Failure::TooLarge
-        );
-        let asset = item
-            .content
-            .attachment()
-            .cloned()
-            .ok_or(assets::Failure::UnsupportedHost)?;
-        Ok((
-            match item.content {
-                Content::File { name, .. } => name.unwrap_or_else(|| "attachment".into()),
-                _ => "attachment".into(),
-            },
-            asset,
-        ))
     }
 
     /// Source-backed shapes; live unverified.

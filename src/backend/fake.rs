@@ -464,7 +464,7 @@ impl FakeBackend {
         self.activity.record();
         Ok(Some(match purpose {
             Purpose::File { .. } => Payload::File(Arc::new(b"Synthetic attachment\n".to_vec())),
-            Purpose::Original { .. } => Payload::Image(Arc::new(Pixels {
+            Purpose::Original => Payload::Image(Arc::new(Pixels {
                 width: 1200,
                 height: 800,
                 rgba: [80, 180, 130, 255].repeat(1200 * 800),
@@ -697,7 +697,7 @@ impl Backend for FakeBackend {
             json!({"chatMid":chat.0,"chatName":self.state.lock().unwrap().config.chats.iter().find(|c| c.id == *chat).map(|c| &c.title),"notificationDisabled":false,"extra":{"groupExtra":{}}}),
         )
     }
-    fn profile_action(&mut self, action: &ProfileAction, _full: Value, _seq: u32) -> Result<()> {
+    fn profile_action(&mut self, action: &ProfileAction, _seq: u32) -> Result<()> {
         self.rpc(FakeRpc::Action(action.clone()))?;
         match action {
             ProfileAction::Rename { mid, name } | ProfileAction::AddFriend { mid, chat: name } => {
@@ -850,7 +850,7 @@ impl Backend for FakeBackend {
             fake.set_network_activity(activity);
             item.read().map_err(|_| {
                 Failure::Refused(if item.path.is_file() {
-                    Refusal::NotAccepted
+                    Refusal::Internal
                 } else {
                     Refusal::FileMissing
                 })

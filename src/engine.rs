@@ -19,7 +19,7 @@ use std::{
 pub enum Connection {
     Fatal,
     Local,
-    Connecting { attempt: u32 },
+    Connecting,
     Online,
     Offline,
     SignedOut { reason: SignOutReason },
@@ -683,7 +683,6 @@ impl Worker {
                                 retry_after: Default::default(),
                                 retry_attempts: Default::default(),
                                 timing,
-                                attempt: 0,
                             };
                             e.run()?;
                         }
@@ -730,7 +729,6 @@ enum ReactionFlight {
 }
 struct Engine {
     timing: Timing,
-    attempt: u32,
     retry_attempts: std::collections::BTreeMap<Refresh, u32>,
     retry_after: std::collections::BTreeMap<Refresh, Instant>,
     continuous: bool,
@@ -1284,7 +1282,6 @@ impl Engine {
                         if !stream_stop.is_cancelled() {
                             if result.is_err() {
                                 deliver(StreamEvent::Retry {
-                                    attempt: 1,
                                     error: Failure::Bug("stream worker panicked".into()),
                                 });
                             }
@@ -1313,11 +1310,8 @@ impl Engine {
         if self.refresh_failures.remove(&Refresh::Session) {
             self.emit(Delta::RefreshRecovered(Refresh::Session));
         }
-        self.attempt = self.attempt.saturating_add(1);
         if self.connection == Connection::Local {
-            self.connection(Connection::Connecting {
-                attempt: self.attempt,
-            });
+            self.connection(Connection::Connecting);
         }
 
         self.refresh_rpc(
@@ -1593,7 +1587,7 @@ impl Engine {
                                 if !paired && engine.known() { return Ok(()); }
                                 engine.account = AccountSession::Ready;
                                 engine.health.success();
-                                engine.connection(Connection::Connecting { attempt: engine.attempt.saturating_add(1) });
+                                engine.connection(Connection::Connecting);
                                 engine.generation.fetch_add(1, Ordering::SeqCst);
                                 if !paired {
                                     return engine.online();
@@ -1675,7 +1669,7 @@ impl Engine {
                 let seq = self.next_seq()?;
                 let net_action = action.clone();
                 self.rpc(
-                    move |b| b.profile_action(&net_action, Value::Null, seq),
+                    move |b| b.profile_action(&net_action, seq),
                     move |engine, result, _| {
                         let error = result.err().map(|_| match action {
                             ProfileAction::Rename { .. } => ProfileFailure::Rename,
@@ -1750,13 +1744,12 @@ impl Engine {
             Intent::Asset(asset) => {
                 self.asset(asset, crate::client::desktop::assets::Purpose::Thumbnail)?
             }
-            Intent::Original(asset) => self.asset(
-                asset,
-                crate::client::desktop::assets::Purpose::Original { request: 0 },
-            )?,
+            Intent::Original(asset) => {
+                self.asset(asset, crate::client::desktop::assets::Purpose::Original)?
+            }
             Intent::File { asset, name } => self.asset(
                 asset,
-                crate::client::desktop::assets::Purpose::File { request: 0, name },
+                crate::client::desktop::assets::Purpose::File { name },
             )?,
             Intent::RetryAsset(key) => {
                 if let Some(media) = &self.media {
@@ -2685,7 +2678,7 @@ impl Engine {
                     return Ok(());
                 }
                 StreamEvent::Connection(_)
-                | StreamEvent::Connecting(_)
+                | StreamEvent::Connecting
                 | StreamEvent::Retry { .. }
                 | StreamEvent::Exited
                 | StreamEvent::Raw(_) => return Ok(()),
@@ -2868,22 +2861,20 @@ impl Engine {
                     },
                 );
             }
-            StreamEvent::Retry { attempt, error } => {
+            StreamEvent::Retry { error } => {
                 self.network_outcome::<()>(&Err(error.clone()));
-                self.attempt = self.attempt.max(attempt);
                 if !error.retry_read() && matches!(error, Failure::Refused(_) | Failure::Bug(_)) {
                     self.rpc_failed(Refresh::Stream, error.clone());
                 }
                 self.error(error);
             }
-            StreamEvent::Connecting(_) => {}
+            StreamEvent::Connecting => {}
             StreamEvent::Connection(Ok(())) => {
                 self.continuous = true;
                 self.retry_attempts.remove(&Refresh::Stream);
                 if self.refresh_failures.remove(&Refresh::Stream) {
                     self.emit(Delta::RefreshRecovered(Refresh::Stream));
                 }
-                self.attempt = 0;
                 self.network_success();
             }
             StreamEvent::Connection(Err(e)) => {

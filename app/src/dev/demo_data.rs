@@ -602,7 +602,7 @@ pub fn photos(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
                     ..Default::default()
                 },
             );
-            *row.body.image_mut() = Some(image_asset(
+            *super::image_mut(&mut row.body) = Some(image_asset(
                 fake,
                 if portrait {
                     "photo-portrait"
@@ -729,7 +729,7 @@ pub fn previews(fake: &FakeBackend) {
                     serde_json::to_value(line::client::desktop::assets::Failure::Http(404))
                         .unwrap();
             }
-            *row.body.image_mut() = Some(serde_json::from_value(asset).unwrap());
+            *super::image_mut(&mut row.body) = Some(serde_json::from_value(asset).unwrap());
         }
         chats.push(ChatInput {
             id: ChatId(chat.clone()),
@@ -778,7 +778,7 @@ pub fn sticker(fake: &FakeBackend, chat: &str) -> MessageInput {
     );
     let asset = image_asset(fake, "sticker", photo(true));
     fake.delay_asset(&asset, std::time::Duration::from_secs(1));
-    *row.body.image_mut() = Some(asset);
+    *super::image_mut(&mut row.body) = Some(asset);
     row
 }
 

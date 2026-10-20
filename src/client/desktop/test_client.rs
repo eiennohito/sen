@@ -54,7 +54,6 @@ pub(super) fn client(mut api: Api) -> (Client, PathBuf) {
         cache: Arc::new(std::sync::Mutex::new(
             ImageCache::new(&root, "uself").unwrap(),
         )),
-        cache_root: root.clone(),
     };
     (client, root)
 }

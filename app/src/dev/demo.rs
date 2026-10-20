@@ -283,7 +283,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             );
             let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
             asset["failure"] = serde_json::to_value(media_failure((kind - 20) as usize)).unwrap();
-            *row.body.image_mut() = Some(serde_json::from_value(asset).unwrap());
+            *super::image_mut(&mut row.body) = Some(serde_json::from_value(asset).unwrap());
             fake.set_page(chat.clone(), vec![row]);
             d.sender.send(Intent::Page {
                 chat,
@@ -386,7 +386,7 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
         );
         let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
         asset["failure"] = serde_json::to_value(media_failure(index)).unwrap();
-        *row.body.image_mut() = Some(serde_json::from_value(asset).unwrap());
+        *super::image_mut(&mut row.body) = Some(serde_json::from_value(asset).unwrap());
         fake.set_page(ChatId("alice".into()), vec![row]);
         return;
     }
@@ -439,7 +439,7 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
                 ..Default::default()
             },
         );
-        *row.body.image_mut() = Some(demo_data::image_asset(
+        *super::image_mut(&mut row.body) = Some(demo_data::image_asset(
             fake,
             "photo-landscape",
             demo_data::photo(false),

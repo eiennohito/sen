@@ -68,13 +68,8 @@ impl Backend for Blocked {
     fn full_chat(&mut self, chat: &ChatId) -> Result<serde_json::Value> {
         self.fake.full_chat(chat)
     }
-    fn profile_action(
-        &mut self,
-        action: &line::backend::ProfileAction,
-        full: serde_json::Value,
-        seq: u32,
-    ) -> Result<()> {
-        self.fake.profile_action(action, full, seq)
+    fn profile_action(&mut self, action: &line::backend::ProfileAction, seq: u32) -> Result<()> {
+        self.fake.profile_action(action, seq)
     }
 
     fn sign_in(&mut self, c: Arc<CancelToken>, d: PairDeliver) -> Result<()> {

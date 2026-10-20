@@ -125,13 +125,6 @@ impl Content {
             _ => None,
         }
     }
-    pub fn image_mut(&mut self) -> &mut Option<Asset> {
-        match self {
-            Self::Photo { asset, .. } | Self::Sticker { asset, .. } => asset,
-            Self::Video { preview, .. } => preview,
-            _ => panic!("content has no image"),
-        }
-    }
 }
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Reaction {
@@ -396,12 +389,10 @@ pub struct ChatInput {
     pub server_unread: u32,
     pub unread_stale: bool,
     pub last_read_server_id: Option<ServerId>,
-    pub list_rank: i64,
 }
-/// Committed delta identities; removed duplicate rows are never also upserted.
+/// Chats to republish and row identities removed by committed mutations.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Changes {
-    pub messages_upserted: BTreeSet<Key>,
     pub messages_removed: BTreeSet<Key>,
     pub chats_changed: BTreeSet<ChatId>,
     pub chats_removed: BTreeSet<ChatId>,
