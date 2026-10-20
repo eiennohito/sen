@@ -378,9 +378,9 @@ fn request_sequence_wraps_without_persisting_preferences() {
     app.on_engine(|engine| {
         let prefs = engine.store.prefs().unwrap();
         engine.seq = 0x7fff_fffe;
-        assert_eq!(engine.next_seq().unwrap(), 0x7fff_ffff);
-        assert_eq!(engine.next_seq().unwrap(), 0);
-        assert_eq!(engine.next_seq().unwrap(), 1);
+        assert_eq!(engine.next_seq(), 0x7fff_ffff);
+        assert_eq!(engine.next_seq(), 0);
+        assert_eq!(engine.next_seq(), 1);
         assert_eq!(engine.store.prefs().unwrap(), prefs);
         assert!(
             serde_json::to_value(prefs)

@@ -79,7 +79,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         let Ok(server_id) = ServerId::new(id.to_string()) else {
             return;
         };
-        let target = d.state.reply_target(server_id.as_str()).map(|m| m.key);
+        let target = d.state.reply_target(&server_id).map(|m| m.key);
         if let Some(key) = target {
             d.jump_to_message(&ui, key);
         } else if let Some(chat) = d.state.selected.clone() {

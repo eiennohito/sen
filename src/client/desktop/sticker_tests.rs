@@ -82,7 +82,7 @@ fn online_profile_keeps_region_from_get_profile() -> Result<()> {
                 assert_eq!(args, json!([0]));
                 (
                     200,
-                    json!({"message":"OK","data":{"mid":"uself","displayName":"Fixture","regionCode":"TW"}}),
+                    json!({"message":"OK","data":{"mid":"U00000000000000000000000000000001","displayName":"Fixture","regionCode":"TW"}}),
                 )
             }),
         ),
@@ -91,11 +91,11 @@ fn online_profile_keeps_region_from_get_profile() -> Result<()> {
             Box::new(|args| {
                 assert_eq!(
                     args,
-                    json!([{"targetUserMids":["ucontact"],"neededContactCalendarEvents":[]},2])
+                    json!([{"targetUserMids":["U00000000000000000000000000000009"],"neededContactCalendarEvents":[]},2])
                 );
                 (
                     200,
-                    json!({"message":"OK","data":{"contacts":{"ucontact":{"contact":{"displayName":"Contact"}}}}}),
+                    json!({"message":"OK","data":{"contacts":{"U00000000000000000000000000000009":{"contact":{"displayName":"Contact"}}}}}),
                 )
             }),
         ),
@@ -111,7 +111,11 @@ fn online_profile_keeps_region_from_get_profile() -> Result<()> {
     let saved = serde_json::to_value(&client.api.state)?;
     assert_eq!(saved["profile"]["regionCode"], "TW");
     assert_eq!(
-        client.contact("ucontact")?.unwrap().name.as_deref(),
+        client
+            .contact("U00000000000000000000000000000009")?
+            .unwrap()
+            .name
+            .as_deref(),
         Some("Contact")
     );
     server.join().unwrap();

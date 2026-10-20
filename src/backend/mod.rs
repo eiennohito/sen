@@ -56,7 +56,7 @@ pub enum StreamEvent {
     AssetRequests(AssetRequests),
     Asset(crate::client::desktop::assets::Completion),
     Authorize {
-        asset: crate::client::desktop::assets::Asset,
+        renew: bool,
         reply: async_channel::Sender<
             std::result::Result<Option<String>, crate::client::desktop::assets::Failure>,
         >,
@@ -91,10 +91,7 @@ pub trait Backend: Send {
     /// Publish AssetRequests before returning. Its handles enqueue independently
     /// of RPCs, and asset completions use this delivery channel directly.
     fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) -> Result<()>;
-    fn authorize(
-        &mut self,
-        asset: &crate::client::desktop::assets::Asset,
-    ) -> Result<Option<String>>;
+    fn authorize(&mut self, renew: bool) -> Result<Option<String>>;
     /// Cache-only access; must never authorize or download an asset.
     fn cached_media(
         &mut self,
@@ -166,6 +163,7 @@ pub struct LineBackend {
     cache: std::path::PathBuf,
     session_failure: Option<crate::client::error::SignInFailure>,
     fetchers: Option<Arc<crate::client::desktop::assets::Fetchers>>,
+    media_auth: Option<(Arc<CancelToken>, Deliver)>,
     client: SessionClient,
     state: std::path::PathBuf,
     wasm_override: Option<std::path::PathBuf>,
@@ -204,6 +202,7 @@ impl LineBackend {
         };
         Ok(Self {
             fetchers: None,
+            media_auth: None,
             cache: cache.into(),
             client: match client {
                 Some(client) => SessionClient::Open(Box::new(client)),
@@ -223,54 +222,13 @@ fn rpc(error: anyhow::Error) -> Failure {
     }
     failure
 }
-fn message_input(
-    chat: &ChatId,
-    m: crate::client::desktop::Message,
-    rev: i64,
-) -> Result<MessageInput> {
-    Ok(MessageInput {
-        server_id: decode_id(&m.id)?,
-        chat_id: chat.clone(),
-        created_ms: m.timestamp_ms,
-        delivered_ms: Some(m.delivered_time),
-        sender_id: m.sender_id.clone(),
-        outgoing: m.outgoing,
-
-        reply: m.reply.map(Box::new),
-        mentioned: m.mentioned,
-        skip_badge: m.skip_badge,
-        request_seq: m.request_seq,
-        reactions: m.reactions,
-        body: m.content,
-        rev,
-    })
-}
-fn chat_input(c: crate::client::desktop::Chat) -> Result<ChatInput> {
-    Ok(ChatInput {
-        id: ChatId(c.id),
-        is_group: c.group,
-        title: c.title,
-        avatar: c.avatar,
-        member_count: c.member_count.map(|n| n as u32),
-        muted: false,
-        left: false,
-        last_message_id: c.last_message_id.as_deref().map(decode_id).transpose()?,
-        last_message_ms: Some(c.timestamp_ms),
-        server_unread: c.unread.unwrap_or(0) as u32,
-        unread_stale: false,
-        last_read_server_id: c.last_read_message.as_deref().map(decode_id).transpose()?,
-    })
-}
 fn asset_authorization(
-    asset: &crate::client::desktop::assets::Asset,
+    renew: bool,
     cancel: &CancelToken,
     deliver: &Deliver,
 ) -> std::result::Result<Option<String>, crate::client::desktop::assets::Failure> {
     let (reply, rx) = async_channel::bounded(1);
-    if !deliver(StreamEvent::Authorize {
-        asset: asset.clone(),
-        reply,
-    }) {
+    if !deliver(StreamEvent::Authorize { renew, reply }) {
         return Err(crate::client::desktop::assets::Failure::Cancelled);
     }
     cancel
@@ -303,7 +261,6 @@ impl Backend for LineBackend {
         self.client()?
             .finish_attachment(&chat.0, uploaded, seq)
             .map_err(rpc)
-            .and_then(|m| message_input(chat, m, 0))
     }
 
     fn session(&self) -> Result<bool> {
@@ -380,13 +337,14 @@ impl Backend for LineBackend {
         self.client()?.members(&chat.0).map_err(rpc)
     }
     fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) -> Result<()> {
+        self.media_auth = Some((stop.clone(), deliver.clone()));
         let auth = deliver.clone();
         let client = self.client()?;
         let queue_stop = stop.clone();
         self.fetchers = Some(Arc::new(client.asset_fetchers(
             stop,
             Default::default(),
-            move |asset, cancel| asset_authorization(asset, cancel, &auth),
+            move |renew, cancel| asset_authorization(renew, cancel, &auth),
             {
                 let deliver = deliver.clone();
                 move |completion, _| {
@@ -407,11 +365,8 @@ impl Backend for LineBackend {
         }));
         Ok(())
     }
-    fn authorize(
-        &mut self,
-        asset: &crate::client::desktop::assets::Asset,
-    ) -> Result<Option<String>> {
-        self.client()?.media_token(asset).map_err(rpc)
+    fn authorize(&mut self, renew: bool) -> Result<Option<String>> {
+        self.client()?.media_token(renew).map(Some).map_err(rpc)
     }
     fn cached_media(
         &mut self,
@@ -461,34 +416,17 @@ impl Backend for LineBackend {
         serde_json::from_value(data).map_err(|_| Failure::Bug("decode".into()))
     }
     fn chats(&mut self, cursor: Option<String>) -> Result<ChatPage> {
-        let (rows, more, cursor) = self.client()?.chats(cursor.as_deref()).map_err(rpc)?;
-        let previews = rows
-            .iter()
-            .filter_map(|c| {
-                c.preview_message
-                    .clone()
-                    .and_then(|m| message_input(&ChatId(c.id.clone()), m, 0).ok())
-            })
-            .collect();
+        let page = self.client()?.chats(cursor.as_deref()).map_err(rpc)?;
         Ok(ChatPage {
-            chats: rows
-                .into_iter()
-                .filter_map(|c| chat_input(c).ok())
-                .collect(),
-            previews,
-            more,
-            cursor,
+            chats: page.chats,
+            previews: page.previews,
+            more: page.more,
+            cursor: page.cursor,
         })
     }
 
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>> {
-        Ok(self
-            .client()?
-            .chat_detail(&chat.0)
-            .map_err(rpc)?
-            .into_iter()
-            .filter_map(|c| chat_input(c).ok())
-            .collect())
+        self.client()?.chat_detail(&chat.0).map_err(rpc)
     }
     fn messages(&mut self, chat: &ChatId, kind: &PageKind) -> Result<Page> {
         const MESSAGE_PAGE_SIZE: usize = 50;
@@ -510,10 +448,7 @@ impl Backend for LineBackend {
         };
         Ok(Page {
             kind: kind.clone(),
-            rows: rows
-                .into_iter()
-                .filter_map(|m| message_input(chat, m, 0).ok())
-                .collect(),
+            rows,
             reaches_start,
         })
     }
@@ -526,9 +461,16 @@ impl Backend for LineBackend {
         if !item.path.is_file() {
             return Err(Failure::Refused(Refusal::FileMissing));
         }
+        let (stop, deliver) = self
+            .media_auth
+            .clone()
+            .ok_or(Failure::Bug("media authorization unavailable".into()))?;
         let upload = self
             .client()?
-            .prepare_attachment(&chat.0, item, seq)
+            .prepare_attachment(&chat.0, item, move || {
+                asset_authorization(true, &stop, &deliver)?
+                    .ok_or_else(|| anyhow::anyhow!("missing media token"))
+            })
             .map_err(rpc)?;
         Ok(Box::new(move |activity, progress| {
             let uploaded = upload(activity, progress).map_err(rpc)?;
@@ -547,7 +489,6 @@ impl Backend for LineBackend {
         self.client()?
             .send_text_with_request(&chat.0, text, seq, reply)
             .map_err(rpc)
-            .and_then(|m| message_input(chat, m, 0))
     }
     fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
         self.client()?.react(id.as_str(), kind, seq).map_err(rpc)
@@ -565,7 +506,6 @@ impl Backend for LineBackend {
         self.client()?
             .send_sticker(&chat.0, sticker, seq, reply)
             .map_err(rpc)
-            .and_then(|m| message_input(chat, m, 0))
     }
     fn create_chat(&mut self, name: &str, targets: &[String], seq: u32) -> Result<ChatInput> {
         self.client()?.create_chat(name, targets, seq).map_err(rpc)
@@ -618,10 +558,8 @@ impl Backend for LineBackend {
                 |e| {
                     deliver(match e {
                         Event::Operation(mut v) => {
-                            let rev = v.data["revision"]
-                                .as_i64()
-                                .or_else(|| v.data["revision"].as_str()?.parse().ok());
-                            v.data["replay"] = rev.is_some_and(|r| r <= replay_through).into();
+                            let rev: Option<i64> = crate::client::wire_number(&v.data["revision"]);
+                            v.replay = rev.is_some_and(|r| r <= replay_through);
                             StreamEvent::Raw(v)
                         }
                         Event::State(s) => match s {
@@ -651,27 +589,24 @@ impl Backend for LineBackend {
     fn decode(&mut self, operation: RawOperation) -> Result<LiveOp> {
         let kind = operation.kind;
         let raw = &operation.data;
-        let revision = raw["revision"]
-            .as_i64()
-            .or_else(|| raw["revision"].as_str()?.parse().ok())
-            .ok_or(Failure::Bug("decode".into()))?;
+        let revision =
+            crate::client::wire_number(&raw["revision"]).ok_or(Failure::Bug("decode".into()))?;
         let chat = || wire_string(raw, "param1").map(|s| ChatId(s.into()));
         let id = || decode_id(wire_string(raw, "param2")?);
         let op = match kind {
             OperationType::SendMessage
             | OperationType::ReceiveMessage
             | OperationType::SendContent => {
-                let (c, mut m) = self
-                    .client()?
-                    .operation(&operation)
-                    .map_err(rpc)?
-                    .ok_or(Failure::Bug("decode".into()))?;
-                m.request_seq = raw["reqSeq"]
-                    .as_u64()
-                    .or_else(|| raw["reqSeq"].as_str()?.parse().ok())
-                    .map(|n| n as u32)
-                    .or(m.request_seq);
-                Op::Message((message_input(&ChatId(c), m, revision)?).into())
+                let message = self.client()?.operation(&operation).map_err(rpc)?;
+                if let Some(mut m) = message {
+                    m.rev = revision;
+                    m.request_seq = crate::client::wire_number(&raw["reqSeq"])
+                        .filter(|seq| *seq > 0)
+                        .or(m.request_seq);
+                    Op::Message(m.into())
+                } else {
+                    Op::Checkpoint
+                }
             }
             OperationType::NotifiedReadMessage => Op::Receipt {
                 chat: chat()?,
@@ -696,7 +631,7 @@ impl Backend for LineBackend {
         };
         Ok(LiveOp {
             revision,
-            replay: raw["replay"].as_bool().unwrap_or(false),
+            replay: operation.replay,
             op,
         })
     }
@@ -718,6 +653,14 @@ fn reaction_operation(kind: OperationType, raw: &Value, own_mid: &str) -> Result
     )
     .map_err(|_| Failure::Bug("decode".into()))?;
     let chat = wire_string(&data, "chatMid")?;
+    let curr = match data.get("curr") {
+        Some(Value::Null) => None,
+        Some(value) => match crate::client::desktop::reaction_kind(value) {
+            Some(kind) => Some(kind),
+            None => return Ok(Op::Checkpoint),
+        },
+        None => return Ok(Op::Checkpoint),
+    };
     // Extension 3.7.2 main.js: SEND_REACTION uses self; NOTIFIED_SEND_REACTION uses param3.
     let actor = if kind == OperationType::SendReaction {
         own_mid
@@ -733,7 +676,7 @@ fn reaction_operation(kind: OperationType, raw: &Value, own_mid: &str) -> Result
     Ok(Op::Reaction {
         id,
         actor: actor.into(),
-        curr: crate::client::desktop::reaction_kind(&data["curr"]),
+        curr,
     })
 }
 
@@ -765,7 +708,7 @@ mod tests {
             let worker = thread::spawn(move || {
                 if authorize {
                     assert_eq!(
-                        asset_authorization(&FakeBackend::asset(true), &worker_stop, &deliver),
+                        asset_authorization(false, &worker_stop, &deliver),
                         if cancel {
                             Err(crate::client::desktop::assets::Failure::Cancelled)
                         } else {
@@ -869,6 +812,50 @@ mod tests {
         );
         for value in [Value::Null, json!(""), json!(3)] {
             assert!(wire_string(&json!({"param1":value}), "param1").is_err());
+        }
+    }
+
+    #[test]
+    fn unknown_live_reactions_checkpoint_and_only_null_removes() {
+        for kind in [
+            OperationType::NotifiedSendReaction,
+            OperationType::SendReaction,
+        ] {
+            let raw =
+                |data: Value| json!({"param1":"10", "param2":data.to_string(), "param3":"actor"});
+            for curr in [
+                json!({"customReactionType":{"id":"new"}}),
+                json!({}),
+                json!({"predefinedReactionType":"bad"}),
+            ] {
+                assert!(matches!(
+                    reaction_operation(kind, &raw(json!({"chatMid":"chat", "curr":curr})), "self")
+                        .unwrap(),
+                    Op::Checkpoint
+                ));
+            }
+            assert!(matches!(
+                reaction_operation(kind, &raw(json!({"chatMid":"chat"})), "self").unwrap(),
+                Op::Checkpoint
+            ));
+            assert!(matches!(
+                reaction_operation(kind, &raw(json!({"chatMid":"chat", "curr":null})), "self")
+                    .unwrap(),
+                Op::Reaction { curr: None, .. }
+            ));
+            for curr in [
+                json!({"predefinedReactionType":2}),
+                json!({"predefinedReactionType":"2"}),
+            ] {
+                assert!(matches!(
+                    reaction_operation(kind, &raw(json!({"chatMid":"chat", "curr":curr})), "self")
+                        .unwrap(),
+                    Op::Reaction {
+                        curr: Some(crate::store::ReactionKind::Predefined(2)),
+                        ..
+                    }
+                ));
+            }
         }
     }
 

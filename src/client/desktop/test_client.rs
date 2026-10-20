@@ -48,11 +48,11 @@ pub(super) fn client(mut api: Api) -> (Client, PathBuf) {
     api.session_path = Some(root.join("session.json"));
     let client = Client {
         api,
-        my_mid: "uself".into(),
+        my_mid: "U00000000000000000000000000000001".into(),
         obs_access: None,
         sequence: 0,
         cache: Arc::new(std::sync::Mutex::new(
-            ImageCache::new(&root, "uself").unwrap(),
+            ImageCache::new(&root, "U00000000000000000000000000000001").unwrap(),
         )),
     };
     (client, root)

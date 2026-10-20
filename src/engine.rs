@@ -1381,9 +1381,9 @@ impl Engine {
         );
         Ok(())
     }
-    fn next_seq(&mut self) -> Result<u32> {
+    fn next_seq(&mut self) -> u32 {
         self.seq = (self.seq + 1) & 0x7fff_ffff;
-        Ok(self.seq)
+        self.seq
     }
     fn send_reaction(
         &mut self,
@@ -1393,7 +1393,7 @@ impl Engine {
         previous: Option<ReactionKind>,
         next: Option<u32>,
     ) -> Result<()> {
-        let seq = self.next_seq()?;
+        let seq = self.next_seq();
         self.reaction_flights.insert(key, ReactionFlight::InFlight);
         let net_id = id.clone();
         self.rpc(
@@ -1648,7 +1648,7 @@ impl Engine {
                 self.inbox.refresh(Refresh::Details(chat));
             }
             Intent::ProfileAction(action) => {
-                let seq = self.next_seq()?;
+                let seq = self.next_seq();
                 let net_action = action.clone();
                 self.rpc(
                     move |b| b.profile_action(&net_action, seq),
@@ -1836,10 +1836,7 @@ impl Engine {
                     let seq = if let Some(seq) = self.group_requests.get(&identity) {
                         *seq
                     } else {
-                        let seq = self.next_seq().map_err(|e| {
-                            self.report_store_error(&e);
-                            CreateFailure::Local
-                        })?;
+                        let seq = self.next_seq();
                         self.group_requests.insert(identity.clone(), seq);
                         seq
                     };
@@ -1948,7 +1945,7 @@ impl Engine {
                 {
                     return Ok(());
                 }
-                let seq = self.next_seq()?;
+                let seq = self.next_seq();
                 self.emit(Delta::UploadFinished(key));
                 self.store.retry(key, seq)?;
                 self.publish()?;
@@ -1981,7 +1978,7 @@ impl Engine {
                     && !row.body.is_withdrawn()
                     && let Some(id) = row.server_id
                 {
-                    let seq = self.next_seq()?;
+                    let seq = self.next_seq();
                     let net_id = id.clone();
                     self.rpc(
                         move |backend| backend.unsend(&net_id, seq),
@@ -2033,7 +2030,7 @@ impl Engine {
         content: impl FnOnce() -> Content,
         reply: Option<ReplyReference>,
     ) -> Result<Key> {
-        let seq = self.next_seq()?;
+        let seq = self.next_seq();
         let (key, _) = self.store.insert_pending(
             chat,
             LocalId(format!("{}-{seq}", now_ms())),
@@ -2590,7 +2587,7 @@ impl Engine {
                 {
                     let net_chat = chat.clone();
                     let net_id = id.clone();
-                    let seq = self.next_seq()?;
+                    let seq = self.next_seq();
                     self.refresh_rpc(
                         Refresh::Read(chat.clone()),
                         move |backend| backend.mark_read(&net_chat, &net_id, seq),
@@ -2706,9 +2703,9 @@ impl Engine {
                 }
                 self.emit(asset_delta(c));
             }
-            StreamEvent::Authorize { asset, reply } => {
+            StreamEvent::Authorize { renew, reply } => {
                 self.rpc(
-                    move |backend| backend.authorize(&asset),
+                    move |backend| backend.authorize(renew),
                     move |_, result, _| {
                         let _ = reply.try_send(
                             result.map_err(|_| crate::client::desktop::assets::Failure::Network),
@@ -2783,10 +2780,8 @@ impl Engine {
             }
             StreamEvent::Raw(raw) => {
                 let data = &raw.data;
-                if data["revision"]
-                    .as_i64()
-                    .or_else(|| data["revision"].as_str()?.parse().ok())
-                    .is_some_and(|r| r > self.store.sync_revision().unwrap_or(0))
+                if crate::client::wire_number(&data["revision"])
+                    .is_some_and(|r: i64| r > self.store.sync_revision().unwrap_or(0))
                     && let Some(id) = data["param1"].as_str().filter(|id| !id.is_empty())
                 {
                     let id = id.to_owned();
@@ -3002,8 +2997,8 @@ impl Engine {
             self.message_keys = keys;
             let mut replies = Vec::new();
             for row in &window.rows {
-                if let Some(id) = row.reply.as_ref().map(|r| r.message_id.as_str())
-                    && let Some(target) = self.store.message_by_server(&ServerId::new(id)?)?
+                if let Some(id) = row.reply.as_ref().map(|r| &r.message_id)
+                    && let Some(target) = self.store.message_by_server(id)?
                 {
                     replies.push(target);
                 }
@@ -3012,11 +3007,9 @@ impl Engine {
                 && !replies.iter().any(|m| {
                     m.server_id
                         .as_ref()
-                        .is_some_and(|id| id.as_str() == reference.message_id)
+                        .is_some_and(|id| id == &reference.message_id)
                 })
-                && let Some(target) = self
-                    .store
-                    .message_by_server(&ServerId::new(reference.message_id)?)?
+                && let Some(target) = self.store.message_by_server(&reference.message_id)?
             {
                 replies.push(target);
             }

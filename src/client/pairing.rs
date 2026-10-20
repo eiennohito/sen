@@ -176,7 +176,7 @@ fn login_with(
     api.state = state.clone();
     save_state(state_path, &state)?;
     progress.set(Stage::CheckingKeys)?;
-    validate_keys(api, &state)?;
+    validate_keys(api)?;
     progress.set(Stage::Authenticated)
 }
 

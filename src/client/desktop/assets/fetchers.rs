@@ -151,7 +151,7 @@ impl Fetchers {
         cache: Arc<Mutex<ImageCache>>,
         global_stop: Arc<CancelToken>,
         failures: Failures,
-        authorize: impl Fn(&Asset, &CancelToken) -> std::result::Result<Option<String>, Failure>
+        authorize: impl Fn(bool, &CancelToken) -> std::result::Result<Option<String>, Failure>
         + Send
         + Sync
         + 'static,
@@ -233,7 +233,7 @@ impl Fetchers {
                             let result = if let Some(class) = blacklisted.filter(|_| !job.bypass) {
                                 Err(class)
                             } else {
-                                fetch(&http, &cache, &job, || authorize(&job.asset, &shared.stop))
+                                fetch(&http, &cache, &job, |renew| authorize(renew, &shared.stop))
                                     .map_err(|error| media_failure(&error))
                             };
                             let network = activity.touched();
@@ -405,11 +405,27 @@ fn fetch(
     http: &http::Transport,
     cache: &Mutex<ImageCache>,
     job: &Job,
-    authorize: impl Fn() -> std::result::Result<Option<String>, Failure>,
+    authorize: impl Fn(bool) -> std::result::Result<Option<String>, Failure>,
 ) -> Result<Payload> {
     if let Some(failure) = job.asset.failure {
         return Err(failure.into());
     }
+    let download = || {
+        let token = if job.asset.private {
+            authorize(false)?
+        } else {
+            None
+        };
+        match job.asset.fetch(http, token.as_deref()) {
+            Err(error)
+                if job.asset.private
+                    && error.downcast_ref::<Failure>() == Some(&Failure::Http(401)) =>
+            {
+                job.asset.fetch(http, authorize(true)?.as_deref())
+            }
+            result => result,
+        }
+    };
     match job.purpose {
         Purpose::Thumbnail => {
             let cached = if job.bypass {
@@ -420,46 +436,20 @@ fn fetch(
             let pixels = match cached {
                 Some(pixels) => pixels,
                 None => {
-                    let bytes = job.asset.fetch(
-                        http,
-                        if job.asset.private {
-                            authorize()?
-                        } else {
-                            None
-                        }
-                        .as_deref(),
-                    )?;
+                    let bytes = download()?;
                     ImageCache::store_shared(cache, &job.asset, &bytes)?
                 }
             };
             Ok(Payload::Image(pixels))
         }
         Purpose::Original => {
-            let bytes = job.asset.fetch(
-                http,
-                if job.asset.private {
-                    authorize()?
-                } else {
-                    None
-                }
-                .as_deref(),
-            )?;
+            let bytes = download()?;
             Ok(Payload::Original {
                 pixels: Arc::new(original_pixels(&bytes)?),
                 bytes: Arc::new(bytes),
             })
         }
-        Purpose::File { .. } => Ok(Payload::File(Arc::new(
-            job.asset.fetch(
-                http,
-                if job.asset.private {
-                    authorize()?
-                } else {
-                    None
-                }
-                .as_deref(),
-            )?,
-        ))),
+        Purpose::File { .. } => Ok(Payload::File(Arc::new(download()?))),
     }
 }
 

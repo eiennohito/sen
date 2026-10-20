@@ -71,17 +71,15 @@ pub struct Revisions {
 }
 impl Revisions {
     pub fn accepts(&self, operation: &Value) -> bool {
-        number(&operation["revision"]).is_some_and(|r| r > self.local)
+        wire_number(&operation["revision"]).is_some_and(|r: u64| r > self.local)
     }
     pub fn commit(&mut self, operation: &Value) {
-        if let Some(r) = number(&operation["revision"]) {
+        if let Some(r) = wire_number(&operation["revision"]) {
             self.local = self.local.max(r);
         }
     }
 }
-fn number(value: &Value) -> Option<u64> {
-    value.as_u64().or_else(|| value.as_str()?.parse().ok())
-}
+use crate::client::wire_number;
 pub fn backoff(attempt: u32) -> Duration {
     Duration::from_secs(2u64.saturating_pow(attempt.clamp(1, 6)).min(60))
 }
@@ -198,7 +196,7 @@ fn dispatch(
     deliver: &mut impl FnMut(Event) -> bool,
 ) -> Result<bool> {
     if name == "message"
-        && number(&data["revision"]).is_some()
+        && wire_number::<u64>(&data["revision"]).is_some()
         && !deliver(Event::State(SyncState::Connected))
     {
         return Ok(false);
@@ -215,7 +213,7 @@ fn dispatch(
             let next = data["nextRevision"]
                 .as_str()
                 .map(str::to_owned)
-                .or_else(|| number(&data["nextRevision"]).map(|v| v.to_string()));
+                .or_else(|| wire_number(&data["nextRevision"]).map(|v: u64| v.to_string()));
             let (tx, rx) = async_channel::bounded(1);
             if !deliver(Event::Resync {
                 next_revision: next.clone(),
@@ -239,7 +237,7 @@ fn dispatch(
             }
             return Ok(false);
         }
-        "connInfoRevision" if number(&data).is_some_and(|r| r > revisions.local) => {
+        "connInfoRevision" if wire_number(&data).is_some_and(|r: u64| r > revisions.local) => {
             let (tx, _rx) = async_channel::bounded(1);
             if !deliver(Event::Resync {
                 next_revision: None,
@@ -387,10 +385,10 @@ mod transport_tests {
         let stop = CancelToken::new();
         let mut r = Revisions { local: 10 };
         let mut attempt = 4;
-        let mut seen = Vec::new();
+        let mut seen: Vec<u64> = Vec::new();
         let mut consumer = |event| {
             match event {
-                Event::Operation(v) => seen.push(number(&v.data["revision"]).unwrap()),
+                Event::Operation(v) => seen.push(wire_number(&v.data["revision"]).unwrap()),
                 Event::Resync { complete, .. } => {
                     complete.send_blocking(Ok(())).unwrap();
                 }

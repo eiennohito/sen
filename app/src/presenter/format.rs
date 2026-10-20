@@ -259,7 +259,6 @@ pub(crate) fn reaction_views(
                     .unwrap_or((0, "Reaction", "◌"));
                 (label, glyph, String::new())
             }
-            ReactionKind::Emoji => ("Emoji", "◌", String::new()),
             ReactionKind::Paid(asset) => (
                 "Emoji",
                 "",

@@ -26,7 +26,6 @@ pub fn benchmark_history(
         },
         ch,
     )?;
-    let state = Session::default();
     let ct = decode(required(fixture, "ciphertext")?)?;
     let mut failed = 0;
     for index in 0..50 {
@@ -34,7 +33,7 @@ pub fn benchmark_history(
         let raw = json!({"to":to,"from":from,"contentType":0,"contentMetadata":{"e2eeVersion":"2"},"chunks":[
             STANDARD.encode(&ct[..16]), STANDARD.encode(&ct[ct.len()-16..]),
             STANDARD.encode(&ct[16..ct.len()-16]), STANDARD.encode(42u32.to_be_bytes()), STANDARD.encode(receiver.to_be_bytes())]});
-        match decrypt_body(&mut api, &state, to, &raw) {
+        match decrypt_body(&mut api, to, &raw) {
             Ok(body) => ensure!(body["text"].is_string(), "missing fixture text"),
             Err(_) => {
                 failed += 1;

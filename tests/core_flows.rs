@@ -658,9 +658,7 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
     for curr in [
         Some(json!({"predefinedReactionType":2})),
         Some(json!({"predefinedReactionType":4})),
-        Some(json!({})),
         Some(serde_json::Value::Null),
-        None,
     ] {
         let mut payload = json!({"chatMid":"alice"});
         if let Some(curr) = &curr {
@@ -685,8 +683,35 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
             unread
         );
     }
-    fake.inject_raw(json!({"type":140,"param1":"10","param3":"other","param2":json!({"chatMid":"alice","curr":{"predefinedReactionType":7}}).to_string()}));
-    app.until(|s| s.messages[&key].reactions[0].kind == ReactionKind::Predefined(7));
+    fake.inject_raw(json!({"type":139,"param1":"10","param2":json!({"chatMid":"alice","curr":{"predefinedReactionType":"2"}}).to_string()}));
+    app.until(|s| {
+        s.messages[&key]
+            .reactions
+            .iter()
+            .any(|r| r.actor == "self" && r.kind == ReactionKind::Predefined(2))
+    });
+    for curr in [
+        None,
+        Some(json!({})),
+        Some(json!({"customReactionType":{"id":"new"}})),
+    ] {
+        let mut data = json!({"chatMid":"alice"});
+        if let Some(curr) = curr {
+            data["curr"] = curr;
+        }
+        fake.inject_raw(
+            json!({"type":140,"param1":"10","param3":"self","param2":data.to_string()}),
+        );
+        fake.inject_raw(json!({"type":140,"param1":"10","param3":"other","param2":json!({"chatMid":"alice","curr":{"predefinedReactionType":7}}).to_string()}));
+        let revision = fake.configure(|s| s.revision);
+        app.until(|s| s.messages[&key].reactions_rev >= revision);
+        assert!(
+            app.state.messages[&key]
+                .reactions
+                .iter()
+                .any(|r| r.actor == "self" && r.kind == ReactionKind::Predefined(2))
+        );
+    }
     let mut refreshed = FakeBackend::message("alice", 10, "react here", false);
     refreshed.rev = fake.revision();
     refreshed.reactions = vec![Reaction {
@@ -1620,12 +1645,7 @@ fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
     app.select("alice");
     let key = app.body_key("Hello! 日本語も使えます。");
     let target = ReplyReference {
-        message_id: app.state.messages[&key]
-            .server_id
-            .as_ref()
-            .unwrap()
-            .as_str()
-            .to_owned(),
+        message_id: app.state.messages[&key].server_id.as_ref().unwrap().clone(),
         service_code: Some(1),
     };
     app.send(Intent::Draft {
@@ -1688,13 +1708,31 @@ fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
 }
 
 #[test]
+fn rich_parse_discards_a_malformed_reply_before_publication() {
+    let fake = FakeBackend::canned();
+    let mut message = FakeBackend::message("alice", 91002, "Body with a malformed reply", false);
+    message.reply = line::client::desktop::rich::parse(&serde_json::json!({
+        "messageRelationType": 3, "relatedMessageId": "01"
+    }))
+    .reply
+    .map(Box::new);
+    fake.set_page(ChatId("alice".into()), vec![message]);
+    let mut app = App::new(fake, StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    let key = app.body_key("Body with a malformed reply");
+    assert!(app.state.messages[&key].reply.is_none());
+    assert!(app.state.reply_targets.is_empty());
+}
+
+#[test]
 fn missing_reply_original_loads_from_the_server_and_opens_in_history() {
     use line::store::{Anchor, PageKind, ReplyReference, ServerId};
     let fake = FakeBackend::canned();
     let original = FakeBackend::message("alice", 91001, "Original outside local history", false);
     let mut reply = FakeBackend::message("alice", 91002, "Reply to an older message", false);
     reply.reply = Some(Box::new(ReplyReference {
-        message_id: "91001".into(),
+        message_id: line::store::ServerId::new("91001").unwrap(),
         service_code: Some(1),
     }));
     fake.set_page(ChatId("alice".into()), vec![reply.clone()]);

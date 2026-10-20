@@ -84,7 +84,7 @@ impl Backend for Blocked {
     fn start_assets(&mut self, s: Arc<CancelToken>, d: Deliver) -> Result<()> {
         self.fake.start_assets(s, d)
     }
-    fn authorize(&mut self, a: &line::client::desktop::assets::Asset) -> Result<Option<String>> {
+    fn authorize(&mut self, a: bool) -> Result<Option<String>> {
         self.fake.authorize(a)
     }
     fn session(&self) -> Result<bool> {

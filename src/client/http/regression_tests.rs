@@ -347,7 +347,7 @@ fn stalled_upload_hits_idle_deadline() {
         .upload(
             &format!("{}/upload", transport.base),
             &[],
-            vec![7; 32 * 1024 * 1024],
+            vec![7; 32 * 1024 * 1024].into(),
             &mut |sent| steps.push(sent),
         )
         .unwrap_err();
@@ -418,7 +418,7 @@ fn upload_progress_precedes_body_completion() {
         transport.upload(
             &format!("{}/upload", transport.base),
             &[],
-            vec![7; size],
+            vec![7; size].into(),
             &mut |n| updates.send(n).unwrap(),
         )
     });

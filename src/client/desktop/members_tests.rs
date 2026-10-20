@@ -8,9 +8,12 @@ fn chats(ids: Vec<String>) -> (&'static str, Reply) {
         Box::new(move |args| {
             assert_eq!(
                 args,
-                json!([{"chatMids":["group"],"withMembers":true,"withInvitees":true},1])
+                json!([{"chatMids":["C00000000000000000000000000000001"],"withMembers":true,"withInvitees":true},1])
             );
-            (200, json!({"chats":[{"chatMid":"group","memberMids":ids}]}))
+            (
+                200,
+                json!({"chats":[{"chatMid":"C00000000000000000000000000000001","memberMids":ids}]}),
+            )
         }),
     )
 }
@@ -43,12 +46,17 @@ fn contacts(count: usize, absent: &'static str) -> (&'static str, Reply) {
 #[test]
 fn batches_members_at_100() {
     let mut rpc = rpc(vec![
-        chats((0..201).map(|i| format!("u{i:04}")).collect()),
+        chats((0..201).map(|i| format!("U{:032x}", i + 1000)).collect()),
         contacts(100, ""),
         contacts(100, ""),
         contacts(2, ""),
     ]);
-    let members = load_members("group", "uself", &mut rpc).unwrap();
+    let members = load_members(
+        "C00000000000000000000000000000001",
+        "U00000000000000000000000000000001",
+        &mut rpc,
+    )
+    .unwrap();
     assert_eq!(members.len(), 202);
     assert_eq!(members.iter().filter(|m| m.is_self).count(), 1);
     assert!(
@@ -61,7 +69,11 @@ fn batches_members_at_100() {
 
 #[test]
 fn failed_member_lookup_reports_network_failure_and_can_be_retried() {
-    let ids = vec!["uknown".into(), "uabsent".into(), "ufailed".into()];
+    let ids = vec![
+        "U00000000000000000000000000000004".into(),
+        "U00000000000000000000000000000005".into(),
+        "U00000000000000000000000000000006".into(),
+    ];
     let mut rpc = rpc(vec![
         chats(ids.clone()),
         (
@@ -69,14 +81,24 @@ fn failed_member_lookup_reports_network_failure_and_can_be_retried() {
             Box::new(|_: Value| (503u16, Value::Null)) as Reply,
         ),
         chats(ids),
-        contacts(4, "uabsent"),
+        contacts(4, "U00000000000000000000000000000005"),
     ]);
-    let error = load_members("group", "uself", &mut rpc).unwrap_err();
+    let error = load_members(
+        "C00000000000000000000000000000001",
+        "U00000000000000000000000000000001",
+        &mut rpc,
+    )
+    .unwrap_err();
     assert_eq!(
         crate::client::error::classify(&error),
         crate::client::error::Failure::Unanswered
     );
-    let members = load_members("group", "uself", &mut rpc).unwrap();
+    let members = load_members(
+        "C00000000000000000000000000000001",
+        "U00000000000000000000000000000001",
+        &mut rpc,
+    )
+    .unwrap();
     assert_eq!(
         members.iter().filter(|m| m.contact.name.is_none()).count(),
         1
@@ -95,4 +117,32 @@ fn rpc(steps: Vec<(&'static str, Reply)>) -> impl FnMut(&str, Value) -> Result<V
             Err(crate::client::error::Failure::Unanswered.into())
         }
     }
+}
+
+#[test]
+fn malformed_member_profile_is_reported() {
+    let mut rpc = rpc(vec![
+        chats(vec!["U00000000000000000000000000000003".into()]),
+        (
+            "getContactsV2",
+            Box::new(|_| {
+                (
+                    200,
+                    json!({"contacts":{
+                        "U00000000000000000000000000000003":{"contact":{"displayName":"Other", "type":null}},
+                        "U00000000000000000000000000000001":{"contact":{"displayName":"Self"}}
+                    }}),
+                )
+            }),
+        ),
+    ]);
+    let members = load_members(
+        "C00000000000000000000000000000001",
+        "U00000000000000000000000000000001",
+        &mut rpc,
+    )
+    .unwrap();
+    assert_eq!(members.len(), 1);
+    assert!(members[0].is_self);
+    assert_eq!(members[0].contact.name.as_deref(), Some("Self"));
 }

@@ -174,7 +174,7 @@ fn reply_rows_keep_full_text_while_composer_quotes_are_compact() {
             let mut reply = crate::tests::message("reply");
             reply.key = Key(2);
             reply.reply = Some(Box::new(line::store::ReplyReference {
-                message_id: "10".into(),
+                message_id: line::store::ServerId::new("10").unwrap(),
                 service_code: None,
             }));
             let (ui, mut presenter, mut state) = fixture();

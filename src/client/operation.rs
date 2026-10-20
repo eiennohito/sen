@@ -49,6 +49,7 @@ impl From<i64> for OperationType {
 pub struct RawOperation {
     pub kind: OperationType,
     pub data: Value,
+    pub replay: bool,
 }
 impl From<Value> for RawOperation {
     fn from(data: Value) -> Self {
@@ -58,6 +59,7 @@ impl From<Value> for RawOperation {
                 .map(OperationType::from)
                 .unwrap_or(OperationType::Unknown),
             data,
+            replay: false,
         }
     }
 }
