@@ -25,6 +25,7 @@ impl Presenter {
                 .unwrap_or("")
                 .into(),
         );
+        g.set_account_avatar(self.images.picture(state.self_contact.avatar.as_ref()));
         g.set_account_initial(name_initial(state.profile.display_name.as_str()));
         g.set_account_mid(state.profile.mid.clone().into());
         g.set_account_name(state.profile.display_name.as_str().into());

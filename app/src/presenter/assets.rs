@@ -74,6 +74,14 @@ impl Presenter {
         self.sticker_items.asset_changed(key);
         if let Some(image) = self.images.get(key) {
             if state
+                .self_contact
+                .avatar
+                .as_ref()
+                .is_some_and(|a| a.key() == key)
+            {
+                ui.global::<ShellState>().set_account_avatar(image.clone());
+            }
+            if state
                 .selected
                 .as_ref()
                 .and_then(|id| chats::chat_avatar(state, id))

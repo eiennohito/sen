@@ -184,6 +184,96 @@ mod tests {
     }
 
     #[test]
+    fn own_avatar_appears_in_rail_and_profile_when_asset_arrives() {
+        std::thread::spawn(|| {
+            use i_slint_backend_testing::ElementHandle;
+            let worker = Worker::start(
+                StoreLocation::Memory,
+                || Ok(line::backend::FakeBackend::canned()),
+                Default::default(),
+            );
+            let _window = crate::snapshot::install().unwrap();
+            let ui = crate::window::create_app_window().unwrap();
+            ui.show().unwrap();
+            ui.window().set_size(slint::LogicalSize::new(980., 720.));
+            slint::platform::update_timers_and_animations();
+            let mut desktop = desktop(&worker);
+            desktop.presenter.install(&ui);
+            desktop.state.apply(Delta::Profile(Profile {
+                mid: "self".into(),
+                display_name: "Me".into(),
+                picture_path: Some("/own-photo".into()),
+                ..Default::default()
+            }));
+            desktop
+                .state
+                .push_detail(line::controller::DetailPage::Profile("self".into()));
+            let avatar = desktop
+                .state
+                .contact("self")
+                .unwrap()
+                .avatar
+                .clone()
+                .unwrap();
+            desktop.render(&ui);
+            assert_eq!(ui.global::<ShellState>().get_account_initial(), "M");
+            assert_eq!(
+                ui.global::<ShellState>().get_account_avatar().size().width,
+                0
+            );
+            assert_eq!(
+                ui.global::<DetailState>().get_profile_avatar().size().width,
+                0
+            );
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, "Your avatar")
+                    .next()
+                    .is_none()
+            );
+            assert!(
+                !desktop.assets.request(&avatar),
+                "render must request the own avatar"
+            );
+            loop {
+                let delta = worker
+                    .deltas
+                    .recv_timeout(std::time::Duration::from_secs(3))
+                    .unwrap();
+                if matches!(&delta, Delta::Asset { key, .. } if *key == avatar.key()) {
+                    desktop.apply(&ui, delta);
+                    break;
+                }
+            }
+            let image = ui.global::<ShellState>().get_account_avatar();
+            assert!(image.size().width > 0);
+            assert_eq!(ui.global::<DetailState>().get_profile_avatar(), image);
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, "Your avatar")
+                    .next()
+                    .is_some()
+            );
+            desktop.render(&ui);
+            assert_eq!(ui.global::<ShellState>().get_account_avatar(), image);
+            desktop.state.apply(Delta::Profile(Profile {
+                mid: "self".into(),
+                display_name: "Me".into(),
+                ..Default::default()
+            }));
+            desktop.render(&ui);
+            assert_eq!(
+                ui.global::<ShellState>().get_account_avatar().size().width,
+                0
+            );
+            assert!(
+                ElementHandle::find_by_accessible_label(&ui, "Your avatar")
+                    .next()
+                    .is_none()
+            );
+        })
+        .join()
+        .unwrap();
+    }
+    #[test]
     fn asset_eviction_does_not_mark_desktop_dirty() {
         std::thread::spawn(|| {
             let worker = Worker::start(

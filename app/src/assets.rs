@@ -108,13 +108,7 @@ impl Assets {
             .cloned()
             .chain(state.friends.iter().filter_map(|f| f.avatar.clone()))
             .chain(state.contacts.values().filter_map(|f| f.avatar.clone()))
-            .chain(
-                state
-                    .profile
-                    .picture_path
-                    .as_deref()
-                    .and_then(line::client::desktop::assets::Asset::avatar),
-            )
+            .chain(state.self_contact.avatar.clone())
             .chain(
                 state
                     .members
