@@ -26,7 +26,6 @@ component HistoryPill inherits Pressable {
     accessible-label: root.label;
     focus-on-activation: false;
     key-event(event) => { if event.text == Key.Tab { root.traversed(event.modifiers.shift); return accept; } reject }
-
 }
 export component Conversation inherits Rectangle {
     public function paste-text() { composer-surface.paste-text(); }
@@ -100,23 +99,9 @@ export component Conversation inherits Rectangle {
             if State.conversation-error != "": Text { text: State.conversation-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
             history-surface := Rectangle {
               vertical-stretch: 1;
-              history-focus := FocusScope {
-                accessible-role: list; accessible-label: "Message history";
-                accessible-description: "Scrollable message history";
-                key-pressed(event) => {
-                    if State.ime-active { return reject; }
-                    if State.recovery-kind != RecoveryKind.none { return reject; }
-                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-sign-in-opener(); } else { more-button.focus(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus(); } else if State.return-visible { return-button.focus(); } else { State.focus-composer(); } } return accept; }
-                    if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
-                    if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
-                    if event.text == Key.PageUp { history.scroll(history.visible-height * 0.9); history.scrolled(); return accept; }
-                    if event.text == Key.PageDown { history.scroll(-history.visible-height * 0.9); history.scrolled(); return accept; }
-                    if event.text == Key.Home { history.jump(0px); history.scrolled(); return accept; }
-                    if event.text == Key.End { State.latest(); return accept; }
-                    reject
-                }
-              }
+
               history := Pane {
+                connection-dismissed => { history-focus.focus(); }
                 connection-feedback: (!State.narrow || State.show-conversation) && !(State.detail-open && State.profile-sheet);
                 focus-requested => { history-focus.focus(); }
                 changed extent => { if State.following && !self.dragging { self.jump(-self.extent); } }
@@ -125,6 +110,23 @@ export component Conversation inherits Rectangle {
                 scrolled => { State.following = State.history-can-follow && self.visible-top == self.inset && !self.dragging && self.extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } State.history-scrolled(); }
                 virtual: State.history-virtual; full-height: root.plain-history-height;
                 virtual-height: root.virtual-history-height;
+                history-focus := FocusScope {
+                  y: -history.visible-top - (State.history-virtual ? 0px : State.history-y); width: history.width; height: history.height;
+                  accessible-role: list; accessible-label: "Message history";
+                  accessible-description: "Scrollable message history";
+                  key-pressed(event) => {
+                      if State.ime-active { return reject; }
+                      if State.recovery-kind != RecoveryKind.none { return reject; }
+                      if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-connection-first(); } else { more-button.focus(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus(); } else if State.return-visible { return-button.focus(); } else { State.focus-composer(); } } return accept; }
+                      if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
+                      if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
+                      if event.text == Key.PageUp { history.scroll(history.visible-height * 0.9); history.scrolled(); return accept; }
+                      if event.text == Key.PageDown { history.scroll(-history.visible-height * 0.9); history.scrolled(); return accept; }
+                      if event.text == Key.Home { history.jump(0px); history.scrolled(); return accept; }
+                      if event.text == Key.End { State.latest(); return accept; }
+                      reject
+                  }
+                }
                 if State.history-virtual: history-view := ListView {
                     scrolled => { history.user-scroll(); }
                     width: parent.width; height: parent.height;
@@ -212,9 +214,10 @@ composer-surface := Composer { }
             }
         }
     public function focus-after-header() { if State.connection-actions-enabled { State.focus-connection-first(); } else { history-focus.focus(); } }
+    public function focus-connection() { history.focus-connection(); }
+    out property <bool> connection-focused: history.connection-focused;
     public function focus-first() { if State.narrow { back-button.focus(); } else { title-focus.focus(); } }
     public function focus-last() { if State.has-chat { composer-surface.focus-last(); } else { history-focus.focus(); } }
-    public function focus-header() { more-button.focus(); }
     public function restore-editor(anchor: int, caret: int) { composer-surface.restore-editor(anchor, caret); }
     public function focus-editor() { composer-surface.focus-editor(); }
     public function focus-history() { history-focus.focus(); }

@@ -10,9 +10,6 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     global_callback!(ui, actions, on_focus_after_layer, |ui, _d| {
         ui.invoke_focus_after_layer();
     });
-    global_callback!(ui, actions, on_focus_auth_start, |ui, _d| {
-        ui.invoke_focus_auth_start();
-    });
     global_callback!(ui, actions, on_focus_before_layer, |ui, _d| {
         ui.invoke_focus_before_layer();
     });
@@ -46,16 +43,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     global_callback!(ui, actions, on_focus_search, |ui, _d| {
         ui.invoke_focus_search();
     });
-    global_callback!(ui, actions, on_focus_settings_close, |ui, _d| {
-        ui.invoke_focus_settings_close();
-    });
     global_callback!(ui, actions, on_focus_settings_opener, |ui, _d| {
         ui.invoke_focus_settings_opener();
-    });
-    global_callback!(ui, actions, on_focus_sign_in_opener, |ui, _d| {
-        ui.invoke_focus_sign_in_opener();
-    });
-    global_callback!(ui, actions, on_focus_viewer_close, |ui, _d| {
-        ui.invoke_focus_viewer_close();
     });
 }

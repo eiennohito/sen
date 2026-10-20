@@ -52,20 +52,36 @@ export component Dialog inherits Rectangle {
     callback dismissed();
     callback key-pressed(KeyEvent) -> EventResult;
     key-pressed(event) => { reject }
+    in property <bool> full-window;
+    // Boundary scopes participate only while native Tab traversal runs.
+    out property <bool> traversing;
     background: Tokens.scrim;
     TouchArea { scroll-event => { accept } }
-    Rectangle {
+    panel := Rectangle {
         x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
         width: root.panel-width; height: root.panel-height;
         background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: root.panel-border;
         drop-shadow-color: root.shadow ? #00000033 : transparent;
         drop-shadow-blur: root.shadow ? 16px : 0px; drop-shadow-offset-y: root.shadow ? 4px : 0px;
         content := FocusScope {
-            focus-on-tab-navigation: false;
+            focus-on-tab-navigation: root.traversing;
+            capture-key-pressed(event) => {
+                if State.ime-active || event.text != Key.Tab { return reject; }
+                root.traversing = true;
+                State.tab-focus(event.modifiers.shift);
+                if content.has-focus { end.focus(); State.tab-focus(true); }
+                else if end.has-focus { content.focus(); State.tab-focus(false); }
+                root.traversing = false;
+                accept
+            }
             key-pressed(event) => { if root.key-pressed(event) == accept { return accept; } if !State.ime-active && event.text == Key.Escape { root.dismissed(); return accept; } reject }
             @children
+            end := FocusScope { width: 0px; height: 0px; focus-on-tab-navigation: root.traversing; }
         }
     }
+    states [ full-window when root.full-window: {
+        panel.width: root.width; panel.height: root.height; panel.border-radius: 0px; panel.border-width: 0px;
+    } ]
 }
 export component Button inherits Pressable {
     in property <string> text;
