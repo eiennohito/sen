@@ -98,7 +98,6 @@ export global State {
     callback open-new-chat();
     in-out property <[FriendRow]> friends;
     in-out property <int> friend-result: -1;
-    in-out property <length> friend-row-height;
     in-out property <string> friend-query;
     in-out property <bool> groups-expanded: true;
     in-out property <bool> friends-expanded: true;
@@ -180,7 +179,6 @@ export global State {
     callback resolve-recovery(RecoveryAction);
     callback quit();
     in-out property <ComposerMode> composer-mode;
-    out property <length> chat-row-height: max(68px, self.text-size * 2.8px + 20px);
     in-out property <bool> background-mode;
     in-out property <bool> tray-available;
     in-out property <bool> autostart;

@@ -1,63 +1,57 @@
+import { Dialog, FocusRing, Button } from "button.slint";
 import { ListRow, RowText } from "list-row.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
-import { Button } from "button.slint";
 import { IconButton } from "icon-button.slint";
 import { ScrollView } from "std-widgets.slint";
 import { CheckBox } from "preferences.slint";
 import { SearchField } from "search-field.slint";
 import { Pane } from "scrollpane.slint";
-export component NewChat inherits Rectangle {
-    visible: State.new-chat-open; background: Tokens.scrim;
-    TouchArea { }
+export component NewChat inherits Dialog {
+    visible: State.new-chat-open;
     changed visible => { if self.visible { search.focus(); } }
-    FocusScope {
-        key-pressed(event) => {
-            if State.ime-active { return reject; }
-            if event.text == Key.Escape && !State.new-chat-busy { State.new-chat-open = false; State.focus-search(); return accept; }
-            if event.text == Key.Tab && !event.modifiers.shift && submit.has-focus { search.focus(); return accept; }
-            if event.text == Key.Tab && event.modifiers.shift && search.has-focus { if submit.enabled { submit.focus(); } else { close-button.focus-button(); } return accept; }
-            reject
+
+    panel-height: min(560px, root.height - 32px); panel-border: Tokens.border;
+    dismissed => { if !State.new-chat-busy { State.new-chat-open = false; State.focus-search(); } }
+    key-pressed(event) => {
+        if State.ime-active { return reject; }
+        if event.text == Key.Tab && !event.modifiers.shift && submit.has-focus { search.focus(); return accept; }
+        if event.text == Key.Tab && event.modifiers.shift && search.has-focus { if submit.enabled { submit.focus(); } else { close-button.focus(); } return accept; }
+        reject
+    }
+    VerticalLayout { padding: 24px; spacing: 12px;
+        HorizontalLayout {
+            Text { text: "New chat"; color: Tokens.text; font-size: Tokens.heading; font-weight: 600; vertical-alignment: center; }
+            close-button := IconButton { label: "Close new chat"; icon: @image-url("../assets/icons/close.svg"); enabled: !State.new-chat-busy; activated => { State.new-chat-open = false; State.focus-search(); } }
         }
-        Rectangle {
-            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-            width: min(400px, parent.width - 32px); height: min(560px, parent.height - 32px);
-            background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: Tokens.border;
-            VerticalLayout { padding: 24px; spacing: 12px;
-                HorizontalLayout {
-                    Text { text: "New chat"; color: Tokens.text; font-size: Tokens.heading; font-weight: 600; vertical-alignment: center; }
-                    close-button := IconButton { label: "Close new chat"; icon: @image-url("../assets/icons/close.svg"); enabled: !State.new-chat-busy; activated => { State.new-chat-open = false; State.focus-search(); } }
-                }
-                search := SearchField { text <=> State.new-chat-query; placeholder-text: "Find friends"; label: "Find friends for new chat"; edited(value) => { State.new-chat-filter(); } clear => { State.new-chat-query = ""; State.new-chat-filter(); } enabled: !State.new-chat-busy; }
-                if State.new-chat-selected.length > 0: ScrollView { height: 36px; vertical-stretch: 0;
-                    HorizontalLayout { alignment: start; spacing: 6px;
-                        for friend in State.new-chat-selected: Rectangle {
-                            width: chip-label.preferred-width + 48px; height: 32px; border-radius: 16px; background: Tokens.surface-2;
-                            chip-label := RowText { x: 12px; height: parent.height; text: friend.name; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
-                            IconButton { x: parent.width - 28px; y: 4px; width: 24px; height: 24px; label: "Remove " + friend.name; icon: @image-url("../assets/icons/close.svg"); enabled: !State.new-chat-busy; activated => { State.new-chat-toggle(friend.id); } }
-                        }
-                    }
-                }
-                Pane { full-height: State.new-chat-friends.length * 56px;
-                    VerticalLayout { spacing: 4px; alignment: start;
-                        for friend in State.new-chat-friends: ListRow { height: 52px;
-                            identity: friend.id; initial: friend.initial; avatar: friend.avatar; title: friend.name; avatar-size: 40px; trailing-width: 32px;
-                            CheckBox { x: parent.width - 28px; y: (parent.height - self.height) / 2; width: 20px; indicator-only: true; text: friend.name; checked: friend.selected; enabled: !State.new-chat-busy; toggled => { State.new-chat-toggle(friend.id); } }
-                        }
-                    }
-                }
-                if State.new-chat-count > 1: Rectangle {
-                    height: 36px; border-radius: 8px; background: Tokens.surface-2;
-                    Text { x: 12px; width: parent.width - 24px; height: parent.height; text: State.new-chat-placeholder; visible: State.new-chat-name == "" && !group-name.has-focus; font-size: Tokens.base; color: Tokens.secondary; overflow: elide; vertical-alignment: center; }
-                    group-name := TextInput { x: 12px; width: parent.width - 24px; height: parent.height; text <=> State.new-chat-name; single-line: true; enabled: !State.new-chat-busy; font-size: Tokens.base; color: Tokens.text; accessible-label: "Group name"; vertical-alignment: center; }
-                    Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; border-radius: 12px; background: transparent; border-width: group-name.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
-                }
-                if State.new-chat-error != "": Text { text: State.new-chat-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
-                HorizontalLayout { alignment: end; spacing: 8px;
-                    Button { text: "Cancel"; enabled: !State.new-chat-busy; clicked => { State.new-chat-open = false; State.focus-search(); } }
-                    submit := Button { text: State.new-chat-busy ? "Creating…" : State.new-chat-uncertain ? "Check Chats" : State.new-chat-count > 1 ? "Create group" : "Chat"; primary: true; enabled: State.new-chat-count > 0 && !State.new-chat-busy; clicked => { State.new-chat-submit(); } }
+        search := SearchField { text <=> State.new-chat-query; placeholder-text: "Find friends"; label: "Find friends for new chat"; edited(value) => { State.new-chat-filter(); } clear => { State.new-chat-query = ""; State.new-chat-filter(); } enabled: !State.new-chat-busy; }
+        if State.new-chat-selected.length > 0: ScrollView { height: 36px; vertical-stretch: 0;
+            HorizontalLayout { alignment: start; spacing: 6px;
+                for friend in State.new-chat-selected: Rectangle {
+                    width: chip-label.preferred-width + 48px; height: 32px; border-radius: 16px; background: Tokens.surface-2;
+                    chip-label := RowText { x: 12px; height: parent.height; text: friend.name; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
+                    IconButton { x: parent.width - 28px; y: 4px; width: 24px; height: 24px; label: "Remove " + friend.name; icon: @image-url("../assets/icons/close.svg"); enabled: !State.new-chat-busy; activated => { State.new-chat-toggle(friend.id); } }
                 }
             }
+        }
+        Pane { full-height: State.new-chat-friends.length * 56px;
+            VerticalLayout { spacing: 4px; alignment: start;
+                for friend in State.new-chat-friends: ListRow { height: 52px;
+                    identity: friend.id; initial: friend.initial; avatar: friend.avatar; title: friend.name; avatar-size: 40px; trailing-width: 32px;
+                    CheckBox { x: parent.width - 28px; y: (parent.height - self.height) / 2; width: 20px; indicator-only: true; text: friend.name; checked: friend.selected; enabled: !State.new-chat-busy; toggled => { State.new-chat-toggle(friend.id); } }
+                }
+            }
+        }
+        if State.new-chat-count > 1: Rectangle {
+            height: 36px; border-radius: 8px; background: Tokens.surface-2;
+            Text { x: 12px; width: parent.width - 24px; height: parent.height; text: State.new-chat-placeholder; visible: State.new-chat-name == "" && !group-name.has-focus; font-size: Tokens.base; color: Tokens.secondary; overflow: elide; vertical-alignment: center; }
+            group-name := TextInput { x: 12px; width: parent.width - 24px; height: parent.height; text <=> State.new-chat-name; single-line: true; enabled: !State.new-chat-busy; font-size: Tokens.base; color: Tokens.text; accessible-label: "Group name"; vertical-alignment: center; }
+            FocusRing { outset: 4px; focused: group-name.has-focus; }
+        }
+        if State.new-chat-error != "": Text { text: State.new-chat-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
+        HorizontalLayout { alignment: end; spacing: 8px;
+            Button { text: "Cancel"; enabled: !State.new-chat-busy; clicked => { State.new-chat-open = false; State.focus-search(); } }
+            submit := Button { text: State.new-chat-busy ? "Creating…" : State.new-chat-uncertain ? "Check Chats" : State.new-chat-count > 1 ? "Create group" : "Chat"; primary: true; enabled: State.new-chat-count > 0 && !State.new-chat-busy; clicked => { State.new-chat-submit(); } }
         }
     }
 }

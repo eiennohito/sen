@@ -1,3 +1,4 @@
+import { Pressable } from "button.slint";
 import { RichRun } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -50,11 +51,10 @@ export component RichFlow inherits Rectangle {
                 MenuItem { title: "Copy link"; activated => { State.copy-text(run.url); } }
             }
             Rectangle { y: parent.height - 2px; height: 1px; background: Tokens.accent-strong; }
-            link-focus := FocusScope {
+            link-focus := Pressable {
                 visible: run.link-first;
-                accessible-role: button; accessible-label: "Open link " + run.url; accessible-description: run.url;
-                accessible-action-default => { State.open-link(run.url); }
-                key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-link(run.url); return accept; } reject }
+                accessible-label: "Open link " + run.url; accessible-description: run.url;
+                activated => { State.open-link(run.url); }
             }
             TouchArea {
                 mouse-cursor: pointer;

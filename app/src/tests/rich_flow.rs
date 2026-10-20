@@ -414,13 +414,13 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                                 "abcdefghij".repeat(8)
                             )
                         } else {
-                            "abcdefghij".repeat(10)
+                            format!("https://example.org/{}", "abcdefghij".repeat(10))
                         }
                         .into(),
                         outgoing: true,
                         ..Default::default()
                     };
-                    rich_content::links::decorate_message(&mut row);
+                    if linked { rich_content::links::decorate_message(&mut row); }
                     ui.global::<State>().set_messages(ModelRc::new(VecModel::from(vec![row])));
                     let pixels = render(&window, size);
                     let runs = observed.borrow().clone();

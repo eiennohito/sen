@@ -1,26 +1,85 @@
+import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
-export component Button inherits Rectangle {
+
+export component Pressable inherits FocusScope {
+    in property <bool> focus-on-activation: true;
+    in property <brush> background;
+    in property <length> border-radius;
+    in property <length> border-width;
+    in property <color> border-color;
+    out property <bool> has-hover: touch.has-hover;
+    out property <bool> pressed: touch.pressed;
+    callback activated();
+    focus-on-tab-navigation: root.enabled && root.visible;
+    focus-on-click: root.enabled && root.visible && root.focus-on-activation;
+    opacity: root.enabled ? 1 : 0.4;
+    accessible-role: button; accessible-enabled: root.enabled;
+    accessible-action-default => { if root.enabled { root.activated(); } }
+    callback key-event(KeyEvent) -> EventResult;
+    key-event(event) => { reject }
+    key-pressed(event) => {
+        if !root.enabled || State.ime-active { return reject; }
+        if root.key-event(event) == accept { return accept; }
+        if event.text == Key.Return || event.text == " " { root.activated(); return accept; }
+        reject
+    }
+    Rectangle {
+        background: root.background; border-radius: root.border-radius;
+        border-width: root.border-width; border-color: root.border-color;
+    }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { if root.focus-on-activation { root.focus(); } root.activated(); } }
+    @children
+}
+
+export component FocusRing inherits Rectangle {
+    in property <bool> focused;
+    in property <length> outset: 0px;
+    in property <length> thickness: 2px;
+    border-radius: 12px; border-color: Tokens.accent-strong;
+    Rectangle {
+        x: -root.outset; y: -root.outset;
+        width: root.width + 2 * root.outset; height: root.height + 2 * root.outset;
+        background: transparent; border-radius: root.border-radius;
+        border-width: root.focused ? root.thickness : 0px; border-color: root.border-color;
+    }
+}
+
+export component Dialog inherits Rectangle {
+    in property <length> panel-width: min(400px, root.width - 32px);
+    in property <length> panel-height: content.preferred-height;
+    in property <color> panel-border: Tokens.divider;
+    in property <bool> shadow;
+    callback dismissed();
+    callback key-pressed(KeyEvent) -> EventResult;
+    key-pressed(event) => { reject }
+    background: Tokens.scrim;
+    TouchArea { scroll-event => { accept } }
+    Rectangle {
+        x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+        width: root.panel-width; height: root.panel-height;
+        background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: root.panel-border;
+        drop-shadow-color: root.shadow ? #00000033 : transparent;
+        drop-shadow-blur: root.shadow ? 16px : 0px; drop-shadow-offset-y: root.shadow ? 4px : 0px;
+        content := FocusScope {
+            focus-on-tab-navigation: false;
+            key-pressed(event) => { if root.key-pressed(event) == accept { return accept; } if !State.ime-active && event.text == Key.Escape { root.dismissed(); return accept; } reject }
+            @children
+        }
+    }
+}
+export component Button inherits Pressable {
     in property <string> text;
-    in property <bool> enabled: true;
     in property <bool> primary;
     in property <bool> danger;
     in property <bool> text-button;
-    out property <bool> has-focus: focus.has-focus;
     callback clicked();
-    forward-focus: focus;
-    accessible-role: button; accessible-label: root.text; accessible-enabled: root.enabled;
-    accessible-action-default => { if root.enabled { root.clicked(); } }
+    accessible-label: root.text; accessible-enabled: root.enabled;
+    activated => { root.clicked(); }
     horizontal-stretch: 0;
     preferred-width: label.preferred-width + 32px;
     min-width: self.preferred-width;
     height: 32px; border-radius: 8px;
-    opacity: root.enabled ? 1 : 0.4;
-    background: root.primary ? (root.danger ? Tokens.danger : Tokens.accent-strong) : touch.has-hover ? Tokens.surface-hover : root.text-button ? transparent : Tokens.surface-2;
+    background: root.primary ? (root.danger ? Tokens.danger : Tokens.accent-strong) : root.has-hover ? Tokens.surface-hover : root.text-button ? transparent : Tokens.surface-2;
     label := Text { text: root.text; font-size: Tokens.base; font-weight: 600; color: root.primary ? Tokens.on-accent : root.danger ? Tokens.danger : root.text-button ? Tokens.accent-strong : Tokens.text; horizontal-alignment: center; vertical-alignment: center; }
-    focus := FocusScope {
-        enabled: root.enabled;
-        key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.clicked(); return accept; } reject }
-    }
-    Rectangle { x: -4px; y: -4px; width: root.width + 8px; height: root.height + 8px; background: transparent; border-radius: 12px; border-width: focus.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
-    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.clicked(); } }
+    FocusRing { outset: 4px; focused: root.has-focus; }
 }

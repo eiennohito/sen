@@ -1,47 +1,28 @@
+import { Pressable, FocusRing, Button } from "button.slint";
 import { DetailPageMode, DetailAction } from "types.slint";
 import { RowText } from "list-row.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { IconButton } from "icon-button.slint";
 import { Avatar } from "avatar.slint";
-import { Button } from "button.slint";
 import { RichFlow } from "rich-flow.slint";
 import { Members } from "members.slint";
 import { ScrollView } from "std-widgets.slint";
-component NameField inherits Rectangle {
-    in-out property <string> text;
-    out property <bool> has-focus: input.has-focus;
-    public function focus-field() { input.focus(); }
-    height: 36px; border-radius: 8px; background: Tokens.surface-2;
-    input := TextInput { x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; text <=> root.text; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name"; }
-    Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; border-radius: 12px; background: transparent; border-width: root.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
-}
-component DetailRow inherits Rectangle {
+component DetailRow inherits Pressable {
     in property <string> label;
     in property <bool> danger;
-    in property <bool> enabled: true;
     in property <bool> toggle;
     in property <bool> checked;
-    out property <bool> has-focus: focus.has-focus;
-    callback activated();
-    public function focus-row() { focus.focus(); }
     height: 52px; border-radius: 8px;
-    background: touch.has-hover ? Tokens.surface-hover : transparent; animate background { duration: 100ms; }
-    opacity: root.enabled ? 1 : 0.4;
-    accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled; accessible-checked: root.checked; accessible-value: root.toggle ? (root.checked ? "On" : "Off") : "";
-    accessible-action-default => { if root.enabled { root.activated(); } }
+    background: root.has-hover ? Tokens.surface-hover : transparent; animate background { duration: 100ms; }
+    accessible-label: root.label; accessible-enabled: root.enabled; accessible-checked: root.checked; accessible-value: root.toggle ? (root.checked ? "On" : "Off") : "";
     RowText { x: 12px; width: parent.width - 72px; height: parent.height; text: root.label; color: root.danger ? Tokens.danger : Tokens.text; vertical-alignment: center; }
     if !root.toggle && !root.danger: Image { x: parent.width - 28px; y: 16px; width: 20px; height: 20px; source: @image-url("../assets/icons/next.svg"); colorize: Tokens.secondary; }
     if root.toggle: Rectangle { x: parent.width - 52px; y: 14px; width: 40px; height: 24px; border-radius: 12px; background: Tokens.surface-2;
         states [ checked when root.checked: { background: Tokens.accent; knob.x: 18px; in-out { animate background, knob.x { duration: 120ms; } } } ]
         knob := Rectangle { x: 2px; y: 2px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.bg; }
     }
-    focus := FocusScope {
-        enabled: root.enabled; accessible-role: none;
-        key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.activated(); return accept; } reject }
-        Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: 8px; background: transparent; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
-    }
-    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { focus.focus(); root.activated(); } }
+    FocusRing { focused: root.has-focus; outset: -2px; border-radius: 8px; }
 }
 component ProfileActionButton inherits Rectangle {
     in property <string> label;
@@ -49,7 +30,7 @@ component ProfileActionButton inherits Rectangle {
     in property <bool> enabled: true;
     out property <bool> has-focus: button.has-focus;
     callback activated();
-    public function focus-button() { button.focus-button(); }
+    forward-focus: button;
     width: 72px; height: 72px;
     button := IconButton { x: (parent.width - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: root.label; icon: root.icon; enabled: root.enabled; activated => { root.activated(); } }
     Text { y: 48px; width: parent.width; text: root.label; horizontal-alignment: center; font-size: Tokens.small; color: Tokens.text; }
@@ -57,17 +38,17 @@ component ProfileActionButton inherits Rectangle {
 export component Detail inherits FocusScope {
     property <length> name-width: 288px;
     focus-on-tab-navigation: false;
-    public function focus-first() { if State.detail-depth > 1 { back.focus-button(); } else { root.focus-open(); } }
-    public function focus-open() { if State.detail-page == DetailPageMode.profile { more.focus-button(); } else { close.focus-button(); } }
+    public function focus-first() { if State.detail-depth > 1 { back.focus(); } else { root.focus-open(); } }
+    public function focus-open() { if State.detail-page == DetailPageMode.profile { more.focus(); } else { close.focus(); } }
     public function focus-last() {
         if State.detail-page == DetailPageMode.members { members.focus-last(); }
-        else if State.detail-page == DetailPageMode.group { if !State.group-room && !State.group-left { leave.focus-row(); } else { member-row.focus-row(); } }
-        else if State.profile-friend { rename.focus-button(); }
-        else if State.profile-addable { add.focus-button(); }
-        else if State.profile-available { chat.focus-button(); }
+        else if State.detail-page == DetailPageMode.group { if !State.group-room && !State.group-left { leave.focus(); } else { member-row.focus(); } }
+        else if State.profile-friend { rename.focus(); }
+        else if State.profile-addable { add.focus(); }
+        else if State.profile-available { chat.focus(); }
         else { avatar-focus.focus(); }
     }
-    function open-dialog(kind: DetailAction) { State.detail-dialog = kind; rename-value.text = State.profile-name; if kind == DetailAction.rename { rename-value.focus-field(); } else { cancel.focus(); } }
+    callback open-dialog(DetailAction);
     capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
     key-pressed(event) => {
         if State.ime-active { return reject; }
@@ -93,12 +74,10 @@ export component Detail inherits FocusScope {
                 HorizontalLayout { alignment: center;
                     Rectangle { width: 96px; height: 96px;
                         Avatar { width: 96px; height: 96px; identity: State.profile-id; initial: State.profile-initial; picture: State.profile-avatar; }
-                        avatar-focus := FocusScope { accessible-role: button; accessible-label: "Open profile photo";
-                            accessible-action-default => { State.profile-photo(); }
-                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.profile-photo(); return accept; } reject }
-                            Rectangle { background: transparent; border-radius: 48px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+                        avatar-focus := Pressable { accessible-label: "Open profile photo";
+                            activated => { State.profile-photo(); }
+                            FocusRing { focused: avatar-focus.has-focus; border-radius: 48px; }
                         }
-                        TouchArea { clicked => { avatar-focus.focus(); State.profile-photo(); } }
                     }
                 }
                 HorizontalLayout { alignment: center; spacing: 8px;
@@ -135,35 +114,5 @@ export component Detail inherits FocusScope {
     menu := ContextMenuArea {
         enabled: false;
         Menu { MenuItem { title: "Copy name"; activated => { State.copy-text(State.profile-name); } } }
-    }
-    Rectangle { visible: State.detail-dialog != DetailAction.none; x: -root.absolute-position.x; y: -root.absolute-position.y; width: State.window-width; height: State.window-height; background: Tokens.scrim; TouchArea {}
-        Rectangle { width: min(400px, parent.width - 32px); height: dialog-content.preferred-height; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: Tokens.divider;
-            FocusScope {
-                key-pressed(event) => { if event.text == Key.Escape { State.detail-dialog = DetailAction.none; root.focus-last(); return accept; } if event.text == Key.Tab {
-                    if event.modifiers.shift {
-                        if dialog-close.has-focus { confirm.focus(); }
-                        else if confirm.has-focus { cancel.focus(); }
-                        else if cancel.has-focus && State.detail-dialog == DetailAction.rename { rename-value.focus-field(); }
-                        else { dialog-close.focus-button(); }
-                    } else {
-                        if confirm.has-focus { dialog-close.focus-button(); }
-                        else if dialog-close.has-focus && State.detail-dialog == DetailAction.rename { rename-value.focus-field(); }
-                        else if cancel.has-focus { confirm.focus(); }
-                        else { cancel.focus(); }
-                    } return accept;
-                } reject }
-                dialog-content := VerticalLayout { padding: 24px; spacing: 16px;
-                    HorizontalLayout { dialog-title := Text { text: State.detail-dialog == DetailAction.rename ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
-                        dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.detail-dialog = DetailAction.none; root.focus-last(); } }
-                    }
-                    rename-value := NameField { visible: State.detail-dialog == DetailAction.rename; height: self.visible ? 36px : 0px; }
-                    if State.detail-dialog == DetailAction.leave: Text { text: "You will no longer receive messages in this group."; wrap: word-wrap; }
-                    HorizontalLayout { alignment: end; spacing: 8px;
-                        cancel := Button { text: "Cancel"; clicked => { State.detail-dialog = DetailAction.none; root.focus-last(); } }
-                        confirm := Button { text: State.detail-dialog == DetailAction.rename ? "Save" : "Leave"; primary: true; danger: State.detail-dialog == DetailAction.leave; clicked => { let kind = State.detail-dialog; State.detail-dialog = DetailAction.none; State.detail-action(kind, rename-value.text); root.focus-first(); } }
-                    }
-                }
-            }
-        }
     }
 }

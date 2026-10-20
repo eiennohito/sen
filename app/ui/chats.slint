@@ -1,8 +1,8 @@
+import { FocusRing, Button } from "button.slint";
 import { PreviewMode } from "types.slint";
 import { ChatCategory } from "types.slint";
 import { ListRow, RowText } from "list-row.slint";
 import { EmptyState } from "empty-state.slint";
-import { Button } from "button.slint";
 import { ListView } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -10,21 +10,16 @@ import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 import { SearchField } from "search-field.slint";
 export component Chats inherits Rectangle {
+    property <length> row-height: max(68px, Tokens.base * 2.8 + 20px);
     property <[{kind: ChatCategory, label: string}]> categories: [{kind: ChatCategory.all, label: "All"}, {kind: ChatCategory.friends, label: "Friends"}, {kind: ChatCategory.groups, label: "Groups"}];
     visible: State.section == 0;
     out property <bool> has-focus: search.contains-focus || chips-focus.has-focus || list-focus.has-focus;
-    public function reveal(index: int) {
-        chat-list.jump(State.list-y);
-        let top = index * State.chat-row-height;
-        let bottom = top + State.chat-row-height;
-        let y = top + State.list-y < 0px ? -top : bottom + State.list-y > chat-list.visible-height ? chat-list.visible-height - bottom : State.list-y;
-        chat-list.jump(y);
-    }
+    public function reveal(index: int) { chat-list.reveal(index, root.row-height); }
     public function focus-search-last() { chips-focus.focus(); }
     public function focus-list() { list-focus.focus(); }
     public function move-cursor(delta: int) {
         State.result-focus = max(0, min(State.chats.length - 1, State.result-focus + delta));
-        chat-list.jump(-max(0px, State.result-focus * State.chat-row-height - chat-list.visible-height / 2));
+        chat-list.centre(State.result-focus * root.row-height);
     }
     public function open-result() {
         if State.result-focus >= 0 && State.result-focus < State.chats.length { State.select-chat(State.chats[State.result-focus].index); State.show-conversation = true; State.focus-composer(); }
@@ -36,7 +31,7 @@ export component Chats inherits Rectangle {
                     height: 42px;
                     Text { text: "Chats"; color: Tokens.text; font-size: Tokens.heading; font-weight: 800; vertical-alignment: center; }
                     Text { width: State.narrow ? Tokens.small * 6.5 : 0px; horizontal-stretch: 0; text: State.narrow && State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
-                    new-chat-button := IconButton { label: "New chat"; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { chips-focus.focus(); } else if State.narrow && State.connection-actions-enabled { State.focus-connection-first(); } else { list-focus.focus(); } return accept; } reject } icon: @image-url("../assets/icons/new-chat.svg"); activated => { State.open-new-chat(); } }
+                    new-chat-button := IconButton { label: "New chat"; key-event(event) => { if event.text == Key.Tab { if event.modifiers.shift { chips-focus.focus(); } else if State.narrow && State.connection-actions-enabled { State.focus-connection-first(); } else { list-focus.focus(); } return accept; } reject } icon: @image-url("../assets/icons/new-chat.svg"); activated => { State.open-new-chat(); } }
                 }
                 HorizontalLayout {
                     search := SearchField {
@@ -66,7 +61,7 @@ export component Chats inherits Rectangle {
                     accessible-role: button; accessible-label: root.categories[self.cursor].label;
                     key-pressed(event) => {
                         if State.ime-active { return reject; }
-                        if event.text == Key.Tab { if event.modifiers.shift { search.focus-last(); } else { new-chat-button.focus-button(); } return accept; }
+                        if event.text == Key.Tab { if event.modifiers.shift { search.focus-last(); } else { new-chat-button.focus(); } return accept; }
                         if event.text == Key.LeftArrow || event.text == Key.RightArrow { self.cursor = mod(self.cursor + (event.text == Key.RightArrow ? 1 : 2), 3); return accept; }
                         if event.text == Key.Return || event.text == " " { State.category = root.categories[self.cursor].kind; State.filter-category(); return accept; }
                         reject
@@ -77,7 +72,7 @@ export component Chats inherits Rectangle {
                         height: 28px; border-radius: 14px;
                         background: Tokens.surface-2;
                         states [ selected when State.category == c.kind: { background: Tokens.text; category-label.color: Tokens.bg; } ]
-                        border-width: chips-focus.has-focus && chips-focus.cursor == i ? 2px : 0px; border-color: (chips-focus.has-focus && chips-focus.cursor == i) || State.category == c.kind ? Tokens.accent : Tokens.border;
+                        FocusRing { focused: chips-focus.has-focus && chips-focus.cursor == i; border-radius: 14px; border-color: Tokens.accent; }
                         accessible-role: button; accessible-label: c.label;
                         accessible-item-selectable: true; accessible-item-selected: State.category == c.kind;
                         accessible-action-default => { chips-focus.cursor = i; chips-focus.focus(); State.category = c.kind; State.filter-category(); }
@@ -91,7 +86,7 @@ export component Chats inherits Rectangle {
                     accessible-role: list; accessible-label: "Conversations";
                     key-pressed(event) => {
                         if State.ime-active { return reject; }
-                        if event.text == Key.Tab { if event.modifiers.shift { if State.narrow && State.connection-actions-enabled { State.focus-sign-in-opener(); } else { new-chat-button.focus-button(); } } else { State.focus-after-browser(); } return accept; }
+                        if event.text == Key.Tab { if event.modifiers.shift { if State.narrow && State.connection-actions-enabled { State.focus-sign-in-opener(); } else { new-chat-button.focus(); } } else { State.focus-after-browser(); } return accept; }
                         if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
                         if event.text == Key.Home { State.result-focus = 0; chat-list.jump(0px); return accept; }
                         if event.text == Key.End { State.result-focus = State.chats.length - 1; chat-list.jump(-chat-list.extent); return accept; }
@@ -108,18 +103,18 @@ export component Chats inherits Rectangle {
                     content-width: self.width; vertical-scrollbar-policy: always-off;
                     horizontal-scrollbar-policy: always-off; accessible-role: none;
 for chat[i] in State.chats: ListRow {
-                        width: chat-list.visible-width; height: State.chat-row-height;
+                        width: chat-list.visible-width; height: root.row-height;
                         border-radius: 8px; clip: true;
                         states [
                             selected when chat.index == State.selected-chat: { background: Tokens.selection; }
                             hovered when row-touch.has-hover: { background: Tokens.chat-hover; in-out { animate background { duration: 100ms; } } }
                         ]
-                        border-width: (list-focus.has-focus || search.has-focus) && i == State.result-focus ? 2px : 0px; border-color: Tokens.accent;
+                        FocusRing { focused: (list-focus.has-focus || search.has-focus) && i == State.result-focus; border-radius: 8px; border-color: Tokens.accent; }
                         identity: chat.id; initial: chat.initial; avatar: chat.avatar; title: chat.title; time: chat.time; muted: chat.muted;
                         preview-mode: chat.preview-mode; draft-preview: chat.draft-preview;
                         subtitle: chat.preview; subtitle-runs: chat.preview-runs;
                         trailing-width: markers.width + Tokens.space-1;
-                        show-preview: i * State.chat-row-height + State.list-y + State.chat-row-height >= 0px && i * State.chat-row-height + State.list-y <= chat-list.visible-height;
+                        show-preview: i * root.row-height + State.list-y + root.row-height >= 0px && i * root.row-height + State.list-y <= chat-list.visible-height;
                             markers := HorizontalLayout {
                                 x: parent.width - self.width - Tokens.space-3; y: Tokens.space-2 + Tokens.base * 1.5 + 2px; spacing: 4px; width: (chat.preview-mode == PreviewMode.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
                                 if !chat.failed && (chat.unread > 0 || chat.unread-unknown): Rectangle { width: 32px; height: 20px; states [ unknown when chat.unread-unknown: { width: 8px; height: 8px; unread-label.visible: false; } ] border-radius: self.height / 2; background: chat.muted ? Tokens.secondary : Tokens.accent; unread-label := RowText { text: chat.unread > 999 ? "999+" : "" + chat.unread; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }

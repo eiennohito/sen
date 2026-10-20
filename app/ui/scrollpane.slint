@@ -57,6 +57,13 @@ export component Pane inherits Rectangle {
         if root.virtual { root.seek-pending = true; }
         root.offset = root.seek-y;
     }
+    public function centre(top: length) { root.jump(-max(0px, top - root.visible-height / 2)); }
+    public function reveal(index: int, row-height: length) {
+        root.jump(root.offset);
+        let top = index * row-height;
+        let bottom = top + row-height;
+        root.jump(top + root.offset < 0px ? -top : bottom + root.offset > root.visible-height ? root.visible-height - bottom : root.offset);
+    }
     public function scroll(delta: length) {
         if root.residual > 0px {
             if delta < 0px {

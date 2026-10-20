@@ -1,65 +1,61 @@
+import { Dialog, Button } from "button.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
-import { Button } from "button.slint";
 import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
-export component Attachments inherits Rectangle {
-    visible: State.attachments-open; background: Tokens.scrim;
+export component Attachments inherits Dialog {
+    visible: State.attachments-open;
     property <int> focus-item: -1;
     property <int> focus-serial;
     function focus-remove(index: int) { root.focus-item = index; root.focus-serial += 1; }
-    TouchArea { }
     changed visible => { if self.visible { cancel.focus(); } }
-    FocusScope {
-        key-pressed(event) => {
-            if State.ime-active { return reject; }
-            if event.text == Key.Escape { State.cancel-attachments(); return accept; }
-            if event.text == Key.Tab && !event.modifiers.shift && submit.has-focus { if State.attachment-items.length > 0 { root.focus-remove(0); } else { cancel.focus(); } return accept; }
-            if event.text == Key.Tab && !event.modifiers.shift && cancel.has-focus && !submit.enabled { if State.attachment-items.length > 0 { root.focus-remove(0); } else { close.focus-button(); } return accept; }
-            if event.text == Key.Tab && !event.modifiers.shift && close.has-focus { cancel.focus(); return accept; }
-            if event.text == Key.Tab && event.modifiers.shift && cancel.has-focus { close.focus-button(); return accept; }
-            if event.text == Key.Tab && event.modifiers.shift && close.has-focus { if State.attachment-items.length > 0 { root.focus-remove(State.attachment-items.length - 1); } else if submit.enabled { submit.focus(); } else { cancel.focus(); } return accept; }
-            reject
+
+    panel-width: min(480px, root.width - 32px);
+    panel-height: min(root.height - 32px, 148px + max(1, State.attachment-items.length) * 64px);
+    panel-border: Tokens.border;
+    dismissed => { State.cancel-attachments(); }
+    key-pressed(event) => {
+        if State.ime-active { return reject; }
+        if event.text == Key.Tab && !event.modifiers.shift && submit.has-focus { if State.attachment-items.length > 0 { root.focus-remove(0); } else { cancel.focus(); } return accept; }
+        if event.text == Key.Tab && !event.modifiers.shift && cancel.has-focus && !submit.enabled { if State.attachment-items.length > 0 { root.focus-remove(0); } else { close.focus(); } return accept; }
+        if event.text == Key.Tab && !event.modifiers.shift && close.has-focus { cancel.focus(); return accept; }
+        if event.text == Key.Tab && event.modifiers.shift && cancel.has-focus { close.focus(); return accept; }
+        if event.text == Key.Tab && event.modifiers.shift && close.has-focus { if State.attachment-items.length > 0 { root.focus-remove(State.attachment-items.length - 1); } else if submit.enabled { submit.focus(); } else { cancel.focus(); } return accept; }
+        reject
+    }
+    VerticalLayout { padding: 24px; spacing: 16px;
+        HorizontalLayout { spacing: 8px;
+            Text { text: "Send to " + State.attachments-chat; color: Tokens.text; font-size: Tokens.heading; font-weight: 600; overflow: elide; }
+            close := IconButton { label: "Close attachments"; icon: @image-url("../assets/icons/close.svg"); activated => { State.cancel-attachments(); } }
         }
-        Rectangle {
-            width: min(480px, parent.width - 32px); height: min(parent.height - 32px, 148px + max(1, State.attachment-items.length) * 64px);
-            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-            background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: Tokens.border;
-            VerticalLayout { padding: 24px; spacing: 16px;
-                HorizontalLayout { spacing: 8px;
-                    Text { text: "Send to " + State.attachments-chat; color: Tokens.text; font-size: Tokens.heading; font-weight: 600; overflow: elide; }
-                    close := IconButton { label: "Close attachments"; icon: @image-url("../assets/icons/close.svg"); activated => { State.cancel-attachments(); } }
-                }
-                Pane { full-height: State.attachment-items.length * 64px;
-                    VerticalLayout { spacing: 0px; alignment: start;
-                        for item[index] in State.attachment-items: HorizontalLayout { height: 64px; spacing: 12px;
-                            Rectangle { width: 56px; height: 56px; background: Tokens.surface-2; border-radius: 8px;
-                                if item.photo: Image { source: item.picture; image-fit: contain; width: 100%; height: 100%; }
-                                if !item.photo: Image { source: @image-url("../assets/icons/file.svg"); colorize: Tokens.secondary; width: 24px; height: 24px; x: 16px; y: 16px; }
-                            }
-                            VerticalLayout { alignment: center; spacing: 2px;
-                                Text { text: item.name; font-size: Tokens.base; color: Tokens.text; overflow: elide; }
-                                Text { text: item.size; color: Tokens.secondary; font-size: Tokens.small; }
-                                if item.error != "": Text { text: item.error; color: Tokens.danger; font-size: Tokens.small; }
-                            }
-                            IconButton { label: "Remove " + item.name;
-                                property <int> focus-request: root.focus-serial;
-                                changed focus-request => { if root.focus-item == index { self.focus-button(); } }
-                                key-pressed(event) => { if event.text == Key.Tab {
-                                    if event.modifiers.shift { if index > 0 { root.focus-remove(index - 1); } else if submit.enabled { submit.focus(); } else { cancel.focus(); } }
-                                    else if index + 1 < State.attachment-items.length { root.focus-remove(index + 1); } else { close.focus-button(); }
-                                    return accept;
-                                } reject }
-                                icon: @image-url("../assets/icons/close.svg"); activated => { State.remove-attachment(index); cancel.focus(); } }
-                        }
+        Pane { full-height: State.attachment-items.length * 64px;
+            VerticalLayout { spacing: 0px; alignment: start;
+                for item[index] in State.attachment-items: HorizontalLayout { height: 64px; spacing: 12px;
+                    Rectangle { width: 56px; height: 56px; background: Tokens.surface-2; border-radius: 8px;
+                        if item.photo: Image { source: item.picture; image-fit: contain; width: 100%; height: 100%; }
+                        if !item.photo: Image { source: @image-url("../assets/icons/file.svg"); colorize: Tokens.secondary; width: 24px; height: 24px; x: 16px; y: 16px; }
                     }
-                }
-                if State.attachments-error != "": Text { text: State.attachments-error; font-size: Tokens.small; color: Tokens.danger; wrap: word-wrap; }
-                HorizontalLayout { alignment: end; spacing: 8px;
-                    cancel := Button { text: "Cancel"; clicked => { State.cancel-attachments(); } }
-                    submit := Button { text: "Send " + State.attachments-count; primary: true; enabled: State.attachments-count > 0; clicked => { State.send-attachments(); } }
+                    VerticalLayout { alignment: center; spacing: 2px;
+                        Text { text: item.name; font-size: Tokens.base; color: Tokens.text; overflow: elide; }
+                        Text { text: item.size; color: Tokens.secondary; font-size: Tokens.small; }
+                        if item.error != "": Text { text: item.error; color: Tokens.danger; font-size: Tokens.small; }
+                    }
+                    IconButton { label: "Remove " + item.name;
+                        property <int> focus-request: root.focus-serial;
+                        changed focus-request => { if root.focus-item == index { self.focus(); } }
+                        key-event(event) => { if event.text == Key.Tab {
+                                if event.modifiers.shift { if index > 0 { root.focus-remove(index - 1); } else if submit.enabled { submit.focus(); } else { cancel.focus(); } }
+                                else if index + 1 < State.attachment-items.length { root.focus-remove(index + 1); } else { close.focus(); }
+                                return accept;
+                            } reject }
+                        icon: @image-url("../assets/icons/close.svg"); activated => { State.remove-attachment(index); cancel.focus(); } }
                 }
             }
+        }
+        if State.attachments-error != "": Text { text: State.attachments-error; font-size: Tokens.small; color: Tokens.danger; wrap: word-wrap; }
+        HorizontalLayout { alignment: end; spacing: 8px;
+            cancel := Button { text: "Cancel"; clicked => { State.cancel-attachments(); } }
+            submit := Button { text: "Send " + State.attachments-count; primary: true; enabled: State.attachments-count > 0; clicked => { State.send-attachments(); } }
         }
     }
 }

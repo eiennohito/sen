@@ -1,10 +1,10 @@
+import { Pressable, FocusRing, Button } from "button.slint";
 import { DeliveryState, RecoveryKind, HistoryRowKind, MessageRow, MessageKind, RunPosition } from "types.slint";
 import { ReactionChip } from "reaction-chip.slint";
 import { ReplyQuote } from "reply-quote.slint";
 import { IconButton } from "icon-button.slint";
 import { Avatar } from "avatar.slint";
 import { DatePill } from "history-pill.slint";
-import { Button } from "button.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { RichFlow } from "rich-flow.slint";
@@ -31,24 +31,17 @@ component MessageMenu inherits Rectangle {
         Rectangle { width: 100%; height: 100%; @children }
     }
 }
-component TextAction inherits Rectangle {
+component TextAction inherits Pressable {
     in property <string> text;
-    in property <string> action-label: root.text; in property <bool> enabled: true;
-    in property <bool> focus-on-click: true;
+    in property <string> action-label: root.text;
     callback clicked();
     width: label.preferred-width + 8px; height: max(24px, Tokens.small * 1.5);
     horizontal-stretch: 0;
-    background: touch.has-hover ? Tokens.alternate-background : transparent; animate background { duration: 100ms; }
-    opacity: root.enabled ? 1 : 0.45;
+    background: root.has-hover ? Tokens.alternate-background : transparent; animate background { duration: 100ms; }
     label := Text { text: root.text; color: Tokens.accent-strong; font-size: Tokens.small; vertical-alignment: center; horizontal-alignment: center; }
-    action-focus := FocusScope {
-        enabled: root.enabled; accessible-role: button; accessible-label: root.action-label;
-        accessible-action-default => { if root.enabled { root.clicked(); } }
-        key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.clicked(); return accept; } reject }
-        Rectangle { background: transparent; border-width: parent.has-focus ? 1px : 0px; border-color: Tokens.accent; }
-    }
-    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { if root.focus-on-click { action-focus.focus(); } root.clicked(); } }
-    public function focus-action() { action-focus.focus(); }
+    accessible-label: root.action-label;
+    activated => { root.clicked(); }
+    FocusRing { thickness: 1px; focused: root.has-focus; border-radius: 0px; border-color: Tokens.accent; }
 }
 export component Message inherits TouchArea {
     in property <MessageRow> message;
@@ -125,13 +118,11 @@ export component Message inherits TouchArea {
                                                         width: 32px; height: 32px; border-radius: 16px;
                                                         background: root.message.own-reaction == kind.id ? Tokens.surface-selected : reaction-touch.has-hover ? Tokens.surface-hover : transparent;
                                                         Text { text: kind.glyph; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
-                                                        FocusScope {
-                                                            Rectangle { background: transparent; border-radius: 16px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
-                                                            accessible-role: button; accessible-label: kind.label; accessible-item-selected: root.message.own-reaction == kind.id;
-                                                            accessible-action-default => { State.react(root.message.id, kind.id); reactions.close(); }
-                                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.react(root.message.id, kind.id); reactions.close(); return accept; } reject }
+                                                        reaction-touch := Pressable {
+                                                            FocusRing { focused: parent.has-focus; border-radius: 16px; }
+                                                            accessible-label: kind.label; accessible-item-selected: root.message.own-reaction == kind.id;
+                                                            activated => { State.react(root.message.id, kind.id); reactions.close(); }
                                                         }
-                                                        reaction-touch := TouchArea { clicked => { State.react(root.message.id, kind.id); reactions.close(); } }
                                                     }
                                                 }
                                             }
@@ -163,20 +154,17 @@ export component Message inherits TouchArea {
                                         surface: root.bubble-surface;
                                         sender: root.message.reply-sender; sender-id: root.message.reply-sender-id; preview: root.message.reply-preview;
                                         picture: root.message.reply-picture; has-picture: root.message.reply-has-picture;
-                                        quote-focus := FocusScope {
-                                            accessible-role: button; accessible-label: "Jump to replied message"; accessible-description: root.message.reply-preview;
-                                            accessible-action-default => { State.jump-message(root.message.reply-id); }
-                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.jump-message(root.message.reply-id); return accept; } reject }
-                                            Rectangle { background: transparent; border-width: parent.has-focus ? 1px : 0px; border-color: Tokens.accent; }
+                                        quote-focus := Pressable {
+                                            accessible-label: "Jump to replied message"; accessible-description: root.message.reply-preview;
+                                            activated => { State.jump-message(root.message.reply-id); }
+                                            FocusRing { thickness: 1px; focused: parent.has-focus; border-radius: 0px; border-color: Tokens.accent; }
                                         }
-                                        TouchArea { mouse-cursor: pointer; clicked => { quote-focus.focus(); State.jump-message(root.message.reply-id); } }
                                     }
                                     text-body := MessageMenu {
                                         message: root.message; text-actions: true; rich: false;
                                         action(kind) => { message-bubble.action(kind); }
-                                        body-measure := Text { visible: false; text: root.message.body; font-size: Tokens.base; wrap: word-wrap; }
                                         visible: root.message.kind != MessageKind.photo && !root.card && root.message.body != "" && (root.message.kind != MessageKind.sticker || root.message.image-key == "");
-                                        height: self.visible ? body.preferred-height : 0px; preferred-width: body-measure.preferred-width;
+                                        height: self.visible ? body.preferred-height : 0px; preferred-width: body.preferred-width;
                                         states [ rich when root.showing-rich: {
                                             height: rich-flow.height; rich: true; rich-body.visible: true; body.visible: false;
                                             preferred-width: root.rich-width > 0 ? root.rich-width * 1px : Tokens.bubble-max;
@@ -189,7 +177,7 @@ export component Message inherits TouchArea {
                                                 accessible-action-default => { self.focus(); }
                                                 key-pressed(event) => {
                                                     if State.ime-active { return reject; }
-                                                    if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else { State.focus-composer(); } return accept; }
+                                                    if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus(); } else { State.focus-composer(); } return accept; }
                                                     return State.reading-key(event);
                                                 }
                                             }
@@ -206,13 +194,13 @@ export component Message inherits TouchArea {
                                         }
                                         body := TextInput {
                                             text: root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
-                                            wrap: body-measure.min-width > self.width ? char-wrap : word-wrap; color: root.body-color;
+                                            wrap: word-wrap; color: root.body-color;
                                             font-size: Tokens.base; height: self.preferred-height;
                                             accessible-label: root.message.accessible-label; selection-background-color: Tokens.message-selection;
                                             selection-foreground-color: Tokens.message-selection-foreground;
                                             key-pressed(event) => {
                                                 if State.ime-active { return reject; }
-                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else if !State.following && State.has-chat { State.focus-reading-before-editor(); } else { State.focus-composer(); } return accept; }
+                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus(); } else if !State.following && State.has-chat { State.focus-reading-before-editor(); } else { State.focus-composer(); } return accept; }
                                                 if State.reading-key(event) == accept { return accept; }
                                                 reject
                                             }
@@ -227,15 +215,14 @@ export component Message inherits TouchArea {
                                             Image { x: 10px; y: 10px; width: 20px; height: 20px; colorize: Tokens.text; source: root.message.kind == MessageKind.video ? @image-url("../assets/icons/video.svg") : root.message.kind == MessageKind.voice ? @image-url("../assets/icons/voice.svg") : root.message.kind == MessageKind.file ? @image-url("../assets/icons/file.svg") : root.message.kind == MessageKind.contact ? @image-url("../assets/icons/contact.svg") : root.message.kind == MessageKind.location ? @image-url("../assets/icons/location.svg") : root.message.kind == MessageKind.undecryptable ? @image-url("../assets/icons/lock.svg") : @image-url("../assets/icons/unknown.svg"); }
                                         }
                                         VerticalLayout { spacing: 4px; alignment: center;
-                                            card-title := TextInput { changed has-focus => { root.card-focused = self.has-focus; } read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else { State.focus-composer(); } return accept; } State.reading-key(event) } }
+                                            card-title := TextInput { changed has-focus => { root.card-focused = self.has-focus; } read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus(); } else { State.focus-composer(); } return accept; } State.reading-key(event) } }
                                             card-meta := Text { text: root.message.detail; color: Tokens.secondary; font-size: Tokens.small; }
                                         }
                                         if root.message.kind == MessageKind.file && (root.message.delivery == DeliveryState.sent || root.message.delivery == DeliveryState.read) && (!root.message.file-failed || root.message.file-retryable): IconButton { label: root.message.file-failed ? "Retry file" : "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !State.file-saving && !root.message.local-media; activated => { State.save-file(root.message.id); } }
                                     }
                                     if !root.card && root.message.detail != "": Rectangle {
                                         height: detail.preferred-height;
-                                        detail-measure := Text { visible: false; text: root.message.detail; font-size: Tokens.small; wrap: word-wrap; }
-                                        detail := Text { x: 0px; y: 0px; width: parent.width; text: root.message.detail; font-size: Tokens.small; color: Tokens.secondary; wrap: detail-measure.min-width > self.width ? char-wrap : word-wrap; }
+                                        detail := Text { x: 0px; y: 0px; width: parent.width; text: root.message.detail; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
                                     }
                                     if root.message.uploading && root.card: Rectangle { height: 3px; background: Tokens.surface-2;
                                         accessible-role: text; accessible-label: "Uploading " + round(root.message.upload-progress * 100) + "%";
@@ -244,8 +231,7 @@ export component Message inherits TouchArea {
                                     if root.message.file-failed: Text { text: root.message.file-error; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
                                     if State.file-save-id == root.message.id && State.file-save-status != "": Rectangle {
                                         height: saved.preferred-height;
-                                        save-measure := Text { visible: false; text: State.file-save-status; font-size: Tokens.small; wrap: word-wrap; }
-                                        saved := Text { x: 0px; y: 0px; width: parent.width; text: State.file-save-status; font-size: Tokens.small; color: Tokens.secondary; wrap: save-measure.min-width > self.width ? char-wrap : word-wrap; }
+                                        saved := Text { x: 0px; y: 0px; width: parent.width; text: State.file-save-status; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
                                     }
                                     if root.message.image-key != "" || root.message.kind == MessageKind.photo: Rectangle {
                                         // Geometry does not change when a thumbnail arrives or fails.
@@ -268,9 +254,12 @@ export component Message inherits TouchArea {
                                             property <bool> viewer-open: State.viewer-open;
                                             changed viewer-open => { if !self.viewer-open && root.message.image-key == State.viewer-key { self.focus(); } }
                                             accessible-action-default => { self.focus(); State.open-photo(root.message.image-key); }
-                                            TouchArea { mouse-cursor: pointer; pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { message-bubble.show({x: self.mouse-x, y: self.mouse-y}); } } clicked => { parent.focus(); State.open-photo(root.message.image-key); } }
-                                            key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-photo(root.message.image-key); return accept; } reject }
-                                            Rectangle { visible: parent.has-focus; border-width: 2px; border-color: Tokens.accent; background: transparent; }
+                                            key-pressed(event) => { if !State.ime-active && (event.text == Key.Return || event.text == " ") { State.open-photo(root.message.image-key); return accept; } reject }
+                                            TouchArea {
+                                                clicked => { parent.focus(); State.open-photo(root.message.image-key); }
+                                                pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { message-bubble.show({x: self.mouse-x, y: self.mouse-y}); } }
+                                            }
+                                            FocusRing { focused: parent.has-focus; border-radius: 0px; border-color: Tokens.accent; }
                                         }
                                         if root.message.uploading: Rectangle {
                                             width: root.message.has-picture ? min(parent.width, parent.height * root.message.picture.width / max(1, root.message.picture.height)) : parent.width;
@@ -294,7 +283,7 @@ export component Message inherits TouchArea {
                                 spacing: 8px; alignment: start;
                                 Text { text: root.message.delivery-detail; wrap: word-wrap; min-width: 0px; horizontal-stretch: 1; color: Tokens.danger; font-size: Tokens.small; vertical-alignment: center; }
                                 TextAction {
-                                    text: root.message.file-missing ? "File missing" : "Retry"; focus-on-click: false;
+                                    text: root.message.file-missing ? "File missing" : "Retry"; focus-on-activation: false;
                                     enabled: State.connected && !root.message.file-missing;
                                     clicked => { State.retry-message(root.message.id); }
                                 }
@@ -336,7 +325,7 @@ export component Message inherits TouchArea {
             x: 30px; y: 0px; width: 28px; height: 28px; label: "Reply"; icon: @image-url("../assets/icons/reply.svg");
             visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus || react-button.has-focus);
             activated => { State.reply(root.message.id); }
-            key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { react-button.focus-button(); } else { State.focus-composer(); } return accept; } reject }
+            key-event(event) => { if event.text == Key.Tab { if event.modifiers.shift { react-button.focus(); } else { State.focus-composer(); } return accept; } reject }
         }
         react-button := IconButton {
             x: 0px; y: 0px;
@@ -344,7 +333,7 @@ export component Message inherits TouchArea {
             label: "React"; icon: @image-url("../assets/icons/react.svg");
             visible: root.message.can-react && (root.has-hover || message-bubble.selected || self.has-focus || reply-button.has-focus);
             activated => { reactions.show(); }
-            key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { if root.card { State.focus-history(); } else { body.focus(); } } else { reply-button.focus-button(); } return accept; } reject }
+            key-event(event) => { if event.text == Key.Tab { if event.modifiers.shift { if root.card { State.focus-history(); } else { body.focus(); } } else { reply-button.focus(); } return accept; } reject }
         }
     }
 }

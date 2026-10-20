@@ -1,3 +1,4 @@
+import { Dialog } from "../button.slint";
 import { DemoAutomation } from "demo-state.slint";
 import { ExtensionState } from "demo-state.slint";
 import { Button, ScrollView } from "std-widgets.slint";
@@ -47,82 +48,74 @@ export component DemoScenarios inherits Rectangle {
     ];
     property <int> last-focus-request;
     property <bool> last-scenario-focused;
-    dialog := Rectangle {
+    dialog := Dialog {
         visible: ExtensionState.demo-scenarios-open;
         width: root.width; height: root.height;
-        Rectangle {
-            background: Tokens.foreground.with-alpha(0.32);
-            TouchArea { scroll-event(event) => { accept } }
+        background: Tokens.foreground.with-alpha(0.32);
+        panel-width: State.narrow ? root.width : min(560px, root.width - 48px);
+        panel-height: State.narrow ? root.height : min(640px, root.height - 48px);
+        panel-border: Tokens.border;
+
+        dismissed => { root.dismiss(); }
+        key-pressed(event) => {
+            if event.text == Key.Tab {
+                if !root.media-menu && !event.modifiers.shift && close.has-focus { root.first-focus-request += 1; return accept; }
+                if !root.media-menu && event.modifiers.shift && root.first-scenario-focused { close.focus(); return accept; }
+                if event.modifiers.shift && close.has-focus { if root.media-menu { root.media-focus-last += 1; } else { root.last-focus-request += 1; } return accept; }
+                if !event.modifiers.shift && ((root.media-menu && root.media-last-focused) || (!root.media-menu && root.last-scenario-focused)) { close.focus(); return accept; }
+            }
+            reject
         }
-        scenario-panel := Rectangle {
-            x: State.narrow ? 0px : (parent.width - self.width) / 2;
-            y: State.narrow ? 0px : (parent.height - self.height) / 2;
-            width: State.narrow ? parent.width : min(560px, parent.width - 48px);
-            height: State.narrow ? parent.height : min(640px, parent.height - 48px);
-            background: Tokens.background; border-width: 1px; border-color: Tokens.border;
-            FocusScope {
-                key-pressed(event) => {
-                    if event.text == Key.Escape { root.dismiss(); return accept; }
-                    if event.text == Key.Tab {
-                        if !root.media-menu && !event.modifiers.shift && close.has-focus { root.first-focus-request += 1; return accept; }
-                        if !root.media-menu && event.modifiers.shift && root.first-scenario-focused { close.focus(); return accept; }
-                        if event.modifiers.shift && close.has-focus { if root.media-menu { root.media-focus-last += 1; } else { root.last-focus-request += 1; } return accept; }
-                        if !event.modifiers.shift && ((root.media-menu && root.media-last-focused) || (!root.media-menu && root.last-scenario-focused)) { close.focus(); return accept; }
-                    }
-                    reject
-                }
+        scenario-panel := VerticalLayout {
+            padding: 16px; spacing: 12px;
+            Text { text: "Demo scenarios"; font-size: Tokens.heading; color: Tokens.foreground; }
+            close := Button { text: "Close demo scenarios"; clicked => { root.dismiss(); } }
+            scenario-scroll := ScrollView {
+                horizontal-scrollbar-policy: always-off;
                 VerticalLayout {
-                    padding: 16px; spacing: 12px;
-                    Text { text: "Demo scenarios"; font-size: Tokens.heading; color: Tokens.foreground; }
-                    close := Button { text: "Close demo scenarios"; clicked => { root.dismiss(); } }
-                    scenario-scroll := ScrollView {
-                        horizontal-scrollbar-policy: always-off;
-                        VerticalLayout {
-                            padding-right: 12px; spacing: 8px; alignment: start;
-                            if ExtensionState.automation-background && !root.media-menu: HorizontalLayout { spacing: 8px;
-                                Rectangle { height: 32px; background: Tokens.surface-2;
-                                    TextInput { text <=> ExtensionState.attachment-injection-paths; accessible-label: "Attachment paths"; single-line: true; color: Tokens.text; font-size: Tokens.small; }
-                                }
-                                Rectangle { width: 140px; height: 32px; background: Tokens.surface-2;
-                                    Text { text: "Preview attachments"; color: Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
-                                    TouchArea { accessible-role: button; accessible-label: "Preview attachments"; clicked => { root.dismiss(); ExtensionState.inject-attachments(ExtensionState.attachment-injection-paths); } }
-                                }
-                            }
-                            if ExtensionState.demo-reset-enabled && !root.media-menu: Button { text: "Reset demo"; clicked => { root.dismiss(); ExtensionState.demo-automation(DemoAutomation.reset); } }
-                            demo-marker := Text { text: "Synthetic interaction scenarios"; accessible-value: ExtensionState.demo-instance; accessible-description: "Reset generation " + ExtensionState.demo-reset-generation; color: Tokens.secondary; font-size: Tokens.small; }
-                            VerticalLayout {
-                                visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
-                                spacing: 8px; alignment: start;
-                                for row in root.scenarios: VerticalLayout {
-                                    spacing: 8px;
-                                    HorizontalLayout {
-                                        for scenario in row: Button {
-                                            text: scenario.text; accessible-label: scenario.label;
-                                            horizontal-stretch: row.length == 1 ? 1 : 0;
-                                            property <int> first-request: root.first-focus-request;
-                                            changed first-request => { if scenario.kind == 0 && ExtensionState.demo-scenarios-open && !root.media-menu { self.focus(); } }
-                                            property <int> focus-request: root.last-focus-request;
-                                            changed focus-request => { if self.focus-request > 0 && ExtensionState.demo-scenarios-open && scenario.kind == 17 { self.focus(); } }
-                                            changed has-focus => { if scenario.kind == 0 { root.first-scenario-focused = self.has-focus; } if scenario.kind == 17 { root.last-scenario-focused = self.has-focus; } }
-                                            clicked => { if scenario.kind == -1 { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } else { root.run(scenario.kind); } }
-                                        }
-                                    }
+                    padding-right: 12px; spacing: 8px; alignment: start;
+                    if ExtensionState.automation-background && !root.media-menu: HorizontalLayout { spacing: 8px;
+                        Rectangle { height: 32px; background: Tokens.surface-2;
+                            TextInput { text <=> ExtensionState.attachment-injection-paths; accessible-label: "Attachment paths"; single-line: true; color: Tokens.text; font-size: Tokens.small; }
+                        }
+                        Rectangle { width: 140px; height: 32px; background: Tokens.surface-2;
+                            Text { text: "Preview attachments"; color: Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+                            TouchArea { accessible-role: button; accessible-label: "Preview attachments"; clicked => { root.dismiss(); ExtensionState.inject-attachments(ExtensionState.attachment-injection-paths); } }
+                        }
+                    }
+                    if ExtensionState.demo-reset-enabled && !root.media-menu: Button { text: "Reset demo"; clicked => { root.dismiss(); ExtensionState.demo-automation(DemoAutomation.reset); } }
+                    demo-marker := Text { text: "Synthetic interaction scenarios"; accessible-value: ExtensionState.demo-instance; accessible-description: "Reset generation " + ExtensionState.demo-reset-generation; color: Tokens.secondary; font-size: Tokens.small; }
+                    VerticalLayout {
+                        visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
+                        spacing: 8px; alignment: start;
+                        for row in root.scenarios: VerticalLayout {
+                            spacing: 8px;
+                            HorizontalLayout {
+                                for scenario in row: Button {
+                                    text: scenario.text; accessible-label: scenario.label;
+                                    horizontal-stretch: row.length == 1 ? 1 : 0;
+                                    property <int> first-request: root.first-focus-request;
+                                    changed first-request => { if scenario.kind == 0 && ExtensionState.demo-scenarios-open && !root.media-menu { self.focus(); } }
+                                    property <int> focus-request: root.last-focus-request;
+                                    changed focus-request => { if self.focus-request > 0 && ExtensionState.demo-scenarios-open && scenario.kind == 17 { self.focus(); } }
+                                    changed has-focus => { if scenario.kind == 0 { root.first-scenario-focused = self.has-focus; } if scenario.kind == 17 { root.last-scenario-focused = self.has-focus; } }
+                                    clicked => { if scenario.kind == -1 { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } else { root.run(scenario.kind); } }
                                 }
                             }
-                            if root.media-menu: Rectangle {
-                                height: media-options.preferred-height;
-                                property <int> focus-last: root.media-focus-last;
-                                changed focus-last => { if self.focus-last > 0 && ExtensionState.demo-scenarios-open && root.media-menu { media-last.focus(); } }
-                                media-options := VerticalLayout {
-                                    spacing: 8px; alignment: start;
-                                    Button { text: "Back to scenarios"; clicked => { root.media-menu = false; close.focus(); } }
-                                    for label[index] in ["Media timeout", "Media network", "Media 404", "Media 403", "Media 500", "Media unsupported sender", "Media rejected path", "Media too large", "Media decode failure"]: Button { text: label; clicked => { root.run(20 + index); } }
-                                    media-last := Button {
-                                        text: "Media cancelled";
-                                        changed has-focus => { root.media-last-focused = self.has-focus; }
-                                        clicked => { root.run(29); }
-                                    }
-                                }
+                        }
+                    }
+                    if root.media-menu: Rectangle {
+                        height: media-options.preferred-height;
+                        property <int> focus-last: root.media-focus-last;
+                        changed focus-last => { if self.focus-last > 0 && ExtensionState.demo-scenarios-open && root.media-menu { media-last.focus(); } }
+                        media-options := VerticalLayout {
+                            spacing: 8px; alignment: start;
+                            Button { text: "Back to scenarios"; clicked => { root.media-menu = false; close.focus(); } }
+                            for label[index] in ["Media timeout", "Media network", "Media 404", "Media 403", "Media 500", "Media unsupported sender", "Media rejected path", "Media too large", "Media decode failure"]: Button { text: label; clicked => { root.run(20 + index); } }
+                            media-last := Button {
+                                text: "Media cancelled";
+                                changed has-focus => { root.media-last-focused = self.has-focus; }
+                                clicked => { root.run(29); }
                             }
                         }
                     }

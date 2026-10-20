@@ -1,3 +1,4 @@
+import { FocusRing } from "button.slint";
 import { ListRow, RowText } from "list-row.slint";
 import { EmptyState } from "empty-state.slint";
 import { State } from "state.slint";
@@ -7,17 +8,11 @@ import { SearchField } from "search-field.slint";
 export component Friends inherits Rectangle {
     out property <bool> has-focus: friend-search.contains-focus || list-focus.has-focus;
     visible: State.section == 1;
-    out property <length> row-height: max(68px, name-metric.preferred-height + status-metric.preferred-height + 20px);
-    changed row-height => { State.friend-row-height = root.row-height; }
-    init => { State.friend-row-height = root.row-height; }
-    name-metric := Text { visible: false; text: "友 Ag"; font-size: Tokens.base; font-weight: 600; }
-    status-metric := Text { visible: false; text: "友 Ag"; font-size: Tokens.preview; }
     public function focus-search() { friend-search.focus(); }
     public function focus-search-last() { friend-search.focus-last(); }
     public function focus-list() { list-focus.focus(); }
     public function move-cursor(delta: int) {
         State.friend-result = max(0, min(State.friends.length - 1, State.friend-result + delta));
-        friend-list.jump(-max(0px, State.friend-result * State.friend-row-height - friend-list.visible-height / 2));
     }
     public function activate() {
         if State.friend-result < 0 || State.friend-result >= State.friends.length { return; }
@@ -66,10 +61,20 @@ export component Friends inherits Rectangle {
                 VerticalLayout {
                     spacing: 0px;
                     for friend[i] in State.friends: Rectangle {
-                        width: friend-list.visible-width; height: State.friend-row-height;
+                        width: friend-list.visible-width; height: self.preferred-height;
+                        property <bool> selected: State.friend-result == i;
+                        changed selected => { if self.selected { friend-list.centre(self.y); } }
+                        VerticalLayout {
+                            spacing: 0px;
+                            if !friend.header: ListRow {
+                                identity: friend.id; initial: friend.initial; avatar: friend.avatar; title: friend.name; subtitle: friend.status; subtitle-runs: friend.status-runs;
+                                height: self.row-height;
+                            }
+                            if friend.header: RowText { x: 8px; width: parent.width - 44px; color: Tokens.secondary; font-size: Tokens.small; height: max(68px, self.preferred-height); vertical-alignment: center; font-weight: 600; text: friend.name + " " + friend.count; }
+                        }
                         states [ hovered when row-touch.has-hover: { background: Tokens.surface-hover; in-out { animate background { duration: 100ms; } } } ]
-                        border-width: (list-focus.has-focus || friend-search.has-focus) && State.friend-result == i ? 2px : 0px;
-                        border-color: Tokens.accent; border-radius: 8px;
+                        border-radius: 8px;
+                        FocusRing { focused: (list-focus.has-focus || friend-search.has-focus) && State.friend-result == i; border-radius: 8px; border-color: Tokens.accent; }
                         accessible-role: button; accessible-label: friend.header ? friend.name : "Open profile: " + friend.name;
                         accessible-expandable: friend.header;
                         accessible-expanded: friend.header && (friend.group ? State.groups-expanded : State.friends-expanded);
@@ -79,8 +84,6 @@ export component Friends inherits Rectangle {
                             source: (friend.group ? State.groups-expanded : State.friends-expanded) ? @image-url("../assets/icons/chevron-down.svg") : @image-url("../assets/icons/chevron.svg");
                             colorize: Tokens.foreground;
                         }
-                        if friend.header: RowText { x: 8px; width: parent.width - 44px; color: Tokens.secondary; font-size: Tokens.small; height: parent.height; vertical-alignment: center; font-weight: 600; text: friend.name + " " + friend.count; }
-                        if !friend.header: ListRow { width: parent.width; height: parent.height; identity: friend.id; initial: friend.initial; avatar: friend.avatar; title: friend.name; subtitle: friend.status; subtitle-runs: friend.status-runs; }
                         row-touch := TouchArea { mouse-cursor: pointer; clicked => { list-focus.focus(); State.friend-result = i; root.activate(); } }
                     }
                 }

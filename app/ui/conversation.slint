@@ -1,8 +1,8 @@
+import { Pressable, FocusRing, Button } from "button.slint";
 import { ReadingViewport, RecoveryKind } from "types.slint";
 import { EmptyState } from "empty-state.slint";
 import { DatePill } from "history-pill.slint";
 import { Avatar } from "avatar.slint";
-import { Button } from "button.slint";
 import { ListView } from "std-widgets.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -10,31 +10,23 @@ import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 import { Message } from "message.slint";
 import { Composer } from "composer.slint";
-component HistoryPill inherits Rectangle {
+component HistoryPill inherits Pressable {
     in property <string> text;
     in property <string> label: root.text;
     in property <bool> latest;
-    in property <bool> enabled;
-    callback activated();
+    enabled: false;
     callback traversed(bool);
-    public function focus-pill() { focus.focus(); }
     preferred-width: root.visible ? (root.latest ? 36px : label.preferred-width + 24px) : 0px; preferred-height: root.visible ? 36px : 0px;
-    border-radius: self.height / 2; background: touch.has-hover ? Tokens.surface-hover : Tokens.bg; drop-shadow-color: #00000026; drop-shadow-blur: 8px; drop-shadow-offset-y: 2px;
-    border-width: focus.has-focus ? 2px : 0px; border-color: Tokens.accent-strong;
+    border-radius: self.height / 2; background: root.has-hover ? Tokens.surface-hover : Tokens.bg;
+    Rectangle { background: root.background; border-radius: root.border-radius; border-width: root.border-width; border-color: root.border-color; drop-shadow-color: #00000026; drop-shadow-blur: 8px; drop-shadow-offset-y: 2px; }
+    FocusRing { focused: root.has-focus; border-radius: root.border-radius; }
     label := Text { x: 8px; width: parent.width - 16px; height: parent.height; visible: !root.latest; text: root.text; font-size: Tokens.small; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; overflow: elide; accessible-role: none; }
     if root.latest: Image { x: 8px; y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/down.svg"); colorize: Tokens.text; }
     if root.latest && State.new-count > 0: Rectangle { x: 20px; y: -4px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: "" + State.new-count; font-size: Tokens.small; font-weight: 600; color: Tokens.on-accent; horizontal-alignment: center; vertical-alignment: center; } }
-    focus := FocusScope {
-        enabled: root.enabled; accessible-role: button; accessible-label: root.label;
-        accessible-action-default => { root.activated(); }
-        key-pressed(event) => {
-            if State.ime-active { return reject; }
-            if event.text == Key.Tab { root.traversed(event.modifiers.shift); return accept; }
-            if event.text == Key.Return || event.text == " " { root.activated(); return accept; }
-            reject
-        }
-    }
-    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.activated(); } }
+    accessible-label: root.label;
+    focus-on-activation: false;
+    key-event(event) => { if event.text == Key.Tab { root.traversed(event.modifiers.shift); return accept; } reject }
+
 }
 export component Conversation inherits Rectangle {
     public function paste-text() { composer-surface.paste-text(); }
@@ -57,15 +49,15 @@ export component Conversation inherits Rectangle {
                     key-pressed(event) => {
                         if event.text == Key.Tab && !State.ime-active {
                             if event.modifiers.shift {
-                                if more-button.has-focus { if State.chat-group { members-button.focus-button(); } else { title-focus.focus(); } }
+                                if more-button.has-focus { if State.chat-group { members-button.focus(); } else { title-focus.focus(); } }
                                 else if members-button.has-focus { title-focus.focus(); }
-                                else if title-focus.has-focus && State.narrow { back-button.focus-button(); }
+                                else if title-focus.has-focus && State.narrow { back-button.focus(); }
                                 else if State.narrow { root.focus-last(); }
                                 else if State.section == 1 { State.focus-friend-list(); } else { State.focus-chat-list(); }
                             } else {
                                 if back-button.has-focus { title-focus.focus(); }
-                                else if title-focus.has-focus && State.chat-group { members-button.focus-button(); }
-                                else if !more-button.has-focus { more-button.focus-button(); }
+                                else if title-focus.has-focus && State.chat-group { members-button.focus(); }
+                                else if !more-button.has-focus { more-button.focus(); }
                                 else { root.focus-after-header(); }
                             }
                             return accept;
@@ -81,7 +73,7 @@ export component Conversation inherits Rectangle {
                         }
                         title-button := Rectangle {
                             horizontal-stretch: 1; height: 32px; border-radius: 8px;
-                            background: title-touch.has-hover ? Tokens.surface-hover : transparent;
+                            background: title-focus.has-hover ? Tokens.surface-hover : transparent;
                             HorizontalLayout {
                                 spacing: 8px; padding: 0px;
                                 Avatar { width: 32px; height: 32px; identity: State.chat-id; initial: State.chat-initial; picture: State.chat-avatar; label: "Conversation avatar"; }
@@ -90,13 +82,11 @@ export component Conversation inherits Rectangle {
                                     if State.chat-group: Text { text: State.member-count + " members"; color: Tokens.secondary; font-size: Tokens.small; }
                                 }
                             }
-                            title-focus := FocusScope {
-                                accessible-role: button; accessible-label: State.chat-title;
-                                accessible-action-default => { State.open-profile(State.chat-id); }
-                                key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-profile(State.chat-id); return accept; } reject }
-                                Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; background: transparent; border-radius: 12px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+                            title-focus := Pressable {
+                                accessible-label: State.chat-title;
+                                activated => { State.open-profile(State.chat-id); }
+                                FocusRing { outset: 4px; focused: parent.has-focus; }
                             }
-                            title-touch := TouchArea { clicked => { title-focus.focus(); State.open-profile(State.chat-id); } }
                         }
                         members-button := IconButton { visible: State.chat-group; enabled: self.visible; width: self.visible ? 32px : 0px; label: State.member-count >= 0 ? "Members, " + State.member-count : "Members"; icon: @image-url("../assets/icons/members.svg"); activated => { State.open-members(); } }
                         more-button := IconButton { label: "More"; icon: @image-url("../assets/icons/more.svg"); activated => { more-menu.show({x: header.width - 200px, y: 52px}); } }
@@ -116,7 +106,7 @@ export component Conversation inherits Rectangle {
                 key-pressed(event) => {
                     if State.ime-active { return reject; }
                     if State.recovery-kind != RecoveryKind.none { return reject; }
-                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-sign-in-opener(); } else { more-button.focus-button(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
+                    if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-sign-in-opener(); } else { more-button.focus(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus(); } else if State.return-visible { return-button.focus(); } else { State.focus-composer(); } } return accept; }
                     if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.DownArrow { history.scroll(-Tokens.base * 1.4); history.scrolled(); return accept; }
                     if event.text == Key.PageUp { history.scroll(history.visible-height * 0.9); history.scrolled(); return accept; }
@@ -201,13 +191,13 @@ export component Conversation inherits Rectangle {
                     width: 0px; label: root.latest-label;
                     text: root.latest-label;
                     activated => { State.latest(); State.focus-history(); }
-                    traversed(back) => { if back { history-focus.focus(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } }
+                    traversed(back) => { if back { history-focus.focus(); } else if State.return-visible { return-button.focus(); } else { State.focus-composer(); } }
                 }
                 return-button := HistoryPill {
                     visible: false; enabled: self.visible;
                     width: 0px; text: "Return to message";
                     activated => { State.return-to-message(); State.focus-history(); }
-                    traversed(back) => { if !back { State.focus-composer(); } else if root.latest-visible { latest-button.focus-pill(); } else { history-focus.focus(); } }
+                    traversed(back) => { if !back { State.focus-composer(); } else if root.latest-visible { latest-button.focus(); } else { history-focus.focus(); } }
                 }
               }
               if State.link-feedback != "": Text {
@@ -222,13 +212,13 @@ composer-surface := Composer { }
             }
         }
     public function focus-after-header() { if State.connection-actions-enabled { State.focus-connection-first(); } else { history-focus.focus(); } }
-    public function focus-first() { if State.narrow { back-button.focus-button(); } else { title-focus.focus(); } }
+    public function focus-first() { if State.narrow { back-button.focus(); } else { title-focus.focus(); } }
     public function focus-last() { if State.has-chat { composer-surface.focus-last(); } else { history-focus.focus(); } }
-    public function focus-header() { more-button.focus-button(); }
+    public function focus-header() { more-button.focus(); }
     public function restore-editor(anchor: int, caret: int) { composer-surface.restore-editor(anchor, caret); }
     public function focus-editor() { composer-surface.focus-editor(); }
     public function focus-history() { history-focus.focus(); }
-    public function focus-reading-before-editor() { if State.return-visible { return-button.focus-pill(); } else if root.latest-visible { latest-button.focus-pill(); } else { history-focus.focus(); } }
+    public function focus-reading-before-editor() { if State.return-visible { return-button.focus(); } else if root.latest-visible { latest-button.focus(); } else { history-focus.focus(); } }
     public function scroll(delta: length) { history.scroll(delta); history.scrolled(); }
     public function jump(y: length) { history.jump(y); }
     property <ReadingViewport> reading-viewport: { height: history.visible-height, visible-top: history.visible-top, pill-height: root.pill-height, extent: history.extent, dragging: history.dragging };

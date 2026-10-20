@@ -1,3 +1,4 @@
+import { FocusRing } from "button.slint";
 import { ComposerMode } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -8,6 +9,7 @@ export component DraftEditor inherits Rectangle {
     public function paste-text() { input.paste(); }
     in property <string> placeholder: "Message";
     in property <bool> read-only; in property <bool> enabled: true;
+    out property <length> text-height: input.preferred-height;
     min-height: Tokens.base * 1.4 + 16px;
     forward-focus: input;
     out property <int> caret: input.cursor-position-byte-offset;
@@ -24,7 +26,7 @@ export component DraftEditor inherits Rectangle {
     changed caret => { if input.has-focus { State.editor-caret = root.caret; } }
     changed anchor => { if input.has-focus { State.editor-anchor = root.anchor; } }
     background: Tokens.surface-2; border-radius: 18px;
-    Rectangle { x: -4px; y: -4px; width: root.width + 8px; height: root.height + 8px; background: transparent; border-radius: 22px; border-width: input.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+    FocusRing { outset: 4px; focused: input.has-focus; border-radius: 22px; }
     Text {
         x: 12px; y: 8px; width: parent.width - 24px;
         visible: State.draft == "" && !State.ime-active && !input.has-focus;
