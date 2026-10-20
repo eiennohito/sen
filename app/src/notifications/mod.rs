@@ -182,17 +182,14 @@ mod tests {
                     })
             };
             desktop.sender.send(desktop.state.select(chat_a.clone()));
-            while desktop.state.connection != Connection::Online || !desktop.state.reaches_end {
-                desktop.state.apply(receive("loading canned chat A"));
+            // The window can arrive before the chat list; wait for both.
+            while desktop.state.connection != Connection::Online
+                || !desktop.state.reaches_end
+                || !desktop.state.chats.contains_key(&chat_a)
+                || !desktop.state.chats.contains_key(&chat_b)
+            {
+                desktop.state.apply(receive("loading canned chats A and B"));
             }
-            assert!(
-                desktop.state.chats.contains_key(&chat_a),
-                "canned chat A is missing"
-            );
-            assert!(
-                desktop.state.chats.contains_key(&chat_b),
-                "canned chat B is missing"
-            );
             let draft_b = Draft {
                 text: "persisted draft in B".into(),
                 cursor: 6,
