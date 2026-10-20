@@ -103,6 +103,7 @@ of the budget: slow tests cost development speed.
 | Comments that narrate history instead of describing the code | "old square cache entries…", "legacy" wording |
 | Changing a persisted format without loading what the previous code wrote | typed `Session` renamed fields and would have signed the user out; a split error enum made stored failed sends unreadable |
 | Imperative Slint: Timers, `changed` handlers and functions doing what states, transitions, bindings and `animate` declare | 0 ms "settle" Timers and inline animation functions; repeating Timers burned 100% CPU |
+| A control's modes spread over `if` elements and ternaries instead of named `states [ … when … ]` (e.g. composer: empty / text / text + quote / editing) | ~130 `if` elements, ~250 ternaries, zero `states` in app/ui; `if` stays only where the subtree must not exist (popups, rare heavy rows), ternaries only for single theme/token picks |
 | `VecModel` copies of app data, diffed and patched by downcasting, instead of a `Model` impl over the data (`VecModel` only for small static lists) | four lists rebuilt and diffed every present; ~15 `downcast_ref::<VecModel<…>>()` walks to patch images |
 | "Consolidation" that moves code instead of removing it, and quietly changes wording | five label tables became one plus per-call-site variants; unnamed groups shown as "Unknown member" |
 
