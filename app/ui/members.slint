@@ -10,18 +10,14 @@ import { Pane } from "scrollpane.slint";
 export component Members inherits FocusScope {
     property <length> row-height: max(64px, Tokens.base * 2.8 + 16px);
     focus-on-tab-navigation: false;
+    out property <bool> contains-focus: list.has-focus || search.contains-focus;
+    out property <bool> editing: search.has-focus;
+    public function focus-list() { list.focus(); }
     in-out property <int> selected <=> State.member-result;
-    public function focus-first() { State.focus-profile-close(); }
-    public function focus-last() { if list.visible { list.focus(); } else { search.focus-last(); } }
     capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
     key-pressed(event) => {
         if State.ime-active { return reject; }
         if event.text == Key.Escape { State.pop-detail(false); return accept; }
-        if event.text == Key.Tab {
-
-            if !event.modifiers.shift && (list.has-focus) { State.focus-after-layer(); return accept; }
-            if event.modifiers.shift && list.has-focus { search.focus-last(); return accept; }
-        }
         reject
     }
     VerticalLayout {
@@ -32,7 +28,6 @@ export component Members inherits FocusScope {
             clear => { State.member-query = ""; root.selected = 0; State.filter-members(); pane.jump(0px); }
             key-pressed(event) => {
                 if event.text == Key.Escape { State.pop-detail(false); return accept; }
-                if event.text == Key.Tab { if event.modifiers.shift { State.focus-profile-close(); } else { list.focus(); } return accept; }
                 if event.text == Key.DownArrow { list.focus(); return accept; }
                 reject
             }
@@ -65,7 +60,7 @@ export component Members inherits FocusScope {
                         title-note: member.is-self ? "You" : member.friend ? "Friend" : "";
                         avatar-size: 40px; trailing-width: 40px;
                         touch := TouchArea { enabled: !member.invited; mouse-cursor: pointer; clicked => { root.selected = i; list.focus(); if !member.invited { State.open-member(member.id); } } }
-                        IconButton { x: parent.width - 40px; y: (parent.height - 32px) / 2; visible: member.friend && !member.invited && !member.is-self && (touch.has-hover || (list.has-focus && root.selected == i)); enabled: self.visible; label: "Chat with " + member.name; icon: @image-url("../assets/icons/chats.svg"); activated => { State.detail-action(DetailAction.member-chat, member.id); } }
+                        IconButton { focus-on-tab-navigation: false; x: parent.width - 40px; y: (parent.height - 32px) / 2; visible: member.friend && !member.invited && !member.is-self && (touch.has-hover || (list.has-focus && root.selected == i)); enabled: self.visible; label: "Chat with " + member.name; icon: @image-url("../assets/icons/chats.svg"); activated => { State.detail-action(DetailAction.member-chat, member.id); } }
                       }
                     }
                 }

@@ -70,8 +70,7 @@ export component DemoScenarios inherits Rectangle {
                     }
                     if ExtensionState.demo-reset-enabled && !root.media-menu: Button { enabled: !dialog.traversing; text: "Reset demo"; clicked => { root.dismiss(); ExtensionState.demo-automation(DemoAutomation.reset); } }
                     demo-marker := Text { text: "Synthetic interaction scenarios"; accessible-value: ExtensionState.demo-instance; accessible-description: "Reset generation " + ExtensionState.demo-reset-generation; color: Tokens.secondary; font-size: Tokens.small; }
-                    VerticalLayout {
-                        visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
+                    if !root.media-menu: VerticalLayout {
                         spacing: 8px; alignment: start;
                         for row in root.scenarios: VerticalLayout {
                             spacing: 8px;

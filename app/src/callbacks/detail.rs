@@ -25,7 +25,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
                 .get_viewer_key()
                 .starts_with("profile:")
             {
-                ui.global::<State>().invoke_finish_detail_restore(false);
+                ui.global::<State>().invoke_restore_detail_focus(false);
             } else {
                 ui.invoke_focus_history();
             }
@@ -44,9 +44,6 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             d.state.pop_detail();
         }
         d.render(&ui);
-        ui.global::<State>().invoke_finish_detail_restore(all);
-    });
-    global_callback!(ui, actions, on_finish_detail_restore, |ui, _d, all| {
         ui.global::<State>().invoke_restore_detail_focus(all);
     });
     global_callback!(ui, actions, on_detail_action, |ui, d, kind, value| {

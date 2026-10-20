@@ -6,7 +6,6 @@ pub(crate) mod attachments;
 mod browser;
 mod composer;
 mod detail;
-mod focus;
 mod history;
 mod settings;
 mod viewer;
@@ -20,7 +19,6 @@ pub(crate) fn install(ui: &AppWindow, actions: Runtime) {
     detail::install(ui, &actions);
     settings::install(ui, &actions);
     viewer::install(ui, &actions);
-    focus::install(ui, &actions);
     global_callback!(ui, actions, on_open_link, |ui, _d, url| {
         let weak = ui.as_weak();
         let chat = ui.global::<State>().get_chat_id();

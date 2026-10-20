@@ -49,9 +49,6 @@ export global State {
     in-out property <ChatCategory> category: ChatCategory.all;
     callback filter-category();
     callback switch-chat(int);
-    callback text-input-focused() -> bool;
-    callback focus-chat-list();
-    callback focus-friend-list();
     public function browser-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
         if event.text == Key.Escape && self.composer-reply.reply-id != "" && !self.window-modal-open && !self.detail-open { self.cancel-reply(); return accept; }
@@ -108,7 +105,6 @@ export global State {
     callback pop-detail(bool);
     callback remember-detail-focus(bool);
     callback restore-detail-focus(bool);
-    callback finish-detail-restore(bool);
     callback detail-action(DetailAction, string);
     callback profile-photo();
     in-out property <int> detail-depth;
@@ -286,12 +282,6 @@ export global State {
     public function close-profile() { self.pop-detail(true); }
     callback tab-focus(bool);
     callback focus-composer();
-    callback focus-cycle-end();
-    callback focus-after-browser();
-    callback focus-after-conversation();
-    callback focus-before-layer();
-    callback focus-after-layer();
-    callback focus-reading-before-editor();
     public function show-viewer(key: string) { self.request-panel(PanelState.viewer); self.viewer-key = key; self.viewer-zoom = 1; self.reset-viewer(); }
     public function close-viewer() { self.request-panel(PanelState.none); }
     public function account-ready() { self.request-panel(PanelState.none); self.show-conversation = false; self.focus-search(); }
@@ -311,7 +301,6 @@ export global State {
     callback focus-search();
     callback focus-friend-search();
     callback focus-settings-opener();
-    callback focus-profile-close();
     callback focus-connection-first();
     public function reading-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }

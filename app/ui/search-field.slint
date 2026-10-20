@@ -1,5 +1,4 @@
 import { FocusRing } from "button.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { IconButton } from "icon-button.slint";
 
@@ -13,7 +12,6 @@ export component SearchField inherits Rectangle {
     callback edited(string);
     callback key-pressed(KeyEvent) -> EventResult;
     callback clear();
-    public function focus-last() { if root.text != "" { clear-button.focus(); } else { input.focus(); } }
     forward-focus: input;
     height: 36px; min-width: 160px; border-radius: 8px; background: Tokens.surface-2;
     opacity: root.enabled ? 1 : 0.4;
@@ -35,10 +33,7 @@ export component SearchField inherits Rectangle {
         accessible-placeholder-text: root.placeholder-text; accessible-label: root.label;
 
         edited => { root.edited(self.text); }
-        key-pressed(event) => {
-            if !State.ime-active && event.text == Key.Tab && !event.modifiers.shift && root.text != "" { clear-button.focus(); return accept; }
-            root.key-pressed(event)
-        }
+        key-pressed(event) => { root.key-pressed(event) }
     }
         }
     }
@@ -49,12 +44,5 @@ export component SearchField inherits Rectangle {
         width: 32px; height: 32px;
         label: "Clear search"; icon: @image-url("../assets/icons/close.svg");
         activated => { input.focus(); root.clear(); }
-        key-event(event) => {
-            if !State.ime-active && event.text == Key.Tab {
-                if event.modifiers.shift { input.focus(); return accept; }
-                return root.key-pressed(event);
-            }
-            reject
-        }
     }
 }
