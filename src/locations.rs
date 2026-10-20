@@ -14,15 +14,13 @@ impl Locations {
     }
 
     pub fn config_home() -> anyhow::Result<PathBuf> {
-        Self::resolve(|key| std::env::var_os(key).map(PathBuf::from))
+        Self::from_environment()
             .map(|locations| locations.config_home)
             .map_err(anyhow::Error::msg)
     }
 
     pub fn from_environment() -> Result<Self, String> {
-        Self::resolve(|key| std::env::var_os(key).map(PathBuf::from))
-    }
-    fn resolve(get: impl Fn(&str) -> Option<PathBuf>) -> Result<Self, String> {
+        let get = |key| std::env::var_os(key).map(PathBuf::from);
         let home = get("HOME")
             .filter(|p| p.is_absolute())
             .ok_or("HOME must be an absolute path")?;

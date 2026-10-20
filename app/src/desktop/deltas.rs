@@ -170,18 +170,14 @@ impl Desktop {
                 match event {
                     PairEvent::Stage(stage) => {
                         g.set_auth_phase(
-                            if matches!(
-                                stage,
-                                line::client::pairing::Stage::Authenticated
-                                    | line::client::pairing::Stage::Synthetic
-                            ) {
+                            if matches!(stage, line::client::pairing::Stage::Authenticated) {
                                 AuthPhase::SignedIn
                             } else {
                                 AuthPhase::Pairing
                             },
                         );
                         g.set_auth_stage(text::pairing_stage(*stage).into());
-                        if matches!(stage, line::client::pairing::Stage::RequestCredentials) {
+                        if matches!(stage, line::client::pairing::Stage::SigningIn) {
                             g.set_auth_pin("".into());
                         }
                     }

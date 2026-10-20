@@ -1,10 +1,19 @@
 //! Shared client protocol against the same endpoints as LINE Chrome.
 //! Rust owns protocol/state/WASM, all HTTPS (RPC, SSE, media) and QR encoding.
+pub mod desktop;
+mod e2ee;
 pub mod error;
+#[cfg(feature = "harness")]
+pub mod harness;
+pub mod http;
 pub mod operation;
+pub mod pairing;
+mod qr;
+
 use crate::runtime::{Call, Runtime};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{Engine, engine::general_purpose::STANDARD};
+use error::RpcError;
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -18,14 +27,6 @@ use std::{
 
 const BASE: &str = "https://line-chrome-gw.line-apps.com";
 const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36";
-
-pub mod desktop;
-mod e2ee;
-#[cfg(feature = "harness")]
-pub mod harness;
-pub mod http;
-pub mod pairing;
-mod qr;
 
 pub(crate) fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path
@@ -54,7 +55,6 @@ pub(crate) fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     }
     result
 }
-use error::RpcError;
 thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<crate::client::http::CancelToken>>> = const { std::cell::RefCell::new(None) }; }
 fn set_request_cancel(cancel: std::sync::Arc<crate::client::http::CancelToken>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
@@ -476,43 +476,6 @@ fn validate_keys(api: &mut Api) -> Result<()> {
     }
     Ok(())
 }
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn private_directory_forces_only_the_final_directory() -> Result<()> {
-        use std::os::unix::fs::PermissionsExt;
-        let root = std::env::temp_dir().join(format!("line-private-dir-{}", std::process::id()));
-        fs::create_dir_all(&root)?;
-        let parent = root.join("ancestor");
-        let final_dir = parent.join("private");
-        private_directory(&final_dir)?;
-        assert_eq!(
-            fs::metadata(&final_dir)?.permissions().mode() & 0o777,
-            0o700
-        );
-        assert_eq!(
-            fs::metadata(&parent)?.permissions().mode() & 0o777,
-            fs::metadata(&root)?.permissions().mode() & 0o777
-        );
-        fs::set_permissions(&final_dir, fs::Permissions::from_mode(0o755))?;
-        private_directory(&final_dir)?;
-        assert_eq!(
-            fs::metadata(&final_dir)?.permissions().mode() & 0o777,
-            0o700
-        );
-        fs::remove_dir_all(root)?;
-        Ok(())
-    }
-    #[test]
-    fn qr_callback_encodes_public_key_as_query_parameter() {
-        let url = callback("line://au/q/test?session=abc", &[0xfb; 32]).unwrap();
-        assert!(url.starts_with("line://au/q/test?session=abc&secret="));
-        assert!(url.contains("%2B"));
-        assert!(url.ends_with("&e2eeVersion=1"));
-        assert!(callback("file:///tmp/test", &[0; 32]).is_err());
-    }
-}
 
 /// Explicit, request-scoped transport activity shared with detached upload work.
 #[derive(Clone, Default)]
@@ -610,6 +573,44 @@ pub(crate) fn decode_response(
         status: response["data"]["statusCode"].as_i64().unwrap_or(0),
     }
     .into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn private_directory_forces_only_the_final_directory() -> Result<()> {
+        use std::os::unix::fs::PermissionsExt;
+        let root = std::env::temp_dir().join(format!("line-private-dir-{}", std::process::id()));
+        fs::create_dir_all(&root)?;
+        let parent = root.join("ancestor");
+        let final_dir = parent.join("private");
+        private_directory(&final_dir)?;
+        assert_eq!(
+            fs::metadata(&final_dir)?.permissions().mode() & 0o777,
+            0o700
+        );
+        assert_eq!(
+            fs::metadata(&parent)?.permissions().mode() & 0o777,
+            fs::metadata(&root)?.permissions().mode() & 0o777
+        );
+        fs::set_permissions(&final_dir, fs::Permissions::from_mode(0o755))?;
+        private_directory(&final_dir)?;
+        assert_eq!(
+            fs::metadata(&final_dir)?.permissions().mode() & 0o777,
+            0o700
+        );
+        fs::remove_dir_all(root)?;
+        Ok(())
+    }
+    #[test]
+    fn qr_callback_encodes_public_key_as_query_parameter() {
+        let url = callback("line://au/q/test?session=abc", &[0xfb; 32]).unwrap();
+        assert!(url.starts_with("line://au/q/test?session=abc&secret="));
+        assert!(url.contains("%2B"));
+        assert!(url.ends_with("&e2eeVersion=1"));
+        assert!(callback("file:///tmp/test", &[0; 32]).is_err());
+    }
 }
 
 #[cfg(test)]

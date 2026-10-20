@@ -1,9 +1,8 @@
 # Core model: store, worker, projection
 
-Status: implemented through core model phase 3 and R2 typed ownership, 2026-10-18. SQLite stores
-account data; FakeBackend drives offline demos and snapshots through the same
-engine, controller and presenter as the account backend. Behavior is defined
-in [ux-model.md](ux-model.md); engineering constraints are in
+SQLite stores account data. `LineBackend` and `FakeBackend` run through the
+same engine, controller and presenter. Behavior is defined in
+[ux-model.md](ux-model.md); engineering constraints are in
 [app-design.md](app-design.md).
 
 ## Ownership
@@ -13,270 +12,153 @@ flowchart LR
     UI[Controller / AppState] -->|Intent| Engine[Store thread / Engine]
     Engine --> Store[SQLite / sole writer]
     Engine -->|jobs| Net[Net thread / Backend / WASM]
-    Net -->|results| Engine
+    Net -->|completions| Engine
     SSE[SSE thread] -->|operations| Engine
-    Assets[Asset workers] -->|completions| Engine
+    Uploads[Upload workers] -->|completions| Engine
+    Assets[Asset workers] -->|media deltas| UI
     Engine -->|FIFO deltas| UI
     UI --> Presenter[Presenter / Slint models]
 ```
 
-- **Store** is the only source of truth for messages, chats, contacts,
-  members, drafts, the outbox, unread state, preferences and the sync
-  revision. Only the worker thread opens it for writing.
-- **Engine** (worker thread) turns every input into store transactions:
-  server pages, older/newer pages, live operations, send results, echoes,
-  unsends, reactions, receipts. After each transaction it emits deltas for what
-  the UI currently watches.
-- **Controller** (UI thread) holds `AppState`: plain Rust data, a *projection*
-  of the store (the chat list, plus a window of the open chat), and pure UI
-  state (selection, panels, focus intents, composer text). It changes the
-  projection only by applying deltas. It never assigns message lists from
-  responses.
-- **Presenter** is the only code that touches Slint. It diffs `AppState`
-  into keyed `VecModel`s (chats, messages, friends, members) and sets
-  properties.
+- `Store` owns messages, chats, contacts, members, drafts, unread state,
+  preferences and the sync revision. The store thread owns its writable SQLite
+  connection. Pending and rejected messages in the message table form the outbox.
+- `Engine` schedules network work, applies results and operations to the store,
+  and publishes the subscribed chat list and message window.
+- `AppState` holds the UI projection and UI state: selection, panels, composer,
+  refresh failures and upload progress. It applies deltas immediately and does
+  not query SQLite.
+- `Presenter` updates keyed application-data models. Slint `MapModel`s project
+  their rows into view data. Chats, messages, friends and members use these
+  models; static lists can use `VecModel`.
 
 ## Store
 
-SQLite through `rusqlite` with the `bundled` feature (no system library, one C
-compile). One database per account at
-`$XDG_DATA_HOME/line-desktop/accounts/<own-mid-hash>/store.sqlite3`, in a
-directory with mode 0700, WAL mode, `synchronous=NORMAL`. It is not encrypted
-(user decision 2026-10-18). The database is a cache of server data plus drafts; a different `user_version` deletes and recreates it from `schema.sql`.
+`Store::open` uses bundled SQLite, WAL mode, `synchronous=NORMAL` and foreign
+keys. The desktop account database is
+`$XDG_DATA_HOME/line-desktop/accounts/<sha256-of-own-mid>/store.sqlite3`.
+Directory creation requests mode 0700. The database is not encrypted.
+`SCHEMA_VERSION` is 13; a different SQLite `user_version` causes the database,
+WAL and shared-memory files to be removed and the schema recreated. This
+also discards local drafts, unsent messages, preferences and pending read acks.
+The saved session is stored separately.
 
-The UI never queries the database or waits on it. Drawing depends only on
-`AppState`.
+The tables in `src/store/schema.sql` are:
 
-Tables (columns abbreviated):
-
-- `account(own_mid, profile_json, sync_revision)`. One row.
-- `chat(chat_id PK, is_group, title, avatar, member_count, muted, left,
-  last_message_id, last_activity, server_unread, last_read_server_id,
-  unread_stale, read_acked_server_id, receipt_server_id, removed, list_rank)`.
-- `message(key INTEGER PK, chat_id, server_id UNIQUE NULL, local_id UNIQUE
-  NULL, request_seq NULL, sort_ts, sort_id, sender_id, outgoing,
-  body_json, reactions_json, reactions_rev, delivery,
-  created_at_local, body_rev, mentioned, skip_badge)`, with an index
-  `(chat_id, sort_ts, sort_id)`.
-- `segment(chat_id, lo_ts, lo_id, hi_ts, hi_id, reaches_start)`. These are the
-  contiguous ranges known to have no gaps (see "Gaps").
-- `withdrawal(server_id PK)` remembers unsends received before a message.
-- `contact(mid PK, name, status, is_group, avatar, member_count,
-  original_name, overridden_name, relation, account_type, favorite_time)`.
-- `member(chat_id, mid, is_self, invited)` references the contact identity;
-  member reads use the current contact, so renames also change member names.
-- `draft(chat_id, text, cursor, updated, anchor)`,
-  `preferences(singleton, value)` (one serialized `Prefs`),
-  `sticker_packages(id, value)`, `chat_detail(chat_id, wire_json)`.
-
-`ChatInput.is_group` is a boolean and `avatar` is an optional `Asset`, decoded
-when reading SQLite. `Profile` is a typed account identity (MID, display name,
-status, picture path). `Friend` and `Member` belong to the store; the client
-returns these types and retains no contact or member cache. `Prefs` contains
-text size (15 by default), enter-sends (false), typed desktop notification and
-background settings, last chat and the persisted request sequence. Preferences
-cross the engine/controller boundary as a whole struct, never string-keyed values.
-
-`left` disables sending after leaving a group; `removed` hides chats missing from a complete list sweep.
-Unread uses one pure `unread(&UnreadRow) -> u32` function over the raw server
-count, acknowledged/local read IDs, newest message ID and covered incoming row
-count. The list query loads these inputs together. `ChatInput.unread_count` is
-computed; `ChatInput.server_unread` holds the raw count. Reading through the newest
-message immediately clears the raw count, so a new message before the read ack
-shows one unread. `unread_stale` independently records metadata freshness.
-
-### Content
-
-`MessageInput.body` and `StoredMessage.body` are the same store-owned `Content`
-enum. SQLite serializes this enum once into `body_json`, and deserializes it
-on reads. Pending text uses `Text` as well. The variants are:
-
-- `Text { text, spans, reply }` with typed UTF-16/UTF-8 inline emoji spans and
-  an optional server message reference.
-- `Photo { asset, size, album_count, caption }`;
-  `Sticker { pkg, id, ver, asset, text }` (text is the server fallback).
-- `File { name, size, asset }`;
-  `Video { duration, asset, preview, album_count, caption }`;
-  `Voice { duration, asset }`. Durations are milliseconds.
-- `Contact { mid, name }`; `Location { title, lat, lon }`;
-  `System { kind, params, text }` preserves server localization and literal text.
-- `Withdrawn`, `Undecryptable`, `Unknown { content_type }`.
-
-No rendered message, sender display name, outgoing flag, timestamp or reactions
-are duplicated inside content. Withdrawal lives only in `Content::Withdrawn`;
-its tombstone makes it sticky. `Reaction { actor, kind }` is the sole stored and
-transport-decoded reaction representation; kind is a predefined ID or a paid
-reaction asset. Grouping and reaction labels belong to the presenter.
-
-The presenter maps content to today's text and media labels, including decrypt
-failures and unsupported messages. It resolves sender names/avatars from the
-current contact/member projection, and includes that identity in its row-cache
-inputs. Asset discovery, photo viewing and reply lookup use typed fields without
-re-parsing JSON. The store alone computes `unread_anchor`; the controller retains
-the supplied divider for the reading session and never guesses from its window.
-
-As a pre-release rule, a schema change discards the local store, including drafts, unsent messages, preferences and pending read acks.
-
-`key` is the row identity for the life of the row. It does not change when a
-pending send gets its server id. The UI keys every row by `key` and never by
-server or local id.
-
-### Order
-
-There is one total order everywhere: `(sort_ts, sort_id)`.
-
-- Confirmed rows: `sort_ts = createdTime` (falling back to `deliveredTime`),
-  and `sort_id` is the server id as a zero-padded fixed-width decimal.
-- Pending rows: `sort_ts = local send time`, and `sort_id = "~" + local_id`,
-  so a pending row sorts after any confirmed row with the same millisecond.
-- On confirmation, `sort_ts`/`sort_id` take the server values. The row keeps
-  its `key` and may move by the clock difference.
-
-### Merge rules (one function per input, all inside one transaction)
-
-| Input | Rule |
+| Table | Stored data |
 | --- | --- |
-| Server page (recent, older, newer) | Upsert by `server_id`. Content fields take the newer `rev`/edit; withdrawal is sticky; `delivery` only advances (Sent → Read). Never deletes rows. Extends or merges `segment`s. |
-| Live message op (25/26/43) | Upsert by `server_id`. Outgoing op 25 with a `request_seq` matching a pending row links to that row (sets `server_id`, `delivery=Sent`). Adjacent to the newest segment when the stream is continuous since the last applied revision; otherwise starts a new segment. |
-| Send result | Link the pending row by `request_seq` → `server_id`. If the echo already created a separate row, merge the two (keep the pending row's `key`, delete the duplicate, emit `Removed{key}`). |
-| Send failure | `delivery = Rejected{reason}` (Not sent). Retry keeps the row; a late echo or success turns it Sent. |
-| Unsend op 64/65 | body becomes `Content::Withdrawn`, `delivery` untouched. |
-| Reaction op 139/140 | Replace `reactions_json` if the op's revision is newer. |
-| Receipt op 55 / read ranges | Advance `delivery` to Read for outgoing rows up to the marker. |
-| Read elsewhere op 40 | Advance `chat.last_read_server_id`; recompute unread. |
-| Chat list page | Upsert `chat` rows. Preview and activity come from the chat's newest message row, never from the list payload, unless the list's last message is newer than anything stored. The list input carries only the last server id/time, so persist that hint and report `needs_refresh` until a page/live row catches up (M14); do not fabricate a message body. Chats absent from a *complete* list sweep are marked `removed`. |
+| `account` | Account MID, typed profile JSON, sync revision; one row. |
+| `chat` | Identity, title/avatar/group metadata, mute/left/removed flags, last-message hints, unread count and read/receipt markers. |
+| `message` | Stable key, chat/server/local IDs, request sequence, sort cursor, sender, content/reply/reaction JSON, body and reaction revisions, delivery, local creation time and mention/badge flags. |
+| `segment` | Inclusive cursor ranges and whether a range reaches the start of history. |
+| `withdrawal` | Server IDs of unsent messages, including ones not fetched yet. |
+| `contact` | Identity, names, status and status metadata, avatar, group/member metadata, relation, account type and favorite time. |
+| `member` | Chat/contact association with self and invited flags. Reads join the current contact identity. |
+| `draft` | Chat, text, cursor, selection anchor, update time and reply reference. |
+| `preferences` | One serialized `Prefs` value. |
+| `sticker_packages` | Serialized sticker package list. |
+| `chat_detail` | Full chat wire JSON. |
 
-Preview, activity, unread and history are all read from the same rows, so
-they cannot disagree.
+Mutators return `Result<()>`, or the created key for `insert_pending`.
+`Store::mutate` accumulates committed changes internally; the engine consumes
+`take_changes()`. `Changes` tracks changed chats, changed drafts, removed chats
+and removed message keys. An operation's changes and sync revision commit
+inside the same savepoint.
 
-`ServerId` has a private field; every construction uses `ServerId::new`, which
-rejects empty IDs and anything other than 1–20 ASCII decimal digits with no
-leading zeros except `0`. A rejected wire ID is a decode failure for that item.
-Zero padding preserves the `(length, lexicographic)` comparison.
-`MessageInput.created_ms <= 0` falls back to a positive `delivered_ms`, then zero.
+`Profile`, `Friend`, `Member`, `ChatInput`, `MessageInput` and `Content` belong to
+the store model. The client decodes directly into these types. `Store::contact`
+looks up one identity; `contact_ids` supplies the known-ID set used when resolving
+senders. `Prefs` contains text size (15 by default), enter-sends (false), desktop
+settings and last chat. Request sequences belong to the engine, not preferences.
 
-`MessageInput.rev` versions page/live content as well as reactions until a distinct
-edit revision exists in the transport. A nullable `message.body_rev` records the reaction revision accompanying body data and tracks
-body-field updates separately, so reaction-only operations cannot suppress a
-later content update. Incoming rows enter as Sent; persisted receipt markers
-upgrade outgoing rows to Read, including rows loaded after the receipt.
+### Content and identity
 
-Page `Older.before` cursors certify adjacency to the fetched range.
-Segments merge at shared endpoints or overlapping ranges; consecutive numeric
-server ids alone do not certify continuity. Empty pages with `reaches_start`
-mark the anchored segment (or the newest segment for Recent). An entirely empty
-chat uses a minimum-cursor segment to remember that the start is known. Windows
-include the anchor, up to `before` earlier rows and `after` later rows. Local
-outbox rows do not certify server continuity or hide gaps between confirmed rows.
-`reaches_end` means the newest stored row is included and no newer server-list
-hint or uncovered confirmed row requires refresh.
+`MessageInput.body` and `StoredMessage.body` use the same `Content` enum,
+serialized into `body_json`. Its variants are:
 
-### Gaps
+- `Text { text, spans }`, with inline emoji offsets in both UTF-16 and UTF-8;
+- `Photo { asset, size, album_count, caption }`;
+- `Sticker { pkg, id, ver, asset, text }`;
+- `File { name, size, asset }`;
+- `Video { duration, asset, preview, album_count, caption }` and
+  `Voice { duration, asset }`, with durations in milliseconds;
+- `Contact { mid, name }`, `Location { title, lat, lon }` and
+  `System { kind, params, text }`;
+- `Withdrawn`, `Undecryptable` and `Unknown { content_type }`.
 
-A chat's stored rows are a union of contiguous segments. On open:
+Replies are separate fields on messages and drafts. `ReplyReference` carries a
+validated `ServerId` and optional service code. Rich parsing drops a malformed
+reply reference while retaining the message. `Content::local_attachment` finds
+prepared local files through photo or attachment assets.
 
-1. The engine sends the window around the anchor from the store at once,
-   offline or not.
-2. If the newest stored row is older than `chat.last_message_id`, or the newest
-   segment is not continuous with live sync, the engine fetches recent
-   messages. It merges them, and joins segments when the page overlaps one.
-   If the page does not overlap, a gap remains: the window contains a "gap"
-   marker row that the UI turns into an automatic newer/older fetch when it
-   becomes visible.
+`ServerId` accepts 1–20 ASCII decimal digits, with no leading zero except `0`.
+Its field is private and deserialization validates it. Invalid wire message IDs
+are logged and skipped by the client. `Reaction` stores an actor and either a
+predefined reaction ID or an optional paid-reaction asset.
 
-Messages are never deleted for size. Media stays a bounded LRU cache with no
-age expiry (D8).
+`Key` is the local row identity. Linking a pending send to a server message
+keeps the pending row's key. Confirmed rows sort by server creation time
+(falling back to positive delivery time, then zero) and the server ID padded to
+20 decimal digits. Pending rows sort by local time and `~<local-id>`.
+Confirmation updates the sort cursor and can move the row.
 
-### Outbox
+### Merging and continuity
 
-Pending sends are `message` rows whose `delivery` is one of `Pending`,
-`Rejected{reason}`, `Sent`, `Read` (a Rust enum serialised as
-JSON, never compared as a string). The submit flow is:
+Pages upsert by server ID. A newer body revision updates content, sender,
+reply and badge flags; reactions have their own revision. Withdrawal tombstones
+keep content withdrawn across later pages. Incoming messages enter as Sent;
+persisted receipt markers can advance outgoing rows to Read.
 
-1. Insert a pending row (a durable commit on the worker thread; the UI waits
-   only for the `Inserted` delta, not for the disk).
-2. Send it.
-3. Link it, or mark it failed.
+Send results and outgoing live echoes match pending rows by request sequence.
+If an echo already created a separate row, merging keeps the pending key and
+removes the duplicate. Failures store `Delivery::Rejected { reason: Refusal }`;
+retry keeps the row, and a late success can still confirm it. On restart, pending sends
+become rejected rather than being sent automatically.
 
-Request sequences start at a random 31-bit value per process and increment modulo 2^31; they are not preferences. Echo linking uses the sequence retained on each pending row.
+History coverage uses stored segments. Overlapping ranges merge; adjacent
+numeric message IDs alone do not establish continuity. `PageKind` is `Recent`,
+`Older { before }` or `Around { id }`. Older-page cursors provide adjacency to
+the requested range. Local pending rows do not establish server continuity.
+`Store::window` returns ascending rows, explicit gaps and start/end coverage.
 
-The actions on failed rows are Retry (same row, new `request_seq`), Discard
-(deletes the row) and Copy to composer. There is no
-count cap; a chat's failed rows are listed in its row badge until resolved.
-
-### Existing files
-
-There is no legacy file reader or import; schema version mismatches recreate the store.
-The session file remains sealed; LINE media decryption remains part of the
-protocol. Media is a 128 MiB / 4096-file LRU ordered by mtime, refreshed on disk
-hits, without age expiry; decoded images have a 24 MiB budget.
+Opening a window publishes cached rows first. Recent, older and around requests
+run as background refreshes. Interior gaps fetch older messages before their
+upper boundary. Chat-list metadata supplies last-message hints without inventing
+message content; the preview comes from the newest stored message.
+`ChatListItem.unread_count` is computed by the store's unread query, separately
+from `ChatInput.server_unread` and `unread_stale`.
 
 ## Worker
 
-### Scheduler
+The store thread serves local work without waiting for RPCs. The net thread
+owns backend initialization, credentials, WASM and RPC execution. Separate
+workers run uploads; the SSE thread owns its HTTP stream. Asset request handles
+queue work independently, and asset completions use the delta channel directly.
+Media authorization is scheduled through the engine's net thread.
 
-The worker uses two threads. The store thread owns SQLite and serves cached
-subscriptions and user intents without waiting for RPCs. It alone schedules
-network jobs and applies their completion events, preserving the existing merge
-rules. The net thread owns the Backend (including initialization, profile,
-sign-in/QR wait, sends, unsend, pages, contacts, receipts and authorization) and
-only executes jobs handed to it. `online()` schedules a job; it never blocks the
-store loop. Sends remain FIFO per chat while the store continues serving intents.
+The `Inbox` uses a mutex and condition variable. The store loop checks health
+expiry, then serves user intents, live events, job completions and eligible
+refreshes in that order. User intents and completions are FIFO queues; the live
+queue is bounded at 256 and applies backpressure. Refreshes form a coalescing
+`BTreeSet<Refresh>`, dispatched by priority when no net job is pending. Each
+refresh has its own retry deadline and attempt count. The default retry delay
+doubles from two seconds to a sixty-second cap.
 
-The store thread has one `Inbox` (a `Mutex` plus `Condvar`) with three lanes,
-served in this order:
+`publish` consumes the accumulated store changes. It upserts changed chat rows
+and sends the current list order. Draft changes update the chat-list projection
+without republishing an otherwise unchanged message window. A window delta
+contains the current window rows, removed keys, gaps, coverage, reply targets
+and unread anchor. Contacts arrive as one `Delta::Contacts` snapshot; individual
+contact updates use `Delta::Contact`. Profile action results carry the action
+and an `error: bool`.
 
-1. **User intents**: open chat, send, older/newer, mark read, retry, discard,
-   friends, members, sign-in. FIFO and unbounded, because the UI produces them
-   at human rate. They are never dropped.
-2. **Live operations** from the SSE thread: FIFO, bounded at 256. The SSE
-   thread blocks when the lane is full (backpressure, no drops).
-3. **Refresh intents**: a *set* (`ChatList`, `ChatDetails(chat)`,
-   `Recent(chat)`, `Receipts(chat)`, `Friends`, `Members(chat)`). Inserting an
-   intent that is already present is a no-op, so duplicate refreshes are coalesced.
-   Each intent records its reason only for logging.
-
-Refresh intents are internal and have no UI. Freshness is the app's job: it
-refreshes on open and when the store knows it is behind. Reconnects with an
-unchanged revision restore live continuity without refreshing chats; a revision
-gap or named full sync requests resync.
-
-Resync skips chats whose resync-owned Recent request failed with HTTP 400 or
-Talk ILLEGAL_ARGUMENT. Chat activity or a user request clears that chat's
-suppression.
-
-No surface gets a Refresh or Reload control. The only user-initiated retries are on things the user did: a failed
-send (Retry, Discard) and an explicitly opened original or file that failed to
-download.
-
-Job completions return to the store thread after queued user intents and live
-operations. Refresh work is dispatched when the net thread is available, so the
-refresh set retains coalescing and priority while an RPC is running. Asset queue
-handles are independent of the Backend: cached and fetched asset completions go
-straight from fetchers to the UI delta channel; authorization remains a net job.
-
-Older-history window shifts read stored rows first. A page request becomes a
-background refresh and is skipped when a stored segment covers the cursor.
-MoreChats raises the local limit and publishes immediately; desktop search
-filters the published chat list. Mutations publish only changed chat
-rows (`Changes.chats_changed`), and a draft never republishes a message window.
-
-A live operation applies its delta directly (move the chat up, write the row,
-bump unread). It only schedules `ChatDetails(chat)` when the chat is unknown
-or its metadata op changed. The chat-list pagination cursor belongs to the
-engine list loader. Each backend list request receives that cursor explicitly;
-refreshes and live operations cannot reset an in-progress sweep. Mark-read,
-send, unsend and profile writes all obtain sequences from the engine's persisted
-counter. Echoes use the operation's request sequence to match the stored outbox;
-the client retains no request echo map.
-
-### Connection state machine
+### Account and connection
 
 ```rust
 enum Connection {
-    Fatal,                         // worker failed; restart required
-    Local,                         // store open, no network attempt yet
-    Connecting { attempt: u32 },
+    Fatal,
+    Local,
+    Connecting,
     Online,
     Offline,
     SignedOut { reason: SignOutReason },
@@ -284,163 +166,93 @@ enum Connection {
 }
 ```
 
-The worker owns it and publishes each transition as one delta. The UI derives
-the banner and the enabled actions from it with a pure function.
+`Connection` is presentation/transport status. The engine separately tracks
+account facts in `AccountSession`: opening, absent, unusable, ready or signing
+in with a saved previous state. Account-scoped intents use `account_allows`;
+local sends can queue while waiting for profile validation.
 
-Startup is two-phase:
+Startup opens the local store before backend initialization. In account mode,
+an explicit MID or the non-secret `accounts/last-mid` selects the database;
+without either, startup uses an in-memory store. The engine publishes cached
+profile, contacts, preferences, chats and last-chat window before probing the
+session. Chat unread freshness is marked stale while not Online.
 
-- **Local open** opens the store using the non-secret `last-mid` file beside the
-  account store directories. It publishes the chat list, account name and last
-  chat window before backend initialization (keyring/sealed session, WASM load
-  and SHA-256, ImageCache prune). Unread counts are marked stale
-  (ux-model §150–155). A validated profile atomically updates `last-mid`.
-- **Online open** validates the profile, then resumes sync from the stored
-  revision. A MID mismatch moves to `SignedOut` and leaves the store
-  untouched.
+`Client::from_api` requires an access token and a nonempty saved `profile.mid`.
+`online_profile` rejects a different MID. Successful profile validation selects
+the MID-hashed account store, saves the profile and atomically replaces
+`last-mid`. First-account work from the in-memory store is persisted when that
+account has no existing database.
 
-Reads and in-session sends remain schedulable while Offline, with independent
-per-refresh backoff. SignedOut cancels queued work; old message rows require Retry
-after sign-in.
+Native sign-in exposes four progress stages: Preparing, WaitingForPhone, SigningIn
+and Authenticated. QR, scanned and PIN events carry the phone interaction.
+Authenticated follows profile loading and key validation. The serialized saved
+`Session` format is independent of the disposable local-store schema.
 
-### Typed errors
+### Errors and sync
 
-`client::error::classify` is the sole network-policy boundary. It returns
-`Failure::{NotDelivered, Unanswered, SignedOut, Refused, Bug}`. Transport evidence
-distinguishes failure before any request byte was written from failure after
-writing started. HTTP status, gateway and TalkException codes keep their
-separate namespaces.
-The engine reschedules reads after transport loss, retryable server failures and
-gateway UNKNOWN_ERROR. Sends retry before delivery (NotDelivered, TalkException
-115 or gateway UNKNOWN_ERROR) in the same session. Unanswered sends require Retry/Delete;
-other Refused and Bug terminate the item. One health object publishes Offline
-15 seconds after a transport failure. Successful network jobs and received
-refusals, including HTTP 5xx, clear it. Cached asset hits and local-only jobs do
-not affect health. SignedOut cancels queued work, preserves in-flight completions
-for their account, and requires explicit sign-in. Store errors remain separate transaction
-errors. Every Bug is logged at the engine error boundary with the operation,
-programmer-owned Bug labels; untrusted context strings are redacted. Account-scoped dispatch requires
-both a ready session and a known account MID; pending local sends wait for profile validation.
-Authenticated API calls without an access token return SignedOut(NoSession).
+`client::error::classify` maps network errors to `Failure::{NotDelivered,
+Unanswered, SignedOut, Refused, Bug}`. HTTP, gateway and TalkException codes
+retain separate namespaces. Transport failures distinguish requests that were
+not delivered from requests that may have been delivered. Media failures map
+into the same policy through `From<assets::Failure>`.
 
-Each refresh intent (including stream startup/restart) has its own exponential backoff: 2 seconds, 4, 8, 16,
-32, then a 60-second cap, reset after success. Profile reconnection uses the
-same per-refresh policy without changing visible connection state during transient failures. `Timing` is
-passed at worker startup; tests inject delays, scheduler waits and the health clock.
-Transport configuration separately supplies connect, socket polling, pool-idle
-and asset budgets; each RPC and stream supplies a duration for its request or
-ping budget. Tests select short budgets explicitly.
+Retryable reads are rescheduled. Unanswered sends require an explicit retry;
+late confirmations still reconcile with the stored row. Transport failures
+start the health clock; the default offline threshold is fifteen seconds.
+Successful network work and refusals clear it. Refresh failures are projected
+with `RefreshFailed` and cleared with `RefreshRecovered`. Store failures use
+`StorageFailed` or `InternalError`. `StorageFailed` sets the storage banner;
+`InternalError` is ignored by `AppState` and only shown by desktop debug
+instrumentation under `ui-debug`. Unexpected worker failure emits `Fatal`; normal
+shutdown does not.
 
-An unexpected worker return or panic sends one `Delta::Fatal`. The controller
-enters `Connection::Fatal`, disables sends and shows “Something went wrong —
-restart”. Normal shutdown sends no fatal delta.
+The SSE thread reads the RPC client's shared access-token view and requests
+refresh through the worker. The RPC client owns token refresh and persistence.
+Operations enter the engine in stream order; their revision is persisted with
+the applied operation. Catch-up operations carry a typed replay flag that
+suppresses duplicate notifications and unread increments. Reconnect resumes
+from the stored revision.
 
-### Sync supervisor
+## Projection and presentation
 
-The SSE thread has only an HTTP transport: it reads the RPC client's shared
-access-token view and requests token refresh through the worker. The RPC client
-alone loads credentials, owns WASM, refreshes/persists tokens and updates that
-view; token values do not travel back through stream events. Standalone sync
-diagnostics construct their own owner outside the desktop engine.
-
-The SSE thread reconnects after failures with backoff on its own thread; only
-SignedOut or shutdown stops it. Read and ping failures are Unanswered. A clean
-close waits 3 seconds before reopening, without changing health or failure
-backoff. Repeated closes without any delivered event double this delay up to
-30 seconds; a stream delivering events resets it to 3 seconds. Only the server
-`reconnect` event reopens immediately. Reconnecting/Connected state transitions
-follow the wait. A malformed frame is skipped. The engine supervises unexpected
-stream exits and restarts them with backoff unless signed out. Live frames enter
-decoding in FIFO arrival order, before refresh work. The engine persists the revision in the same transaction that applies an operation, and
-seeds `localRev` from it on start (D5). Operations replayed during catch-up
-carry `replay=true`, which suppresses notifications and unread increments. The
-UI-thread pumps (tray, notifications, activation) become channels drained on
-the event loop. They never exit on a slow turn.
-
-### Backend seam
-
-The engine talks to a `Backend` trait at the RPC level: `profile`, `chats`,
-`messages page`, `send`, `ops stream`, and asset request handles. It has two implementations:
-
-- `LineBackend`: the existing transport, WASM and crypto.
-- `FakeBackend`: in-process, scripted. It serves canned chats and messages and
-  can inject operations, delays and failures. It is compiled only for unit tests or
-  with the `line/demo` feature; integration tests enable that feature via a self dev-dependency.
-  Fixture data and upload pacing use `configure`; RPC failures and observations use
-  `fail_rpc` and `calls()`.
-
-The demo (`--demo`), `--snapshot` scenes and integration tests run the same
-engine, store and controller on `FakeBackend`. The desktop `demo` feature enables
-these modules and CLI flags; `ui-debug` implies `demo`.
-
-## Projection and deltas
-
-The UI subscribes to `ChatList` (sorted rows, bounded to what the list shows
-plus a margin) and `Window { chat, anchor, before, after }`. The worker
-answers with a snapshot, then pushes deltas in commit order over a single FIFO
-(`upgrade_in_event_loop` preserves order):
+The public subscription messages are `Intent::ChatList { sub, limit }` and
+`Intent::Window(WindowSub { sub, chat, anchor, before, after })`. Relevant delta
+fields are:
 
 ```rust
-enum Delta {
-    Fatal,
-    Connection(Connection),
-    Chats { upsert: Vec<ChatItem>, remove: Vec<ChatId> },
-    Window { sub: SubId, upsert: Vec<MessageItem>, remove: Vec<Key>,
-             gap_markers: Vec<Gap>, reaches_start: bool },
-    Unread { chat: ChatId, count: u32, stale: bool, divider: Option<Key> },
-    …
+Chats {
+    sub: u64,
+    upsert: Vec<ChatListItem>,
+    remove: Vec<ChatId>,
+    order: Vec<ChatId>,
+}
+Window {
+    sub: u64,
+    upsert: Vec<StoredMessage>,
+    remove: Vec<Key>,
+    gaps: Vec<Gap>,
+    reaches_start: bool,
+    reaches_end: bool,
+    replies: Vec<StoredMessage>,
+    unread_anchor: Option<Key>,
 }
 ```
 
-- A `sub` id fences deltas for a window that was replaced by a newer
-  subscription.
-- The controller applies deltas immediately, including while the pointer is
-  down. The presenter preserves row identity by `key`, so selection and menus
-  survive patches. If pointer-down stability needs
-  more than keyed patching, the presenter (not the data layer) may hold back
-  *model commits* until release, without dropping anything.
-- Scrolling far moves the window: the controller asks for a new window
-  anchored at the visible row. The store is the history, so there is no UI-side
-  retention policy.
-- Image bitmaps are not stored in rows. The presenter looks them up by asset
-  key in the existing decoded-image cache when it builds a row.
+Subscription IDs fence responses for replaced subscriptions. `AppState` stores
+window messages by key with indexes for sort order and server-ID reply lookup;
+reply targets outside the window are held separately. It retains the supplied
+unread divider for the reading session. The presenter resolves current sender
+and reactor identities from the contact projection and maps keyed rows to
+Slint models. Decoded images live in its image cache, separate from stored rows.
 
-## Tests that must exist
+`Worker::on_deltas` wakes `app::event_loop`, which coalesces arrivals into a
+pending `slint::invoke_from_event_loop` callback. The callback drains the delta
+FIFO and applies the batch immediately, including during pointer interaction.
+There is no periodic delta-drain timer or deferred pointer-down queue.
 
-Each of the following runs against `FakeBackend` through the real engine,
-store and controller:
-
-- M13: send, switch chat, return, with a stale page arriving late; the row is
-  kept with the same `key`.
-- M14: an incoming message in a closed chat, then opening that chat with a
-  stale stored page; the row is shown and a refresh is scheduled.
-- Echo before send result, and send result before echo: one row in both cases.
-- Offline start shows cached chats and the cached window; reconnect resumes
-  from the stored revision with no duplicate notifications.
-- Chat-list pagination survives live operations.
-- Updates during pointer-down are all applied, none lost.
-- Unsend, reaction and receipt each update the row in place.
-- Failed send: discard, retry and late echo confirmation.
-- Restart: history, drafts, failed outbox items and the scroll anchor are
-  restored from the store.
-
-Out of scope: U-group surfaces, P-group protocol additions, T5 and T9.
-
-## Implementation notes
-
-The implementation has these specific constraints:
-
-- The UI drains the engine's single FIFO on a 16 ms event-loop timer. Each
-  delta is applied as it is drained, including during pointer interaction;
-  there is no deferred-update queue.
-- The existing transport has an older-page RPC but no implemented newer-page
-  RPC. LineBackend answers a newer request with a recent page labelled
-  `Recent`, so the store never treats an unanchored response as proof of
-  continuity. Visible interior gaps fetch older messages before their upper
-  confirmed boundary.
-- Existing session credentials do not contain an account MID. Their first
-  local open uses an empty memory store until profile validation selects the
-  account's MID-hashed database. Successful validation records profile identity
-  in the session so subsequent launches can open that database before network
-  access. Legacy message/state files are neither read nor imported.
-- RPC errors retain separate HTTP, gateway and TalkException namespaces through
-  classification. Media failures retain the asset fetcher's typed failure enum.
+`FakeBackend` is available for unit tests and the `line/demo` feature.
+Integration tests enable it through a self dev-dependency. Desktop `demo`
+enables demo/snapshot paths, and `ui-debug` implies `demo`. The integration
+flows in `tests/core_flows.rs` exercise store, worker and controller together,
+including send/echo ordering, stale pages, reconnect, account changes,
+attachments, reply drafts, reactions, receipts and restart recovery.

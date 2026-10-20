@@ -768,7 +768,7 @@ mod tests {
                         Arc::new(move |event| {
                             if matches!(
                                 event,
-                                PairEvent::Stage(crate::client::pairing::Stage::AwaitScan)
+                                PairEvent::Stage(crate::client::pairing::Stage::WaitingForPhone)
                             ) {
                                 started.send(()).unwrap();
                             }

@@ -58,43 +58,51 @@ impl Attachment {
                 _ => return Ok(item),
             }
             .to_string();
-            let (width, height) = reader.into_dimensions()?;
+            let Ok((width, height)) = reader.into_dimensions() else {
+                return Ok(item);
+            };
             if u64::from(width) * u64::from(height) <= 100_000_000 {
                 let bytes = item.read()?;
-                let animated = match format {
-                    image::ImageFormat::Gif => {
-                        image::codecs::gif::GifDecoder::new(Cursor::new(&bytes))?
-                            .into_frames()
-                            .take(2)
-                            .count()
-                            > 1
-                    }
-                    image::ImageFormat::Png => {
-                        image::codecs::png::PngDecoder::new(Cursor::new(&bytes))?.is_apng()?
-                    }
-                    image::ImageFormat::WebP => {
-                        image::codecs::webp::WebPDecoder::new(Cursor::new(&bytes))?.has_animation()
-                    }
-                    _ => false,
-                };
-                let mut reader = ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
-                let mut limits = image::Limits::default();
-                limits.max_alloc = Some(500_000_000);
-                reader.limits(limits);
-                let decoded = crate::images::decode(reader)?;
-                let preview = decoded.thumbnail(384, 384);
-                let photo = Photo {
-                    width: decoded.width(),
-                    height: decoded.height(),
-                    extension,
-                    animated,
-                    preview_width: preview.width(),
-                    preview_height: preview.height(),
-                };
-                let mut png = Cursor::new(Vec::new());
-                preview.write_to(&mut png, image::ImageFormat::Png)?;
-                item.preview = png.into_inner();
-                item.photo = Some(photo);
+                let prepared = (|| -> image::ImageResult<_> {
+                    let animated = match format {
+                        image::ImageFormat::Gif => {
+                            image::codecs::gif::GifDecoder::new(Cursor::new(&bytes))?
+                                .into_frames()
+                                .take(2)
+                                .count()
+                                > 1
+                        }
+                        image::ImageFormat::Png => {
+                            image::codecs::png::PngDecoder::new(Cursor::new(&bytes))?.is_apng()?
+                        }
+                        image::ImageFormat::WebP => {
+                            image::codecs::webp::WebPDecoder::new(Cursor::new(&bytes))?
+                                .has_animation()
+                        }
+                        _ => false,
+                    };
+                    let mut reader = ImageReader::new(Cursor::new(&bytes)).with_guessed_format()?;
+                    let mut limits = image::Limits::default();
+                    limits.max_alloc = Some(500_000_000);
+                    reader.limits(limits);
+                    let decoded = crate::images::decode(reader)?;
+                    let preview = decoded.thumbnail(384, 384);
+                    let photo = Photo {
+                        width: decoded.width(),
+                        height: decoded.height(),
+                        extension,
+                        animated,
+                        preview_width: preview.width(),
+                        preview_height: preview.height(),
+                    };
+                    let mut png = Cursor::new(Vec::new());
+                    preview.write_to(&mut png, image::ImageFormat::Png)?;
+                    Ok((photo, png.into_inner()))
+                })();
+                if let Ok((photo, preview)) = prepared {
+                    item.photo = Some(photo);
+                    item.preview = preview;
+                }
             }
         }
         Ok(item)
@@ -104,13 +112,15 @@ impl Attachment {
             let _ = std::fs::remove_file(&self.path);
         }
     }
+    fn limit(&self) -> u64 {
+        if self.photo.is_some() {
+            PHOTO_LIMIT
+        } else {
+            FILE_LIMIT
+        }
+    }
     pub fn too_large(&self) -> bool {
-        self.size
-            > if self.photo.is_some() {
-                PHOTO_LIMIT
-            } else {
-                FILE_LIMIT
-            }
+        self.size > self.limit()
     }
     pub fn read(&self) -> Result<Vec<u8>> {
         let file = std::fs::File::open(&self.path).context("File missing")?;
@@ -119,13 +129,8 @@ impl Attachment {
             file.metadata()?.len() == self.size,
             "File changed; select it again"
         );
-        let limit = if self.photo.is_some() {
-            PHOTO_LIMIT
-        } else {
-            FILE_LIMIT
-        };
         let mut bytes = Vec::new();
-        file.take(limit + 1).read_to_end(&mut bytes)?;
+        file.take(self.limit() + 1).read_to_end(&mut bytes)?;
         ensure!(
             bytes.len() as u64 == self.size,
             "File changed; select it again"
@@ -148,5 +153,42 @@ impl Attachment {
                 size: Some(self.size),
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn corrupt_photos_can_be_sent_as_files() -> Result<()> {
+        let root = std::env::temp_dir().join(format!("line-corrupt-photo-{}", std::process::id()));
+        std::fs::create_dir_all(&root)?;
+        let mut png = Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(2, 2).write_to(&mut png, image::ImageFormat::Png)?;
+        let mut png = png.into_inner();
+        let data = png.windows(4).position(|b| b == b"IDAT").unwrap();
+        png[data + 4] ^= 0xff;
+        assert_eq!(
+            ImageReader::new(Cursor::new(&png))
+                .with_guessed_format()?
+                .into_dimensions()?,
+            (2, 2)
+        );
+        for (name, bytes) in [
+            ("header.jpg", &b"broken jpeg"[..]),
+            ("pixels.png", png.as_slice()),
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, bytes)?;
+            let item = Attachment::prepare(&path)?;
+            assert!(item.photo.is_none());
+            assert!(item.preview.is_empty());
+            assert!(!item.too_large());
+            assert_eq!(item.read()?, bytes);
+            assert!(matches!(item.content(), crate::store::Content::File { .. }));
+        }
+        std::fs::remove_dir_all(root)?;
+        Ok(())
     }
 }

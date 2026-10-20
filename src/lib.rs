@@ -16,6 +16,21 @@ pub mod system_events;
 mod test_support;
 
 pub(crate) fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
-    use std::io::Read;
-    std::fs::File::open("/dev/urandom")?.read_exact(bytes)
+    let mut remaining = bytes;
+    while !remaining.is_empty() {
+        // getrandom may return a short fill or be interrupted by a signal.
+        let filled = unsafe { libc::getrandom(remaining.as_mut_ptr().cast(), remaining.len(), 0) };
+        if filled < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(error);
+        }
+        if filled == 0 {
+            return Err(std::io::ErrorKind::UnexpectedEof.into());
+        }
+        remaining = &mut remaining[filled as usize..];
+    }
+    Ok(())
 }
