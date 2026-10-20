@@ -119,7 +119,10 @@ pub(crate) fn private_directory(path: &Path) -> Result<()> {
 }
 
 pub(crate) struct Api {
+    #[cfg(not(test))]
     rt: Runtime,
+    #[cfg(test)]
+    rt: crate::test_support::TestRuntime,
     wasm: Vec<u8>,
     http: http::Transport,
     key_cache: std::collections::HashMap<String, Value>,
@@ -133,6 +136,10 @@ pub(crate) struct Api {
 }
 impl Api {
     fn signature(&mut self, path: &str, body: &str, access: &str) -> Result<String> {
+        #[cfg(test)]
+        if self.rt.0.is_none() {
+            return Ok(String::new());
+        }
         self.prepare_runtime()?;
         if self
             .signing_key
@@ -163,10 +170,28 @@ impl Api {
     }
 
     #[cfg(test)]
-    fn new(wasm: &[u8], client_version: &str) -> Result<Self> {
-        Self::with_runtime(Runtime::new(wasm, client_version)?, wasm, client_version)
+    fn new(module: &crate::crypto_module::CryptoModule) -> Result<Self> {
+        Self::with_runtime(
+            Runtime::from_module(crate::test_support::compiled_module(), &module.version)?,
+            &module.read()?,
+            &module.version,
+        )
     }
     fn with_runtime(rt: Runtime, wasm: &[u8], client_version: &str) -> Result<Self> {
+        #[cfg(test)]
+        let rt = rt.into();
+        Self::build(rt, wasm, client_version)
+    }
+    #[cfg(test)]
+    fn without_crypto() -> Result<Self> {
+        Self::build(Default::default(), &[], "9.8.7")
+    }
+    fn build(
+        #[cfg(not(test))] rt: Runtime,
+        #[cfg(test)] rt: crate::test_support::TestRuntime,
+        wasm: &[u8],
+        client_version: &str,
+    ) -> Result<Self> {
         Ok(Self {
             rt,
             wasm: wasm.to_vec(),

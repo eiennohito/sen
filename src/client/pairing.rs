@@ -311,42 +311,17 @@ mod tests {
     fn qr_gateway_poll_timeout_keeps_waiting_until_the_scan_event() -> Result<()> {
         let module = crate::test_support::installed_module();
 
-        use crate::client::http::tests::{accept, local_server};
-        use std::io::{BufRead, BufReader, Read};
-        let (http, server) = local_server(|listener| {
-            for response in [
-                json!({"code":0,"message":"OK","data":{"authSessionId":"synthetic"}}),
-                json!({"code":0,"message":"OK","data":{"callbackUrl":"line://au/q/test","longPollingMaxCount":2}}),
-                error::wire_fixture::qr_expired(),
-                json!({"code":0,"message":"OK","data":{}}),
-            ] {
-                let mut socket = BufReader::new(accept(&listener));
-                let mut line = String::new();
-                socket.read_line(&mut line).unwrap();
-                assert!(line.contains("SecondaryQrCodeLogin"));
-                let mut length = 0;
-                loop {
-                    line.clear();
-                    socket.read_line(&mut line).unwrap();
-                    if line == "\r\n" {
-                        break;
-                    }
-                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        length = value.trim().parse().unwrap();
-                    }
-                }
-                socket.read_exact(&mut vec![0; length]).unwrap();
-                let body = response.to_string();
-                write!(
-                    socket.get_mut(),
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-            }
-        });
-        let wasm = module.read()?;
-        let mut api = Api::new(&wasm, &module.version)?;
+        use crate::client::http::tests::{Reply, server_responses};
+        let (http, server) = server_responses([
+            ("/api/talk/thrift/LoginQrCode/SecondaryQrCodeLoginService/createSession", json!({"code":0,"message":"OK","data":{"authSessionId":"synthetic"}})),
+            ("/api/talk/thrift/LoginQrCode/SecondaryQrCodeLoginService/createQrCode", json!({"code":0,"message":"OK","data":{"callbackUrl":"line://au/q/test","longPollingMaxCount":2}})),
+            ("/api/talk/thrift/LoginQrCode/SecondaryQrCodeLoginPermitNoticeService/checkQrCodeVerified", error::wire_fixture::qr_expired()),
+            ("/api/talk/thrift/LoginQrCode/SecondaryQrCodeLoginPermitNoticeService/checkQrCodeVerified", json!({"code":0,"message":"OK","data":{}})),
+        ].into_iter().map(|(path, response)| {
+            let reply: Reply = Box::new(move |_| (200, response));
+            (path, reply)
+        }).collect());
+        let mut api = Api::new(&module)?;
         api.http = http;
         let cancel = CancelToken::new();
         let events = std::cell::RefCell::new(Vec::new());

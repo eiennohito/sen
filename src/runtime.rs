@@ -775,7 +775,12 @@ impl Runtime {
     pub fn new(bytes: &[u8], version: &str) -> Result<Self> {
         let engine = Engine::default();
         let module = Module::new(&engine, bytes)?;
-        let mut linker = Linker::new(&engine);
+        Self::from_module(&module, version)
+    }
+
+    pub(crate) fn from_module(module: &Module, version: &str) -> Result<Self> {
+        let engine = module.engine();
+        let mut linker = Linker::new(engine);
         for import in module.imports() {
             let spec = FUNCTIONS
                 .iter()
@@ -821,9 +826,9 @@ impl Runtime {
                 return Err(crypto_changed(version, name));
             }
         }
-        let mut store = Store::new(&engine, Host::new(version));
+        let mut store = Store::new(engine, Host::new(version));
         let instance = linker
-            .instantiate(&mut store, &module)?
+            .instantiate(&mut store, module)?
             .start(&mut store)
             .map_err(runtime_error)?;
         let mut rt = Self {

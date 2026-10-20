@@ -5,6 +5,33 @@ pub(crate) fn installed_module() -> crate::crypto_module::CryptoModule {
     })
 }
 
+pub(crate) fn compiled_module() -> &'static wasmi::Module {
+    static MODULE: std::sync::OnceLock<wasmi::Module> = std::sync::OnceLock::new();
+    MODULE.get_or_init(|| {
+        let bytes = installed_module().read().unwrap();
+        wasmi::Module::new(&wasmi::Engine::default(), &bytes).unwrap()
+    })
+}
+
+#[derive(Default)]
+pub(crate) struct TestRuntime(pub Option<crate::runtime::Runtime>);
+impl From<crate::runtime::Runtime> for TestRuntime {
+    fn from(runtime: crate::runtime::Runtime) -> Self {
+        Self(Some(runtime))
+    }
+}
+impl std::ops::Deref for TestRuntime {
+    type Target = crate::runtime::Runtime;
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref().expect("HTTP-only test used crypto")
+    }
+}
+impl std::ops::DerefMut for TestRuntime {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.0.as_mut().expect("HTTP-only test used crypto")
+    }
+}
+
 /// Tiny JPEG with an EXIF orientation-6 IFD, constructed rather than checked in.
 pub(crate) fn oriented_jpeg() -> Vec<u8> {
     let image = image::RgbImage::from_fn(3, 2, |x, _| {

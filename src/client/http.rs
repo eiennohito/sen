@@ -956,7 +956,7 @@ mod glue {
 pub(in crate::client) mod tests {
     use super::*;
     use std::{
-        io::{BufRead, BufReader},
+        io::{BufRead, BufReader, Write},
         net::{TcpListener, TcpStream},
         thread,
     };
@@ -980,27 +980,57 @@ pub(in crate::client) mod tests {
             .unwrap();
         socket
     }
-    pub(in crate::client) fn read_request(stream: &mut BufReader<TcpStream>) -> bool {
+    pub(in crate::client) fn request_headers(
+        stream: &mut BufReader<TcpStream>,
+    ) -> Option<(String, Option<usize>)> {
         let mut line = String::new();
         if stream.read_line(&mut line).unwrap() == 0 {
-            return false;
+            return None;
         }
-        assert!(line.starts_with("POST /api/"));
-        let mut length = 0;
+        let request = line.trim_end().to_owned();
+        let mut length = None;
         loop {
             line.clear();
-            stream.read_line(&mut line).unwrap();
+            assert!(stream.read_line(&mut line).unwrap() > 0);
             if line == "\r\n" {
-                break;
+                return Some((request, length));
             }
-            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = v.trim().parse().unwrap();
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = Some(value.trim().parse().unwrap());
             }
         }
-        let mut body = vec![0; length];
+    }
+    pub(in crate::client) fn request(
+        stream: &mut BufReader<TcpStream>,
+    ) -> Option<(String, Vec<u8>)> {
+        let (request, length) = request_headers(stream)?;
+        let mut body = vec![0; length.unwrap_or_default()];
         stream.read_exact(&mut body).unwrap();
+        Some((request, body))
+    }
+    pub(in crate::client) fn read_request(stream: &mut BufReader<TcpStream>) -> bool {
+        let Some((request, body)) = request(stream) else {
+            return false;
+        };
+        assert!(request.starts_with("POST /api/"));
         assert_eq!(body, b"{}");
         true
+    }
+    pub(in crate::client) type Reply =
+        Box<dyn FnOnce(serde_json::Value) -> (u16, serde_json::Value) + Send>;
+    pub(in crate::client) fn server_responses(
+        steps: Vec<(&'static str, Reply)>,
+    ) -> (Transport, thread::JoinHandle<()>) {
+        local_server(move |listener| {
+            for (path, reply) in steps {
+                let mut socket = BufReader::new(accept(&listener));
+                let (request, body) = request(&mut socket).unwrap();
+                assert_eq!(request, format!("POST {path} HTTP/1.1"));
+                let (status, data) = reply(serde_json::from_slice(&body).unwrap());
+                let body = data.to_string();
+                write!(socket.get_mut(), "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
+            }
+        })
     }
 }
 #[cfg(test)]
