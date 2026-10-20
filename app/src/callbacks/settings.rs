@@ -11,7 +11,17 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
                 background: g.get_background_mode(),
                 autostart: g.get_autostart(),
                 notifications: g.get_notifications_enabled(),
-                preview: g.get_notification_preview().into(),
+                preview: match g.get_notification_preview() {
+                    line_desktop_ui::NotificationPreview::NameAndText => {
+                        line::store::NotificationPreview::NameAndText
+                    }
+                    line_desktop_ui::NotificationPreview::NameOnly => {
+                        line::store::NotificationPreview::NameOnly
+                    }
+                    line_desktop_ui::NotificationPreview::NewMessage => {
+                        line::store::NotificationPreview::NewMessage
+                    }
+                },
                 sound: g.get_notification_sound(),
                 mention_exception: g.get_notification_mention_exception(),
                 group_events: g.get_notification_group_events(),

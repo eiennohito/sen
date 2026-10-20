@@ -53,7 +53,6 @@ pub struct Instance {
     _connection: Option<Connection>,
     _lock: Option<File>,
     events: std::cell::RefCell<mpsc::Receiver<Activation>>,
-    pub warning: Option<String>,
 }
 pub enum Launch {
     Primary(Instance),
@@ -86,14 +85,16 @@ impl Instance {
                             | zbus::fdo::RequestNameReply::AlreadyOwner,
                         ) => Ok(Some((connection, rx))),
                         Err(zbus::Error::NameTaken) | Ok(_) => {
-                            if activate_existing {
-                                let _ = connection.call_method(
+                            if activate_existing
+                                && let Err(error) = connection.call_method(
                                     Some(APP_ID),
                                     OBJECT,
                                     Some("org.freedesktop.Application"),
                                     "Activate",
                                     &(HashMap::<String, OwnedValue>::new(),),
-                                );
+                                )
+                            {
+                                line::reporting::log("desktop", "activate-existing", &error);
                             }
                             Ok(None)
                         }
@@ -107,34 +108,26 @@ impl Instance {
                 _connection: Some(connection),
                 _lock: None,
                 events: std::cell::RefCell::new(events),
-                warning: None,
             })),
             Ok(None) => Ok(Launch::Forwarded),
-            Err(_) => {
-                let runtime = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from);
-                let (lock, warning) = match runtime {
-                    Some(dir) => match lock_file(&dir.join("line-desktop.lock")) {
-                        Ok(Some(file)) => (
-                            Some(file),
-                            "Desktop activation is unavailable. A local lock prevents another instance.",
-                        ),
+            Err(error) => {
+                line::reporting::log("desktop", "activation-unavailable", &error);
+                let lock = match std::env::var_os("XDG_RUNTIME_DIR") {
+                    Some(dir) => match lock_file(&PathBuf::from(dir).join("line-desktop.lock")) {
+                        Ok(Some(file)) => Some(file),
                         Ok(None) => return Ok(Launch::Forwarded),
-                        Err(_) => (
-                            None,
-                            "Desktop activation and the local lock are unavailable. Another instance may be running.",
-                        ),
+                        Err(error) => {
+                            line::reporting::log("desktop", "lock-unavailable", &error);
+                            None
+                        }
                     },
-                    None => (
-                        None,
-                        "Desktop activation and the runtime directory are unavailable. Another instance may be running.",
-                    ),
+                    None => None,
                 };
                 let (_, events) = mpsc::channel();
                 Ok(Launch::Primary(Self {
                     _connection: None,
                     _lock: lock,
                     events: std::cell::RefCell::new(events),
-                    warning: Some(warning.into()),
                 }))
             }
         }
@@ -148,8 +141,8 @@ fn lock_file(path: &Path) -> std::io::Result<Option<File>> {
         .create(true)
         .truncate(false)
         .mode(0o600)
-        .custom_flags(0x20000)
-        .open(path)?; // O_NOFOLLOW
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
     match file.try_lock() {
         Ok(()) => Ok(Some(file)),
         Err(std::fs::TryLockError::WouldBlock) => Ok(None),

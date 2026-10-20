@@ -21,7 +21,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         } = &m.body
         {
             let asset = asset.clone();
-            let name = name.clone().unwrap_or_else(|| "attachment".into());
+            let name = name.clone().unwrap_or_else(|| "閃 attachment".into());
             g.set_file_save_id(id.clone());
             g.set_file_save_status("".into());
             g.set_file_saving(true);

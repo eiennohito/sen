@@ -29,6 +29,7 @@ use window::create_app_window;
 mod assets;
 mod emoji;
 mod event_loop;
+mod export;
 mod notifications;
 mod presenter;
 mod rich_content;

@@ -1,19 +1,13 @@
-//! Managed XDG autostart entry. Only a deliberate preference change writes it.
+//! Managed XDG autostart entry, refreshed at startup when enabled and on preference changes.
 use std::{
     fs::{self, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
 };
 pub(crate) fn directory() -> Result<PathBuf, String> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .ok_or("Home folder is unavailable.")?;
-    Ok(std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .unwrap_or_else(|| home.join(".config"))
-        .join("autostart"))
+    line::locations::Locations::config_home()
+        .map(|path| path.join("autostart"))
+        .map_err(|_| "Home folder is unavailable.".to_owned())
 }
 pub(crate) fn set_enabled(
     directory: &Path,

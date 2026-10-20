@@ -1,10 +1,10 @@
 mod dbus;
 pub(crate) mod policy;
 pub(crate) mod worker;
-use crate::notifications::policy::{Context, EventKind, Preferences, PreviewLevel};
+use crate::notifications::policy::{Context, EventKind, Preferences};
 use crate::*;
 pub(crate) struct Notifications {
-    pub service: notifications::worker::Attention,
+    service: notifications::worker::Attention,
     events: std::sync::mpsc::Receiver<notifications::worker::Event>,
 }
 impl Notifications {
@@ -18,6 +18,15 @@ impl Notifications {
         });
         Self { service, events }
     }
+    pub fn set_unread_count(&self, count: u64) {
+        self.service.set_unread_count(count);
+    }
+    pub fn withdraw(&self, chat: &str) {
+        self.service.withdraw(chat);
+    }
+    pub fn withdraw_notifications(&self) {
+        self.service.withdraw_notifications();
+    }
     pub fn test(&self, ui: &AppWindow, state: &AppState) {
         let prefs = preferences(&state.prefs.desktop);
         let text = policy::redact(
@@ -29,7 +38,7 @@ impl Notifications {
             .set_notification_status("Sending test notification…".into());
         self.service.probe();
         self.service.notify(notifications::worker::Notice {
-            chat: "notification-test".into(),
+            chat: worker::TEST_CHAT.into(),
             summary: text.summary,
             body: text.body,
             sound: prefs.sound,
@@ -100,24 +109,16 @@ pub(crate) fn handle(event: notifications::worker::Event, ui: &AppWindow, deskto
                 });
             }
         }
-        notifications::worker::Event::Delivered(chat) if chat == "notification-test" => ui
+        notifications::worker::Event::TestDelivered => ui
             .global::<SettingsState>()
             .set_notification_status("Test notification sent".into()),
-        notifications::worker::Event::Delivered(chat)
-        | notifications::worker::Event::Closed(chat) => {
-            let _ = chat;
-        }
     }
 }
 
 fn preferences(prefs: &DesktopPrefs) -> Preferences {
     Preferences {
         enabled: prefs.notifications,
-        preview: match prefs.preview {
-            0 => PreviewLevel::NameAndText,
-            2 => PreviewLevel::NewMessage,
-            _ => PreviewLevel::NameOnly,
-        },
+        preview: prefs.preview,
         sound: prefs.sound,
         mention_exception: prefs.mention_exception,
         group_events: prefs.group_events,

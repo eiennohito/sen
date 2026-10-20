@@ -20,16 +20,20 @@ struct Prepared {
 }
 
 fn picture(bytes: &[u8]) -> slint::Image {
-    if let Ok(image) = image::load_from_memory(bytes) {
-        let image = image.to_rgba8();
-        let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-            image.as_raw(),
-            image.width(),
-            image.height(),
-        );
-        slint::Image::from_rgba8(buffer)
-    } else {
-        Default::default()
+    if bytes.is_empty() {
+        return Default::default();
+    }
+    match image::load_from_memory(bytes) {
+        Ok(image) => {
+            let image = image.to_rgba8();
+            let buffer = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                image.as_raw(),
+                image.width(),
+                image.height(),
+            );
+            slint::Image::from_rgba8(buffer)
+        }
+        Err(_) => Default::default(),
     }
 }
 fn present(ui: &AppWindow, selection: &Selection) {
@@ -51,8 +55,7 @@ fn present(ui: &AppWindow, selection: &Selection) {
 }
 pub(crate) fn begin(
     ui: &AppWindow,
-    desktop: &Desktop,
-    selected: &std::sync::Arc<std::sync::Mutex<Selection>>,
+    desktop: &mut Desktop,
     input: impl FnOnce() -> Result<Vec<PathBuf>, String> + Send + 'static,
 ) {
     if desktop.state.selected.is_none()
@@ -61,7 +64,7 @@ pub(crate) fn begin(
     {
         return;
     }
-    let mut selection = selected.lock().unwrap();
+    let selection = &mut desktop.attachments;
     selection.generation += 1;
     selection.chat = desktop.state.selected.clone();
     for item in selection.items.drain(..) {
@@ -81,7 +84,6 @@ pub(crate) fn begin(
             .into(),
     );
     let weak = ui.as_weak();
-    let selected = selected.clone();
     let root = desktop.clipboard_root.clone();
     std::thread::spawn(move || {
         let mut prepared = Prepared {
@@ -112,7 +114,7 @@ pub(crate) fn begin(
             Err(error) => prepared.errors.push(error),
         }
         let _ = weak.upgrade_in_event_loop(move |ui| {
-            complete(&ui, &mut selected.lock().unwrap(), prepared);
+            event_loop::push(move |d| complete(&ui, &mut d.attachments, prepared));
         });
     });
 }
@@ -154,20 +156,20 @@ fn chooser() -> Result<Vec<PathBuf>, String> {
 }
 pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
     global_callback!(ui, actions, G, on_attach, |ui, d| {
-        begin(&ui, d, &d.attachments, chooser);
+        begin(&ui, d, chooser);
     });
     #[cfg(feature = "ui-debug")]
     dev::automation::inject_attachments(ui, actions);
     global_callback!(ui, actions, G, on_remove_attachment, |ui, d, index| {
-        let mut selection = d.attachments.lock().unwrap();
+        let selection = &mut d.attachments;
         if (index as usize) < selection.items.len() {
             selection.items.remove(index as usize).delete_clipboard();
         }
-        present(&ui, &selection);
+        present(&ui, selection);
     });
     global_callback!(ui, actions, G, on_cancel_attachments, |ui, d| {
         let g = ui.global::<G>();
-        let mut selection = d.attachments.lock().unwrap();
+        let selection = &mut d.attachments;
         selection.generation += 1;
         for item in selection.items.drain(..) {
             item.delete_clipboard();
@@ -177,7 +179,7 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
     });
     global_callback!(ui, actions, G, on_send_attachments, |ui, d| {
         let g = ui.global::<G>();
-        let mut selection = d.attachments.lock().unwrap();
+        let selection = &mut d.attachments;
         if let Some(chat) = selection.chat.take() {
             let items = std::mem::take(&mut selection.items)
                 .into_iter()
@@ -198,12 +200,10 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
     global_callback!(ui, actions, G, on_paste_attachment, |ui, d| {
         let weak = ui.as_weak();
         let root = d.clipboard_root.clone();
-        let selected = d.attachments.clone();
-        begin(&ui, d, &d.attachments, move || {
+        begin(&ui, d, move || {
             let paste_text = || {
-                weak.upgrade_in_event_loop({
-                    let selected = selected.clone();
-                    move |ui| paste_text(&ui, &selected)
+                weak.upgrade_in_event_loop(move |ui| {
+                    event_loop::push(move |d| paste_text(&ui, &d.attachments));
                 })
             };
             let Ok(mut clipboard) = arboard::Clipboard::new() else {
@@ -243,17 +243,15 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
     } => true);
 }
 
-pub(crate) fn drop_files(ui: &AppWindow, d: &Desktop, uris: &str) {
+pub(crate) fn drop_files(ui: &AppWindow, d: &mut Desktop, uris: &str) {
     let paths = uri_paths(uris);
     if !paths.is_empty() {
-        begin(ui, d, &d.attachments, move || Ok(paths));
+        begin(ui, d, move || Ok(paths));
     }
 }
 
-fn paste_text(ui: &AppWindow, selected: &std::sync::Mutex<Selection>) {
+fn paste_text(ui: &AppWindow, selected: &Selection) {
     if selected
-        .lock()
-        .unwrap()
         .chat
         .as_ref()
         .is_some_and(|chat| chat.0 == ui.global::<ConversationState>().get_chat_id().as_str())

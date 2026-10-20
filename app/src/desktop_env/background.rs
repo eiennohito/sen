@@ -18,9 +18,7 @@ impl Background {
             self.events = Some(rx);
         }
         if !prefs.background {
-            if let Some(tray) = self.tray.take() {
-                tray.shutdown();
-            }
+            self.tray = None;
             self.events = None;
             self.available = false;
         }
@@ -56,14 +54,6 @@ impl Background {
                     }
                 }
             }
-        }
-    }
-}
-
-impl Drop for Background {
-    fn drop(&mut self) {
-        if let Some(tray) = self.tray.take() {
-            tray.shutdown();
         }
     }
 }

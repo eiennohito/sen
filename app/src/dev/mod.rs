@@ -116,7 +116,6 @@ impl Session {
         d: &mut Desktop,
         runtime: Runtime,
         fake: Option<&FakeBackend>,
-        warning: &str,
     ) -> Result<AppWindow, slint::PlatformError> {
         let ui = window::create_app_window()?;
         ui.window().set_size(slint::LogicalSize::new(
@@ -127,7 +126,6 @@ impl Session {
             &ui,
             d,
             runtime.clone(),
-            warning,
             self.snapshot.is_none() && !self.args.background,
         );
         ui.global::<Palette>().set_color_scheme(if self.args.dark {

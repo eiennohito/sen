@@ -6,7 +6,7 @@ pub(crate) struct Desktop {
     pub(crate) shown_composer: String,
     pub(crate) reveal: Option<ChatId>,
     pub(crate) viewer_name: String,
-    pub(crate) attachments: std::sync::Arc<std::sync::Mutex<callbacks::attachments::Selection>>,
+    pub(crate) attachments: callbacks::attachments::Selection,
     pub(crate) viewer_asset: Option<String>,
     pub(crate) viewer_source: Option<std::path::PathBuf>,
     pub(crate) notifications: Option<notifications::Notifications>,
@@ -55,17 +55,12 @@ impl Desktop {
             &self.sender,
         );
 
+        self.presenter.present(ui, &self.state, self.category);
         if let Some(notifications) = &self.notifications {
-            notifications.service.set_unread_count(
-                self.state
-                    .chats
-                    .values()
-                    .filter(|c| c.unread_count > 0)
-                    .count() as u64,
-            );
+            notifications
+                .set_unread_count(ui.global::<ShellState>().get_unread_conversations() as u64);
         }
 
-        self.presenter.present(ui, &self.state, self.category);
         self.presenter
             .request_status_assets(&mut self.assets, &self.sender);
         if let Some(id) = &self.history.jump_target
@@ -109,7 +104,7 @@ impl Desktop {
     }
     pub(crate) fn switch_chat(&mut self, ui: &AppWindow, chat: ChatId) {
         if let Some(n) = &self.notifications {
-            n.service.withdraw(&chat.0);
+            n.withdraw(&chat.0);
         }
         self.capture_draft(ui);
         self.shown_composer = self.state.composer.clone();

@@ -31,6 +31,7 @@ pub(crate) fn start(
         .parent()
         .unwrap()
         .join("clipboard-attachments");
+    let fonts = locations.fonts();
     let real_worker = || {
         let root = locations.session.parent().unwrap().join("accounts");
         Worker::start(
@@ -49,7 +50,7 @@ pub(crate) fn start(
     #[cfg(feature = "demo")]
     let dev = dev::Session::start(dev_args, real_worker)?;
     slint::set_xdg_app_id(desktop_env::desktop_integration::APP_ID)?;
-    emoji::load();
+    emoji::load(&fonts);
     #[cfg(not(feature = "demo"))]
     let worker = real_worker();
     #[cfg(feature = "demo")]
@@ -85,15 +86,10 @@ pub(crate) fn start(
         actions: ActionQueue::default(),
         draining: Default::default(),
     };
-    let warning = instance
-        .as_ref()
-        .and_then(|i| i.warning.as_deref())
-        .unwrap_or_default();
     #[cfg(not(feature = "demo"))]
-    let ui = desktop.update(|d| window::install_window(d, desktop.clone(), warning))?;
+    let ui = desktop.update(|d| window::install_window(d, desktop.clone()))?;
     #[cfg(feature = "demo")]
-    let ui =
-        desktop.update(|d| dev.install_window(d, desktop.clone(), dev.fake.as_ref(), warning))?;
+    let ui = desktop.update(|d| dev.install_window(d, desktop.clone(), dev.fake.as_ref()))?;
     #[cfg(feature = "demo")]
     if dev.stage(&ui, &desktop)? {
         return Ok(());

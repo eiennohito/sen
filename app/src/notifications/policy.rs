@@ -1,17 +1,11 @@
 //! Pure message attention decisions. Callers supply authoritative unread state.
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub enum PreviewLevel {
-    NameAndText,
-    #[default]
-    NameOnly,
-    NewMessage,
-}
+use line::store::NotificationPreview;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Preferences {
     pub enabled: bool,
-    pub preview: PreviewLevel,
+    pub preview: NotificationPreview,
     pub sound: bool,
     pub mention_exception: bool,
     pub group_events: bool,
@@ -54,11 +48,11 @@ pub struct NotificationText {
     pub body: String,
 }
 
-pub fn redact(level: PreviewLevel, name: &str, text: &str) -> NotificationText {
+pub fn redact(level: NotificationPreview, name: &str, text: &str) -> NotificationText {
     let name = crate::presenter::names::nonblank(Some(name))
         .unwrap_or(crate::presenter::names::NOTIFICATION);
     match level {
-        PreviewLevel::NameAndText => NotificationText {
+        NotificationPreview::NameAndText => NotificationText {
             summary: name.into(),
             body: {
                 let mut chars = text.chars();
@@ -70,11 +64,11 @@ pub fn redact(level: PreviewLevel, name: &str, text: &str) -> NotificationText {
                 body
             },
         },
-        PreviewLevel::NameOnly => NotificationText {
+        NotificationPreview::NameOnly => NotificationText {
             summary: name.into(),
             body: String::new(),
         },
-        PreviewLevel::NewMessage => NotificationText {
+        NotificationPreview::NewMessage => NotificationText {
             summary: "New message".into(),
             body: String::new(),
         },
@@ -149,13 +143,13 @@ mod tests {
     }
     #[test]
     fn privacy_removes_text() {
-        let full = redact(PreviewLevel::NameAndText, "葵", "Private text 🐈");
+        let full = redact(NotificationPreview::NameAndText, "葵", "Private text 🐈");
         assert_eq!(full.summary, "葵");
         assert_eq!(full.body, "Private text 🐈");
-        let name = redact(PreviewLevel::NameOnly, "葵", "Private text 🐈");
+        let name = redact(NotificationPreview::NameOnly, "葵", "Private text 🐈");
         assert_eq!(name.summary, "葵");
         assert!(name.body.is_empty());
-        let hidden = redact(PreviewLevel::NewMessage, "葵", "Private text 🐈");
+        let hidden = redact(NotificationPreview::NewMessage, "葵", "Private text 🐈");
         assert_eq!(hidden.summary, "New message");
         assert!(hidden.body.is_empty());
     }
@@ -163,7 +157,7 @@ mod tests {
     fn blank_notification_names_use_the_application_name() {
         for name in ["", " \t\n"] {
             assert_eq!(
-                redact(PreviewLevel::NameOnly, name, "private").summary,
+                redact(NotificationPreview::NameOnly, name, "private").summary,
                 "閃"
             );
         }
@@ -172,7 +166,7 @@ mod tests {
     fn body_is_bounded_by_characters_including_ellipsis() {
         for length in [0, 999, 1000, 1001, 2000] {
             let input = "🐈".repeat(length);
-            let result = redact(PreviewLevel::NameAndText, "Name", &input);
+            let result = redact(NotificationPreview::NameAndText, "Name", &input);
             assert_eq!(result.body.chars().count(), length.min(1000));
             if length > 1000 {
                 assert_eq!(result.body, format!("{}…", "🐈".repeat(999)));
@@ -189,6 +183,6 @@ mod tests {
         assert!(!sound_due(Some(1_000), 999));
         let prefs = Preferences::default();
         assert!(!prefs.enabled && !prefs.sound && !prefs.mention_exception && !prefs.group_events);
-        assert_eq!(prefs.preview, PreviewLevel::NameOnly);
+        assert_eq!(prefs.preview, NotificationPreview::NameOnly);
     }
 }

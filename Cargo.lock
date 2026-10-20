@@ -2756,6 +2756,7 @@ dependencies = [
  "i-slint-backend-testing",
  "i-slint-core",
  "image",
+ "libc",
  "line",
  "line-desktop-ui",
  "serde",
