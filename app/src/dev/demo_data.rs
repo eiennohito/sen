@@ -367,6 +367,16 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
     rows
 }
 pub fn seed(fake: &FakeBackend) {
+    let own_avatar = Asset::avatar("/self-photo").unwrap();
+    let pixels = avatar(2).to_rgba8().unwrap();
+    fake.set_pixels(
+        &own_avatar,
+        Pixels {
+            width: pixels.width(),
+            height: pixels.height(),
+            rgba: pixels.as_bytes().to_vec(),
+        },
+    );
     let mut packages = FakeBackend::demo_sticker_packages();
     for index in 2..12 {
         let mut package = packages[index % 2].clone();

@@ -760,6 +760,7 @@ impl Backend for FakeBackend {
         Ok(Profile {
             mid: "self".into(),
             display_name: "Offline preview".into(),
+            picture_path: Some("/self-photo".into()),
             ..Default::default()
         })
     }
