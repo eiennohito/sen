@@ -1,3 +1,4 @@
+use super::Asset;
 use crate::*;
 
 pub struct EmojiView {
@@ -6,7 +7,7 @@ pub struct EmojiView {
 }
 impl EmojiView {
     pub(crate) fn new(span: line::store::InlineEmoji) -> Self {
-        let image_key = line::client::desktop::assets::Asset::inline_emoji(&span)
+        let image_key = Asset::inline_emoji(&span)
             .map(|a| a.key())
             .unwrap_or_default();
         Self { span, image_key }
@@ -22,7 +23,7 @@ fn system_millis() -> i64 {
 pub(crate) fn now_millis() -> i64 {
     CLOCK.with(|clock| (clock.get())())
 }
-#[cfg(feature = "demo")]
+#[cfg(any(test, feature = "demo"))]
 pub(crate) fn set_clock(clock: fn() -> i64) {
     CLOCK.with(|current| current.set(clock));
 }
@@ -37,59 +38,6 @@ pub(crate) fn name_initial(name: &str) -> slint::SharedString {
 pub(crate) fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
-/// Group only adjacent messages with known time and identity. Presentation is
-/// derived after sorting/reconciliation, so refreshes and local sends agree.
-pub(crate) fn group_messages(messages: &mut [MessageRow], source: &[Option<&StoredMessage>]) {
-    let mut previous_date = None;
-    for (row, message) in messages.iter_mut().zip(source) {
-        row.sender_initial = name_initial(&row.sender_name);
-        let time = message.and_then(|m| local_time(m.sort.sort_ts));
-        let date = time.map(|time| time.date_naive());
-        row.clock = time
-            .map(|time| time.format("%H:%M").to_string())
-            .unwrap_or_default()
-            .into();
-        row.day_label = if date != previous_date {
-            message
-                .map(|m| day_label(m.sort.sort_ts, now_millis()))
-                .unwrap_or_default()
-                .into()
-        } else {
-            "".into()
-        };
-        previous_date = date;
-    }
-    let joins = |left: usize, right: usize| {
-        let (Some(left), Some(right)) = (source[left], source[right]) else {
-            return false;
-        };
-        let a = left.sort.sort_ts;
-        let b = right.sort.sort_ts;
-        !matches!(left.body, Content::System { .. } | Content::Withdrawn)
-            && !matches!(right.body, Content::System { .. } | Content::Withdrawn)
-            && matches!(left.delivery, Delivery::Sent | Delivery::Read)
-            && matches!(right.delivery, Delivery::Sent | Delivery::Read)
-            && local_time(a)
-                .zip(local_time(b))
-                .is_some_and(|(a, b)| a.date_naive() == b.date_naive())
-            && left.outgoing == right.outgoing
-            && (left.outgoing || (!left.sender_id.is_empty() && left.sender_id == right.sender_id))
-            && a > 0
-            && b >= a
-            && b - a <= 300_000
-    };
-    for i in 0..messages.len() {
-        let before = i > 0 && joins(i - 1, i);
-        let after = i + 1 < messages.len() && joins(i, i + 1);
-        messages[i].run_position = match (before, after) {
-            (false, false) => line_desktop_ui::RunPosition::Single,
-            (false, true) => line_desktop_ui::RunPosition::First,
-            (true, true) => line_desktop_ui::RunPosition::Middle,
-            (true, false) => line_desktop_ui::RunPosition::Last,
-        };
-    }
-}
-
 pub(crate) fn order_key(timestamp: i64) -> String {
     format!("{:020}", timestamp.max(0))
 }
@@ -146,7 +94,7 @@ pub(crate) fn day_label(timestamp: i64, now: i64) -> String {
     }
 }
 
-fn local_time(timestamp: i64) -> Option<chrono::DateTime<chrono::Local>> {
+pub(super) fn local_time(timestamp: i64) -> Option<chrono::DateTime<chrono::Local>> {
     if timestamp <= 0 || timestamp == i64::MAX {
         return None;
     }
@@ -296,17 +244,21 @@ pub(crate) fn reaction_views(
     groups
         .into_iter()
         .map(|(mut group, actors)| {
-            group.reactors = ModelRc::new(VecModel::from(actors));
+            group.reactors = ModelRc::new(slint::VecModel::from(actors));
             group
         })
         .collect()
 }
 
-pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> MessageRow {
+pub(crate) fn message_row(
+    m: &StoredMessage,
+    system_text: Option<&str>,
+    images: &super::Images,
+) -> MessageRow {
     let (kind, body) = message_text(&m.body);
     let emoji = emoji_views(&m.body);
     let rich_runs = if kind == MessageKind::Text && !emoji.is_empty() {
-        crate::rich_content::runs(m.body.as_text(), &emoji)
+        images.runs(crate::rich_content::run_data(m.body.as_text(), &emoji))
     } else {
         ModelRc::default()
     };
@@ -339,7 +291,7 @@ pub(crate) fn message_row(m: &StoredMessage, system_text: Option<&str>) -> Messa
         body: system_text.unwrap_or(&body).into(),
         time: display_time(m.sort.sort_ts).into(),
         outgoing: m.outgoing,
-        image_key: m.body.image().map(|a| a.key()).unwrap_or_default().into(),
+        image_key: super::asset_key(m.body.image()),
         ..Default::default()
     }
 }
@@ -401,6 +353,24 @@ pub(crate) fn avatar_tint(id: &str) -> slint::Color {
     ];
     let rgb = hues[hash as usize % hues.len()];
     slint::Color::from_rgb_u8((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
+}
+
+pub(super) fn joins(left: &StoredMessage, right: Option<&StoredMessage>) -> bool {
+    let Some(right) = right else { return false };
+    let a = left.sort.sort_ts;
+    let b = right.sort.sort_ts;
+    !matches!(left.body, Content::System { .. } | Content::Withdrawn)
+        && !matches!(right.body, Content::System { .. } | Content::Withdrawn)
+        && matches!(left.delivery, Delivery::Sent | Delivery::Read)
+        && matches!(right.delivery, Delivery::Sent | Delivery::Read)
+        && local_time(a)
+            .zip(local_time(b))
+            .is_some_and(|(a, b)| a.date_naive() == b.date_naive())
+        && left.outgoing == right.outgoing
+        && (left.outgoing || (!left.sender_id.is_empty() && left.sender_id == right.sender_id))
+        && a > 0
+        && b >= a
+        && b - a <= 300_000
 }
 
 #[cfg(test)]

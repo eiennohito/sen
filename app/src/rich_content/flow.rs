@@ -289,20 +289,22 @@ pub(crate) fn layout(
     }
     ModelRc::new(VecModel::from(output))
 }
+/// Updates the previous layout in place so the runs' delegates keep their
+/// identity. `previous` is this function's own earlier output; anything else
+/// (the initial empty model) just takes `next`.
 pub(crate) fn reuse(previous: ModelRc<RichRun>, next: ModelRc<RichRun>) -> ModelRc<RichRun> {
     let Some(model) = previous.as_any().downcast_ref::<VecModel<RichRun>>() else {
         return next;
     };
-    for index in 0..model.row_count().min(next.row_count()) {
-        if model.row_data(index) != next.row_data(index) {
-            model.set_row_data(index, next.row_data(index).unwrap());
+    for i in (next.row_count()..model.row_count()).rev() {
+        model.remove(i);
+    }
+    for (i, row) in next.iter().enumerate() {
+        if i == model.row_count() {
+            model.push(row);
+        } else if model.row_data(i).as_ref() != Some(&row) {
+            model.set_row_data(i, row);
         }
-    }
-    while model.row_count() > next.row_count() {
-        model.remove(model.row_count() - 1);
-    }
-    for index in model.row_count()..next.row_count() {
-        model.push(next.row_data(index).unwrap());
     }
     previous
 }

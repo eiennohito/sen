@@ -24,18 +24,17 @@ pub(crate) fn small(image: &slint::Image, size: i32) -> slint::Image {
 pub(crate) fn preview_runs(
     text: &str,
     metadata: &[presenter::format::EmojiView],
-    images: &HashMap<String, slint::Image>,
+    images: &presenter::Images,
     size: i32,
 ) -> ModelRc<RichRun> {
-    let source = rich_content::runs(text, metadata);
+    let source = rich_content::run_data(text, metadata);
     if !source.iter().any(|r| r.emoji) {
         return ModelRc::default();
     }
     let mut runs: Vec<RichRun> = Vec::new();
-    let mut pictures = HashMap::new();
     let mut space = false;
     let mut started = false;
-    for mut run in source.iter() {
+    for mut run in source {
         if run.emoji {
             if space {
                 if let Some(last) = runs.last_mut().filter(|r| !r.emoji) {
@@ -49,11 +48,8 @@ pub(crate) fn preview_runs(
             }
             space = false;
             started = true;
-            if let Some(image) = images.get(run.image_key.as_str()) {
-                run.picture = pictures
-                    .entry(run.image_key.clone())
-                    .or_insert_with(|| small(image, size))
-                    .clone();
+            if let Some(image) = images.preview(run.image_key.as_str(), size) {
+                run.picture = image;
                 run.has_picture = true;
             }
             runs.push(run);
@@ -91,7 +87,7 @@ pub(crate) fn set(
     content: &Content,
     outgoing: bool,
     system_text: Option<&str>,
-    images: &HashMap<String, slint::Image>,
+    images: &presenter::Images,
     size: i32,
 ) {
     let (kind, label) = kind_label(content);
@@ -103,11 +99,11 @@ pub(crate) fn set(
             kind,
             MessageKind::Photo | MessageKind::Sticker | MessageKind::Video
         ) {
-        let image = images.get(&image_key);
+        let image = images.preview(&image_key, size);
         ModelRc::new(VecModel::from(vec![
             RichRun {
                 image_key: image_key.clone().into(),
-                picture: image.map(|i| small(i, size)).unwrap_or_default(),
+                picture: image.clone().unwrap_or_default(),
                 has_picture: image.is_some(),
                 thumbnail: true,
                 contain: kind == MessageKind::Sticker,

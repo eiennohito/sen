@@ -8,24 +8,16 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         global.set_new_chat_query("".into());
         global.set_new_chat_name("".into());
         global.set_new_chat_error("".into());
-        global.set_new_chat_selected(ModelRc::new(VecModel::<ComposeFriend>::default()));
-        d.presenter.present_compose(&ui, &d.state);
+        d.presenter.clear_compose_selection();
         global.set_new_chat_open(true);
+        d.presenter.present_compose(&ui, &d.state);
         d.sender.send(Intent::Friends);
     });
     global_callback!(ui, actions, on_new_chat_filter, |ui, d| {
         d.presenter.present_compose(&ui, &d.state);
     });
     global_callback!(ui, actions, on_new_chat_toggle, |ui, d, id| {
-        let global = ui.global::<State>();
-        let mut selected = global.get_new_chat_selected().iter().collect::<Vec<_>>();
-        if selected.iter().any(|f| f.id == id) {
-            selected.retain(|f| f.id != id);
-        } else if let Some(mut friend) = global.get_new_chat_friends().iter().find(|f| f.id == id) {
-            friend.selected = true;
-            selected.push(friend);
-        }
-        global.set_new_chat_selected(ModelRc::new(VecModel::from(selected)));
+        d.presenter.toggle_compose_friend(id.as_str());
         d.presenter.present_compose(&ui, &d.state);
     });
     global_callback!(ui, actions, on_new_chat_submit, |ui, d| {

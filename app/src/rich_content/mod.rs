@@ -3,6 +3,9 @@ use crate::*;
 pub(crate) const MAX_RUNS: usize = 2048;
 
 pub(crate) fn runs(body: &str, emoji: &[presenter::format::EmojiView]) -> ModelRc<RichRun> {
+    ModelRc::new(VecModel::from(run_data(body, emoji)))
+}
+pub(crate) fn run_data(body: &str, emoji: &[presenter::format::EmojiView]) -> Vec<RichRun> {
     let mut rows = Vec::new();
     let mut offset = 0;
     for item in emoji {
@@ -36,7 +39,7 @@ pub(crate) fn runs(body: &str, emoji: &[presenter::format::EmojiView]) -> ModelR
     if rows.len() > crate::rich_content::MAX_RUNS {
         rows.clear();
     }
-    ModelRc::new(VecModel::from(rows))
+    rows
 }
 fn text_runs(text: &str, rows: &mut Vec<RichRun>) {
     let mut start = 0;

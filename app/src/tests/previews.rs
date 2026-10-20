@@ -28,7 +28,7 @@ fn emoji_message() -> StoredMessage {
 #[test]
 fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
     let view = emoji_message();
-    let mut message = message_row(&emoji_message(), None);
+    let mut message = message_row(&emoji_message(), None, &presenter::Images::default());
     rich_content::links::decorate_message(&mut message);
     let mut row = ChatRow::default();
     rich_content::preview::set(
@@ -36,7 +36,7 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
         &view.body,
         view.outgoing,
         None,
-        &HashMap::new(),
+        &presenter::Images::default(),
         15,
     );
     assert_eq!(row.preview, "日😀[笑] again [笑] end");
@@ -121,7 +121,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
             Content::Video { preview, .. } => *preview = Some(asset),
             _ => {}
         }
-        let mut images = HashMap::new();
+        let images = presenter::Images::default();
         let view = m;
         let mut row = ChatRow::default();
         rich_content::preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
@@ -146,9 +146,10 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
                 .iter()
                 .any(|r| r.thumbnail)
         );
-        images.remove(&media_key);
+        images.failed(media_key, line::client::desktop::assets::Failure::Decode);
         rich_content::preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
         assert_eq!(row.preview, text);
+        assert!(!row.preview_runs.row_data(0).unwrap().has_picture);
     }
 }
 
@@ -231,8 +232,15 @@ fn content_labels_agree_across_rows_previews_and_accessibility() {
         let mut m = message("");
         m.body = content;
         let mut chat = ChatRow::default();
-        rich_content::preview::set(&mut chat, &m.body, m.outgoing, None, &HashMap::new(), 15);
-        let mut row = message_row(&m, None);
+        rich_content::preview::set(
+            &mut chat,
+            &m.body,
+            m.outgoing,
+            None,
+            &presenter::Images::default(),
+            15,
+        );
+        let mut row = message_row(&m, None, &presenter::Images::default());
         rich_content::links::decorate_message(&mut row);
         assert_eq!(kind_label(&m.body).1, compact);
         assert_eq!(message_text(&m.body).1, full);

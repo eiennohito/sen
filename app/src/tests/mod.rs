@@ -63,3 +63,5 @@ pub(crate) mod previews;
 mod rich_flow;
 
 mod ui_regressions;
+
+mod messages;

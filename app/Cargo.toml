@@ -10,6 +10,7 @@ demo = ["line/demo", "line-desktop-ui/demo"]
 ui-debug = ["demo", "line-desktop-ui/ui-debug", "dep:i-slint-backend-selector", "dep:i-slint-core"]
 
 [dev-dependencies]
+i-slint-core = { version = "=1.18.1", default-features = false }
 line-desktop-ui = { path = "../ui", features = ["testing"] }
 i-slint-backend-testing = "=1.18.1"
 line = { path = "..", features = ["demo"] }

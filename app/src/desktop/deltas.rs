@@ -213,7 +213,7 @@ impl Desktop {
     fn apply_viewer(&mut self, ui: &AppWindow, d: &Delta) {
         match d {
             Delta::MediaFailed { key, failure } => {
-                self.presenter.failures.insert(key.clone(), *failure);
+                self.presenter.images.failed(key.clone(), *failure);
                 self.presenter.patch_asset(ui, &self.state, key);
                 if self.viewer_asset.as_ref() == Some(key) {
                     ui.global::<State>().set_viewer_loading(false);
@@ -237,7 +237,6 @@ impl Desktop {
                 });
             }
             Delta::Asset { key, pixels } => {
-                self.presenter.failures.remove(key);
                 self.presenter.images.insert(
                     key.clone(),
                     slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
@@ -249,7 +248,7 @@ impl Desktop {
                 self.presenter.patch_asset(ui, &self.state, key);
                 if self.viewer_asset.as_ref() == Some(key) {
                     ui.global::<State>()
-                        .set_viewer_image(self.presenter.images[key].clone());
+                        .set_viewer_image(self.presenter.images.get(key).unwrap());
                     ui.global::<State>().set_viewer_loading(false);
                     ui.global::<State>().set_viewer_status(
                         format!(
