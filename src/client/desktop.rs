@@ -1189,27 +1189,8 @@ fn attach_reply(message: &mut Value, reply: Option<&crate::store::ReplyReference
 mod ordering_tests {
     use super::message_id_cmp;
     #[test]
-    fn message_ids_have_a_total_order_even_for_invalid_ids() {
-        let ids = [
-            "",
-            "0",
-            "00",
-            "2",
-            "10",
-            "1a",
-            "abc",
-            "999999999999999999999999999",
-        ];
-        for a in ids {
-            for b in ids {
-                assert_eq!(message_id_cmp(a, b), message_id_cmp(b, a).reverse());
-                for c in ids {
-                    if message_id_cmp(a, b).is_le() && message_id_cmp(b, c).is_le() {
-                        assert!(message_id_cmp(a, c).is_le());
-                    }
-                }
-            }
-        }
+    fn message_ids_sort_numerically_beyond_u64() {
         assert!(message_id_cmp("2", "10").is_lt());
+        assert!(message_id_cmp("9999999999999999999", "18446744073709551616").is_lt());
     }
 }

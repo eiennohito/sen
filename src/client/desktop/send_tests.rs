@@ -1,13 +1,14 @@
-use super::test_client::{Reply, client, server_responses};
+use super::test_client::client;
 use super::*;
 use crate::client::error::wire_fixture::{self, GROUP_KEY_ROTATED, KEY_ROTATED, SENDER_KEY_STALE};
+use crate::client::http::tests::{Reply, server_responses};
 
 #[test]
 fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
     let module = crate::test_support::installed_module();
 
     let wasm = module.read()?;
-    let mut rt = Runtime::new(&wasm, &module.version)?;
+    let mut rt = Runtime::from_module(crate::test_support::compiled_module(), &module.version)?;
     let own = rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
     let own_public = bytes_method(&mut rt, Call::Curve25519KeyGetPublicKey, own, &[])?;
     let mut receivers = Vec::new();
@@ -46,12 +47,12 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
             .take(if code == SENDER_KEY_STALE { 1 } else { 2 })
         {
             let public = public.clone();
-            steps.push(("negotiateE2EEPublicKey", Box::new(move |args| {
+            steps.push(("/api/talk/thrift/Talk/TalkService/negotiateE2EEPublicKey", Box::new(move |args| {
                 assert_eq!(args, json!(["U00000000000000000000000000000002"]));
                 (200, json!({"code":0,"message":"OK","data":{"allowedTypes":[0],"specVersion":1,"publicKey":{"keyId":id}}}))
             })));
             steps.push((
-                "getE2EEPublicKey",
+                "/api/talk/thrift/Talk/TalkService/getE2EEPublicKey",
                 Box::new(move |args| {
                     assert_eq!(args, json!(["U00000000000000000000000000000002", 1, id]));
                     (
@@ -61,7 +62,7 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
                 }),
             ));
             let sent = sent.clone();
-            steps.push(("sendMessage", Box::new(move |args| {
+            steps.push(("/api/talk/thrift/Talk/TalkService/sendMessage", Box::new(move |args| {
                 assert_eq!(args[0], 7);
                 assert_eq!(args[1]["relatedMessageId"], "123");
                 assert_eq!(args[1]["messageRelationType"], 3);
@@ -128,15 +129,15 @@ fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {
 
 #[test]
 fn rpc_success_uses_http_and_message_and_allows_absent_data() -> Result<()> {
-    let module = crate::test_support::installed_module();
-
-    let wasm = module.read()?;
-    let api = Api::new(&wasm, &module.version)?;
+    let api = Api::without_crypto()?;
     let (mut client, root) = client(api);
     let (transport, server) = server_responses(vec![
-        ("getProfile", Box::new(|_| (200, json!({"message":"OK"})))),
         (
-            "getProfile",
+            "/api/talk/thrift/Talk/TalkService/getProfile",
+            Box::new(|_| (200, json!({"message":"OK"}))),
+        ),
+        (
+            "/api/talk/thrift/Talk/TalkService/getProfile",
             Box::new(|_| {
                 (
                     200,
@@ -144,8 +145,14 @@ fn rpc_success_uses_http_and_message_and_allows_absent_data() -> Result<()> {
                 )
             }),
         ),
-        ("getProfile", Box::new(|_| (200, json!({"code":0})))),
-        ("getProfile", Box::new(|_| (201, json!({"message":"OK"})))),
+        (
+            "/api/talk/thrift/Talk/TalkService/getProfile",
+            Box::new(|_| (200, json!({"code":0}))),
+        ),
+        (
+            "/api/talk/thrift/Talk/TalkService/getProfile",
+            Box::new(|_| (201, json!({"message":"OK"}))),
+        ),
     ]);
     client.api.http = transport;
     assert_eq!(client.api.profile()?, Value::Null);
@@ -164,8 +171,7 @@ fn rpc_success_uses_http_and_message_and_allows_absent_data() -> Result<()> {
 fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Result<()> {
     let module = crate::test_support::installed_module();
 
-    let wasm = module.read()?;
-    let api = Api::new(&wasm, &module.version)?;
+    let api = Api::new(&module)?;
     let (mut client, root) = client(api);
     let own = client
         .api
@@ -176,13 +182,16 @@ fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Res
     let valid = json!({"id":"102","from":"U00000000000000000000000000000002","to":"U00000000000000000000000000000001","text":"still here","contentType":0});
     let page = json!({"code":0,"message":"OK","data":[encrypted.clone(),valid]});
     let (http, server) = server_responses(vec![
-        ("getRecentMessagesV2", Box::new(move |_| (200, page))),
         (
-            "getE2EEPublicKey",
+            "/api/talk/thrift/Talk/TalkService/getRecentMessagesV2",
+            Box::new(move |_| (200, page)),
+        ),
+        (
+            "/api/talk/thrift/Talk/TalkService/getE2EEPublicKey",
             Box::new(|_| (200, wire_fixture::refused_key())),
         ),
         (
-            "getE2EEPublicKey",
+            "/api/talk/thrift/Talk/TalkService/getE2EEPublicKey",
             Box::new(|_| (200, wire_fixture::signed_out())),
         ),
     ]);
@@ -207,11 +216,10 @@ fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Res
 
 #[test]
 fn malformed_message_rows_do_not_hide_valid_history_or_invent_reactions() -> Result<()> {
-    let module = crate::test_support::installed_module();
-    let api = Api::new(&module.read()?, &module.version)?;
+    let api = Api::without_crypto()?;
     let (mut client, root) = client(api);
     let (http, server) = server_responses(vec![(
-        "getRecentMessagesV2",
+        "/api/talk/thrift/Talk/TalkService/getRecentMessagesV2",
         Box::new(|_| {
             (
                 200,
@@ -254,8 +262,7 @@ fn malformed_message_rows_do_not_hide_valid_history_or_invent_reactions() -> Res
 
 #[test]
 fn wire_request_sequences_and_contact_numbers_survive_decoding() -> Result<()> {
-    let module = crate::test_support::installed_module();
-    let api = Api::new(&module.read()?, &module.version)?;
+    let api = Api::without_crypto()?;
     let (mut client, root) = client(api);
     for field in ["reqSeq", "requestSeq"] {
         for seq in [json!(7), json!("7")] {
@@ -295,12 +302,11 @@ fn wire_request_sequences_and_contact_numbers_survive_decoding() -> Result<()> {
 
 #[test]
 fn obs_token_renewal_replaces_the_shared_cached_token() -> Result<()> {
-    let module = crate::test_support::installed_module();
-    let api = Api::new(&module.read()?, &module.version)?;
+    let api = Api::without_crypto()?;
     let (mut client, root) = client(api);
     let (http, server) = server_responses(vec![
         (
-            "acquireEncryptedAccessToken",
+            "/api/talk/thrift/Talk/TalkService/acquireEncryptedAccessToken",
             Box::new(|_| {
                 (
                     200,
@@ -309,7 +315,7 @@ fn obs_token_renewal_replaces_the_shared_cached_token() -> Result<()> {
             }),
         ),
         (
-            "acquireEncryptedAccessToken",
+            "/api/talk/thrift/Talk/TalkService/acquireEncryptedAccessToken",
             Box::new(|_| {
                 (
                     200,
@@ -330,8 +336,7 @@ fn obs_token_renewal_replaces_the_shared_cached_token() -> Result<()> {
 
 #[test]
 fn malformed_contacts_do_not_discard_friends_or_fail_lookup() -> Result<()> {
-    let module = crate::test_support::installed_module();
-    let api = Api::new(&module.read()?, &module.version)?;
+    let api = Api::without_crypto()?;
     let (mut client, root) = client(api);
     const GOOD: &str = "U00000000000000000000000000000002";
     const BAD: &str = "U00000000000000000000000000000003";
@@ -342,12 +347,15 @@ fn malformed_contacts_do_not_discard_friends_or_fail_lookup() -> Result<()> {
     };
     let (http, server) = server_responses(vec![
         (
-            "getAllContactIds",
+            "/api/talk/thrift/Talk/TalkService/getAllContactIds",
             Box::new(|_| (200, json!({"code":0,"message":"OK","data":[GOOD,BAD]}))),
         ),
-        ("getContactsV2", Box::new(move |_| (200, contacts()))),
         (
-            "getAllChatMids",
+            "/api/talk/thrift/Talk/TalkService/getContactsV2",
+            Box::new(move |_| (200, contacts())),
+        ),
+        (
+            "/api/talk/thrift/Talk/TalkService/getAllChatMids",
             Box::new(|_| {
                 (
                     200,
@@ -355,8 +363,14 @@ fn malformed_contacts_do_not_discard_friends_or_fail_lookup() -> Result<()> {
                 )
             }),
         ),
-        ("getContactsV2", Box::new(move |_| (200, contacts()))),
-        ("getContactsV2", Box::new(move |_| (200, contacts()))),
+        (
+            "/api/talk/thrift/Talk/TalkService/getContactsV2",
+            Box::new(move |_| (200, contacts())),
+        ),
+        (
+            "/api/talk/thrift/Talk/TalkService/getContactsV2",
+            Box::new(move |_| (200, contacts())),
+        ),
     ]);
     client.api.http = http;
     let friends = client.friends()?;
@@ -371,8 +385,7 @@ fn malformed_contacts_do_not_discard_friends_or_fail_lookup() -> Result<()> {
 
 #[test]
 fn sticker_to_type_uses_uppercase_mid_prefixes_and_unknown_defaults_to_user() -> Result<()> {
-    let module = crate::test_support::installed_module();
-    let api = Api::new(&module.read()?, &module.version)?;
+    let api = Api::without_crypto()?;
     let (mut client, root) = client(api);
     let mut steps: Vec<(&'static str, Reply)> = Vec::new();
     for (prefix, expected) in [
@@ -384,7 +397,7 @@ fn sticker_to_type_uses_uppercase_mid_prefixes_and_unknown_defaults_to_user() ->
         ('r', 0),
         ('X', 0),
     ] {
-        steps.push(("sendMessage", Box::new(move |args| {
+        steps.push(("/api/talk/thrift/Talk/TalkService/sendMessage", Box::new(move |args| {
             assert_eq!(args[1]["toType"], expected);
             (200, json!({"code":0,"message":"OK","data":{"id":"100","from":"U00000000000000000000000000000001","to":format!("{prefix}{:032x}", 2),"contentType":7}}))
         })));

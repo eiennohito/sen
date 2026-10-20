@@ -251,7 +251,7 @@ mod tests {
 
         let fixture: Value =
             serde_json::from_str(include_str!("../../fixtures/letter-sealing-v2.json"))?;
-        let mut api = Api::new(&module.read()?, &module.version)?;
+        let mut api = Api::new(&module)?;
         let key = api.rt.static_call(Call::Curve25519KeyGenerate, &[1])?;
         let h = api
             .rt

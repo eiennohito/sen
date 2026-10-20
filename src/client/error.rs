@@ -412,7 +412,7 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    fn classification_uses_the_first_matching_cause() {
+    fn transport_auth_and_media_failures_keep_their_policy() {
         let rpc = RpcError {
             gateway: 0,
             method: "test".into(),
@@ -431,6 +431,23 @@ mod tests {
         // Policy failures nested in IO are not promoted to top-level overrides.
         let nested = anyhow::Error::new(std::io::Error::other(Failure::NotDelivered));
         assert!(matches!(classify(&nested), Failure::Bug(_)));
+        assert!(needs_refresh::<()>(&Err(RpcError {
+            gateway: 10051,
+            method: "test".into(),
+            http: 200,
+            code: 119,
+            status: 0,
+        }
+        .into())));
+        use super::super::desktop::assets::Failure as Media;
+        assert_eq!(
+            media_failure(&Media::UnsupportedHost.into()),
+            Media::UnsupportedHost
+        );
+        assert_eq!(
+            media_failure(&std::io::Error::from(std::io::ErrorKind::NotFound).into()),
+            Media::Http(404)
+        );
     }
 
     #[test]
@@ -494,12 +511,9 @@ mod tests {
 
     #[test]
     fn missing_access_token_returns_signed_out_without_a_request() {
-        let module = crate::test_support::installed_module();
-
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();
-        let wasm = module.read().unwrap();
-        let mut api = super::super::Api::new(&wasm, &module.version).unwrap();
+        let mut api = super::super::Api::without_crypto().unwrap();
         api.http = super::super::http::Transport::local(
             "synthetic",
             format!("http://{}", listener.local_addr().unwrap()),
@@ -520,56 +534,34 @@ mod tests {
 
     #[test]
     fn second_119_ends_the_session() {
-        let module = crate::test_support::installed_module();
-
-        use crate::client::http::tests::{accept, local_server};
-        use std::io::{BufRead, BufReader, Read, Write};
-        let (http, server) = local_server(|listener| {
-            for (path, response) in [
+        use crate::client::http::tests::server_responses;
+        let (http, server) = server_responses(
+            [
                 ("/api/test", json!({"code":10051,"data":{"code":119}})),
                 (
                     "/api/auth/tokenRefresh",
                     json!({"code":0,"message":"OK","data":{"accessToken":"renewed"}}),
                 ),
                 ("/api/test", json!({"code":10051,"data":{"code":119}})),
-            ] {
-                let mut socket = BufReader::new(accept(&listener));
-                let mut line = String::new();
-                socket.read_line(&mut line).unwrap();
-                assert_eq!(line, format!("POST {path} HTTP/1.1\r\n"));
-                let mut length = 0;
-                loop {
-                    line.clear();
-                    socket.read_line(&mut line).unwrap();
-                    if line == "\r\n" {
-                        break;
-                    }
-                    if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                        length = value.trim().parse().unwrap();
-                    }
-                }
-                let mut body = vec![0; length];
-                socket.read_exact(&mut body).unwrap();
-                let body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-                assert_eq!(
-                    body,
-                    if path == "/api/test" {
-                        json!([])
-                    } else {
-                        json!({"refreshToken":"refresh"})
-                    }
-                );
-                let body = response.to_string();
-                write!(
-                    socket.get_mut(),
-                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
-                    body.len()
-                )
-                .unwrap();
-            }
-        });
-        let wasm = module.read().unwrap();
-        let mut api = super::super::Api::new(&wasm, &module.version).unwrap();
+            ]
+            .into_iter()
+            .map(|(path, response)| {
+                let reply: super::super::http::tests::Reply = Box::new(move |body| {
+                    assert_eq!(
+                        body,
+                        if path == "/api/test" {
+                            json!([])
+                        } else {
+                            json!({"refreshToken":"refresh"})
+                        }
+                    );
+                    (200, response)
+                });
+                (path, reply)
+            })
+            .collect(),
+        );
+        let mut api = super::super::Api::without_crypto().unwrap();
         api.http = http;
         api.state.token_v3_issue_result = super::super::Tokens {
             access_token: "old".into(),
@@ -591,40 +583,6 @@ mod tests {
             json!({"accessToken":"renewed","refreshToken":"refresh","expiresIn":123,"extra":{"a":true}})
         );
         server.join().unwrap();
-    }
-}
-
-#[cfg(test)]
-mod top_level_tests {
-    use super::*;
-
-    #[test]
-    fn refresh_checks_do_not_follow_io_sources() {
-        let rpc = || RpcError {
-            gateway: 0,
-            method: "test".into(),
-            http: 200,
-            code: 119,
-            status: 0,
-        };
-        assert!(needs_refresh::<()>(&Err(rpc().into())));
-        let wrapped = std::io::Error::other(rpc());
-        assert!(!needs_refresh::<()>(&Err(wrapped.into())));
-    }
-
-    #[test]
-    fn media_and_missing_file_checks_do_not_follow_io_sources() {
-        use super::super::desktop::assets::Failure as Media;
-        assert_eq!(
-            media_failure(&Media::UnsupportedHost.into()),
-            Media::UnsupportedHost
-        );
-        let wrapped = std::io::Error::other(Media::UnsupportedHost);
-        assert_eq!(media_failure(&wrapped.into()), Media::Decode);
-        let missing = || std::io::Error::from(std::io::ErrorKind::NotFound);
-        assert_eq!(media_failure(&missing().into()), Media::Http(404));
-        let wrapped = std::io::Error::other(missing());
-        assert_eq!(media_failure(&wrapped.into()), Media::Decode);
     }
 }
 

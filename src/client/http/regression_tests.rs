@@ -105,15 +105,7 @@ fn stream_idle_timeout_fires() {
     let (release, finish) = mpsc::channel();
     let (transport, server) = local_server(move |listener| {
         let mut socket = BufReader::new(accept(&listener));
-        let mut line = String::new();
-        use std::io::BufRead;
-        loop {
-            line.clear();
-            socket.read_line(&mut line).unwrap();
-            if line == "\r\n" {
-                break;
-            }
-        }
+        request_headers(&mut socket).unwrap();
         socket
             .get_mut()
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
@@ -318,27 +310,12 @@ fn two_hundred_requests_reuse_one_connection() {
     server.join().unwrap();
 }
 
-fn upload_headers(socket: &mut BufReader<std::net::TcpStream>) -> usize {
-    use std::io::BufRead;
-    let mut length = None;
-    loop {
-        let mut line = String::new();
-        assert!(socket.read_line(&mut line).unwrap() > 0);
-        if line == "\r\n" {
-            return length.unwrap();
-        }
-        if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-            length = Some(value.trim().parse().unwrap());
-        }
-    }
-}
-
 #[test]
 fn stalled_upload_hits_idle_deadline() {
     let (release, wait) = mpsc::channel();
     let (mut transport, server) = local_server(move |listener| {
         let mut socket = BufReader::new(accept(&listener));
-        upload_headers(&mut socket);
+        request_headers(&mut socket).unwrap().1.unwrap();
         wait.recv_timeout(Duration::from_secs(3)).unwrap();
     });
     transport.config.upload_idle = Duration::from_millis(100);
@@ -368,14 +345,7 @@ fn asset_body_deadline_is_classified_as_timeout() {
     let (release, wait) = mpsc::channel();
     let (mut transport, server) = local_server(move |listener| {
         let mut socket = BufReader::new(accept(&listener));
-        use std::io::BufRead;
-        loop {
-            let mut line = String::new();
-            socket.read_line(&mut line).unwrap();
-            if line == "\r\n" {
-                break;
-            }
-        }
+        request_headers(&mut socket).unwrap();
         socket
             .get_mut()
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx")
@@ -402,7 +372,7 @@ fn upload_progress_precedes_body_completion() {
     let (release, rest) = mpsc::channel();
     let (transport, server) = local_server(move |listener| {
         let mut socket = BufReader::new(accept(&listener));
-        assert_eq!(upload_headers(&mut socket), size);
+        assert_eq!(request_headers(&mut socket).unwrap().1.unwrap(), size);
         socket.read_exact(&mut [0; 65536]).unwrap();
         first.send(()).unwrap();
         rest.recv().unwrap();
