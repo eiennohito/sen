@@ -180,29 +180,6 @@ fn login_with(
     progress.set(Stage::Authenticated)
 }
 
-/// Never called at startup or on a network error: requires explicit user action.
-/// A new pairing has separate encrypted draft storage, even for the same person.
-pub fn sign_in(
-    state: &Path,
-    wasm_override: Option<PathBuf>,
-    version_override: Option<String>,
-    cancel: &CancelToken,
-    emit: impl Fn(Event),
-) -> Result<()> {
-    if cancel.is_cancelled() {
-        return Err(super::error::SignInFailure::Cancelled.into());
-    }
-    let module = crate::crypto_module::resolve(wasm_override, version_override)?;
-    sign_in_validated(
-        state,
-        module,
-        NetworkActivity::default(),
-        cancel,
-        emit,
-        |_, _| Ok(()),
-    )
-}
-
 pub(crate) fn sign_in_validated<T>(
     state: &Path,
     module: crate::crypto_module::CryptoModule,
@@ -264,14 +241,14 @@ pub(crate) fn sign_in_validated<T>(
     login_with(&staged, &mut api, &ui)?;
     let validated = validate(&staged, api)?;
     ui.check()?;
-    install_session(state, &staged, Some(cancel))
+    install_session(state, &staged, cancel)
         .context(super::error::SignInFailure::StateDirectory(parent.into()))?;
     Ok(validated)
 }
 
-fn install_session(state: &Path, staged: &Path, cancel: Option<&CancelToken>) -> Result<()> {
+fn install_session(state: &Path, staged: &Path, cancel: &CancelToken) -> Result<()> {
     ensure!(
-        !cancel.is_some_and(|cancel| cancel.is_cancelled()),
+        !cancel.is_cancelled(),
         super::error::SignInFailure::Cancelled
     );
     let bytes = fs::read(staged)?;
@@ -410,7 +387,7 @@ mod tests {
         let staged = root.join("new.json");
         private_write(&state, b"old session")?;
         private_write(&staged, b"new session")?;
-        install_session(&state, &staged, None)?;
+        install_session(&state, &staged, &CancelToken::new())?;
         assert_eq!(fs::read(&state)?, b"new session");
         let backup = fs::read_dir(&root)?
             .find_map(|e| {
@@ -424,25 +401,29 @@ mod tests {
         assert_eq!(fs::read(&backup)?, b"old session");
         assert_eq!(fs::metadata(&backup)?.permissions().mode() & 0o777, 0o600);
         private_write(&staged, b"latest session")?;
-        install_session(&state, &staged, None)?;
+        install_session(&state, &staged, &CancelToken::new())?;
         assert_eq!(fs::read(&backup)?, b"old session");
         assert_eq!(fs::read_dir(&root)?.count(), 3);
         let cancel = CancelToken::new();
         cancel.cancel();
         private_write(&staged, b"cancelled session")?;
-        assert!(install_session(&state, &staged, Some(&cancel)).is_err());
+        assert!(install_session(&state, &staged, &cancel).is_err());
         assert_eq!(fs::read(&backup)?, b"old session");
         assert!(
-            sign_in(
+            sign_in_validated(
                 &state,
-                Some(root.join("unused.wasm")),
-                None,
+                crate::crypto_module::CryptoModule {
+                    wasm: root.join("unused.wasm"),
+                    version: "9.8.7".into()
+                },
+                NetworkActivity::default(),
                 &{
                     let token = CancelToken::new();
                     token.cancel();
                     token
                 },
-                |_| panic!("cancelled flow emitted an event")
+                |_| panic!("cancelled flow emitted an event"),
+                |_, _| Ok(())
             )
             .is_err()
         );

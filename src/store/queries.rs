@@ -8,7 +8,7 @@ fn sql_limit(value: usize) -> i64 {
 
 const CHAT_SELECT: &str = "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,
     c.muted,c.left,c.last_message_id,c.last_activity,c.server_unread,c.unread_stale,
-    c.last_read_server_id,c.list_rank";
+    c.last_read_server_id";
 const UNREAD_COLUMNS: &str = "c.read_acked_server_id,
     (SELECT server_id FROM message WHERE chat_id=c.chat_id AND server_id IS NOT NULL
      ORDER BY sort_id DESC LIMIT 1),
@@ -74,7 +74,6 @@ fn decode_chat(r: &rusqlite::Row<'_>) -> rusqlite::Result<ChatInput> {
         server_unread: r.get(9)?,
         unread_stale: r.get(10)?,
         last_read_server_id: r.get(11)?,
-        list_rank: r.get(12)?,
     })
 }
 fn chats(conn: &Connection) -> Result<Vec<ChatInput>> {
@@ -281,7 +280,7 @@ impl Store {
     ) -> Result<Vec<ChatListItem>> {
         let mut stmt = self.conn.prepare(&format!(
             "SELECT c.chat_id,c.is_group,c.title,c.avatar,c.member_count,c.muted,c.left,c.last_message_id,
-             c.last_activity,c.server_unread,c.unread_stale,c.last_read_server_id,c.list_rank,
+             c.last_activity,c.server_unread,c.unread_stale,c.last_read_server_id,
              m.key,m.chat_id,m.server_id,m.local_id,m.request_seq,m.sort_ts,m.sort_id,
              m.sender_id,m.outgoing,m.body_json,m.reactions_json,m.reactions_rev,
              m.delivery,m.created_at_local,m.body_rev,m.mentioned,m.skip_badge,m.reply_json,
@@ -294,7 +293,7 @@ impl Store {
                  ORDER BY sort_ts DESC,sort_id DESC LIMIT 1)
              LEFT JOIN draft d ON d.chat_id=c.chat_id
              WHERE (c.removed=0 OR ?4) AND (?3 IS NULL OR c.chat_id=?3)
-             ORDER BY activity DESC,c.list_rank,c.chat_id LIMIT ?1 OFFSET ?2",
+             ORDER BY activity DESC,c.chat_id LIMIT ?1 OFFSET ?2",
         ))?;
         let rows = stmt
             .query_map(
@@ -306,29 +305,29 @@ impl Store {
                 ],
                 |r| {
                     let chat = decode_chat(r)?;
-                    let unread_count = unread(&decode_unread(r, &chat, 38)?);
+                    let unread_count = unread(&decode_unread(r, &chat, 37)?);
                     Ok(ChatListItem {
                         unread_count,
                         chat,
-                        preview: if r.get::<_, Option<i64>>(13)?.is_some() {
-                            Some(super::messages::decode_at(r, 13)?)
+                        preview: if r.get::<_, Option<i64>>(12)?.is_some() {
+                            Some(super::messages::decode_at(r, 12)?)
                         } else {
                             None
                         },
                         draft: r
-                            .get::<_, Option<String>>(31)?
+                            .get::<_, Option<String>>(30)?
                             .map(|text| -> rusqlite::Result<Draft> {
                                 Ok(Draft {
-                                    reply: super::messages::parse(r, 37)?,
+                                    reply: super::messages::parse(r, 36)?,
                                     text,
-                                    cursor: r.get(32)?,
-                                    anchor: r.get(33)?,
-                                    updated: r.get(34)?,
+                                    cursor: r.get(31)?,
+                                    anchor: r.get(32)?,
+                                    updated: r.get(33)?,
                                 })
                             })
                             .transpose()?,
-                        failed_count: r.get(35)?,
-                        activity_ms: r.get(36)?,
+                        failed_count: r.get(34)?,
+                        activity_ms: r.get(35)?,
                     })
                 },
             )?
@@ -356,13 +355,13 @@ impl Store {
                 };
                 tx.execute(
                     "INSERT INTO chat(chat_id, is_group, title, avatar, member_count, muted, left, last_message_id,
-                    last_activity, server_unread, unread_stale, last_read_server_id, list_rank)
-                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13) ON CONFLICT(chat_id) DO UPDATE
+                    last_activity, server_unread, unread_stale, last_read_server_id)
+                    VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12) ON CONFLICT(chat_id) DO UPDATE
                     SET removed=0, is_group=excluded.is_group, title=excluded.title, avatar=excluded.avatar,
                     member_count=excluded.member_count, muted=excluded.muted, left=excluded.left,
                     last_message_id=excluded.last_message_id, last_activity=excluded.last_activity,
                     server_unread=excluded.server_unread, unread_stale=excluded.unread_stale,
-                    last_read_server_id=excluded.last_read_server_id, list_rank=excluded.list_rank",
+                    last_read_server_id=excluded.last_read_server_id",
                     params![
                         input.id.0,
                         input.is_group,
@@ -376,7 +375,6 @@ impl Store {
                         input.server_unread,
                         input.unread_stale,
                         read,
-                        input.list_rank,
                     ],
                 )?;
                 if let Some(marker) = &input.last_read_server_id {

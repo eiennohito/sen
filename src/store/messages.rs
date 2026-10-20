@@ -193,7 +193,6 @@ fn server_row(
                 ));
             }
             conn.execute("DELETE FROM message WHERE key=?", [other.key.0])?;
-            changes.messages_upserted.remove(&other.key);
             changes.messages_removed.insert(other.key);
             let local = target.local_id;
             let seq = target.request_seq;
@@ -278,7 +277,6 @@ fn save_server_row(
         "UPDATE chat SET removed=0 WHERE chat_id=?",
         [&row.chat_id.0],
     )?;
-    changes.messages_upserted.insert(row.key);
     changes.chats_changed.insert(row.chat_id.clone());
     Ok(row)
 }
@@ -452,7 +450,6 @@ impl Store {
             row.reply = reply.map(Box::new);
             insert(tx, &mut row)?;
             key = row.key;
-            c.messages_upserted.insert(key);
             c.chats_changed.insert(chat.clone());
             Ok(())
         })?;
@@ -538,7 +535,6 @@ impl Store {
                 row.request_seq = seq;
             }
             save(tx, &row)?;
-            c.messages_upserted.insert(key);
             c.chats_changed.insert(row.chat_id);
             Ok(())
         })
@@ -565,7 +561,6 @@ impl Store {
             {
                 row.body = Content::Withdrawn;
                 save(tx, &row)?;
-                c.messages_upserted.insert(row.key);
                 c.chats_changed.insert(row.chat_id);
             }
             Ok(())
@@ -584,7 +579,6 @@ impl Store {
                 row.reactions = reactions;
                 row.reactions_rev = rev;
                 save(tx, &row)?;
-                c.messages_upserted.insert(row.key);
                 c.chats_changed.insert(row.chat_id);
             }
             Ok(())
@@ -606,22 +600,16 @@ impl Store {
                 "UPDATE chat SET receipt_server_id=?2 WHERE chat_id=?1",
                 params![chat.0, marker,],
             )?;
-            let mut stmt = tx.prepare(
+            tx.execute(
                 "UPDATE message SET delivery=?3
                 WHERE chat_id=?1 AND server_id IS NOT NULL AND sort_id<=?2
-                AND outgoing=1 AND delivery<>?3 RETURNING key",
-            )?;
-            let keys = stmt.query_map(
+                AND outgoing=1 AND delivery<>?3",
                 params![
                     chat.0,
                     server_sort(&marker),
                     serde_json::to_string(&Delivery::Read)?
                 ],
-                |r| Ok(Key(r.get(0)?)),
             )?;
-            for key in keys {
-                c.messages_upserted.insert(key?);
-            }
             c.chats_changed.insert(chat.clone());
             Ok(())
         })

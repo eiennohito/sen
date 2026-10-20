@@ -19,8 +19,7 @@ pub enum OperationType {
     NotifiedDeleteSelfFromChat,
     SendReaction,
     NotifiedSendReaction,
-    MissingType,
-    Unknown(i64),
+    Unknown,
 }
 impl From<i64> for OperationType {
     fn from(value: i64) -> Self {
@@ -41,7 +40,7 @@ impl From<i64> for OperationType {
             128 => Self::NotifiedDeleteSelfFromChat,
             139 => Self::SendReaction,
             140 => Self::NotifiedSendReaction,
-            value => Self::Unknown(value),
+            _ => Self::Unknown,
         }
     }
 }
@@ -57,7 +56,7 @@ impl From<Value> for RawOperation {
             kind: data["type"]
                 .as_i64()
                 .map(OperationType::from)
-                .unwrap_or(OperationType::MissingType),
+                .unwrap_or(OperationType::Unknown),
             data,
         }
     }

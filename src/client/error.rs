@@ -69,10 +69,6 @@ pub enum Refusal {
     AppClosed,
     #[error("File missing")]
     FileMissing,
-    #[serde(other)]
-    #[serde(rename = "Message was not accepted")]
-    #[error("rejection: {self:?}")]
-    NotAccepted,
 }
 
 /// Rejections returned by the remote services.
@@ -104,7 +100,6 @@ pub enum SignInFailure {
     SessionKeyMissing,
     SessionIo,
     Expired,
-    SessionIdentity,
     Internal,
 }
 
@@ -231,7 +226,6 @@ impl SignInFailure {
             Self::SessionIo => "saved-session-io",
             Self::Internal => "internal",
             Self::Expired => "expired",
-            Self::SessionIdentity => "session-identity",
         }
     }
 }

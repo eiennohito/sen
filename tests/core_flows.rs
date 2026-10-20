@@ -431,7 +431,7 @@ fn send_failures_preserve_delivery_and_retry_identity() {
 
     fake.fail_rpc(
         FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(Refusal::NotAccepted),
+        Failure::Refused(Refusal::Internal),
     );
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
@@ -597,7 +597,7 @@ fn first_identity_keeps_local_work_and_sends_pending() {
             mid: None,
         },
     );
-    app.until(|s| matches!(s.connection, Connection::Connecting { .. }));
+    app.until(|s| matches!(s.connection, Connection::Connecting));
     app.select("alice");
     app.send(Intent::Send {
         chat: ChatId("alice".into()),
@@ -823,7 +823,7 @@ fn contact_actions_report_failure_then_update_in_place() {
         app.until(|s| s.group_info.get(&chat).is_some_and(|info| info.is_object()));
         fake.fail_rpc(
             FakeRpc::Action(action.clone()),
-            Failure::Refused(Refusal::NotAccepted),
+            Failure::Refused(Refusal::Internal),
         );
         for success in [false, true] {
             app.state.action = Some(action.clone());
@@ -917,7 +917,7 @@ fn compose_reaction_set_cancel_and_failure_revert() {
     app.until(|s| s.messages[&key].reactions.is_empty() && s.messages[&key].reactions_rev > 1001);
     fake.fail_rpc(
         FakeRpc::React(app.state.messages[&key].server_id.clone().unwrap(), Some(2)),
-        Failure::Refused(Refusal::NotAccepted),
+        Failure::Refused(Refusal::Internal),
     );
     app.send(Intent::React { key, kind: 2 });
     app.until_delta(
@@ -1051,7 +1051,7 @@ fn create_group_success_and_failure() {
     assert_eq!(app.state.chats[&id].chat.title, "Picnic");
     assert_eq!(app.state.chats[&id].chat.member_count, Some(3));
     app.select(&id.0);
-    fake.fail_rpc(FakeRpc::CreateChat, Failure::Refused(Refusal::NotAccepted));
+    fake.fail_rpc(FakeRpc::CreateChat, Failure::Refused(Refusal::Internal));
     app.send(Intent::CreateChat {
         name: "Failure".into(),
         targets: vec!["alice".into(), "new-friend".into()],

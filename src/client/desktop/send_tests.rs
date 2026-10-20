@@ -187,7 +187,7 @@ fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Res
         ),
     ]);
     client.api.http = http;
-    let messages = client.messages("upeer")?;
+    let messages = client.refresh_messages("upeer")?;
     assert_eq!(messages[0].content, Content::Undecryptable);
     assert_eq!(messages[1].content.as_text(), "still here");
     for kind in [25, 43] {

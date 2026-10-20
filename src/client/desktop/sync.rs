@@ -9,13 +9,12 @@ use std::{
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SyncState {
     Connected,
-    Reconnecting { attempt: u32 },
+    Reconnecting,
 }
 #[derive(Debug)]
 pub enum Event {
     State(SyncState),
     Failure {
-        attempt: u32,
         error: crate::client::error::Failure,
     },
     Operation(crate::client::operation::RawOperation),
@@ -155,7 +154,6 @@ fn receive_on(
         if crate::client::error::needs_refresh(&result) {
             if refreshed_once {
                 deliver(Event::Failure {
-                    attempt,
                     error: crate::client::error::Failure::SignedOut(
                         crate::client::error::SignOutReason::TokenRefresh,
                     ),
@@ -174,7 +172,7 @@ fn receive_on(
             attempt = attempt.saturating_add(1);
             let error = crate::client::error::classify(&error);
             let terminal = matches!(error, crate::client::error::Failure::SignedOut(_));
-            if !deliver(Event::Failure { attempt, error }) || terminal {
+            if !deliver(Event::Failure { error }) || terminal {
                 break;
             }
             wait(stop, backoff(attempt));
@@ -184,7 +182,7 @@ fn receive_on(
                 close_delay = (close_delay * 2).min(Duration::from_secs(30));
             }
         }
-        if !stop.is_cancelled() && !deliver(Event::State(SyncState::Reconnecting { attempt })) {
+        if !stop.is_cancelled() && !deliver(Event::State(SyncState::Reconnecting)) {
             break;
         }
     }

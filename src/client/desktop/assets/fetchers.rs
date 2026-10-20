@@ -58,8 +58,8 @@ struct Failed {
 #[derive(Clone)]
 pub enum Purpose {
     Thumbnail,
-    Original { request: u64 },
-    File { request: u64, name: String },
+    Original,
+    File { name: String },
 }
 
 #[derive(Clone)]
@@ -434,7 +434,7 @@ fn fetch(
             };
             Ok(Payload::Image(pixels))
         }
-        Purpose::Original { .. } => {
+        Purpose::Original => {
             let bytes = job.asset.fetch(
                 http,
                 if job.asset.private {

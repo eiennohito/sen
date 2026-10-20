@@ -72,9 +72,8 @@ pub enum StreamEvent {
     },
     Connection(Result<()>),
     Exited,
-    Connecting(u32),
+    Connecting,
     Retry {
-        attempt: u32,
         error: Failure,
     },
 }
@@ -106,7 +105,7 @@ pub trait Backend: Send {
     fn contact(&mut self, mid: &str) -> Result<Option<crate::store::Friend>>;
     fn notice(&mut self, mid: &str) -> Result<Value>;
     fn full_chat(&mut self, chat: &ChatId) -> Result<Value>;
-    fn profile_action(&mut self, action: &ProfileAction, full_chat: Value, seq: u32) -> Result<()>;
+    fn profile_action(&mut self, action: &ProfileAction, seq: u32) -> Result<()>;
     fn profile(&mut self) -> Result<Profile>;
     fn chats(&mut self, cursor: Option<String>) -> Result<ChatPage>;
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>>;
@@ -173,12 +172,6 @@ pub struct LineBackend {
     version_override: Option<String>,
 }
 impl LineBackend {
-    pub fn local_mid(&self) -> Option<String> {
-        match &self.client {
-            SessionClient::Open(client) => Some(client.local_mid().to_owned()),
-            SessionClient::Absent(_) => None,
-        }
-    }
     fn client(&mut self) -> Result<&mut crate::client::desktop::Client> {
         match &mut self.client {
             SessionClient::Open(client) => Ok(client),
@@ -259,14 +252,13 @@ fn chat_input(c: crate::client::desktop::Chat) -> Result<ChatInput> {
         title: c.title,
         avatar: c.avatar,
         member_count: c.member_count.map(|n| n as u32),
-        muted: c.muted.unwrap_or(false),
+        muted: false,
         left: false,
         last_message_id: c.last_message_id.as_deref().map(decode_id).transpose()?,
         last_message_ms: Some(c.timestamp_ms),
         server_unread: c.unread.unwrap_or(0) as u32,
         unread_stale: false,
         last_read_server_id: c.last_read_message.as_deref().map(decode_id).transpose()?,
-        list_rank: 0,
     })
 }
 fn asset_authorization(
@@ -433,7 +425,7 @@ impl Backend for LineBackend {
         }
         let asset = match purpose {
             Purpose::Thumbnail => asset.clone(),
-            Purpose::Original { .. } => match asset.original() {
+            Purpose::Original => match asset.original() {
                 Some(asset) => asset,
                 None => return Ok(None),
             },
@@ -453,7 +445,7 @@ impl Backend for LineBackend {
     fn full_chat(&mut self, chat: &ChatId) -> Result<Value> {
         self.client()?.full_chat(&chat.0).map_err(rpc)
     }
-    fn profile_action(&mut self, action: &ProfileAction, _full: Value, seq: u32) -> Result<()> {
+    fn profile_action(&mut self, action: &ProfileAction, seq: u32) -> Result<()> {
         match action {
             ProfileAction::Rename { mid, name } => self.client()?.rename_contact(mid, name, seq),
             ProfileAction::AddFriend { mid, chat } => self.client()?.add_friend(mid, chat, seq),
@@ -634,9 +626,9 @@ impl Backend for LineBackend {
                         }
                         Event::State(s) => match s {
                             SyncState::Connected => StreamEvent::Connection(Ok(())),
-                            SyncState::Reconnecting { attempt } => StreamEvent::Connecting(attempt),
+                            SyncState::Reconnecting => StreamEvent::Connecting,
                         },
-                        Event::Failure { attempt, error } => StreamEvent::Retry { attempt, error },
+                        Event::Failure { error } => StreamEvent::Retry { error },
                         Event::Resync {
                             next_revision,
                             complete,
@@ -651,7 +643,6 @@ impl Backend for LineBackend {
                 && let Err(error) = result
             {
                 deliver(StreamEvent::Retry {
-                    attempt: 1,
                     error: crate::client::error::classify(&error),
                 });
             }

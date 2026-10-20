@@ -98,10 +98,7 @@ impl App {
             &crate::client::decode_response("/test", 200, br#"{"code":10051,"data":{"code":1}}"#)
                 .unwrap_err(),
         );
-        self.worker
-            .sender
-            .0
-            .live(StreamEvent::Retry { attempt: 1, error });
+        self.worker.sender.0.live(StreamEvent::Retry { error });
     }
 }
 
@@ -115,7 +112,6 @@ fn three_transient_stream_failures_have_no_visible_effect() {
     });
     for _ in 0..3 {
         app.worker.sender.0.live(StreamEvent::Retry {
-            attempt: 1,
             error: Failure::Unanswered,
         });
     }
@@ -134,13 +130,11 @@ fn three_transient_stream_failures_have_no_visible_effect() {
 fn persistent_stream_loss_shows_offline_and_success_clears_it() {
     let mut app = App::new();
     app.worker.sender.0.live(StreamEvent::Retry {
-        attempt: 1,
         error: Failure::Unanswered,
     });
     app.until(|state| state.connection == Connection::Offline);
     let response = crate::client::decode_response("/api/test", 503, b"unavailable").unwrap_err();
     app.worker.sender.0.live(StreamEvent::Retry {
-        attempt: 2,
         error: classify(&response),
     });
     app.until(|state| state.connection == Connection::Online);
@@ -156,7 +150,6 @@ fn health_deadline_is_recomputed_after_a_message() {
         engine.timing.offline_after = Duration::from_secs(3600);
     });
     app.worker.sender.0.live(StreamEvent::Retry {
-        attempt: 1,
         error: Failure::Unanswered,
     });
     app.on_engine(|_| {});
@@ -641,7 +634,7 @@ fn empty_live_op_target_still_checkpoints_and_unknown_types_survive() {
         let mut revision = engine.store.sync_revision().unwrap();
         for (wire, kind) in [
             (121, OperationType::UpdateChat),
-            (-4000, OperationType::Unknown(-4000)),
+            (-4000, OperationType::Unknown),
         ] {
             revision += 1;
             let raw: RawOperation = serde_json::json!({

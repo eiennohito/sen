@@ -836,7 +836,7 @@ fn explicit_requests_first_then_newest_first() {
         assert!(fetchers.enqueue(
             asset.clone(),
             if i < 2 {
-                Purpose::Original { request: i as u64 }
+                Purpose::Original
             } else {
                 Purpose::Thumbnail
             }
@@ -871,7 +871,7 @@ fn eviction_publishes_completion_and_never_evicts_explicit_jobs() {
         bypass: true
     }));
     let original = avatar("http://127.0.0.1", 1);
-    assert!(fetchers.enqueue(original.clone(), Purpose::Original { request: 1 }));
+    assert!(fetchers.enqueue(original.clone(), Purpose::Original));
     let evicted = avatar("http://127.0.0.1", 2);
     for i in 2..=QUEUE_LIMIT {
         assert!(fetchers.enqueue(avatar("http://127.0.0.1", i), Purpose::Thumbnail));
@@ -911,10 +911,7 @@ fn eviction_publishes_completion_and_never_evicts_explicit_jobs() {
 fn refused_visible_enqueue_retains_a_job_for_explicit_retry() {
     let fetchers = paused_fetchers();
     for i in 0..QUEUE_LIMIT {
-        assert!(fetchers.enqueue(
-            avatar("http://127.0.0.1", i),
-            Purpose::Original { request: i as u64 }
-        ));
+        assert!(fetchers.enqueue(avatar("http://127.0.0.1", i), Purpose::Original));
     }
     let asset = avatar("http://127.0.0.1", QUEUE_LIMIT);
     let key = asset.key();
