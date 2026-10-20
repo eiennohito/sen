@@ -11,6 +11,30 @@ pub(crate) fn offset(text: &str, chars: i32, mut measure: impl FnMut(&str) -> f3
     measure(&text[..byte(text, chars)])
 }
 
+/// The URL of the link run under the pointer, or "" (cursor and tooltip only; no measuring).
+pub(crate) fn link_at(
+    rows: &ModelRc<RichRun>,
+    x: f32,
+    y: f32,
+    centered: bool,
+    width: f32,
+) -> slint::SharedString {
+    rows.iter()
+        .find(|run| {
+            let left = run.x
+                + if centered {
+                    ((width - run.line_width) / 2.).max(0.)
+                } else {
+                    0.
+                };
+            !run.url.is_empty()
+                && (left..left + run.measured_width).contains(&x)
+                && (run.y..run.y + run.measured_height).contains(&y)
+        })
+        .map(|run| run.url)
+        .unwrap_or_default()
+}
+
 pub(crate) fn hit(
     rows: &ModelRc<RichRun>,
     x: f32,

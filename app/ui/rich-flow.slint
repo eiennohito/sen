@@ -126,9 +126,12 @@ export component RichFlow inherits Rectangle {
             }
         }
     }
-    TouchArea {
+    selection-touch := TouchArea {
         enabled: root.selectable;
-        mouse-cursor: text;
+        // Links keep the pointer cursor and URL tooltip under the selection layer.
+        property <string> hover-url: self.has-hover ? ContentState.rich-link-at(root.lines, self.mouse-x / 1px, self.mouse-y / 1px, root.centered, root.width / 1px) : "";
+        mouse-cursor: self.hover-url != "" ? pointer : text;
+        if self.hover-url != "": Tooltip { Text { text: selection-touch.hover-url; font-size: Tokens.small; color: Tokens.foreground; } }
         property <length> start-x;
         property <length> start-y;
         property <bool> dragged;

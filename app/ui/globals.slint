@@ -318,6 +318,7 @@ export global ContentState {
     callback preview-layout([RichRun], string, float, float) -> [RichRun];
     callback rich-layout([RichRun], float, float, [RichRun]) -> [RichRun];
     callback rich-hit([RichRun], float, float, float, bool, float) -> RichPoint;
+    pure callback rich-link-at([RichRun], float, float, bool, float) -> string;
     pure callback rich-offset(string, float, int) -> float;
     pure callback rich-word([RichRun], [RichRun], RichPoint) -> RichSelection;
     callback rich-copy([RichRun], [RichRun], RichSelection) -> string;

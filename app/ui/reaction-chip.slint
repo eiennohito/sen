@@ -1,5 +1,5 @@
 import { ShellState } from "globals.slint";
-import { Pressable, FocusRing } from "button.slint";
+import { Pressable, FocusRing, Button } from "button.slint";
 import { ReactionRow } from "types.slint";
 import { Tokens } from "tokens.slint";
 import { Avatar } from "avatar.slint";
@@ -31,7 +31,7 @@ export component ReactionChip inherits Rectangle {
         accessible-label: root.reaction.label + ", " + root.reaction.count + " reactions";
         accessible-item-selected: root.reaction.own;
 
-        activated => { self.focus(); if root.reaction.own { root.remove(); } else { reactors.show(); } }
+        activated => { self.focus(); reactors.show(); }
         FocusRing { focused: parent.has-focus; border-radius: 14px; border-color: Tokens.accent; }
     }
     reactors := PopupWindow {
@@ -54,6 +54,7 @@ export component ReactionChip inherits Rectangle {
                             Avatar { width: 28px; height: 28px; identity: actor.id; initial: actor.initial; picture: actor.avatar; label: actor.name + " avatar"; }
                             Text { min-width: self.preferred-width; text: actor.name; color: Tokens.text; font-size: Tokens.small; vertical-alignment: center; }
                         }
+                        if group.own: Button { text: "Remove your reaction"; text-button: true; clicked => { root.remove(); reactors.close(); } }
                     }
                 }
             }

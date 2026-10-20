@@ -99,6 +99,10 @@ pub(crate) fn install(ui: &AppWindow) {
             })
         });
     ui.global::<ContentState>()
+        .on_rich_link_at(|rows, x, y, centered, width| {
+            selection::link_at(&rows, x, y, centered, width)
+        });
+    ui.global::<ContentState>()
         .on_rich_word(|source, rows, point| selection::word(&source, &rows, point));
     ui.global::<ContentState>()
         .on_rich_copy(|source, rows, selection| selection::copy(&source, &rows, selection));

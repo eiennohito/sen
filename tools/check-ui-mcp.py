@@ -690,7 +690,13 @@ def check_own_chip_removal(open_reactions):
             focus_tab()
             assert is_focused(element(label, "Button")), "Tab did not reach own chip"
             key(activation)
-        wait_for(lambda: not any(item.get("accessibleLabel") == label for item in tree()), "own chip activation did not remove reaction")
+        # Activating a chip always shows who reacted; removal is an explicit popup action.
+        assert_reactor_popup_visible()
+        assert element(label, "Button") is not None, "own chip activation removed the reaction"
+        if activation is None:
+            screenshot("own-reactors")
+        click("Remove your reaction", "Button")
+        wait_for(lambda: not any(item.get("accessibleLabel") == label for item in tree()), "Remove your reaction did not remove it")
         assert is_focused(element("React", "Button")), "removing own chip lost focus"
         open_reactions()
         assert not element("LOVE", "Button").get("accessibleItemSelected"), "cancelled reaction remains selected"

@@ -1032,3 +1032,30 @@ fn dragging_link_and_emoji_copies_only_the_range_and_keeps_images() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn pointer_over_a_link_run_reports_its_url_for_the_cursor_and_tooltip() {
+    let run = |text: &str, url: &str, x: f32, y: f32| RichRun {
+        text: text.into(),
+        url: url.into(),
+        x,
+        y,
+        measured_width: 40.,
+        measured_height: 20.,
+        line_width: 120.,
+        ..Default::default()
+    };
+    let rows = ModelRc::new(VecModel::from(vec![
+        run("see ", "", 0., 0.),
+        run("example", "https://example.org", 40., 0.),
+        run("end", "", 0., 20.),
+    ]));
+    let at = |x, y, centered| rich_content::selection::link_at(&rows, x, y, centered, 200.);
+    assert_eq!(at(50., 10., false), "https://example.org");
+    assert_eq!(at(10., 10., false), "");
+    assert_eq!(at(85., 10., false), "");
+    assert_eq!(at(50., 30., false), "");
+    // Centred lines shift every run by (width - line width) / 2.
+    assert_eq!(at(50., 10., true), "");
+    assert_eq!(at(90., 10., true), "https://example.org");
+}

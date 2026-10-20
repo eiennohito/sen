@@ -76,6 +76,9 @@ export component Message inherits TouchArea {
     property <length> bubble-x: message-content.x + message-column.x + message-bubble.x;
     property <length> bubble-bottom: message-content.y + message-column.y + message-bubble.y + message-bubble.height;
     property <int> focused-chips;
+    // Removal starts in the reactors popup; focus moves to React once the chip is gone.
+    property <bool> refocus-react;
+    changed message => { if root.refocus-react && root.message.own-reaction == 0 { root.refocus-react = false; react-button.focus(); } }
     property <bool> photo-focused;
     property <bool> card-focused: false; property <bool> rich-fallback: false;
     property <float> rich-width;
@@ -305,7 +308,7 @@ export component Message inherits TouchArea {
                             if root.message.reaction-count > 0: HorizontalLayout {
                                 alignment: start; spacing: 4px;
                                 for reaction in root.message.reactions: ReactionChip { reaction: reaction; groups: root.message.reactions;
-                                    remove => { react-button.focus(); ConversationState.cancel-reaction(root.message.id); }
+                                    remove => { root.refocus-react = true; ConversationState.cancel-reaction(root.message.id); }
                                     changed has-focus => { root.focused-chips += self.has-focus ? 1 : -1; }
                                     history-key(event) => { root.history-key(event, true) }
                                 }
