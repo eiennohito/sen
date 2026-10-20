@@ -172,7 +172,7 @@ impl Presenter {
         let detail_error = self.present_errors(ui, state);
         self.present_detail(ui, state, detail_error);
         self.present_chats(ui, state, category);
-        self.present_messages(ui, state);
+        self.present_messages(ui, state, &state.rows());
         self.present_shell(ui, state);
         self.present_header(ui, state);
         self.present_draft(ui, state);

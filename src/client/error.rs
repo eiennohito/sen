@@ -151,11 +151,9 @@ pub fn classify(error: &anyhow::Error) -> Failure {
     }
     for cause in causes(error) {
         if let Some(error) = cause.downcast_ref::<TransportFailure>() {
-            return match error.source {
-                TransportError::Io(_)
-                | TransportError::Timeout
-                | TransportError::ConnectionFailed
-                | TransportError::ProxyConfiguration => {
+            return match transport_media_failure(&error.source) {
+                super::desktop::assets::Failure::Network
+                | super::desktop::assets::Failure::Timeout => {
                     if error.write_started {
                         Failure::Unanswered
                     } else {
@@ -189,14 +187,7 @@ pub fn classify(error: &anyhow::Error) -> Failure {
             };
         }
         if let Some(error) = cause.downcast_ref::<super::desktop::assets::Failure>() {
-            return match error {
-                super::desktop::assets::Failure::Network
-                | super::desktop::assets::Failure::Timeout => Failure::Unanswered,
-                super::desktop::assets::Failure::Http(code) => {
-                    Failure::Refused(Refusal::Server(ServerRefusal::Http(*code)))
-                }
-                _ => Failure::Bug("media response failure".into()),
-            };
+            return Failure::from(*error);
         }
     }
     Failure::Bug("decode, crypto, protocol or invariant failure".into())
@@ -242,18 +233,22 @@ pub fn sign_in_failure(error: &anyhow::Error, cancelled: bool) -> SignInFailure 
     if cancelled {
         return SignInFailure::Cancelled;
     }
-    match classify(error) {
-        Failure::SignedOut(SignOutReason::Unavailable(reason)) => reason,
-        Failure::NotDelivered | Failure::Unanswered => SignInFailure::Network,
-        Failure::Refused(_) => SignInFailure::Server,
-        Failure::SignedOut(_) => SignInFailure::Expired,
-        Failure::Bug(_) => SignInFailure::Internal,
-    }
+    classify(error).sign_in_reason()
 }
 
 impl wasmi::core::HostError for SignInFailure {}
 
 impl Failure {
+    pub fn sign_in_reason(self) -> SignInFailure {
+        match self {
+            Self::SignedOut(SignOutReason::Unavailable(reason)) => reason,
+            Self::NotDelivered | Self::Unanswered => SignInFailure::Network,
+            Self::Refused(_) => SignInFailure::Server,
+            Self::SignedOut(_) => SignInFailure::Expired,
+            Self::Bug(_) => SignInFailure::Internal,
+        }
+    }
+
     /// Invalid chat requests should not be repeated automatically by resync.
     pub fn suppress_resync_refresh(&self) -> bool {
         matches!(
@@ -294,6 +289,28 @@ impl Failure {
     }
 }
 
+impl From<super::desktop::assets::Failure> for Failure {
+    fn from(error: super::desktop::assets::Failure) -> Self {
+        use super::desktop::assets::Failure as Media;
+        match error {
+            Media::Network | Media::Timeout => Self::Unanswered,
+            Media::Http(code) => Self::Refused(Refusal::Server(ServerRefusal::Http(code))),
+            _ => Self::Bug("media response failure".into()),
+        }
+    }
+}
+
+fn transport_media_failure(error: &TransportError) -> super::desktop::assets::Failure {
+    use super::desktop::assets::Failure as Media;
+    match error {
+        TransportError::Timeout => Media::Timeout,
+        TransportError::Io(_)
+        | TransportError::ConnectionFailed
+        | TransportError::ProxyConfiguration => Media::Network,
+        _ => Media::Decode,
+    }
+}
+
 pub(crate) fn media_failure(error: &anyhow::Error) -> super::desktop::assets::Failure {
     use super::desktop::assets::Failure as Media;
     if let Some(failure) = error.downcast_ref::<Media>() {
@@ -309,13 +326,7 @@ pub(crate) fn media_failure(error: &anyhow::Error) -> super::desktop::assets::Fa
         return Media::Http(404);
     }
     if let Some(transport) = find_source::<TransportFailure>(error) {
-        return match transport.source {
-            TransportError::Timeout => Media::Timeout,
-            TransportError::Io(_)
-            | TransportError::ConnectionFailed
-            | TransportError::ProxyConfiguration => Media::Network,
-            _ => Media::Decode,
-        };
+        return transport_media_failure(&transport.source);
     }
     if let Some(rpc) = find_source::<RpcError>(error) {
         return Media::Http(rpc.http);

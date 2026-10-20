@@ -54,21 +54,23 @@ impl crate::Desktop {
         self.render(ui);
     }
     pub(crate) fn photos(&self) -> Vec<String> {
-        self.state
-            .rows()
-            .iter()
+        Self::photo_keys(&self.state.rows())
+    }
+    fn photo_keys(rows: &[&StoredMessage]) -> Vec<String> {
+        rows.iter()
             .filter(|m| matches!(m.body, Content::Photo { .. }))
             .filter_map(|m| m.body.image().cloned())
             .map(|asset| asset.key())
             .collect()
     }
     pub(crate) fn open_photo(&mut self, ui: &AppWindow, key: &str) {
-        let asset = self.state.rows().iter().find_map(|m| {
+        let rows = self.state.rows();
+        let asset = rows.iter().find_map(|m| {
             let asset = m.body.image().filter(|a| a.key() == key)?;
             asset.original()
         });
         if let Some(asset) = asset {
-            let photos = self.photos();
+            let photos = Self::photo_keys(&rows);
             let index = photos.iter().position(|k| k == key);
             ui.global::<ViewerState>()
                 .set_viewer_has_previous(index.is_some_and(|i| i > 0));
@@ -99,66 +101,63 @@ mod tests {
     fn viewer_original_failures_end_loading_and_profiles_wait_for_the_uncropped_image() {
         std::thread::spawn(|| {
             let _platform = crate::snapshot::install().unwrap();
-            let ui = crate::tests::test_window();
-            let worker = Worker::start(
-                StoreLocation::Memory,
-                || Ok(line::backend::FakeBackend::canned()),
-                Default::default(),
-            );
-            let mut desktop = crate::tests::desktop(worker.sender.clone());
-            ui.global::<DetailState>()
-                .set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::new(
-                    192, 192,
-                )));
-            ui.global::<DetailState>().set_profile_id("contact".into());
-            desktop.state.contacts.insert(
-                "contact".into(),
-                Friend {
-                    id: "contact".into(),
-                    avatar: line::client::desktop::assets::Asset::avatar("/contact"),
-                    ..Default::default()
-                },
-            );
-            desktop.open_profile_photo(&ui);
-            assert_eq!(
-                ui.global::<ViewerState>().get_viewer_image().size().width,
-                0
-            );
-            assert!(ui.global::<ViewerState>().get_viewer_loading());
-            let key = desktop.viewer_asset.clone().unwrap();
-            desktop.apply(
-                &ui,
-                Delta::MediaFailed {
-                    key: key.clone(),
-                    failure: line::client::desktop::assets::Failure::Network,
-                },
-            );
-            assert!(!ui.global::<ViewerState>().get_viewer_loading());
-            assert_eq!(
-                ui.global::<ViewerState>().get_viewer_status(),
-                "Original unavailable"
-            );
-            ui.global::<ViewerState>().set_viewer_loading(true);
-            ui.global::<ViewerState>()
-                .set_viewer_status("Loading original…".into());
+            let (ui, runtime, _worker) =
+                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            runtime.update(|desktop| {
+                ui.global::<DetailState>()
+                    .set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::new(
+                        192, 192,
+                    )));
+                ui.global::<DetailState>().set_profile_id("contact".into());
+                desktop.state.contacts.insert(
+                    "contact".into(),
+                    Friend {
+                        id: "contact".into(),
+                        avatar: line::client::desktop::assets::Asset::avatar("/contact"),
+                        ..Default::default()
+                    },
+                );
+                desktop.open_profile_photo(&ui);
+                assert_eq!(
+                    ui.global::<ViewerState>().get_viewer_image().size().width,
+                    0
+                );
+                assert!(ui.global::<ViewerState>().get_viewer_loading());
+                let key = desktop.viewer_asset.clone().unwrap();
+                desktop.apply(
+                    &ui,
+                    Delta::MediaFailed {
+                        key: key.clone(),
+                        failure: line::client::desktop::assets::Failure::Network,
+                    },
+                );
+                assert!(!ui.global::<ViewerState>().get_viewer_loading());
+                assert_eq!(
+                    ui.global::<ViewerState>().get_viewer_status(),
+                    "Original unavailable"
+                );
+                ui.global::<ViewerState>().set_viewer_loading(true);
+                ui.global::<ViewerState>()
+                    .set_viewer_status("Loading original…".into());
 
-            desktop.apply(
-                &ui,
-                Delta::Original {
-                    key,
-                    path: "missing-original.jpg".into(),
-                    source: "missing-source.jpg".into(),
-                },
-            );
-            assert!(!ui.global::<ViewerState>().get_viewer_loading());
-            assert_eq!(
-                ui.global::<ViewerState>().get_viewer_error(),
-                "Could not load original"
-            );
-            assert_eq!(
-                ui.global::<ViewerState>().get_viewer_status(),
-                "Original unavailable"
-            );
+                desktop.apply(
+                    &ui,
+                    Delta::Original {
+                        key,
+                        path: "missing-original.jpg".into(),
+                        source: "missing-source.jpg".into(),
+                    },
+                );
+                assert!(!ui.global::<ViewerState>().get_viewer_loading());
+                assert_eq!(
+                    ui.global::<ViewerState>().get_viewer_error(),
+                    "Could not load original"
+                );
+                assert_eq!(
+                    ui.global::<ViewerState>().get_viewer_status(),
+                    "Original unavailable"
+                );
+            });
         })
         .join()
         .unwrap();

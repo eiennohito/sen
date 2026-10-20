@@ -140,27 +140,53 @@ fn save_preserves_unreadable_or_invalid_existing_sessions() {
 }
 
 #[test]
-fn typed_current_session_round_trips_through_the_file() -> Result<()> {
-    let root = root("typed-current-session");
-    let path = root.join("session.json");
-    let original = json!({"format":1,
-        "token_v3_issue_result":{"accessToken":"fake-access","refreshToken":"fake-refresh","duration":123,"unknown":{"a":[null,true]}},
-        "certificate":"fake-certificate","login_metadata":{"unknown":[1,2]},
-        "e2ee_keys":[{"id":42,"version":1,"public_key":"fake-public","exported_key":"fake-export","unknown":false}],
-        "profile":{"mid":"ufake","displayName":"Fake","unknown":{"x":1}},"unknown":[null,"extra"]});
-    private_write(&path, &serde_json::to_vec(&original)?)?;
-    let loaded: crate::client::Session =
-        serde_json::from_value(load_with(&path, Store::PlaintextFile, &Unreachable)?)?;
-    save_with(
-        &path,
-        &serde_json::to_value(loaded)?,
-        Store::PlaintextFile,
-        &Unreachable,
-    )?;
-    let reloaded = load_with(&path, Store::PlaintextFile, &Unreachable)?;
-    assert_eq!(reloaded, original);
-    let typed: crate::client::Session = serde_json::from_value(reloaded)?;
-    assert_eq!(serde_json::to_value(typed)?, original);
+fn saved_session_fixtures_preserve_all_fields() -> Result<()> {
+    // Current fixtures: a synthetic Session serialized by save_with, copied verbatim.
+    // The sealed fixture uses only the public test key [0x42; 32], never a keyring.
+    // ecc06f0f939f2982c795d779266c649b49f4d665 added the typed Session defaults.
+    // session-pre-format.json hand-writes that accepted shape without format or
+    // refreshToken. No pre-format writer exists in git history: even the first
+    // writer (6e058db0d8048abd2054fcdf2d15559656ef6730) wrote format: 1.
+    let root = root("session-fixtures");
+    let keys = MapKeys::default();
+    keys.put("synthetic-session-fixture", &[0x42; 32])?;
+    for (name, bytes, store) in [
+        (
+            "current",
+            include_bytes!("../../fixtures/session-current.json").as_slice(),
+            Store::PlaintextFile,
+        ),
+        (
+            "sealed",
+            include_bytes!("../../fixtures/session-sealed.json").as_slice(),
+            Store::Keyring,
+        ),
+        (
+            "pre-format",
+            include_bytes!("../../fixtures/session-pre-format.json").as_slice(),
+            Store::PlaintextFile,
+        ),
+    ] {
+        let path = root.join(format!("{name}.json"));
+        private_write(&path, bytes)?;
+        let mut original = load_with(&path, store, &keys)?;
+        let loaded: crate::client::Session = serde_json::from_value(original.clone())?;
+        // The absent format defaults to zero; every original field must survive.
+        if name == "pre-format" {
+            original["format"] = json!(0);
+        }
+        let saved = serde_json::to_value(loaded)?;
+        assert_eq!(saved, original, "{name}: typed session changed a field");
+        save_with(&path, &saved, store, &keys)?;
+        let reloaded = load_with(&path, store, &keys)?;
+        assert_eq!(reloaded, original, "{name}: save/load changed a field");
+        let typed: crate::client::Session = serde_json::from_value(reloaded)?;
+        assert_eq!(
+            serde_json::to_value(typed)?,
+            original,
+            "{name}: reload changed a field"
+        );
+    }
     fs::remove_dir_all(root)?;
     Ok(())
 }

@@ -117,6 +117,11 @@ impl Content {
             _ => None,
         }
     }
+    pub fn local_attachment(&self) -> Option<&crate::attachments::Attachment> {
+        self.image()
+            .or_else(|| self.attachment())
+            .and_then(Asset::local_attachment)
+    }
     pub fn attachment(&self) -> Option<&Asset> {
         match self {
             Self::File { asset, .. } | Self::Video { asset, .. } | Self::Voice { asset, .. } => {
@@ -402,6 +407,7 @@ pub struct ChatInput {
 pub struct Changes {
     pub messages_removed: BTreeSet<Key>,
     pub chats_changed: BTreeSet<ChatId>,
+    pub drafts_changed: BTreeSet<ChatId>,
     pub chats_removed: BTreeSet<ChatId>,
 }
 /// Page cursors certify continuity between the fetched range and its anchor.

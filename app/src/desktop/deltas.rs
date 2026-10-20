@@ -14,16 +14,22 @@ impl Desktop {
             editor = selection.or(editor);
         }
         if self.state.selected.is_none() && !self.state.chat_order.is_empty() {
-            self.select(ui, 0);
+            self.switch_chat(ui, self.state.chat_order[0].clone());
         } else if dirty {
             self.render(ui);
         }
         if let Some((anchor, caret)) = editor {
-            if composer.get_draft().as_str() != self.state.composer {
+            let changed = composer.get_draft().as_str() != self.state.composer;
+            if changed {
                 composer.set_draft(self.state.composer.clone().into());
             }
             self.shown_composer = self.state.composer.clone();
-            ui.invoke_restore_editor(anchor, caret);
+            if changed
+                || composer.get_editor_anchor() != anchor
+                || composer.get_editor_caret() != caret
+            {
+                ui.invoke_restore_editor(anchor, caret);
+            }
         }
         if window && self.history.latest_requested && self.state.reaches_end {
             self.history.latest_requested = false;
@@ -42,8 +48,8 @@ impl Desktop {
             }
             return (false, false, None);
         }
-        // The engine may publish an unchanged window and a whole chat list on a
-        // draft save. Keep that acknowledgement out of the conversation render.
+        // Refreshes can publish identical window snapshots. Avoid rendering
+        // the conversation again when its contents and bounds are unchanged.
         if let Delta::Window {
             sub,
             upsert,
@@ -258,7 +264,7 @@ impl Desktop {
         match result {
             Ok(id) => {
                 g.set_new_chat_open(false);
-                self.show_chat(ui, id.clone());
+                self.open_conversation(ui, id.clone());
             }
             Err(error) => {
                 g.set_new_chat_uncertain(matches!(error, line::engine::CreateFailure::Uncertain));

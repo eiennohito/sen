@@ -2,7 +2,7 @@ use super::system_events;
 use super::*;
 
 impl Presenter {
-    pub(super) fn present_chats(
+    pub(crate) fn present_chats(
         &mut self,
         ui: &AppWindow,
         state: &AppState,

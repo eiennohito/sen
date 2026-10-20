@@ -12,7 +12,6 @@ export component Pressable inherits FocusScope {
     callback activated();
     focus-on-tab-navigation: root.enabled && root.visible;
     focus-on-click: root.enabled && root.visible && root.focus-on-activation;
-    opacity: root.enabled ? 1 : 0.4;
     accessible-role: button; accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.activated(); } }
     callback key-event(KeyEvent) -> EventResult;
@@ -23,12 +22,17 @@ export component Pressable inherits FocusScope {
         if event.text == Key.Return || event.text == " " { root.activated(); return accept; }
         reject
     }
-    Rectangle {
-        background: root.background; border-radius: root.border-radius;
-        border-width: root.border-width; border-color: root.border-color;
+    // Opacity on the root makes Slint 1.18 inline every user of Pressable
+    // (about 3 MB of generated code); keep it on an inner element.
+    dimmed := Rectangle {
+        opacity: root.enabled ? 1 : 0.4;
+        Rectangle {
+            background: root.background; border-radius: root.border-radius;
+            border-width: root.border-width; border-color: root.border-color;
+        }
+        touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { if root.focus-on-activation { root.focus(); } root.activated(); } }
+        @children
     }
-    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { if root.focus-on-activation { root.focus(); } root.activated(); } }
-    @children
 }
 
 export component FocusRing inherits Rectangle {

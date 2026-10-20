@@ -17,6 +17,57 @@ pub enum DetailPage {
     GroupInfo(ChatId),
     Members(ChatId),
 }
+/// Window rows indexed for presentation and reply lookups.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WindowMessages {
+    rows: BTreeMap<Key, StoredMessage>,
+    order: BTreeMap<(Cursor, Key), Key>,
+    server_ids: BTreeMap<ServerId, Key>,
+}
+impl WindowMessages {
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
+    pub fn remove(&mut self, key: &Key) -> Option<StoredMessage> {
+        let old = self.rows.remove(key)?;
+        self.order.remove(&(old.sort.clone(), *key));
+        if let Some(id) = &old.server_id
+            && self.server_ids.get(id) == Some(key)
+        {
+            self.server_ids.remove(id);
+        }
+        Some(old)
+    }
+    pub fn insert(&mut self, key: Key, row: StoredMessage) {
+        self.remove(&key);
+        self.order.insert((row.sort.clone(), key), key);
+        if let Some(id) = &row.server_id {
+            self.server_ids.insert(id.clone(), key);
+        }
+        self.rows.insert(key, row);
+    }
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+    pub fn get(&self, key: &Key) -> Option<&StoredMessage> {
+        self.rows.get(key)
+    }
+    pub fn contains_key(&self, key: &Key) -> bool {
+        self.rows.contains_key(key)
+    }
+    pub fn values(&self) -> impl Iterator<Item = &StoredMessage> {
+        self.rows.values()
+    }
+}
+impl std::ops::Index<&Key> for WindowMessages {
+    type Output = StoredMessage;
+    fn index(&self, key: &Key) -> &Self::Output {
+        &self.rows[key]
+    }
+}
 pub struct AppState {
     pub uploads: BTreeMap<Key, f32>,
     pub sticker_packages: Vec<StickerPackage>,
@@ -26,7 +77,7 @@ pub struct AppState {
     pub group_info: BTreeMap<ChatId, serde_json::Value>,
     pub notices: BTreeMap<String, serde_json::Value>,
     pub action: Option<crate::backend::ProfileAction>,
-    pub action_error: Option<crate::engine::ProfileFailure>,
+    pub action_error: Option<crate::backend::ProfileAction>,
     pub friends: Vec<crate::store::Friend>,
     pub members: Vec<crate::store::Member>,
     pub connection: Connection,
@@ -42,7 +93,7 @@ pub struct AppState {
         std::collections::BTreeMap<crate::engine::Refresh, crate::client::error::Failure>,
     pub window_anchor: Anchor,
     pub selected: Option<ChatId>,
-    pub messages: BTreeMap<Key, StoredMessage>,
+    pub messages: WindowMessages,
     pub reply_targets: BTreeMap<ServerId, StoredMessage>,
     pub gaps: Vec<Gap>,
     pub unread_divider: Option<Key>,
@@ -80,7 +131,7 @@ impl Default for AppState {
             refresh_failures: Default::default(),
             window_anchor: Anchor::Latest,
             selected: None,
-            messages: BTreeMap::new(),
+            messages: WindowMessages::default(),
             reply_targets: BTreeMap::new(),
             gaps: vec![],
             unread_divider: None,
@@ -111,8 +162,9 @@ impl AppState {
     }
     pub fn reply_target(&self, message_id: &ServerId) -> Option<&StoredMessage> {
         self.messages
-            .values()
-            .find(|m| m.server_id.as_ref() == Some(message_id))
+            .server_ids
+            .get(message_id)
+            .and_then(|key| self.messages.get(key))
             .or_else(|| self.reply_targets.get(message_id))
     }
     pub fn profile_own(&self, mid: &str) -> bool {
@@ -195,10 +247,6 @@ impl AppState {
             self.composer.clear();
             self.composer_reply = None;
         }
-        if self.selected.as_ref() != Some(&chat) {
-            self.detail.clear();
-            self.panel = Panel::Chats;
-        }
         self.window_sub += 1;
         self.window_anchor = Anchor::Unread;
         self.selected = Some(chat.clone());
@@ -210,13 +258,7 @@ impl AppState {
         self.unread_divider = None;
         self.reaches_start = false;
         self.reaches_end = false;
-        Intent::Window(WindowSub {
-            sub: self.window_sub,
-            chat,
-            anchor: Anchor::Unread,
-            before: 80,
-            after: 80,
-        })
+        Intent::Window(WindowSub::unread(self.window_sub, chat))
     }
     pub fn subscribe_window(&mut self, anchor: Anchor, before: usize, after: usize) -> Intent {
         self.window_sub += 1;
@@ -230,9 +272,11 @@ impl AppState {
         })
     }
     pub fn rows(&self) -> Vec<&StoredMessage> {
-        let mut rows = self.messages.values().collect::<Vec<_>>();
-        rows.sort_by(|a, b| a.sort.cmp(&b.sort));
-        rows
+        self.messages
+            .order
+            .values()
+            .map(|key| &self.messages[key])
+            .collect()
     }
     pub fn apply(&mut self, delta: Delta) {
         match delta {
@@ -317,13 +361,23 @@ impl AppState {
                     _ => false,
                 };
                 self.action = None;
-                self.action_error = if relevant { error } else { None };
+                self.action_error = (relevant && error).then_some(action);
             }
-            Delta::Friends(rows) => {
+            Delta::Contacts(rows) => {
                 for r in &rows {
                     self.contacts.insert(r.id.clone(), r.clone());
                 }
-                self.friends = rows;
+                for member in &mut self.members {
+                    if let Some(row) = self.contacts.get(&member.contact.id) {
+                        let invited = member.contact.profile.invited;
+                        member.contact = row.clone();
+                        member.contact.profile.invited = invited;
+                    }
+                }
+                self.friends = rows
+                    .into_iter()
+                    .filter(|r| r.group || r.profile.relation == Some(0))
+                    .collect();
             }
             Delta::Members { chat, rows } if self.selected.as_ref() == Some(&chat) => {
                 self.members = rows
@@ -500,12 +554,16 @@ mod content_model_tests {
         assert!(members[0].is_self);
     }
     #[test]
-    fn selecting_from_detail_uses_chats_and_waits_for_matching_window() {
+    fn selecting_keeps_navigation_and_waits_for_matching_window() {
         let mut state = AppState::default();
         state.push_detail(DetailPage::Profile("member".into()));
+        state.panel = Panel::Settings;
         state.select(ChatId("chat".into()));
-        assert_eq!(state.panel, Panel::Chats);
-        assert!(state.detail.is_empty());
+        assert_eq!(state.panel, Panel::Settings);
+        assert_eq!(
+            state.detail_page(),
+            Some(&DetailPage::Profile("member".into()))
+        );
         assert!(state.window_loading);
         state.apply(Delta::Window {
             sub: state.window_sub,

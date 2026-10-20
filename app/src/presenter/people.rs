@@ -8,7 +8,7 @@ pub(super) enum FriendEntry {
 }
 
 impl Presenter {
-    pub(super) fn present_people(&mut self, ui: &AppWindow, state: &AppState) {
+    pub(crate) fn present_people(&mut self, ui: &AppWindow, state: &AppState) {
         let g = ui.global::<FriendsState>();
         let query = Query::new(&g.get_friend_query());
         let friends: Vec<_> = state

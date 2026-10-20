@@ -177,7 +177,8 @@ mod tests {
     fn preview_cannot_be_exported_as_an_original() {
         std::thread::spawn(|| {
             let _platform = crate::snapshot::install().unwrap();
-            let ui = crate::tests::test_window();
+            let (ui, _runtime, _worker) =
+                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
             ui.invoke_show_viewer("fixture".into());
             ui.global::<ViewerState>()
                 .set_viewer_image(slint::Image::from_rgba8(slint::SharedPixelBuffer::<

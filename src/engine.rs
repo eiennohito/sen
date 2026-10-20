@@ -97,6 +97,17 @@ pub struct WindowSub {
     pub before: usize,
     pub after: usize,
 }
+impl WindowSub {
+    pub fn unread(sub: u64, chat: ChatId) -> Self {
+        Self {
+            sub,
+            chat,
+            anchor: Anchor::Unread,
+            before: 80,
+            after: 80,
+        }
+    }
+}
 #[derive(Clone)]
 pub enum Intent {
     ChatList {
@@ -196,7 +207,7 @@ impl Intent {
         }
     }
 }
-fn needs_account(intent: &Intent) -> bool {
+fn account_allows(intent: &Intent, ready: bool, known: bool) -> bool {
     match intent {
         Intent::SignIn
         | Intent::CancelSignIn
@@ -215,26 +226,17 @@ fn needs_account(intent: &Intent) -> bool {
         | Intent::Copy(_)
         | Intent::Discard(_)
         | Intent::MoreChats
-        | Intent::Stop => false,
+        | Intent::Stop => true,
         Intent::ProfileAction(_)
         | Intent::RetryAsset(_)
-        | Intent::Send { .. }
-        | Intent::SendAttachments { .. }
         | Intent::React { .. }
         | Intent::StickerPackages
-        | Intent::SendSticker { .. }
         | Intent::CreateChat { .. }
         | Intent::Unsend(_)
         | Intent::Retry(_)
-        | Intent::MarkRead { .. } => true,
+        | Intent::MarkRead { .. } => known,
+        Intent::Send { .. } | Intent::SendAttachments { .. } | Intent::SendSticker { .. } => ready,
     }
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProfileFailure {
-    Rename,
-    AddFriend,
-    Mute,
-    Leave,
 }
 #[derive(Clone, Debug)]
 pub enum CreateFailure {
@@ -308,7 +310,7 @@ pub enum Delta {
     },
     ProfileAction {
         action: ProfileAction,
-        error: Option<ProfileFailure>,
+        error: bool,
     },
     MoreChats(bool),
     RefreshFailed {
@@ -317,7 +319,7 @@ pub enum Delta {
     },
     RefreshRecovered(Refresh),
     Notify(crate::store::MessageInput),
-    Friends(Vec<crate::store::Friend>),
+    Contacts(Vec<crate::store::Friend>),
     Members {
         chat: ChatId,
         rows: Vec<crate::store::Member>,
@@ -887,19 +889,19 @@ impl Engine {
         );
     }
 
-    fn report_store_error(&self, error: &StoreError) {
-        let storage = StorageFailure::classify(error);
+    fn report_store_error(&self, error: StoreError) {
+        let storage = StorageFailure::classify(&error);
         let kind = if storage.is_some() {
             "local-write"
         } else {
-            match error {
+            match &error {
                 StoreError::Invalid(_) => "invalid store operation",
                 StoreError::Sql(rusqlite::Error::QueryReturnedNoRows) => "unknown key",
                 StoreError::Json(_) => "stored data decode",
                 _ => "store invariant",
             }
         };
-        crate::reporting::log(&self.operation, kind, error);
+        crate::reporting::log(&self.operation, kind, &error);
         if let Some(failure) = storage {
             self.emit(Delta::StorageFailed(failure));
         } else {
@@ -988,7 +990,7 @@ impl Engine {
                     self.publish()
                 })();
                 if let Err(error) = result {
-                    self.report_store_error(&error);
+                    self.report_store_error(error);
                 }
             }
             Failure::Bug(ref message) => {
@@ -1054,9 +1056,7 @@ impl Engine {
                         return Ok(());
                     }
                     Err(error) => AccountSession::SessionUnusable {
-                        reason: SignOutReason::Unavailable(crate::client::error::sign_in_failure(
-                            &anyhow::Error::new(error), false,
-                        )),
+                        reason: SignOutReason::Unavailable(error.sign_in_reason()),
                     },
                 };
                 engine.retry_attempts.remove(&Refresh::Session);
@@ -1094,20 +1094,14 @@ impl Engine {
         }
         self.emit(Delta::Connection(Connection::Local));
         self.emit(Delta::Profile(self.store.account()?.profile));
-        self.emit_friends()?;
+        self.emit_contacts()?;
         self.emit(Delta::Prefs(self.store.prefs()?));
         self.store.recover_sends()?;
         // The local subscription snapshot is emitted before any RPC.
         self.list = Some((1, 100));
         self.publish()?;
         if let Some(chat) = self.store.prefs()?.last_chat {
-            self.open(WindowSub {
-                sub: 1,
-                chat,
-                anchor: Anchor::Unread,
-                before: 80,
-                after: 80,
-            })?;
+            self.open(WindowSub::unread(1, chat))?;
         }
         self.probe_session();
         loop {
@@ -1209,20 +1203,12 @@ impl Engine {
             };
             match result {
                 Err(error) => {
-                    self.report_store_error(&error);
+                    self.report_store_error(error);
                 }
                 Ok(()) if self.store.writes() != writes => self.emit(Delta::StoreSaved),
                 Ok(()) => {}
             }
         }
-        {
-            let mut lanes = self.inbox.lanes.lock().unwrap();
-            lanes.stopped = true;
-            lanes.completed.clear();
-        }
-        self.inbox.notify();
-        self.assets_stop.cancel();
-        self.stop_stream();
         Ok(())
     }
     fn stop_stream(&mut self) {
@@ -1350,13 +1336,7 @@ impl Engine {
                     if engine.window.is_none()
                         && let Some(chat) = engine.store.prefs()?.last_chat
                     {
-                        engine.open(WindowSub {
-                            sub: 1,
-                            chat,
-                            anchor: Anchor::Unread,
-                            before: 80,
-                            after: 80,
-                        })?;
+                        engine.open(WindowSub::unread(1, chat))?;
                     }
                 }
                 engine.store_mid = Some(p.mid.clone());
@@ -1454,11 +1434,7 @@ impl Engine {
     fn open(&mut self, w: WindowSub) -> Result<()> {
         self.chat_changed(&w.chat);
         let exists = self.store.chat(&w.chat)?.is_some();
-        let friend = self
-            .store
-            .contacts()?
-            .iter()
-            .any(|f| f.id == w.chat.0 && !f.group);
+        let friend = self.store.contact(&w.chat.0)?.is_some_and(|f| !f.group);
         if !exists && !friend {
             self.inbox.refresh(Refresh::Details(w.chat.clone()));
         }
@@ -1478,30 +1454,17 @@ impl Engine {
         self.force_window = true;
         self.publish()
     }
-    // Friends always reach the UI in store order, so a refresh does not reshuffle rows.
-    fn emit_friends(&mut self) -> Result<()> {
-        let rows = self.store.contacts()?.into_iter().collect::<Vec<_>>();
-        for row in &rows {
-            self.emit(Delta::Contact(row.clone()));
-        }
-        self.emit(Delta::Friends(
-            rows.into_iter()
-                .filter(|r: &crate::store::Friend| r.group || r.profile.relation == Some(0))
-                .collect(),
-        ));
+    // Contacts reach the UI in store order, so a refresh does not reshuffle friends.
+    fn emit_contacts(&mut self) -> Result<()> {
+        self.emit(Delta::Contacts(self.store.contacts()?));
         Ok(())
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
-        if !self.known()
-            && !(matches!(self.account, AccountSession::Ready)
-                && matches!(
-                    i,
-                    Intent::Send { .. }
-                        | Intent::SendAttachments { .. }
-                        | Intent::SendSticker { .. }
-                ))
-            && needs_account(&i)
-        {
+        if !account_allows(
+            &i,
+            matches!(self.account, AccountSession::Ready),
+            self.known(),
+        ) {
             return Ok(());
         }
         match i {
@@ -1638,7 +1601,7 @@ impl Engine {
                 }
             }
             Intent::Contact(mid) => {
-                if let Some(row) = self.store.contacts()?.into_iter().find(|v| v.id == mid) {
+                if let Some(row) = self.store.contact(&mid)? {
                     self.emit(Delta::Contact(row));
                 }
                 self.inbox.refresh(Refresh::Contact(mid));
@@ -1658,19 +1621,12 @@ impl Engine {
                 self.rpc(
                     move |b| b.profile_action(&net_action, seq),
                     move |engine, result, _| {
-                        let error = result.err().map(|_| match action {
-                            ProfileAction::Rename { .. } => ProfileFailure::Rename,
-                            ProfileAction::AddFriend { .. } => ProfileFailure::AddFriend,
-                            ProfileAction::Mute { .. } => ProfileFailure::Mute,
-                            ProfileAction::Leave { .. } => ProfileFailure::Leave,
-                        });
-                        if error.is_none() {
+                        let error = result.is_err();
+                        if !error {
                             match &action {
                                 ProfileAction::Rename { mid, name }
                                 | ProfileAction::AddFriend { mid, chat: name } => {
-                                    if let Some(raw) =
-                                        engine.store.contacts()?.into_iter().find(|v| v.id == *mid)
-                                    {
+                                    if let Some(raw) = engine.store.contact(mid)? {
                                         let mut row = raw;
                                         if matches!(&action, ProfileAction::Rename { .. }) {
                                             if row.profile.original_name.is_none() {
@@ -1682,8 +1638,7 @@ impl Engine {
                                             row.profile.relation = Some(0);
                                         }
                                         engine.store.save_contacts(std::slice::from_ref(&row))?;
-                                        engine.emit(Delta::Contact(row));
-                                        engine.emit_friends()?;
+                                        engine.emit_contacts()?;
                                     }
                                     engine.inbox.refresh(Refresh::Contact(mid.clone()));
                                 }
@@ -1717,7 +1672,7 @@ impl Engine {
                 );
             }
             Intent::Friends => {
-                self.emit_friends()?;
+                self.emit_contacts()?;
                 self.inbox.refresh(Refresh::Friends);
             }
             Intent::Members(chat) => {
@@ -1824,7 +1779,7 @@ impl Engine {
                         .store
                         .account()
                         .map_err(|e| {
-                            self.report_store_error(&e);
+                            self.report_store_error(e);
                             CreateFailure::Local
                         })?
                         .own_mid;
@@ -1874,7 +1829,7 @@ impl Engine {
                                             Ok(chat.id)
                                         }
                                         Err(error) => {
-                                            engine.report_store_error(&error);
+                                            engine.report_store_error(error);
                                             engine.inbox.refresh(Refresh::ChatList);
                                             Err(CreateFailure::Uncertain)
                                         }
@@ -2036,10 +1991,7 @@ impl Engine {
             }
             Intent::Draft { chat, draft } => {
                 self.store.save_draft(&chat, &draft)?;
-                let window = self.window.take();
-                let result = self.publish();
-                self.window = window;
-                result?;
+                self.publish()?;
             }
             Intent::Prefs(mut prefs) => {
                 let stored = self.store.prefs()?;
@@ -2063,7 +2015,7 @@ impl Engine {
         reply: Option<ReplyReference>,
     ) -> Result<Key> {
         let seq = self.next_seq();
-        let (key, _) = self.store.insert_pending(
+        let key = self.store.insert_pending(
             chat,
             LocalId(format!("{}-{seq}", now_ms())),
             seq,
@@ -2092,12 +2044,7 @@ impl Engine {
             .ok_or_else(|| StoreError::Invalid("send sequence missing".into()))?;
         let account = self.account_mid();
         let address = (account.clone(), key);
-        let attachment = message
-            .body
-            .image()
-            .or_else(|| message.body.attachment())
-            .and_then(|asset| asset.local_attachment())
-            .cloned();
+        let attachment = message.body.local_attachment().cloned();
         self.in_flight.insert(address.clone());
         let generation = self.generation.load(Ordering::SeqCst);
         if let Some(item) = attachment {
@@ -2240,12 +2187,7 @@ impl Engine {
     }
     fn cleanup_clipboard(&self, key: Key) -> Result<()> {
         let row = self.store.message(key)?;
-        if let Some(item) = row
-            .body
-            .image()
-            .or_else(|| row.body.attachment())
-            .and_then(|a| a.local_attachment())
-        {
+        if let Some(item) = row.body.local_attachment() {
             item.delete_clipboard();
         }
         Ok(())
@@ -2293,12 +2235,7 @@ impl Engine {
         match result {
             Ok(row) => {
                 let pending = store.message(key)?;
-                if let Some(item) = pending
-                    .body
-                    .image()
-                    .or_else(|| pending.body.attachment())
-                    .and_then(|asset| asset.local_attachment())
-                {
+                if let Some(item) = pending.body.local_attachment() {
                     item.delete_clipboard();
                 }
                 store.link_sent(seq, row.server_id, row.created_ms)?;
@@ -2376,12 +2313,7 @@ impl Engine {
         Ok(())
     }
     fn resolve_senders(&self, rows: &[MessageInput]) -> Result<()> {
-        let known = self
-            .store
-            .contacts()?
-            .into_iter()
-            .map(|c| c.id)
-            .collect::<BTreeSet<_>>();
+        let known = self.store.contact_ids()?;
         for row in rows {
             if let Some(event) = crate::system_events::parse(&row.body) {
                 for mid in event.mids() {
@@ -2528,7 +2460,7 @@ impl Engine {
                             }
                         }
                         engine.store.save_contacts(&rows)?;
-                        engine.emit_friends()?;
+                        engine.emit_contacts()?;
                         Ok(())
                     },
                 );
@@ -2539,30 +2471,31 @@ impl Engine {
                     Refresh::Members(chat.clone()),
                     move |backend| backend.members(&net_chat),
                     move |engine, mut rows| {
-                        let existing = engine.store.contacts()?;
                         for member in &mut rows {
                             if member.contact.name.is_none()
-                                && let Some(old) =
-                                    existing.iter().find(|c| c.id == member.contact.id)
+                                && let Some(old) = engine.store.contact(&member.contact.id)?
                             {
                                 let invited = member.contact.profile.invited;
-                                member.contact = old.clone();
+                                member.contact = old;
                                 member.contact.profile.invited = invited;
                             }
                         }
-                        let contacts = rows
-                            .iter()
-                            .filter(|m| !m.is_self && m.contact.name.is_some())
-                            .filter_map(|m| {
-                                let mut contact = m.contact.clone();
-                                contact.profile.invited = false;
-                                let old = existing.iter().find(|v| v.id == contact.id);
-                                if old.is_some_and(|v| v.profile.relation == Some(0)) {
-                                    return None;
-                                }
-                                Some(contact)
-                            })
-                            .collect::<Vec<_>>();
+                        let mut contacts = Vec::new();
+                        for member in &rows {
+                            if member.is_self || member.contact.name.is_none() {
+                                continue;
+                            }
+                            if engine
+                                .store
+                                .contact(&member.contact.id)?
+                                .is_some_and(|v| v.profile.relation == Some(0))
+                            {
+                                continue;
+                            }
+                            let mut contact = member.contact.clone();
+                            contact.profile.invited = false;
+                            contacts.push(contact);
+                        }
                         engine.store.save_contacts(&contacts)?;
                         engine.store.save_members(&chat, &rows)?;
                         engine.emit(Delta::Members { chat, rows });
@@ -2727,9 +2660,7 @@ impl Engine {
                     match &c.result {
                         Ok(_) => self.network_success(),
                         Err(failure) => {
-                            self.network_outcome::<()>(&Err(crate::client::error::classify(
-                                &anyhow::Error::new(*failure),
-                            )));
+                            self.network_outcome::<()>(&Err(Failure::from(*failure)));
                         }
                     }
                 }
@@ -2787,9 +2718,7 @@ impl Engine {
                             })
                             .and_then(|row| {
                                 row.body
-                                    .image()
-                                    .or_else(|| row.body.attachment())
-                                    .and_then(|a| a.local_attachment())
+                                    .local_attachment()
                                     .filter(|item| item.clipboard)
                                     .cloned()
                             })
@@ -2976,6 +2905,7 @@ impl Engine {
         if let Some((sub, limit)) = self.list
             && (self.force_list
                 || !changes.chats_changed.is_empty()
+                || !changes.drafts_changed.is_empty()
                 || !changes.chats_removed.is_empty())
         {
             let all = self.store.chat_list(limit, 0)?;
@@ -2984,13 +2914,14 @@ impl Engine {
                 .filter(|row| {
                     self.force_list
                         || changes.chats_changed.contains(&row.chat.id)
+                        || changes.drafts_changed.contains(&row.chat.id)
                         || !self.chat_keys.contains(&row.chat.id)
                 })
                 .cloned()
                 .collect::<Vec<_>>();
             // Selected chats can fall outside the loaded list. Their metadata
             // (especially drafts) still needs a row delta without expanding order.
-            for id in &changes.chats_changed {
+            for id in changes.chats_changed.union(&changes.drafts_changed) {
                 if !all.iter().any(|row| &row.chat.id == id)
                     && let Some(row) = self.store.chat_item(id)?
                 {

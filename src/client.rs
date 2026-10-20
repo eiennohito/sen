@@ -480,22 +480,6 @@ fn validate_keys(api: &mut Api) -> Result<()> {
 mod tests {
     use super::*;
     #[test]
-    fn saved_session_keeps_the_current_format_and_all_fields() -> Result<()> {
-        let original = json!({
-            "format":1,"token_v3_issue_result":{"accessToken":"fake-access","refreshToken":"fake-refresh","expiresIn":123,"extra":{"nested":[true,null]}},
-            "certificate":"fake-certificate","login_metadata":{"publicKey":"fake","other":[1,2]},
-            "e2ee_keys":[{"id":42,"version":1,"public_key":"fake-public","exported_key":"fake-export","extra":false}],
-            "profile":{"mid":"ufake","displayName":"Fake","nested":{"x":1}},"other":[null,"extra"]
-        });
-        let loaded: Session = serde_json::from_value(original.clone())?;
-        assert_eq!(loaded.profile.mid, "ufake");
-        let saved = serde_json::to_value(&loaded)?;
-        let reloaded: Session = serde_json::from_value(saved.clone())?;
-        assert_eq!(saved, original);
-        assert_eq!(serde_json::to_value(reloaded)?, original);
-        Ok(())
-    }
-    #[test]
     fn private_directory_forces_only_the_final_directory() -> Result<()> {
         use std::os::unix::fs::PermissionsExt;
         let root = std::env::temp_dir().join(format!("line-private-dir-{}", std::process::id()));

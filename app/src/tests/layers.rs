@@ -5,7 +5,8 @@ fn resizing_layers_keeps_focus_on_visible_content() {
     std::thread::spawn(|| {
         use slint::private_unstable_api::re_exports::WindowInner;
         let window = snapshot::install().unwrap();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         for layer in ["profile", "members", "member-profile", "settings"] {
             ui.global::<ShellState>().set_panel(PanelState::None);
@@ -57,7 +58,8 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
     std::thread::spawn(|| {
         use slint::platform::WindowEvent;
         let _platform = snapshot::install().unwrap();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         let events = Rc::new(RefCell::new(Vec::new()));
         let captured = events.clone();
         let weak = ui.as_weak();
@@ -172,7 +174,8 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
 fn escape_busy_sign_in_requires_a_decision() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         let cancelled = Rc::new(std::cell::Cell::new(0));
         let count = cancelled.clone();
         ui.global::<AuthState>()
@@ -210,7 +213,8 @@ fn escape_busy_sign_in_requires_a_decision() {
 fn profile_panel_preserves_reading_at_wide_boundaries() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         ui.global::<ConversationState>().set_has_chat(true);
         ui.global::<ShellState>().set_show_conversation(true);
         ui.global::<ConversationState>()
@@ -302,7 +306,8 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
 fn loading_history_never_renders_the_loaded_empty_identity() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
@@ -335,7 +340,8 @@ fn loading_history_never_renders_the_loaded_empty_identity() {
 fn selecting_another_loading_chat_restarts_the_indicator_delay() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
@@ -384,7 +390,8 @@ fn selecting_another_loading_chat_restarts_the_indicator_delay() {
 fn replacing_feedback_gets_a_full_dismissal_interval() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         let advance = |ms| {
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));

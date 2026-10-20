@@ -40,7 +40,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         if targets.len() == 1 {
             let id = ChatId(targets[0].clone());
             g.set_new_chat_open(false);
-            d.show_chat(&ui, id);
+            d.open_conversation(&ui, id);
         } else if targets.len() > 1 {
             g.set_new_chat_busy(true);
             g.set_new_chat_error("".into());

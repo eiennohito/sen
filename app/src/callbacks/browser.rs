@@ -17,11 +17,11 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     global_callback!(ui, actions, G, on_search_changed, |ui, d| {
-        d.render(&ui);
+        d.presenter.present_chats(&ui, &d.state, d.category);
     });
     global_callback!(ui, actions, G, on_filter_category, |ui, d| {
         let g = ui.global::<G>();
         d.category = g.get_category();
-        d.render(&ui);
+        d.presenter.present_chats(&ui, &d.state, d.category);
     });
 }

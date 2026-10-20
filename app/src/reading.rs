@@ -22,7 +22,6 @@ pub(crate) struct Reading {
     pub(crate) exposed: BTreeMap<ChatId, ServerId>,
     pub(crate) paging_anchor: Option<Key>,
     pub(crate) restore_anchor: Option<(Key, f32)>,
-    pub(crate) oldest: Option<(ChatId, Cursor)>,
 }
 
 impl Reading {
@@ -106,8 +105,8 @@ pub(crate) fn exposure(
     {
         let top = -view.y + view.visible_top;
         let bottom = -view.y + view.height - view.pill_height;
-        let exposed = state
-            .rows()
+        let rows = state.rows();
+        let exposed = rows
             .iter()
             .filter(|m| {
                 reading
@@ -118,9 +117,8 @@ pub(crate) fn exposure(
             .filter(|m| !m.outgoing && matches!(m.delivery, Delivery::Sent | Delivery::Read))
             .filter_map(|m| m.server_id.clone())
             .max();
-        let tail_visible = state
-            .rows()
-            .into_iter()
+        let tail_visible = rows
+            .iter()
             .rev()
             .find(|m| line::system_events::displayable(&m.body))
             .is_none_or(|m| {
@@ -187,15 +185,15 @@ pub(crate) fn page_older(
     let mut intents = Vec::new();
     if view.y >= -30.
         && !state.reaches_start
-        && let Some((chat, before)) = reading.oldest.clone()
+        && let Some(chat) = state.selected.clone()
+        && let Some((key, before)) = state
+            .messages
+            .values()
+            .filter(|m| m.server_id.is_some())
+            .min_by(|a, b| a.sort.cmp(&b.sort))
+            .map(|m| (m.key, m.sort.clone()))
     {
-        if let Some(key) = state
-            .rows()
-            .into_iter()
-            .find(|m| m.server_id.is_some())
-            .map(|m| m.key)
-            && reading.paging_anchor != Some(key)
-        {
+        if reading.paging_anchor != Some(key) {
             let offset = reading
                 .geometry
                 .get(&key)
@@ -403,12 +401,17 @@ mod tests {
         assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.as_str() == "9"));
         assert!(exposure(&mut reading, &state, view.clone()).is_empty());
         view.pill_height = 0.;
-        state.messages.get_mut(&Key(2)).unwrap().outgoing = true;
+        let mut row = state.messages[&Key(2)].clone();
+        row.outgoing = true;
+        state.messages.insert(row.key, row.clone());
         assert!(exposure(&mut reading, &state, view.clone()).is_empty());
-        state.messages.get_mut(&Key(2)).unwrap().outgoing = false;
-        state.messages.get_mut(&Key(2)).unwrap().delivery = Delivery::Pending;
+        row.outgoing = false;
+        state.messages.insert(row.key, row.clone());
+        row.delivery = Delivery::Pending;
+        state.messages.insert(row.key, row.clone());
         assert!(exposure(&mut reading, &state, view.clone()).is_empty());
-        state.messages.get_mut(&Key(2)).unwrap().delivery = Delivery::Sent;
+        row.delivery = Delivery::Sent;
+        state.messages.insert(row.key, row.clone());
         view.modal = true;
         assert!(exposure(&mut reading, &state, view.clone()).is_empty());
         view.modal = false;

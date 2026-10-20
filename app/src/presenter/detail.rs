@@ -1,7 +1,7 @@
 use super::*;
 
 impl Presenter {
-    pub(super) fn present_members(&mut self, ui: &AppWindow, state: &AppState) {
+    pub(crate) fn present_members(&mut self, ui: &AppWindow, state: &AppState) {
         let g = ui.global::<DetailState>();
         let mut members: Vec<_> = state.members.iter().collect();
         members.sort_by_key(|m| (m.contact.profile.invited, !m.is_self));
@@ -63,6 +63,7 @@ impl Presenter {
         g.set_detail_error(
             state
                 .action_error
+                .as_ref()
                 .map(text::profile_failure)
                 .map(str::to_owned)
                 .unwrap_or(detail_error)
