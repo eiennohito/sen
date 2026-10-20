@@ -31,6 +31,10 @@ merge. "Branch" means the work exists but is not merged yet.
 | 26 | Deslop batches from the audit: store schema/unread model, transport rewrite, delete CLI and native_crypto, credentials data-loss paths, client core, engine split, content model, desktop glue, check-ui restructure (15 launches → 2), test deletions | audit | wave 1 merged (crypto/CLI, store, transport); wave 2 merged (backend/demo, client core, content model); wave 3: engine 7a dedup merged (behaviour-changing items moved to #32), check-ui restructure, desktop glue and integration tests and desktop services merged; next: tools/docs, presenter and rich_content split, engine file split, then R4; reconnect-retry and the asset priority mailbox are deleted, not wired (desktop glue batch) |
 | 33 | Restart restores the unread anchor and drafts, but not an arbitrary scroll position; docs/core-model.md promises the scroll anchor | test cleanup | decide: persist the reading anchor per chat, or correct the doc |
 
+## Implemented in this worktree
+
+- #68 Download the current CBDT Noto Color Emoji and OFL from jsDelivr in the background; structural validation, atomic replacement, conditional 30-day checks, live text refresh, and offline fallback. `SEN_EMOJI_FONT` disables downloads for UI checks. Never embed fonts.
+
 ## Done (merged to main)
 
 - #61 Own avatar in the rail (picture with initial fallback, updated when the asset arrives).

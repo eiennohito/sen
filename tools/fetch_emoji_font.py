@@ -1,38 +1,77 @@
 #!/usr/bin/env python3
-"""Fetch the pinned Noto Color Emoji 2.057 font and OFL-1.1 licence."""
-import hashlib
+"""Fetch the current bitmap Noto Color Emoji font and OFL licence from jsDelivr.
+
+Structural validation requires fontTools (python3-fonttools).
+"""
+from io import BytesIO
+import os
 from pathlib import Path
 import urllib.request
 
 ROOT = Path(__file__).resolve().parent.parent
 FONT_DIR = ROOT / 'fonts'
-SOURCE = 'https://raw.githubusercontent.com/googlefonts/noto-emoji/v2026-09-24-unicode18_0/2D/fonts/'
-FILES = (
-    ('NotoColorEmoji.ttf', 'NotoColorEmoji.ttf', '15671215ab769fdc7162a045d56fd7d7e477c51b04e6b3c761d914d8fdd6cc44'),
-    ('LICENSE', 'OFL.txt', '6a73f9541c2de74158c0e7cf6b0a58ef774f5a780bf191f2d7ec9cc53efe2bf2'),
-)
+SOURCE = 'https://cdn.jsdelivr.net/gh/googlefonts/noto-emoji@main/2D/fonts/'
+FILES = (('NotoColorEmoji.ttf', 'NotoColorEmoji.ttf'), ('LICENSE', 'OFL.txt'))
+CAP = 50 * 1024 * 1024
+
+
+def validate(data):
+    try:
+        from fontTools.ttLib import TTFont, TTLibError
+    except ImportError as error:
+        raise ValueError('Install python3-fonttools to validate the emoji font') from error
+    try:
+        with TTFont(BytesIO(data)) as font:
+            if not {'CBDT', 'CBLC'}.issubset(font.keys()):
+                raise ValueError('Missing CBDT/CBLC tables')
+            # Decode bitmap tables too, so malformed tables are rejected.
+            font['CBDT']
+            font['CBLC']
+            cmap = font.getBestCmap() or {}
+            if not all(cmap.get(ord(ch)) not in (None, '.notdef') for ch in '😀🌸❤'):
+                raise ValueError('Missing emoji cmap entries')
+    except (TTLibError, KeyError, IndexError) as error:
+        raise ValueError('Invalid emoji font') from error
 
 
 def verified_files():
-    for _, name, digest in FILES:
+    for _, name in FILES:
         path = FONT_DIR / name
-        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != digest:
-            raise ValueError(f'Run python3 tools/fetch_emoji_font.py: missing or invalid {name}')
+        data = path.read_bytes()
+        if name.endswith('.ttf'):
+            validate(data)
+        elif b'SIL OPEN FONT LICENSE' not in data:
+            raise ValueError('Invalid OFL licence')
         yield path
+
+
+class CDNOnly(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise ValueError('Unexpected CDN redirect')
 
 
 def main():
     FONT_DIR.mkdir(exist_ok=True)
-    for source, name, digest in FILES:
+    opener = urllib.request.build_opener(CDNOnly)
+    for source, name in FILES:
+        with opener.open(SOURCE + source, timeout=60) as response:
+            data = response.read(CAP + 1)
+        if len(data) > CAP:
+            raise ValueError(f'File too large: {name}')
+        if name.endswith('.ttf'):
+            validate(data)
+        elif b'SIL OPEN FONT LICENSE' not in data:
+            raise ValueError('Invalid OFL licence')
         path = FONT_DIR / name
-        if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() == digest:
-            continue
-        data = urllib.request.urlopen(SOURCE + source, timeout=60).read()
-        if hashlib.sha256(data).hexdigest() != digest:
-            raise ValueError(f'SHA256 mismatch: {name}')
         temporary = path.with_suffix('.tmp')
-        temporary.write_bytes(data)
-        temporary.replace(path)
+        try:
+            with temporary.open('wb') as output:
+                output.write(data)
+                output.flush()
+                os.fsync(output.fileno())
+            temporary.replace(path)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 if __name__ == '__main__':

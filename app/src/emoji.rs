@@ -14,13 +14,49 @@ pub(crate) fn load(fonts: &std::path::Path) {
     }
 }
 
+pub(crate) fn download(fonts: std::path::PathBuf, ui: &sen_ui::AppWindow) {
+    #[cfg(any(debug_assertions, feature = "ui-debug"))]
+    if std::env::var_os("SEN_EMOJI_FONT").is_some() {
+        return;
+    }
+    use slint::ComponentHandle;
+    let weak = ui.as_weak();
+    sen::client::emoji_font::start(fonts, move |data| {
+        if let Err(error) = weak.upgrade_in_event_loop(move |ui| {
+            register(data);
+            refresh(ui.window());
+        }) {
+            sen::reporting::log("emoji-font", "register", &error);
+        }
+    });
+}
+
+fn refresh(window: &slint::Window) {
+    // Reattaching the existing adapter clears Slint 1.18's shaped-text and repaint caches.
+    let adapter = i_slint_core::window::WindowInner::from_pub(window).window_adapter();
+    adapter.renderer().set_window_adapter(&adapter);
+    window.request_redraw();
+}
+
 fn register(data: Vec<u8>) {
     use slint::fontique_011::{
-        fontique::{Blob, GenericFamily},
+        fontique::{Blob, FontInfoOverride, GenericFamily},
         shared_collection,
     };
     let mut collection = shared_collection();
-    let registered = collection.register_fonts(Blob::new(std::sync::Arc::new(data)), None);
+    // A stable private family lets an update replace the previously loaded face.
+    if let Some(family) = collection.family_by_name("Sen Emoji") {
+        for font in family.fonts() {
+            collection.unregister_font(family.id(), font.width(), font.style(), font.weight());
+        }
+    }
+    let registered = collection.register_fonts(
+        Blob::new(std::sync::Arc::new(data)),
+        Some(FontInfoOverride {
+            family_name: Some("Sen Emoji"),
+            ..Default::default()
+        }),
+    );
     if registered.is_empty() {
         sen::reporting::log(
             "emoji-font",
@@ -32,7 +68,10 @@ fn register(data: Vec<u8>) {
     let old: Vec<_> = collection.generic_families(GenericFamily::Emoji).collect();
     collection.set_generic_families(
         GenericFamily::Emoji,
-        registered.iter().map(|(id, _)| *id).chain(old),
+        registered.iter().map(|(id, _)| *id).chain(
+            old.into_iter()
+                .filter(|id| !registered.iter().any(|(new, _)| new == id)),
+        ),
     );
 }
 
@@ -105,9 +144,34 @@ mod tests {
         let data = std::fs::read(path).unwrap();
         std::thread::spawn(move || {
             let window = crate::snapshot::install().unwrap();
-            super::register(data);
+            let mut collection = slint::fontique_011::shared_collection();
+            let monochrome = collection.family_id("DejaVu Sans").unwrap();
+            collection.set_generic_families(
+                slint::fontique_011::fontique::GenericFamily::Emoji,
+                [monochrome].into_iter(),
+            );
             let ui = EmojiSample::new().unwrap();
+            ui.set_sample("😀".into());
             ui.show().unwrap();
+            let before = crate::snapshot::render(&window, (100, 80)).unwrap();
+            assert!(
+                before
+                    .as_slice()
+                    .iter()
+                    .all(|p| p.r.max(p.g).max(p.b) - p.r.min(p.g).min(p.b) <= 20)
+            );
+            super::register(data);
+            super::refresh(ui.window());
+            let after = crate::snapshot::render(&window, (100, 80)).unwrap();
+            assert!(
+                after
+                    .as_slice()
+                    .iter()
+                    .filter(|p| p.r.max(p.g).max(p.b) - p.r.min(p.g).min(p.b) > 20)
+                    .count()
+                    > 20,
+                "already shaped text did not switch to the registered colour font"
+            );
             for (sample, colour) in [
                 ("🌸", true),
                 ("😀", true),

@@ -20,6 +20,8 @@ name = "crypto-harness"
 required-features = ["harness"]
 
 [dependencies]
+ttf-parser = "0.25.1"
+fontique = "=0.11.1"
 anyhow = "1"
 base64 = "0.22"
 sha2 = "0.10"

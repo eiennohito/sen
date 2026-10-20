@@ -663,6 +663,47 @@ impl Transport {
         );
         reader.capped(cap, true)
     }
+    pub(super) fn emoji_font(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        cap: usize,
+    ) -> Result<(u16, HeaderMap, Vec<u8>)> {
+        let parsed = url::Url::parse(url)?;
+        ensure!(
+            parsed.scheme() == "https"
+                && parsed.host_str() == Some("cdn.jsdelivr.net")
+                && parsed.port().is_none()
+                && parsed.username().is_empty()
+                && parsed.password().is_none(),
+            "unsupported emoji font host"
+        );
+        #[cfg(test)]
+        let local_url = self
+            .config
+            .allow_http
+            .then(|| format!("{}{}", self.base, parsed.path()));
+        #[cfg(test)]
+        let url = local_url.as_deref().unwrap_or(url);
+        let mut reader = self.send(
+            "GET",
+            url,
+            headers,
+            Bytes::new(),
+            SendOptions::request(Duration::from_secs(60), Duration::from_secs(10)),
+            None,
+        )?;
+        ensure!(
+            matches!(reader.status, 200 | 304),
+            "emoji font HTTP {}",
+            reader.status
+        );
+        Ok((
+            reader.status,
+            reader.headers.clone(),
+            reader.capped(cap, false)?,
+        ))
+    }
     pub(super) fn upload(
         &self,
         url: &str,

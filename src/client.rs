@@ -2,6 +2,7 @@
 //! Rust owns protocol/state/WASM, all HTTPS (RPC, SSE, media) and QR encoding.
 pub mod desktop;
 mod e2ee;
+pub mod emoji_font;
 pub mod error;
 #[cfg(feature = "harness")]
 pub mod harness;

@@ -90,6 +90,7 @@ pub(crate) fn start(
     let ui = desktop.update(|d| window::install_window(d, desktop.clone()))?;
     #[cfg(feature = "demo")]
     let ui = desktop.update(|d| dev.install_window(d, desktop.clone(), dev.fake.as_ref()))?;
+    emoji::download(fonts, &ui);
     #[cfg(feature = "demo")]
     if dev.stage(&ui, &desktop)? {
         return Ok(());
