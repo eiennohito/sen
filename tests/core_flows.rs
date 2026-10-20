@@ -125,6 +125,15 @@ fn echo_and_send_result_keep_one_identity_in_both_orders() {
                 .count(),
             1
         );
+        app.send(Intent::Retry(key));
+        app.settle();
+        assert_eq!(
+            fake.calls()
+                .iter()
+                .filter(|call| matches!(call, FakeRpc::Send(_)))
+                .count(),
+            1
+        );
         assert!(app.state.messages.contains_key(&key));
     }
 }
@@ -2080,5 +2089,54 @@ fn fencing_a_draft_keeps_saved_preferences() {
             .unwrap()
             .text,
         "fenced draft"
+    );
+}
+
+#[test]
+fn retry_while_send_echo_arrives_does_not_send_again() {
+    let fake = FakeBackend::canned();
+    // The server accepted the message, but the RPC response was lost.
+    fake.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::Unanswered);
+    let (entered, release) = fake.block_send();
+    let mut app = App::new(fake.clone(), StoreLocation::Memory);
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.send(Intent::Send {
+        chat: ChatId("alice".into()),
+        text: "racing echo".into(),
+        reply: None,
+    });
+    let key = app.body_key("racing echo");
+    entered.recv_timeout(line::engine::harness::WAIT).unwrap();
+    app.send(Intent::Retry(key));
+    let mut echo = FakeBackend::message("alice", 901, "racing echo", true);
+    echo.request_seq = app.state.messages[&key].request_seq;
+    fake.inject(LiveOp {
+        revision: 2001,
+        replay: false,
+        op: Op::Message(Box::new(echo)),
+    });
+    app.until(|s| s.messages[&key].delivery == Delivery::Sent);
+    app.send(Intent::Retry(key));
+    app.fence();
+    release.send(()).unwrap();
+    app.settle();
+    app.send(Intent::Retry(key));
+    app.settle();
+    assert_eq!(
+        fake.calls()
+            .iter()
+            .filter(|call| matches!(call, FakeRpc::Send(_)))
+            .count(),
+        1
+    );
+    assert_eq!(
+        app.state
+            .messages
+            .values()
+            .filter(|m| m.body.as_text() == "racing echo")
+            .count(),
+        1
     );
 }

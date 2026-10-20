@@ -35,6 +35,15 @@ fn synthetic() -> Value {
 }
 
 #[test]
+fn default_store_cannot_reach_the_desktop_keyring() {
+    assert!(std::env::var_os(ENVIRONMENT).is_none());
+    assert_eq!(
+        check_writable().unwrap_err().root_cause().to_string(),
+        "tests must not use the desktop keyring"
+    );
+}
+
+#[test]
 fn sealed_file_hides_credentials_and_round_trips() {
     let root = root("seal");
     let path = root.join("session.json");

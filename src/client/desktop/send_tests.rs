@@ -418,3 +418,64 @@ fn sticker_to_type_uses_uppercase_mid_prefixes_and_unknown_defaults_to_user() ->
     fs::remove_dir_all(root)?;
     Ok(())
 }
+
+#[test]
+fn cached_group_v2_text_decrypts_and_tampering_renders_undecryptable() -> Result<()> {
+    let fixture: Value =
+        serde_json::from_str(include_str!("../../../fixtures/letter-sealing-v2.json"))?;
+    let group: Value =
+        serde_json::from_str(include_str!("../../../fixtures/opaque-group-mids.json"))?;
+    let api = Api::new(&crate::test_support::installed_module())?;
+    let (mut client, root) = client(api);
+    let from = required(&group, "from")?;
+    let to = required(&group, "to")?;
+    let key = client
+        .api
+        .rt
+        .static_call(Call::Curve25519KeyGenerate, &[1])?;
+    let channel = e2ee::channel(
+        &mut client.api.rt,
+        key,
+        &decode(required(&fixture, "peer_public_key")?)?,
+    )?;
+    client.api.cache_channel(
+        e2ee::Channel::Group {
+            mid: to.into(),
+            group_key_id: 99,
+            sender: from.into(),
+            sender_key_id: 42,
+        },
+        channel,
+    )?;
+    let dest = client.api.rt.string(to)?;
+    let sender = client.api.rt.string(from)?;
+    let body = client
+        .api
+        .rt
+        .bytes(required(&fixture, "plaintext")?.as_bytes());
+    let mut ciphertext = bytes_method(
+        &mut client.api.rt,
+        Call::E2EEChannelEncryptV2,
+        channel,
+        &[dest, sender, 42, 99, 0, 1, body],
+    )?;
+    client.api.rt.free_string(dest)?;
+    client.api.rt.free_string(sender)?;
+    client.api.rt.release(body)?;
+    let mut raw = json!({"id":"101", "from":from, "to":to, "contentType":0, "contentMetadata":{"e2eeVersion":"2"}, "chunks":pack_chunks(&ciphertext, 2, 42, 99)?});
+    let message = client.message(to, &raw)?.unwrap();
+    assert_eq!(
+        message.body.as_text(),
+        serde_json::from_str::<Value>(required(&fixture, "plaintext")?)?["text"]
+            .as_str()
+            .unwrap()
+    );
+    *ciphertext.last_mut().unwrap() ^= 1;
+    raw["chunks"] = serde_json::to_value(pack_chunks(&ciphertext, 2, 42, 99)?)?;
+    assert_eq!(
+        client.message(to, &raw)?.unwrap().body,
+        Content::Undecryptable
+    );
+    fs::remove_dir_all(root)?;
+    Ok(())
+}

@@ -236,3 +236,45 @@ fn blank_contact_card_names_omit_the_separator() {
         assert_eq!(presenter::format::kind_label(&content).1, "Contact");
     }
 }
+
+#[test]
+fn switching_chats_restores_both_editor_drafts_and_reply() {
+    std::thread::spawn(|| {
+        let _platform = crate::snapshot::install().unwrap();
+        let fake = line::backend::FakeBackend::canned();
+        let mut app = line::engine::harness::App::new(fake.clone(), StoreLocation::Memory);
+        app.online();
+        app.select("alice");
+        let key = app.body_key("Hello! 日本語も使えます。");
+        let reply = app.state.messages[&key].server_id.clone().unwrap();
+        let (ui, runtime, _worker) = test_window(fake, |d, _, ui| {
+            d.state = std::mem::take(&mut app.state);
+            d.render(ui);
+        });
+        let chats = ui.global::<ChatsState>();
+        let select = |id: &str| {
+            let index = chats
+                .get_chats()
+                .iter()
+                .find(|row| row.id == id)
+                .unwrap()
+                .index;
+            chats.invoke_select_chat(index);
+        };
+        let composer = ui.global::<ComposerState>();
+        composer.set_draft("Alice draft".into());
+        composer.invoke_reply(key.0.to_string().into());
+        select("weekend");
+        assert_eq!(composer.get_draft(), "");
+        composer.set_draft("Weekend draft".into());
+        select("alice");
+        assert_eq!(composer.get_draft(), "Alice draft");
+        runtime.update(|d| assert_eq!(d.state.composer_reply.as_ref().unwrap().message_id, reply));
+        assert_eq!(composer.get_composer_reply().reply_id, reply.as_str());
+        select("weekend");
+        assert_eq!(composer.get_draft(), "Weekend draft");
+        runtime.update(|d| assert!(d.state.composer_reply.is_none()));
+    })
+    .join()
+    .unwrap();
+}
