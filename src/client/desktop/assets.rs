@@ -65,20 +65,28 @@ impl Asset {
         }
     }
 
-    pub fn local(item: crate::attachments::Attachment) -> Self {
+    fn remote(url: String, dimension: u32, private: bool) -> Self {
         Self {
-            url: format!("local:{}", item.path.display()),
-            private: true,
+            url,
+            dimension,
+            private,
+            local: None,
             key_material: None,
             talk_meta: None,
-            dimension: 384,
             original_suffix: None,
             original_url: None,
             failure: None,
-            name: Some(item.name.clone()),
-            local: Some(Box::new(item)),
+            name: None,
         }
     }
+
+    pub fn local(item: crate::attachments::Attachment) -> Self {
+        let mut asset = Self::remote(format!("local:{}", item.path.display()), 384, true);
+        asset.name = Some(item.name.clone());
+        asset.local = Some(Box::new(item));
+        asset
+    }
+
     pub fn local_attachment(&self) -> Option<&crate::attachments::Attachment> {
         self.local.as_deref()
     }
@@ -132,16 +140,8 @@ impl Asset {
         let failure = (!http::Transport::production_asset_url(&url, None))
             .then_some(Failure::UnsupportedHost);
         Some(Self {
-            url,
-            private: false,
-            key_material: None,
-            talk_meta: None,
-            dimension: 192,
-            local: None,
-            original_url: None,
-            original_suffix: None,
-            name: None,
             failure,
+            ..Self::remote(url, 192, false)
         })
     }
 
@@ -156,20 +156,13 @@ impl Asset {
         } else {
             ""
         };
-        Some(Self {
-            url: format!(
+        Some(Self::remote(
+            format!(
                 "https://stickershop.line-scdn.net/stickershop/v{version}/sticker/{id}{hash}/android{base}/sticker.png"
             ),
-            private: false,
-            key_material: None,
-            talk_meta: None,
-            dimension: 256,
-            local: None,
-            original_url: None,
-            original_suffix: None,
-            name: None,
-            failure: None,
-        })
+            256,
+            false,
+        ))
     }
 
     pub fn inline_emoji(span: &crate::store::InlineEmoji) -> Option<Self> {
@@ -179,20 +172,13 @@ impl Asset {
     pub(super) fn paid_reaction(value: &Value) -> Option<Self> {
         let product = segment(value["productId"].as_str()?)?;
         let emoji = segment(value["emojiId"].as_str()?)?;
-        Some(Self {
-            url: format!(
+        Some(Self::remote(
+            format!(
                 "https://stickershop.line-scdn.net/sticonshop/v1/sticon/{product}/android/{emoji}.png"
             ),
-            private: false,
-            key_material: None,
-            talk_meta: None,
-            dimension: 32,
-            local: None,
-            original_url: None,
-            original_suffix: None,
-            name: None,
-            failure: None,
-        })
+            32,
+            false,
+        ))
     }
 
     // A photo without an object identity keeps its placeholder and cannot be fetched.
@@ -205,21 +191,14 @@ impl Asset {
         {
             let download = meta["DOWNLOAD_URL"].as_str();
             return Some(Self {
-                url: url.into(),
-                private: false,
-                key_material: None,
-                talk_meta: None,
-                dimension: 384,
-                original_suffix: None,
-                local: None,
                 original_url: download.map(str::to_owned),
-                name: None,
                 failure: std::iter::once(url)
                     .chain(download)
                     .any(|url| {
                         !http::Transport::production_asset_url(url, Some("manager.line-scdn.net"))
                     })
                     .then_some(Failure::UnsupportedHost),
+                ..Self::remote(url.into(), 384, false)
             });
         }
         let sid = meta["SID"].as_str().unwrap_or("m");
@@ -232,15 +211,9 @@ impl Asset {
             "/preview"
         };
         Some(Self {
-            url: format!("https://obs.line-apps.com/r/talk/{sid}/{oid}{suffix}"),
-            private: true,
             key_material: key,
             talk_meta: Some(talk_meta(id)),
-            dimension: 384,
-            name: None,
             failure,
-            local: None,
-            original_url: None,
             original_suffix: Some(
                 if meta["MEDIA_CONTENT_INFO"]
                     .as_str()
@@ -253,6 +226,11 @@ impl Asset {
                 }
                 .into(),
             ),
+            ..Self::remote(
+                format!("https://obs.line-apps.com/r/talk/{sid}/{oid}{suffix}"),
+                384,
+                true,
+            )
         })
     }
 
@@ -273,21 +251,19 @@ impl Asset {
             ("m", id)
         };
         Some(Self {
-            url: format!("https://obs.line-apps.com/r/talk/{sid}/{oid}"),
-            private: true,
             key_material: key,
             talk_meta: Some(talk_meta(id)),
-            dimension: 0,
-            local: None,
-            original_url: None,
-            original_suffix: None,
-            name: None,
             failure: route_failure(sid, oid).or_else(|| {
                 ["DOWNLOAD_URL", "DOWNLOAD_URL_RENEWAL"]
                     .iter()
                     .any(|key| meta[*key].as_str().is_some_and(|url| !url.is_empty()))
                     .then_some(Failure::UnsupportedHost)
             }),
+            ..Self::remote(
+                format!("https://obs.line-apps.com/r/talk/{sid}/{oid}"),
+                0,
+                true,
+            )
         })
     }
 
@@ -397,8 +373,35 @@ fn talk_meta(id: &str) -> String {
 }
 
 pub(super) fn encrypt_media(mut ciphertext: Vec<u8>, material: &[u8]) -> Result<Vec<u8>> {
-    use aes::cipher::{KeyIvInit, StreamCipher};
-    use hmac::{Hmac, Mac};
+    use aes::cipher::StreamCipher;
+    use hmac::Mac;
+    let (mut cipher, mut mac) = media_cipher(material)?;
+    cipher.apply_keystream(&mut ciphertext);
+    mac.update(&ciphertext);
+    ciphertext.extend(mac.finalize().into_bytes());
+    Ok(ciphertext)
+}
+
+fn decrypt_media(bytes: &[u8], material: &[u8]) -> Result<Vec<u8>> {
+    use aes::cipher::StreamCipher;
+    use hmac::Mac;
+    ensure!(
+        material.len() == 32 && bytes.len() >= 32,
+        "invalid encrypted media envelope"
+    );
+    let (mut cipher, mut mac) = media_cipher(material)?;
+    let (ciphertext, tag) = bytes.split_at(bytes.len() - 32);
+    mac.update(ciphertext);
+    mac.verify_slice(tag)
+        .map_err(|_| anyhow::anyhow!("media authentication failed"))?;
+    let mut plaintext = ciphertext.to_vec();
+    cipher.apply_keystream(&mut plaintext);
+    Ok(plaintext)
+}
+
+fn media_cipher(material: &[u8]) -> Result<(ctr::Ctr32BE<aes::Aes256>, hmac::Hmac<Sha256>)> {
+    use aes::cipher::KeyIvInit;
+    use hmac::Mac;
     ensure!(material.len() == 32, "invalid media key material");
     let mut keys = [0_u8; 76];
     hkdf::Hkdf::<Sha256>::new(None, material)
@@ -406,36 +409,10 @@ pub(super) fn encrypt_media(mut ciphertext: Vec<u8>, material: &[u8]) -> Result<
         .map_err(|_| anyhow::anyhow!("media key derivation failed"))?;
     let mut counter = [0_u8; 16];
     counter[..12].copy_from_slice(&keys[64..]);
-    ctr::Ctr32BE::<aes::Aes256>::new_from_slices(&keys[..32], &counter)?
-        .apply_keystream(&mut ciphertext);
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&keys[32..64])?;
-    mac.update(&ciphertext);
-    ciphertext.extend(mac.finalize().into_bytes());
-    Ok(ciphertext)
-}
-
-fn decrypt_media(bytes: &[u8], material: &[u8]) -> Result<Vec<u8>> {
-    use aes::cipher::{KeyIvInit, StreamCipher};
-    use hmac::{Hmac, Mac};
-    ensure!(
-        material.len() == 32 && bytes.len() >= 32,
-        "invalid encrypted media envelope"
-    );
-    let mut keys = [0_u8; 76];
-    hkdf::Hkdf::<Sha256>::new(None, material)
-        .expand(b"FileEncryption", &mut keys)
-        .map_err(|_| anyhow::anyhow!("media key derivation failed"))?;
-    let (ciphertext, tag) = bytes.split_at(bytes.len() - 32);
-    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(&keys[32..64])?;
-    mac.update(ciphertext);
-    mac.verify_slice(tag)
-        .map_err(|_| anyhow::anyhow!("media authentication failed"))?;
-    let mut counter = [0_u8; 16];
-    counter[..12].copy_from_slice(&keys[64..]);
-    let mut plaintext = ciphertext.to_vec();
-    ctr::Ctr32BE::<aes::Aes256>::new_from_slices(&keys[..32], &counter)?
-        .apply_keystream(&mut plaintext);
-    Ok(plaintext)
+    Ok((
+        ctr::Ctr32BE::<aes::Aes256>::new_from_slices(&keys[..32], &counter)?,
+        <hmac::Hmac<Sha256> as Mac>::new_from_slice(&keys[32..64])?,
+    ))
 }
 
 pub struct Pixels {
@@ -446,7 +423,15 @@ pub struct Pixels {
 
 pub struct ImageCache {
     directory: PathBuf,
-    paths: HashMap<String, PathBuf>,
+    paths: HashMap<String, CacheFile>,
+    totals: [u64; 2],
+    counts: [usize; 2],
+}
+
+struct CacheFile {
+    path: PathBuf,
+    size: u64,
+    modified: SystemTime,
 }
 
 impl ImageCache {
@@ -468,7 +453,10 @@ impl ImageCache {
         let mut cache = Self {
             directory,
             paths: HashMap::new(),
+            totals: [0; 2],
+            counts: [0; 2],
         };
+        cache.index()?;
         cache.prune(0, false)?;
         Ok(cache)
     }
@@ -492,11 +480,11 @@ impl ImageCache {
         Ok(path)
     }
     fn read_key(&mut self, key: &str) -> Result<Option<PathBuf>> {
-        let Some(path) = self.paths.get(key).cloned() else {
+        let Some(path) = self.paths.get(key).map(|file| file.path.clone()) else {
             return Ok(None);
         };
         if !path.is_file() {
-            self.paths.remove(key);
+            self.forget(key);
             return Ok(None);
         }
         if ImageReader::open(&path)?
@@ -505,13 +493,15 @@ impl ImageCache {
             .is_err()
         {
             remove_file(&path)?;
-            self.paths.remove(key);
+            self.forget(key);
             return Ok(None);
         }
+        let now = SystemTime::now();
         OpenOptions::new()
             .write(true)
             .open(&path)?
-            .set_times(fs::FileTimes::new().set_modified(SystemTime::now()))?;
+            .set_times(fs::FileTimes::new().set_modified(now))?;
+        self.paths.get_mut(key).unwrap().modified = now;
         Ok(Some(path))
     }
     pub fn read_original(&mut self, asset: &Asset) -> Result<Option<(PathBuf, PathBuf)>> {
@@ -577,10 +567,19 @@ impl ImageCache {
     }
     fn replace(&mut self, key: &str, path: &Path, bytes: &[u8]) -> Result<()> {
         private_write(path, bytes)?;
-        if let Some(previous) = self.paths.insert(key.to_owned(), path.to_owned())
-            && previous != path
+        let previous = self.forget(key);
+        self.insert(
+            key.to_owned(),
+            CacheFile {
+                path: path.to_owned(),
+                size: bytes.len() as u64,
+                modified: SystemTime::now(),
+            },
+        );
+        if let Some(previous) = previous
+            && previous.path != path
         {
-            remove_file(&previous)?;
+            remove_file(&previous.path)?;
         }
         Ok(())
     }
@@ -612,8 +611,20 @@ impl ImageCache {
             .write_to(&mut jpeg, ImageFormat::Jpeg)?;
         self.write(key, jpeg.get_ref(), "jpg")
     }
-    fn prune(&mut self, incoming: u64, original: bool) -> Result<()> {
-        let mut entries = Vec::new();
+    fn insert(&mut self, key: String, file: CacheFile) {
+        let kind = usize::from(original_key(&key));
+        self.totals[kind] += file.size;
+        self.counts[kind] += 1;
+        self.paths.insert(key, file);
+    }
+    fn forget(&mut self, key: &str) -> Option<CacheFile> {
+        let file = self.paths.remove(key)?;
+        let kind = usize::from(original_key(key));
+        self.totals[kind] -= file.size;
+        self.counts[kind] -= 1;
+        Some(file)
+    }
+    fn index(&mut self) -> Result<()> {
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
@@ -624,20 +635,25 @@ impl ImageCache {
                 continue;
             };
             let metadata = entry.metadata()?;
-            entries.push((
-                metadata.modified()?,
-                metadata.len(),
-                entry.path(),
-                key.to_owned(),
-            ));
+            let file = CacheFile {
+                path: entry.path(),
+                size: metadata.len(),
+                modified: metadata.modified()?,
+            };
+            if let Some(previous) = self.paths.get(key) {
+                if previous.modified > file.modified {
+                    remove_file(&file.path)?;
+                    continue;
+                }
+                let previous = self.forget(key).unwrap();
+                remove_file(&previous.path)?;
+            }
+            self.insert(key.to_owned(), file);
         }
-        entries.sort_by_key(|entry| std::cmp::Reverse(entry.0));
-        self.paths.clear();
-        let mut seen = std::collections::HashSet::new();
-        let mut totals = [0u64; 2];
-        let mut counts = [0; 2];
-        for (_, size, path, key) in entries {
-            let kind = usize::from(original_key(&key));
+        Ok(())
+    }
+    fn prune(&mut self, incoming: u64, original: bool) -> Result<()> {
+        for kind in 0..2 {
             let reserve = if original == (kind == 1) { incoming } else { 0 };
             let limit = if kind == 1 {
                 ORIGINAL_LIMIT
@@ -645,15 +661,20 @@ impl ImageCache {
                 DISK_LIMIT
             };
             let count_limit = if kind == 1 { 128 } else { 4096 };
-            if !seen.insert(key.clone())
-                || totals[kind] + size + reserve > limit
-                || counts[kind] + usize::from(reserve > 0) >= count_limit
+            while self.totals[kind] + reserve > limit
+                || self.counts[kind] + usize::from(reserve > 0) >= count_limit
             {
-                remove_file(&path)?;
-            } else {
-                totals[kind] += size;
-                counts[kind] += 1;
-                self.paths.insert(key, path);
+                let Some(key) = self
+                    .paths
+                    .iter()
+                    .filter(|(key, _)| usize::from(original_key(key)) == kind)
+                    .min_by_key(|(_, file)| file.modified)
+                    .map(|(key, _)| key.clone())
+                else {
+                    break;
+                };
+                let file = self.forget(&key).unwrap();
+                remove_file(&file.path)?;
             }
         }
         Ok(())
@@ -793,6 +814,58 @@ mod tests {
         Ok(())
     }
     #[test]
+    fn cache_bounds_thumbnail_files_during_repeated_writes() -> Result<()> {
+        let root = root();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let bytes = png([25, 70, 200, 255]);
+        let mut newest = None;
+        for id in 0..4100 {
+            let asset =
+                Asset::paid_reaction(&json!({"productId":"test", "emojiId":id.to_string()}))
+                    .unwrap();
+            newest = Some((asset.clone(), cache.store(&asset, &bytes)?));
+        }
+        let count = fs::read_dir(cache.directory())?.count();
+        assert!(count <= 4096, "thumbnail file budget exceeded: {count}");
+        let (asset, path) = newest.unwrap();
+        assert_eq!(cache.read(&asset)?, Some(path.clone()));
+        let mut reopened = ImageCache::new(root.path(), "synthetic")?;
+        assert_eq!(reopened.read(&asset)?, Some(path));
+        Ok(())
+    }
+    #[test]
+    fn cache_keeps_storing_after_oldest_file_disappears() -> Result<()> {
+        let root = root();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let bytes = png([25, 70, 200, 255]);
+        let oldest = Asset::avatar("/oldest").unwrap().original().unwrap();
+        let path = cache.store(&oldest, &bytes)?;
+        cache
+            .paths
+            .get_mut(&ImageCache::cache_key(&oldest))
+            .unwrap()
+            .modified = UNIX_EPOCH;
+        fs::remove_file(path)?;
+        for id in 0..132 {
+            let asset = Asset::avatar(&format!("/next-{id}"))
+                .unwrap()
+                .original()
+                .unwrap();
+            let path = cache.store(&asset, &bytes)?;
+            assert_eq!(cache.read_original(&asset)?, Some((path.clone(), path)));
+            assert!(cache.counts[1] <= 128);
+            assert!(cache.totals[1] <= ORIGINAL_LIMIT);
+        }
+        let files = fs::read_dir(cache.directory())?.collect::<std::io::Result<Vec<_>>>()?;
+        assert_eq!(files.len(), cache.counts[1]);
+        let size = files
+            .iter()
+            .map(|file| file.metadata().unwrap().len())
+            .sum::<u64>();
+        assert_eq!(size, cache.totals[1]);
+        Ok(())
+    }
+    #[test]
     fn originals_have_a_separate_smaller_disk_budget() -> Result<()> {
         let root = root();
         let mut cache = ImageCache::new(root.path(), "synthetic")?;
@@ -817,6 +890,23 @@ mod tests {
         let next = cache.directory.join("key-next.png");
         cache.replace("key", &next, &png([200, 70, 25, 255]))?;
         assert!(next.exists());
+        assert_eq!(cache.read_key("key")?, Some(next));
+        assert_eq!(cache.counts, [1, 0]);
+        Ok(())
+    }
+    #[test]
+    fn replacement_remains_indexed_if_previous_file_cannot_be_removed() -> Result<()> {
+        let root = root();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let first = cache.write("key", &png([25, 70, 200, 255]), "png")?;
+        fs::remove_file(&first)?;
+        fs::create_dir(&first)?;
+        let next = cache.directory.join("key-next.png");
+        let bytes = png([200, 70, 25, 255]);
+        assert!(cache.replace("key", &next, &bytes).is_err());
+        assert_eq!(cache.read_key("key")?, Some(next));
+        assert_eq!(cache.counts, [1, 0]);
+        assert_eq!(cache.totals, [bytes.len() as u64, 0]);
         Ok(())
     }
     #[test]

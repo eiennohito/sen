@@ -609,9 +609,7 @@ impl Worker {
                                     let net_cancel = worker_cancel.clone();
                                     thread::Builder::new().name("line-net".into()).spawn(
                                         move || {
-                                            crate::client::desktop::set_cancellation_token(
-                                                net_cancel,
-                                            );
+                                            crate::client::set_request_cancel(net_cancel);
                                             let mut backend = None;
                                             let mut open = move || {
                                                 open().map(|value| {
@@ -801,7 +799,7 @@ impl Engine {
         let live_generation = self.generation.clone();
         let job: NetJob = Box::new(move |backend| {
             crate::reporting::set_operation(&operation);
-            crate::client::desktop::set_cancellation_token(cancel);
+            crate::client::set_request_cancel(cancel);
             let activity = NetworkActivity::default();
             // Cancellation still produces a completion so the UI leaves its busy state.
             let result = if generation != live_generation.load(Ordering::SeqCst) {

@@ -10,7 +10,7 @@ mod send_tests;
 mod sticker_tests;
 pub mod sync;
 #[cfg(test)]
-mod test_client;
+pub(crate) mod test_client;
 mod upload;
 
 use super::error::SignInFailure;
@@ -53,11 +53,6 @@ fn member_identity(id: &str, contact: &Value, my_mid: &str) -> Option<Member> {
             member_count: None,
         },
     })
-}
-
-/// Install the owning worker's cancellation token for all synchronous requests.
-pub fn set_cancellation_token(cancel: std::sync::Arc<crate::client::http::CancelToken>) {
-    set_request_cancel(cancel);
 }
 
 pub struct Client {
@@ -167,7 +162,7 @@ impl Client {
     pub fn open_local(
         state_path: &Path,
         module: crate::crypto_module::CryptoModule,
-        cache_root: &Path,
+        images: impl FnOnce(&str) -> Result<Arc<std::sync::Mutex<ImageCache>>>,
     ) -> Result<Self> {
         let wasm = module.read()?;
         let mut api = Api::with_runtime(module.runtime(&wasm)?, &wasm, &module.version)?;
@@ -175,29 +170,28 @@ impl Client {
             .context(SignInFailure::SavedSession)?;
         api.state = state.clone();
         validate_keys(&mut api).context(SignInFailure::SavedSession)?;
-        Self::from_api(state_path, cache_root, state, api)
+        Self::from_api(state_path, images, state, api)
     }
     pub(crate) fn from_api(
         state_path: &Path,
-        cache_root: &Path,
+        images: impl FnOnce(&str) -> Result<Arc<std::sync::Mutex<ImageCache>>>,
         state: Session,
         mut api: Api,
     ) -> Result<Self> {
         access(&state).context(SignInFailure::SavedSession)?;
         ensure!(!state.profile.mid.is_empty(), SignInFailure::SavedSession);
         let my_mid = state.profile.mid.clone();
-        let cache = ImageCache::new(cache_root, &my_mid)
-            .context(SignInFailure::StateDirectory(cache_root.into()))?;
+        let cache = images(&my_mid)?;
         api.stream_access = Arc::new(std::sync::RwLock::new(access(&state)?.into()));
         api.state = state;
         api.session_path = Some(state_path.into());
         let sequence = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
         Ok(Self {
             api,
-            my_mid: my_mid.clone(),
+            my_mid,
             obs_access: None,
             sequence,
-            cache: Arc::new(std::sync::Mutex::new(cache)),
+            cache,
         })
     }
 
@@ -703,7 +697,6 @@ impl Client {
         + 'static,
         publish: impl Fn(assets::Completion, &crate::client::http::CancelToken) + Send + Sync + 'static,
     ) -> assets::Fetchers {
-        failures.scope(&self.my_mid);
         assets::Fetchers::start(
             self.api.http.assets(),
             self.cache.clone(),

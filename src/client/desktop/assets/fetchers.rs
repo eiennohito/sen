@@ -12,10 +12,12 @@ const QUEUE_LIMIT: usize = 256;
 const FAILURE_TTL: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Default)]
-pub struct Failures(Arc<Mutex<HashMap<String, Failed>>>, Arc<Mutex<String>>);
+pub struct Failures {
+    entries: Arc<Mutex<HashMap<String, Failed>>>,
+}
 impl Failures {
     fn record(&self, key: String, class: Failure, job: Job, replace: bool) {
-        let mut failed = self.0.lock().unwrap();
+        let mut failed = self.entries.lock().unwrap();
         if !replace && failed.contains_key(&key) {
             return;
         }
@@ -38,12 +40,24 @@ impl Failures {
         );
     }
 
-    pub(in crate::client::desktop) fn scope(&self, account: &str) {
-        let mut scope = self.1.lock().unwrap();
-        if *scope != account {
-            self.0.lock().unwrap().clear();
-            *scope = account.into();
-        }
+    fn blocked(&self, key: &str) -> Option<Failure> {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(key)
+            .filter(|f| !f.retry || f.at.elapsed() < FAILURE_TTL)
+            .map(|f| f.class)
+    }
+    fn retry_job(&self, key: &str) -> Option<Job> {
+        self.entries
+            .lock()
+            .unwrap()
+            .get(key)
+            .filter(|f| f.retry)
+            .map(|f| f.job.clone())
+    }
+    fn clear(&self, key: &str) {
+        self.entries.lock().unwrap().remove(key);
     }
 }
 
@@ -175,7 +189,7 @@ impl Fetchers {
                 thread::Builder::new()
                     .name(format!("line-asset-{index}"))
                     .spawn(move || {
-                        set_cancellation_token(shared.stop.clone());
+                        set_request_cancel(shared.stop.clone());
                         loop {
                             let work = {
                                 let mut queue = shared.queue.lock().unwrap();
@@ -188,14 +202,7 @@ impl Fetchers {
                                     }
                                     let key = queue.next_key();
                                     if let Some(key) = key {
-                                        let blacklisted = shared
-                                            .failures
-                                            .0
-                                            .lock()
-                                            .unwrap()
-                                            .get(&key)
-                                            .filter(|f| !f.retry || f.at.elapsed() < FAILURE_TTL)
-                                            .map(|f| f.class);
+                                        let blacklisted = shared.failures.blocked(&key);
                                         let job = queue
                                             .entries
                                             .get_mut(&key)
@@ -249,7 +256,7 @@ impl Fetchers {
                                         );
                                     }
                                     Ok(_) => {
-                                        shared.failures.0.lock().unwrap().remove(&key);
+                                        shared.failures.clear(&key);
                                     }
                                     Err(_) => {}
                                 }
@@ -280,7 +287,7 @@ impl Fetchers {
     pub fn failure(&self, key: &str) -> Option<Failure> {
         self.shared
             .failures
-            .0
+            .entries
             .lock()
             .unwrap()
             .get(key)
@@ -288,16 +295,7 @@ impl Fetchers {
     }
 
     pub fn retry(&self, key: &str) -> bool {
-        let job = self
-            .shared
-            .failures
-            .0
-            .lock()
-            .unwrap()
-            .get(key)
-            .filter(|f| f.retry)
-            .map(|f| f.job.clone());
-        job.is_some_and(|job| {
+        self.shared.failures.retry_job(key).is_some_and(|job| {
             self.enqueue_job(Job {
                 bypass: true,
                 ..job
@@ -307,14 +305,7 @@ impl Fetchers {
 
     pub fn enqueue(&self, asset: Asset, purpose: Purpose) -> bool {
         let bypass = !matches!(purpose, Purpose::Thumbnail)
-            && self
-                .shared
-                .failures
-                .0
-                .lock()
-                .unwrap()
-                .get(&asset.key())
-                .is_some_and(|f| f.retry);
+            && self.shared.failures.retry_job(&asset.key()).is_some();
         let key = asset.key();
         let job = Job {
             asset,
