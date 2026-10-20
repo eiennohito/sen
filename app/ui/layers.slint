@@ -1,5 +1,5 @@
 import { Dialog, FocusRing, Button } from "button.slint";
-import { DetailAction } from "types.slint";
+import { FocusOpener, DetailAction } from "types.slint";
 import { RowText } from "list-row.slint";
 import { ComboBox, CheckBox } from "preferences.slint";
 import { ScrollView } from "std-widgets.slint";
@@ -44,8 +44,6 @@ export component Layers inherits Rectangle {
     reaction-error-timer := Timer { interval: 4s; running: false; triggered => { self.running = false; State.reaction-error-id = ""; } }
     Timer { interval: 5s; running: State.viewer-save-status != "" && !State.viewer-saving; triggered => { State.viewer-save-status = ""; } }
     property <int> settings-section;
-    property <int> message-text-size: State.text-size;
-    changed message-text-size => { text-size.current-index = root.message-text-size <= 13 ? 0 : root.message-text-size <= 15 ? 1 : root.message-text-size <= 18 ? 2 : 3; }
     property <bool> auth-visible: State.auth-open;
     changed auth-visible => { if !self.auth-visible { root.cancel-confirm = false; } }
     property <bool> approval-busy: State.auth-busy;
@@ -86,7 +84,7 @@ export component Layers inherits Rectangle {
         visible: State.detail-open && !State.auth-open && !State.viewer-open; background: Tokens.background;
         TouchArea { scroll-event(event) => { accept } }
         border-width: 1px; border-color: Tokens.border;
-        detail := Detail { open-dialog(kind) => { State.detail-dialog = kind; rename-value.text = State.profile-name; if kind == DetailAction.rename { rename-value.focus(); } else { cancel.focus(); } } }
+        detail := Detail { open-dialog(kind) => { State.detail-dialog = kind;  } }
     }
     Dialog {
         visible: State.settings-open && !State.auth-open && !State.viewer-open;
@@ -116,7 +114,7 @@ export component Layers inherits Rectangle {
                     content-width: self.width;
                     settings-content := VerticalLayout {
                         padding-right: 12px; spacing: 0px; alignment: start;
-                        VerticalLayout { visible: root.settings-section == 0; height: self.visible ? self.preferred-height : 0px;
+                        if root.settings-section == 0: VerticalLayout {
                             spacing: 12px;
                             Text { text: "Message text size"; }
                             text-size := ComboBox {
@@ -128,7 +126,7 @@ export component Layers inherits Rectangle {
                             if State.storage-error != "": Text { text: State.storage-error; wrap: word-wrap; color: Tokens.danger; }
                             enter-sends := CheckBox { text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
                         }
-                        VerticalLayout { visible: root.settings-section == 1; height: self.visible ? self.preferred-height : 0px;
+                        if root.settings-section == 1: VerticalLayout {
                             spacing: 12px;
                             CheckBox { text: "Desktop notifications"; checked <=> State.notifications-enabled; toggled => { State.settings-changed(); } }
                             if State.notifications-paused: Text { text: "Notifications are paused from the tray."; wrap: word-wrap; color: Tokens.secondary; }
@@ -146,8 +144,7 @@ export component Layers inherits Rectangle {
                             if !State.notification-available: Text { text: "Notification service not available"; color: Tokens.secondary; wrap: word-wrap; }
                             if State.notification-status != "": Text { text: State.notification-status; wrap: word-wrap; }
                         }
-                        VerticalLayout {
-                            visible: root.settings-section == 2; height: self.visible ? self.preferred-height : 0px;
+                        if root.settings-section == 2: VerticalLayout {
                             spacing: 12px;
                             CheckBox { text: "Keep running in background"; checked <=> State.background-mode; toggled => { State.settings-changed(); } }
                             Text { text: "Closing LINE hides it to the desktop tray. Notifications and sync continue until you choose Quit."; wrap: word-wrap; color: Tokens.secondary; }
@@ -245,21 +242,28 @@ export component Layers inherits Rectangle {
     }
     Dialog {
         visible: State.detail-open && !State.auth-open && !State.viewer-open && State.detail-dialog != DetailAction.none;
-        dismissed => { State.detail-dialog = DetailAction.none; detail.focus-last(); }
+        dismissed => { State.detail-dialog = DetailAction.none; detail.focus-action(); }
         dialog-content := VerticalLayout { padding: 24px; spacing: 16px;
             HorizontalLayout { dialog-title := Text { text: State.detail-dialog == DetailAction.rename ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
-                dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.detail-dialog = DetailAction.none; detail.focus-last(); } }
+                dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.detail-dialog = DetailAction.none; detail.focus-action(); } }
             }
-            Rectangle {
-                visible: State.detail-dialog == DetailAction.rename; height: self.visible ? 36px : 0px;
-                border-radius: 8px; background: Tokens.surface-2;
-                rename-value := TextInput { x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name"; }
-                FocusRing { outset: 4px; text-entry: true; focused: rename-value.has-focus; }
+            if State.detail-dialog == DetailAction.rename: VerticalLayout { spacing: 16px;
+                Rectangle {
+                    height: 36px; border-radius: 8px; background: Tokens.surface-2;
+                    rename-value := TextInput { text: State.profile-name; init => { self.focus(); } x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name"; }
+                    FocusRing { outset: 4px; text-entry: true; focused: rename-value.has-focus; }
+                }
+                HorizontalLayout { alignment: end; spacing: 8px;
+                    Button { text: "Cancel"; clicked => { State.detail-dialog = DetailAction.none; detail.focus-action(); } }
+                    Button { text: "Save"; primary: true; clicked => { State.detail-action(DetailAction.rename, rename-value.text); State.detail-dialog = DetailAction.none; detail.focus-first(); } }
+                }
             }
-            if State.detail-dialog == DetailAction.leave: Text { text: "You will no longer receive messages in this group."; wrap: word-wrap; }
-            HorizontalLayout { alignment: end; spacing: 8px;
-                cancel := Button { text: "Cancel"; clicked => { State.detail-dialog = DetailAction.none; detail.focus-last(); } }
-                confirm := Button { text: State.detail-dialog == DetailAction.rename ? "Save" : "Leave"; primary: true; danger: State.detail-dialog == DetailAction.leave; clicked => { let kind = State.detail-dialog; State.detail-dialog = DetailAction.none; State.detail-action(kind, rename-value.text); detail.focus-first(); } }
+            if State.detail-dialog == DetailAction.leave: VerticalLayout { spacing: 16px;
+                Text { text: "You will no longer receive messages in this group."; wrap: word-wrap; }
+                HorizontalLayout { alignment: end; spacing: 8px;
+                    Button { text: "Cancel"; init => { self.focus(); } clicked => { State.detail-dialog = DetailAction.none; detail.focus-action(); } }
+                    Button { text: "Leave"; primary: true; danger: true; clicked => { State.detail-action(DetailAction.leave, ""); State.detail-dialog = DetailAction.none; detail.focus-first(); } }
+                }
             }
         }
     }
@@ -280,9 +284,11 @@ export component Layers inherits Rectangle {
     public function fit-photo() { State.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
     public function original-photo() { State.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
     public function back-to-members() { State.pop-detail(false); }
+    out property <bool> editing: State.detail-open && detail.editing;
+    out property <bool> detail-focused: State.detail-open && detail.focus-opener() != FocusOpener.none;
+    public function focus-opener() -> FocusOpener { return detail.focus-opener(); }
+    public function restore-opener(opener: FocusOpener) { detail.restore-opener(opener); }
     public function focus-profile-close() { detail.focus-open(); }
-    public function focus-profile-last() { detail.focus-last(); }
-    public function focus-profile() { detail.focus-first(); }
     public function focus-settings() { root.settings-section = 0; settings-close.focus(); }
     public function focus-auth() { if State.auth-busy { auth-back.focus(); } else { auth-start.focus(); } }
     public function focus-viewer() { viewer-close.focus(); }

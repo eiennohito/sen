@@ -1,6 +1,16 @@
 use crate::*;
-// Slint has no public API for saving and restoring the focused item.
-use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
+use slint::private_unstable_api::re_exports::WindowInner;
+
+macro_rules! global_callback {
+    ($ui:ident, $callback:ident, $method:ident) => {
+        let weak = $ui.as_weak();
+        $ui.global::<State>().$callback(move || {
+            if let Some(ui) = weak.upgrade() {
+                ui.$method();
+            }
+        });
+    };
+}
 
 pub(crate) fn install(ui: &AppWindow) {
     // One application window, replaced when the offline demo resets.
@@ -65,6 +75,12 @@ pub(crate) fn install(ui: &AppWindow) {
         }
         *window = Some(ui.as_weak());
     });
+    global_callback!(ui, on_focus_composer, invoke_focus_composer);
+    global_callback!(ui, on_focus_connection_first, invoke_focus_connection_first);
+    global_callback!(ui, on_focus_friend_search, invoke_focus_friend_search);
+    global_callback!(ui, on_focus_history, invoke_focus_history);
+    global_callback!(ui, on_focus_search, invoke_focus_search);
+    global_callback!(ui, on_focus_settings_opener, invoke_focus_settings_opener);
     let weak = ui.as_weak();
     ui.global::<State>().on_tab_focus(move |back| {
         if let Some(ui) = weak.upgrade() {
@@ -76,19 +92,6 @@ pub(crate) fn install(ui: &AppWindow) {
             }
         }
     });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_text_input_focused(move || {
-        weak.upgrade().is_some_and(|ui| {
-            WindowInner::from_pub(ui.window())
-                .focus_item
-                .borrow()
-                .upgrade()
-                .is_some_and(|item| {
-                    item.downcast::<slint::private_unstable_api::re_exports::TextInput>()
-                        .is_some_and(|input| !input.as_pin_ref().read_only())
-                })
-        })
-    });
     let saved = Rc::new(RefCell::new(Vec::new()));
     let record = saved.clone();
     let weak = ui.as_weak();
@@ -97,30 +100,21 @@ pub(crate) fn install(ui: &AppWindow) {
             if reset {
                 record.borrow_mut().clear();
             }
-            record.borrow_mut().push(
-                WindowInner::from_pub(ui.window())
-                    .focus_item
-                    .borrow()
-                    .clone(),
-            );
+            record.borrow_mut().push(ui.invoke_focus_opener());
         }
     });
     let weak = ui.as_weak();
     ui.global::<State>().on_restore_detail_focus(move |all| {
         if let Some(ui) = weak.upgrade() {
-            let item = if all {
+            let opener = if all {
                 let first = saved.borrow().first().cloned();
                 saved.borrow_mut().clear();
                 first
             } else {
                 saved.borrow_mut().pop()
             };
-            if let Some(item) = item.and_then(|i| i.upgrade()).filter(|i| i.is_visible()) {
-                WindowInner::from_pub(ui.window()).set_focus_item(
-                    &item,
-                    true,
-                    FocusReason::PopupActivation,
-                );
+            if let Some(opener) = opener {
+                ui.invoke_restore_opener(opener);
             } else if ui.global::<State>().get_detail_open() {
                 ui.invoke_focus_profile_close();
             } else {
@@ -138,25 +132,16 @@ pub(crate) fn install_demo(ui: &AppWindow) {
     ui.global::<ExtensionState>()
         .on_remember_demo_focus(move || {
             if let Some(ui) = weak.upgrade() {
-                *record.borrow_mut() = Some(
-                    WindowInner::from_pub(ui.window())
-                        .focus_item
-                        .borrow()
-                        .clone(),
-                );
+                *record.borrow_mut() = Some(ui.invoke_focus_opener());
             }
         });
     let weak = ui.as_weak();
     ui.global::<ExtensionState>()
         .on_restore_demo_focus(move || {
             if let Some(ui) = weak.upgrade()
-                && let Some(item) = saved.borrow_mut().take().and_then(|weak| weak.upgrade())
+                && let Some(opener) = saved.borrow_mut().take()
             {
-                WindowInner::from_pub(ui.window()).set_focus_item(
-                    &item,
-                    true,
-                    FocusReason::PopupActivation,
-                );
+                ui.invoke_restore_opener(opener);
             }
         });
 }

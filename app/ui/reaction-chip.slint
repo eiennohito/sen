@@ -24,6 +24,7 @@ export component ReactionChip inherits Rectangle {
         Text { text: root.reaction.count; color: Tokens.foreground; font-size: Tokens.small; vertical-alignment: center; }
     }
     chip-focus := Pressable {
+        focus-on-tab-navigation: false;
         accessible-label: root.reaction.label + ", " + root.reaction.count + " reactions";
         accessible-item-selected: root.reaction.own;
 

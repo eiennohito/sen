@@ -109,8 +109,16 @@ fn keyboard_rings_follow_buttons_and_whole_friend_rows() {
         control("Find a conversation").mock_single_click(PointerEventButton::Left);
         let main_baseline = rings();
         ui.invoke_focus_search();
+        // Tab follows visual order.
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+                text: Key::Shift.into(),
+            });
         key(Key::Tab.into());
-        key(Key::Tab.into());
+        ui.window()
+            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+                text: Key::Shift.into(),
+            });
         assert_eq!(focus_label(&ui), "New chat");
         assert!(surrounds("New chat", &main_baseline));
         key(Key::Return.into());
@@ -290,30 +298,81 @@ fn detail_focus_restores_the_opener_without_demo() {
         let ui = window::create_app_window().unwrap();
         ui.show().unwrap();
         snapshot::render(&window, (980, 720)).unwrap();
-        ui.invoke_focus_search();
-        ui.global::<State>().invoke_remember_detail_focus(true);
-        ui.global::<State>().set_panel(PanelState::Detail);
-        ui.global::<State>().set_detail_depth(1);
-        snapshot::render(&window, (980, 720)).unwrap();
-        ui.invoke_focus_profile_close();
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "x".into() });
-        assert_eq!(ui.global::<State>().get_query(), "");
-        ui.global::<State>().set_panel(PanelState::None);
-        ui.global::<State>().set_detail_depth(0);
-        snapshot::render(&window, (980, 720)).unwrap();
-        ui.global::<State>().invoke_restore_detail_focus(true);
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "x".into() });
-        assert_eq!(
-            ui.global::<State>().get_query(),
-            "x",
-            "closing detail must restore its opener"
-        );
+        for already_open in [false, true] {
+            ui.global::<State>().set_query("".into());
+            if already_open {
+                ui.global::<State>().set_panel(PanelState::Detail);
+                ui.global::<State>().set_detail_depth(1);
+                snapshot::render(&window, (980, 720)).unwrap();
+            }
+            ui.invoke_focus_search();
+            ui.global::<State>().invoke_remember_detail_focus(true);
+            ui.global::<State>().set_panel(PanelState::Detail);
+            ui.global::<State>().set_detail_depth(1);
+            if !already_open {
+                snapshot::render(&window, (980, 720)).unwrap();
+            }
+            ui.invoke_focus_profile_close();
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "x".into() });
+            assert_eq!(ui.global::<State>().get_query(), "");
+            ui.global::<State>().set_panel(PanelState::None);
+            ui.global::<State>().set_detail_depth(0);
+            snapshot::render(&window, (980, 720)).unwrap();
+            ui.global::<State>().invoke_restore_detail_focus(true);
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "x".into() });
+            assert_eq!(
+                ui.global::<State>().get_query(),
+                "x",
+                "closing detail must restore its opener"
+            );
+        }
+        let g = ui.global::<State>();
+        g.set_has_account(true);
+        g.set_has_chat(true);
+        g.set_show_conversation(true);
+        g.set_composer_mode(ComposerMode::Idle);
+        for width in [1280, 420] {
+            snapshot::render(&window, (width, 720)).unwrap();
+            let mut openers = vec![
+                FocusOpener::None,
+                FocusOpener::MemberList,
+                FocusOpener::GroupMembers,
+                FocusOpener::ProfilePhoto,
+            ];
+            if width == 420 {
+                openers.extend([
+                    FocusOpener::Search,
+                    FocusOpener::Chats,
+                    FocusOpener::FriendSearch,
+                    FocusOpener::Friends,
+                    FocusOpener::Navigation,
+                ]);
+            }
+            for opener in openers {
+                ui.invoke_restore_opener(opener);
+                assert_eq!(
+                    focus_label(&ui),
+                    "Message draft",
+                    "hidden opener {opener:?} accepted focus at {width}"
+                );
+                use slint::private_unstable_api::re_exports::WindowInner;
+                assert!(
+                    WindowInner::from_pub(ui.window())
+                        .focus_item
+                        .borrow()
+                        .upgrade()
+                        .unwrap()
+                        .is_visible(),
+                    "restored focus is hidden"
+                );
+            }
+        }
         ui.hide().unwrap();
     })
     .join()
@@ -668,7 +727,7 @@ fn virtual_wheel_frames_update_latest_and_top_paging() {
 #[test]
 fn busy_controls_refuse_focus_and_activation() {
     std::thread::spawn(|| {
-        use i_slint_backend_testing::ElementHandle;
+        use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
         use slint::platform::{Key, WindowEvent};
         i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
@@ -676,16 +735,7 @@ fn busy_controls_refuse_focus_and_activation() {
         ui.window().set_size(slint::LogicalSize::new(360., 720.));
         slint::platform::update_timers_and_animations();
         let g = ui.global::<State>();
-        let focused = || {
-            use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
-            WindowInner::from_pub(ui.window())
-                .focus_item
-                .borrow()
-                .upgrade()
-                .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Label))
-                .unwrap_or_default()
-                .to_string()
-        };
+        let focused = || focus_label(&ui);
         let key = |text: slint::SharedString| {
             ui.window()
                 .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
@@ -711,6 +761,15 @@ fn busy_controls_refuse_focus_and_activation() {
         );
 
         g.set_connection(ConnectionState::Online);
+        g.set_composer_mode(ComposerMode::Unavailable);
+        ui.invoke_focus_search();
+        let opener = focused();
+        ui.invoke_focus_composer();
+        assert_eq!(
+            focused(),
+            opener,
+            "disabled draft moved focus out to the rail"
+        );
         g.set_panel(PanelState::Detail);
         g.set_detail_depth(1);
         g.set_profile_friend(true);
@@ -722,8 +781,36 @@ fn busy_controls_refuse_focus_and_activation() {
             g.set_detail_page(page);
             slint::platform::update_timers_and_animations();
             ui.invoke_focus_profile_close();
-            ui.invoke_focus_before_layer();
-            assert_ne!(focused(), label, "busy {label} accepted focus");
+            let focusable = ElementQuery::from_root(&ui)
+                .find_all()
+                .into_iter()
+                .filter(|item| {
+                    item.accessible_enabled() != Some(false)
+                        && matches!(
+                            item.accessible_role(),
+                            Some(
+                                AccessibleRole::Button
+                                    | AccessibleRole::TextInput
+                                    | AccessibleRole::Checkbox
+                                    | AccessibleRole::List
+                                    | AccessibleRole::TabList
+                                    | AccessibleRole::Slider
+                            )
+                        )
+                })
+                .count();
+            for _ in 0..focusable {
+                g.invoke_tab_focus(true);
+                assert_ne!(focused(), label, "busy {label} accepted focus");
+                if focused() == "Close details" {
+                    break;
+                }
+            }
+            assert_eq!(
+                focused(),
+                "Close details",
+                "reverse Tab did not complete the cycle within the focusable controls"
+            );
             let control = ElementHandle::find_by_accessible_label(&ui, label)
                 .next()
                 .unwrap_or_else(|| panic!("missing {label}"));

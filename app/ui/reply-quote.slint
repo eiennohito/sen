@@ -9,14 +9,17 @@ export component ReplyQuote inherits Rectangle {
     in property <string> preview;
     in property <image> picture;
     in property <bool> has-picture;
-    in property <bool> cancellable;
     height: max(44px, Tokens.small * 2.8 + 12px);
     background: root.surface; border-radius: 8px; clip: true;
     Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: root.name-tint; }
-    VerticalLayout {
-        padding: 6px; padding-left: 10px; padding-right: (root.cancellable ? 40px : 6px) + (root.has-picture ? 38px : 0px); spacing: 2px;
-        if root.sender != "": RowText { text: root.sender; color: root.name-tint; font-size: Tokens.small; font-weight: 600; }
-        RowText { text: root.preview; vertical-alignment: center; color: Tokens.secondary; font-size: Tokens.small; }
+    HorizontalLayout {
+        padding: 6px; padding-left: 10px; spacing: 6px; cross-axis-alignment: center;
+        VerticalLayout {
+            spacing: 2px;
+            if root.sender != "": RowText { text: root.sender; color: root.name-tint; font-size: Tokens.small; font-weight: 600; }
+            RowText { text: root.preview; vertical-alignment: center; color: Tokens.secondary; font-size: Tokens.small; }
+        }
+        if root.has-picture: Image { width: 32px; height: 32px; source: root.picture; image-fit: contain; }
+        @children
     }
-    if root.has-picture: Image { x: parent.width - (root.cancellable ? 78px : 38px); y: (parent.height - 32px) / 2; width: 32px; height: 32px; source: root.picture; image-fit: contain; }
 }

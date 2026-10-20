@@ -68,7 +68,6 @@ export component Pane inherits Rectangle {
         }
     }
     callback connection-dismissed();
-    callback connection-key-pressed(KeyEvent) -> EventResult;
     public function focus-connection() { notice-host.focus(); State.tab-focus(false); }
     out property <bool> connection-focused;
     notice-host := FocusScope {
@@ -80,7 +79,6 @@ export component Pane inherits Rectangle {
             x: 0px; y: 0px;
             changed has-focus => { root.connection-focused = self.has-focus; }
             dismissed => { root.connection-dismissed(); }
-            key-pressed(event) => { root.connection-key-pressed(event) }
             visible: State.connection-feedback-visible;
         }
     }

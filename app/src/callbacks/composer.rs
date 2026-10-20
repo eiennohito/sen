@@ -13,6 +13,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             d.capture_draft(&ui);
             d.render(&ui);
             let weak = ui.as_weak();
+            // Menu activation restores its opener after the callback; focus the draft afterwards.
             slint::Timer::single_shot(std::time::Duration::ZERO, move || {
                 if let Some(ui) = weak.upgrade() {
                     ui.invoke_focus_composer();

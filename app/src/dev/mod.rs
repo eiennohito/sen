@@ -37,6 +37,7 @@ pub(crate) fn install_focus(ui: &AppWindow) {
                     let position = current.map_to_window(geometry.origin);
                     return serde_json::json!({
                         "label": label.as_str(),
+                        "visible": current.is_visible(),
                         "role": format!("{:?}", current.accessible_role()),
                         "x": position.x, "y": position.y,
                         "width": geometry.size.width, "height": geometry.size.height,

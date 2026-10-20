@@ -195,9 +195,22 @@ def smoke_chat(label):
         return any(item.get("accessibleItemSelected") and item.get("accessibleLabel", "").startswith(label + ", ") for item in items)
     wait_for(selected_chat_visible, f"chat selection did not settle: {label}")
 
+def assert_restored_focus(label, role="Button"):
+    focus = focused_control()
+    item = element(label, role)
+    assert is_focused(item, focus), f"focus not restored to {label}: {focus}"
+    # Hidden ancestors remove their descendants from the accessible tree.
+    assert focus["visible"], f"restored focus is hidden: {label}"
+    size = call("get_window_properties", windowHandle=window)
+    scale = size.get("scaleFactor", 1)
+    for axis, extent in (("x", "width"), ("y", "height")):
+        assert item["size"][extent] > 0, f"restored focus has no area: {label}"
+        assert 0 <= item["absolutePosition"][axis] < size["size"][extent] / scale, f"restored focus is outside the window: {label}"
+
+
 def check_detail_stack():
     def focused(label, role="Button"):
-        assert is_focused(element(label, role)), f"focus not restored to {label}: {[item.get('accessibleLabel') for item in tree() if is_focused(item)]}"
+        assert_restored_focus(label, role)
     click("Friends")
     search=element("Search friends and groups", "TextInput")
     call("set_element_value",elementHandle=search["handle"],value="")
@@ -212,6 +225,10 @@ def check_detail_stack():
     click("Open member: 葵")
     wait_element("Profile", "Text")
     click("Rename")
+    assert_restored_focus("Name", "TextInput")
+    original_name = element("Name", "TextInput")["accessibleValue"]
+    key("x")
+    assert element("Name", "TextInput")["accessibleValue"] == "x" + original_name, "rename opening selected the name or moved its caret"
     set_value("Name", "Aoi test 🌿")
     click("Save")
     wait_element("Aoi test 🌿", "Text")
@@ -419,12 +436,19 @@ def check_chain(surface, expected, seed):
 
 def check_narrow_chats_focus():
     show_chats()
+    click("Friends")
+    set_value("Search friends and groups", "Weekend")
+    click("Open profile: Weekend plans")
+    key("\x1b")
+    assert_restored_focus("Message draft", "TextInput")
+    show_chats()
     for recovery in ([], ["Sign in again"]):
         if recovery: demo_scenario("Expired sign-in")
-        expected = ["Navigation", "Find a conversation", "All", "New chat"] + recovery + ["Conversations"]
+        # Tab follows visual order
+        expected = ["Navigation", "New chat", "Find a conversation", "All"] + recovery + ["Conversations"]
         check_chain("narrow chats", expected, ("Find a conversation", "TextInput"))
         set_value("Find a conversation", "葵")
-        check_chain("narrow chats search clear", expected[:2] + ["Clear search"] + expected[2:], ("Find a conversation", "TextInput"))
+        check_chain("narrow chats search clear", expected[:expected.index("Find a conversation") + 1] + ["Clear search"] + expected[expected.index("Find a conversation") + 1:], ("Find a conversation", "TextInput"))
         click("Clear search")
 
 
@@ -441,7 +465,34 @@ def check_focus():
             key("\x12", "Release")
 
     def browser_stops(search_label, list_label, recovery):
-        return ["Navigation", search_label] + (["All", "New chat"] if list_label == "Conversations" else []) + (recovery if narrow else []) + [list_label]
+        # Tab follows visual order
+        return ["Navigation"] + (["New chat"] if list_label == "Conversations" else []) + [search_label] + (["All"] if list_label == "Conversations" else []) + (recovery if narrow else []) + [list_label]
+
+    if panel:
+        smoke_chat("葵")
+        title = next(item for item in tree() if item.get("accessibleLabel") == "葵" and item.get("accessibleRole") == "Button")
+        call("click_element", elementHandle=title["handle"])
+        body = next(item for item in reversed(tree()) if item.get("accessibleRole") in ("Text", "TextInput") and item.get("accessibleLabel", "").startswith(("Incoming from ", "Outgoing, ")))
+        call("click_element", elementHandle=body["handle"])
+        click("More")
+        click("Profile", "Text")
+        key("\x1b")
+        assert_restored_focus("Message draft", "TextInput")
+
+    # Tab follows visual order
+    click("Chats")
+    click("Find a conversation", "TextInput")
+    focus_tab(True)
+    assert focus_label() == "New chat"
+    for arrow in ("\uf703", "\uf702"):
+        key(arrow)
+        focus_tab()
+        assert focus_label() == "Find a conversation", "New chat arrow moved focus"
+        focus_tab()
+        assert focus_label() == "All", "New chat arrow moved the chip cursor"
+        focus_tab(True)
+        focus_tab(True)
+        assert focus_label() == "New chat"
 
     # Chips are one Tab stop; arrows move focus without activating a filter.
     click("Chats")
@@ -489,30 +540,36 @@ def check_focus():
             click("Friends" if surface == "friends" else "Chats")
             expected = browser_stops(search_label, list_label, recovery)
             if not narrow:
-                expected += ["葵", "More"] + recovery + ["Message history", "Message draft"]
+                expected += ["葵", "More"] + recovery + ["Message history"]
                 if element("Stickers", "Button").get("accessibleEnabled"): expected.append("Stickers")
                 if element("Attach", "Button").get("accessibleEnabled"): expected.append("Attach")
+                # Tab follows the composer's visual order
+                expected.append("Message draft")
                 if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
             check_chain(f"{surface} {suffix}", expected, (search_label, "TextInput"))
             set_value(search_label, "葵")
-            check_chain(f"{surface} search clear {suffix}", expected[:2] + ["Clear search"] + expected[2:], (search_label, "TextInput"))
+            check_chain(f"{surface} search clear {suffix}", expected[:expected.index(search_label) + 1] + ["Clear search"] + expected[expected.index(search_label) + 1:], (search_label, "TextInput"))
             click("Clear search")
         click("Chats")
         for chat in ("葵", "Weekend plans"):
             click(chat)
             set_value("Message draft", "Focus check")
-            expected = ["Back"] if narrow else ["Navigation", "Find a conversation", "All", "New chat", "Conversations"]
+            # Tab follows visual order
+            expected = ["Back"] if narrow else ["Navigation", "New chat", "Find a conversation", "All", "Conversations"]
             expected.append(chat)
             if chat == "Weekend plans": expected.append(element("Members", "Button")["accessibleLabel"])
-            expected += ["More"] + recovery + ["Message history", "Message draft"]
+            expected += ["More"] + recovery + ["Message history"]
             if element("Stickers", "Button").get("accessibleEnabled"): expected.append("Stickers")
             if element("Attach", "Button").get("accessibleEnabled"): expected.append("Attach")
+            # Tab follows the composer's visual order
+            expected.append("Message draft")
             if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
             check_chain(f"conversation {chat} {suffix}", expected, ("Message draft", "TextInput"))
             if chat == "Weekend plans":
                 click("Members")
                 layer = ["Close details", "Search members", "Group members"]
-                prefix = expected if panel else [] if narrow else ["Navigation", "Find a conversation", "All", "New chat", "Conversations"]
+                # Tab follows visual order
+                prefix = expected if panel else [] if narrow else ["Navigation", "New chat", "Find a conversation", "All", "Conversations"]
                 check_chain(f"members {layer_kind} {suffix}", prefix + layer, ("Close details", "Button"))
                 set_value("Search members", "葵")
                 check_chain(f"members search clear {suffix}", prefix + layer[:2] + ["Clear search"] + layer[2:], ("Close details", "Button"))
@@ -529,9 +586,11 @@ def check_focus():
         click("Open profile: 葵")
         prefix = [] if narrow else ["Navigation", "Search friends and groups", "Friends and groups"]
         if panel:
-            prefix += ["Weekend plans", element("Members", "Button")["accessibleLabel"], "More"] + recovery + ["Message history", "Message draft"]
+            prefix += ["Weekend plans", element("Members", "Button")["accessibleLabel"], "More"] + recovery + ["Message history"]
             if element("Stickers", "Button").get("accessibleEnabled"): prefix.append("Stickers")
             if element("Attach", "Button").get("accessibleEnabled"): prefix.append("Attach")
+            # Tab follows the composer's visual order
+            prefix.append("Message draft")
             if element("Send", "Button").get("accessibleEnabled"): prefix.append("Send")
         check_chain(f"profile {layer_kind} {suffix}", prefix + ["Profile more", "Close details", "Open profile photo", "Chat", "Rename"], ("Close details", "Button"))
         key("\x1b")
@@ -633,6 +692,7 @@ def check_composer_alignment():
         set_value("Message draft", text)
         field = bounds_by_id("Composer::composer")
         buttons = [element(label, "Button") for label in ("Stickers", "Attach", "Send")]
+        assert all(b["size"] == {"width": 32, "height": 32} for b in buttons), "composer buttons must stay 32×32"
         centers = [b["absolutePosition"]["y"] + b["size"]["height"] / 2 for b in buttons]
         assert max(centers) - min(centers) <= 1, "composer buttons are not centred together"
         if name == "one-line":
@@ -680,8 +740,17 @@ def check_compose():
     for label in ("React", "Reply"):
         key("\t")
         assert any(item.get("accessibleLabel") == label and is_focused(item) for item in tree()), f"body → React → Reply lost focus at {label}"
+    focus_tab(True)
+    assert is_focused(element("React", "Button")), "reverse Tab from Reply skipped React"
+    focus_tab(True)
+    assert is_focused(body), "reverse Tab from React skipped its message body"
+    for label in ("React", "Reply"):
+        focus_tab()
+        assert is_focused(element(label, "Button")), f"forward Tab skipped {label}"
     key("\t")
-    assert is_focused(element("Message draft", "TextInput")), "Reply did not tab to composer"
+    # Tab follows the composer's visual order
+    composer_start = next((label, "Button") for label in ("Stickers", "Attach") if element(label, "Button").get("accessibleEnabled"))
+    assert is_focused(element(*composer_start)), "Reply did not tab to the first enabled composer control"
     def reply_via_menu():
         body = next(item for item in reversed(tree()) if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut and item.get("accessibleLabel", "").startswith("Outgoing,"))
         call("click_element", elementHandle=body["handle"], button="Right")
@@ -1258,14 +1327,18 @@ def check_reading():
 
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     # Reverse traversal reaches the single history surface, regardless of rows.
-    for _ in range(2):
+    # Tab follows the composer's visual order: Attach and Stickers precede the draft.
+    # The history pills sit between the history and the composer.
+    composer = [label for label in ("Attach", "Stickers") if element(label, "Button").get("accessibleEnabled")]
+    # Reverse Tab visits Return before Latest.
+    pills = [item["accessibleLabel"] for prefix in ("Return to message", "Latest") for item in tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith(prefix)]
+    for label in composer + pills + ["Message history"]:
         key("\x10", "Press")
         key("\t")
         key("\x10", "Release")
-        history = element("Message history", "List")
-        if is_focused(history):
-            break
-    assert is_focused(history), "reverse Tab entered a message"
+        stop = element(label, "List" if label == "Message history" else "Button")
+        assert is_focused(stop), f"reverse Tab from the draft missed {label}: at {focus_label()}"
+    history = stop
     key("\uf72b")  # End
     bottom = call("get_element_properties", elementHandle=first["handle"])["absolutePosition"]["y"]
     key("\uf729")  # Home
@@ -1300,6 +1373,13 @@ def check_reading():
 def check_rich():
     demo_scenario("Rich content")
     wait_element("[笑]", "Image")
+    rich_body = next(item for item in tree() if item.get("accessibleRole") == "Text" and "日😀[笑]本🌸" in item.get("accessibleLabel", ""))
+    call("click_element", elementHandle=rich_body["handle"])
+    for reverse, label in ((False, "React"), (False, "Reply"), (True, "React"), (True, rich_body["accessibleLabel"])):
+        focus_tab(reverse)
+        stop = rich_body if label == rich_body["accessibleLabel"] else element(label, "Button")
+        assert is_focused(stop), f"rich message Tab skipped {label}"
+    click("Message draft", "TextInput")
     title = "Rich content with a very long conversation name 日本語"
     chat = wait_element(title, "Button")
     rows = tree(chat["handle"])
@@ -1353,17 +1433,21 @@ def check_rich():
         for pill in (latest, return_pill):
             assert strip["absolutePosition"]["y"] + strip["size"]["height"] <= pill["absolutePosition"]["y"], "strip covered a history pill"
             assert pill["absolutePosition"]["y"] + pill["size"]["height"] <= editor["absolutePosition"]["y"], "history pill covered the composer"
+        # Tab follows the composer's visual order
+        composer_start = ("Stickers", "Button") if element("Stickers", "Button").get("accessibleEnabled") else ("Attach", "Button")
         call("click_element", elementHandle=handle("Message draft", "TextInput"))
-        for label, role in [("Return to message", "Button"), (latest["accessibleLabel"], "Button"), ("Message history", "List")]:
+        # Attach is the first enabled stop before the draft in reverse order.
+        composer_reverse = [(label, "Button") for label in ("Attach", "Stickers") if element(label, "Button").get("accessibleEnabled")]
+        for label, role in [*composer_reverse, ("Return to message", "Button"), (latest["accessibleLabel"], "Button"), ("Message history", "List")]:
             key("\x10", "Press")
             key("\t")
             key("\x10", "Release")
             assert is_focused(element(label, role)), f"reverse Tab skipped {label}"
         assert is_focused(element("Message history", "List")), "reverse Tab skipped a history pill"
-        for label, role in [(latest["accessibleLabel"], "Button"), ("Return to message", "Button"), ("Message draft", "TextInput")]:
+        for label, role in [(latest["accessibleLabel"], "Button"), ("Return to message", "Button"), composer_start]:
             key("\t")
             assert is_focused(element(label, role)), f"forward Tab skipped {label}"
-        assert is_focused(wait_element("Message draft", "TextInput")), "history/Latest/Return/composer Tab order changed"
+        assert is_focused(wait_element(*composer_start)), "history/Latest/Return/composer Tab order changed"
         click("Return to message", "Button")
         wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return did not restore its origin")
         restored_y = emoji_body()["absolutePosition"]["y"]
