@@ -166,12 +166,15 @@ Credentials under `artifacts/auth/`, proprietary artifacts and sensitive HARs
 under `dumps/` must stay out of logs, prompts and Git. Checked-in fixtures are
 synthetic.
 
-Colour emoji uses Noto Color Emoji 2.057 (OFL-1.1), loaded from disk.
-Run `python3 tools/fetch_emoji_font.py` to fetch and verify the pinned font and
-licence into gitignored `fonts/`. For development, run
-`SEN_EMOJI_FONT="$PWD/fonts/NotoColorEmoji.ttf" cargo run -p sen-desktop`.
-The UI launcher and check runner set `SEN_EMOJI_FONT` automatically.
-The desktop installer copies verified files to `$XDG_DATA_HOME/sen/fonts/`
-(default `~/.local/share/sen/fonts/`), warning if they are unavailable.
-Missing or unusable fonts log a startup diagnostic and leave system fallback
-available. See `third_party/README.md` for the renderer and shaping patches.
+Colour emoji uses Noto Color Emoji (OFL-1.1), installed or downloaded to
+`$XDG_DATA_HOME/sen/fonts/` (default `~/.local/share/sen/fonts/`), never embedded.
+Privacy: startup contacts jsDelivr for the font and OFL licence when absent,
+then checks at most every 30 days using ETag/Last-Modified; failures keep system
+fallback or the installed font. Downloads are structurally validated, without a
+pinned hash, and registered live. No account information is sent to the CDN.
+For development, `python3 tools/fetch_emoji_font.py` (requires python3-fonttools)
+fetches the same current bitmap build into gitignored `fonts/`.
+`SEN_EMOJI_FONT="$PWD/fonts/NotoColorEmoji.ttf" cargo run -p sen-desktop`
+uses that file and disables downloads in debug builds. The UI launcher and
+check runner set this override automatically; the installer can copy both files.
+See `third_party/README.md` for the renderer and shaping patches.

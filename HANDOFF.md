@@ -143,11 +143,11 @@ If another pairing is required, use the app's Sign in flow. It preserves the
 previous session before installing the newly validated one. Pairing uses the
 Chrome secondary-device slot and requires an explicit device-slot assignment.
 
-Colour emoji: run `python3 tools/fetch_emoji_font.py` for the pinned Noto Color
-Emoji 2.057 and OFL licence in `fonts/` (gitignored). The UI launcher requires
-verified copies and sets `SEN_EMOJI_FONT` in its private demo environment.
-`tools/install-desktop.py` installs both files alongside user data. The render
-regression reads `fonts/NotoColorEmoji.ttf` directly from the checkout, ignoring
-`SEN_EMOJI_FONT` and the user data directory. It skips with the missing path and
-fetch command if that file is absent; no CI download is required.
+Colour emoji: the app downloads the current bitmap Noto Color Emoji and OFL from
+jsDelivr when absent, checks conditionally at most every 30 days, validates without
+pinned hashes, and refreshes text live. Fonts are never embedded.
+`python3 tools/fetch_emoji_font.py` (python3-fonttools) fetches the same source to
+`fonts/`; the UI launcher/checks set `SEN_EMOJI_FONT`, disabling all font network work.
+`tools/install-desktop.py` can install both files. The colour render regression
+reads `fonts/NotoColorEmoji.ttf` directly and requires this local fixture.
 Rebase both `third_party/` patches on every Slint upgrade.
