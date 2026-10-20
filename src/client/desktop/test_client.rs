@@ -57,3 +57,19 @@ pub(super) fn client(mut api: Api) -> (Client, PathBuf) {
     };
     (client, root)
 }
+
+pub(crate) fn asset_client(root: &Path, mid: &str, base: &str) -> Result<Client> {
+    let module = crate::test_support::installed_module();
+    let wasm = module.read()?;
+    let mut api = Api::new(&wasm, &module.version)?;
+    api.http = http::Transport::local_assets(base.to_owned());
+    Client::from_api(
+        &root.join("session.json"),
+        |mid| Ok(Arc::new(std::sync::Mutex::new(ImageCache::new(root, mid)?))),
+        serde_json::from_value(json!({
+            "token_v3_issue_result":{"accessToken":"synthetic"},
+            "e2ee_keys":[], "profile":{"mid":mid}
+        }))?,
+        api,
+    )
+}

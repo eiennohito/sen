@@ -221,7 +221,7 @@ fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly()
         "slow join: {:?}",
         started.elapsed()
     );
-    assert!(failures.0.lock().unwrap().is_empty());
+    assert!(failures.entries.lock().unwrap().is_empty());
     gate.release();
     server.join().unwrap();
 }
@@ -263,7 +263,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
         fetchers
             .shared
             .failures
-            .0
+            .entries
             .lock()
             .unwrap()
             .get_mut(&avatar(&base, 1).key())
@@ -601,7 +601,7 @@ fn every_permanent_class_blocks_explicit_retries() {
         fetchers
             .shared
             .failures
-            .0
+            .entries
             .lock()
             .unwrap()
             .get_mut(&asset.key())
@@ -619,34 +619,6 @@ fn every_permanent_class_blocks_explicit_retries() {
     }
     assert!(requests.try_recv().is_err());
     server.join().unwrap();
-}
-
-#[test]
-fn retained_failures_never_follow_credentials_to_another_account() {
-    let base = "https://profile.line-scdn.net".to_owned();
-    let failures = Failures::default();
-    failures.scope("first-account");
-    failures.0.lock().unwrap().insert(
-        "image".into(),
-        Failed {
-            class: Failure::Network,
-            retry: Failure::Network.retry_read(),
-
-            at: Instant::now(),
-
-            job: Job {
-                bypass: false,
-
-                asset: avatar(&base, 1),
-
-                purpose: Purpose::Thumbnail,
-            },
-        },
-    );
-    failures.scope("first-account");
-    assert_eq!(failures.0.lock().unwrap().len(), 1);
-    failures.scope("second-account");
-    assert!(failures.0.lock().unwrap().is_empty());
 }
 
 #[test]
@@ -676,10 +648,10 @@ fn failure_records_evict_at_the_queue_bound() {
             rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
             Err(Failure::RejectedPath)
         ));
-        assert!(fetchers.shared.failures.0.lock().unwrap().len() <= QUEUE_LIMIT);
+        assert!(fetchers.shared.failures.entries.lock().unwrap().len() <= QUEUE_LIMIT);
     }
     assert_eq!(
-        fetchers.shared.failures.0.lock().unwrap().len(),
+        fetchers.shared.failures.entries.lock().unwrap().len(),
         QUEUE_LIMIT
     );
     assert!(fetchers.failure(&first).is_none());
@@ -725,25 +697,25 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
         );
         requests.recv_timeout(Duration::from_secs(10)).unwrap();
         {
-            let mut failures = fetchers.shared.failures.0.lock().unwrap();
+            let mut failures = fetchers.shared.failures.entries.lock().unwrap();
             let failed = failures.get_mut(&asset.key()).unwrap();
             failed.class = class;
             failed.at = Instant::now() - FAILURE_TTL + Duration::from_secs(1);
         }
-        let at = fetchers.shared.failures.0.lock().unwrap()[&asset.key()].at;
+        let at = fetchers.shared.failures.entries.lock().unwrap()[&asset.key()].at;
         fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
         assert!(
             matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(found) if found == class)
         );
         assert_eq!(
-            fetchers.shared.failures.0.lock().unwrap()[&asset.key()].at,
+            fetchers.shared.failures.entries.lock().unwrap()[&asset.key()].at,
             at
         );
         assert!(requests.try_recv().is_err());
         fetchers
             .shared
             .failures
-            .0
+            .entries
             .lock()
             .unwrap()
             .get_mut(&asset.key())

@@ -1,12 +1,14 @@
 //! RPC boundary shared by the real account and synthetic runs.
+use crate::client::desktop::assets::ImageCache;
 use crate::client::http::CancelToken;
 use crate::client::{
     NetworkActivity,
     operation::{OperationType, RawOperation},
 };
 use crate::store::*;
+use anyhow::Context;
 use serde_json::Value;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 pub use crate::client::error::{Failure, Refusal, SignOutReason};
 pub type Result<T> = std::result::Result<T, Failure>;
@@ -161,6 +163,7 @@ enum SessionClient {
 
 pub struct LineBackend {
     cache: std::path::PathBuf,
+    images: Option<(String, Arc<Mutex<ImageCache>>)>,
     session_failure: Option<crate::client::error::SignInFailure>,
     fetchers: Option<Arc<crate::client::desktop::assets::Fetchers>>,
     media_auth: Option<(Arc<CancelToken>, Deliver)>,
@@ -182,37 +185,56 @@ impl LineBackend {
         cache: &std::path::Path,
         version_override: Option<String>,
     ) -> anyhow::Result<Self> {
-        let open = || -> anyhow::Result<Option<crate::client::desktop::Client>> {
-            let module =
-                crate::crypto_module::resolve(wasm_override.clone(), version_override.clone())?;
+        let mut backend = Self {
+            fetchers: None,
+            media_auth: None,
+            cache: cache.into(),
+            images: None,
+            client: SessionClient::Absent(NetworkActivity::default()),
+            session_failure: None,
+            state: state.into(),
+            wasm_override,
+            version_override,
+        };
+        let mut open = || -> anyhow::Result<Option<crate::client::desktop::Client>> {
+            let module = crate::crypto_module::resolve(
+                backend.wasm_override.clone(),
+                backend.version_override.clone(),
+            )?;
             if state.try_exists()? {
-                crate::client::desktop::Client::open_local(state, module, cache).map(Some)
+                crate::client::desktop::Client::open_local(state, module, |mid| {
+                    backend.account_images(mid)
+                })
+                .map(Some)
             } else {
                 drop(module.runtime(&module.read()?)?);
                 Ok(None)
             }
         };
-        let (client, session_failure) = match open() {
-            Ok(client) => (client, None),
+        match open() {
+            Ok(Some(client)) => backend.client = SessionClient::Open(Box::new(client)),
+            Ok(None) => {}
             Err(error) => {
                 crate::reporting::log("saved-session", "open", error.as_ref());
-                let reason = crate::client::error::saved_session_failure(&error)?;
-                (None, Some(reason))
+                backend.session_failure =
+                    Some(crate::client::error::saved_session_failure(&error)?);
             }
-        };
-        Ok(Self {
-            fetchers: None,
-            media_auth: None,
-            cache: cache.into(),
-            client: match client {
-                Some(client) => SessionClient::Open(Box::new(client)),
-                None => SessionClient::Absent(NetworkActivity::default()),
-            },
-            session_failure,
-            state: state.into(),
-            wasm_override,
-            version_override,
-        })
+        }
+        Ok(backend)
+    }
+
+    fn account_images(&mut self, mid: &str) -> anyhow::Result<Arc<Mutex<ImageCache>>> {
+        if self
+            .images
+            .as_ref()
+            .is_none_or(|(account, _)| account != mid)
+        {
+            let images = ImageCache::new(&self.cache, mid).context(
+                crate::client::error::SignInFailure::StateDirectory(self.cache.clone()),
+            )?;
+            self.images = Some((mid.into(), Arc::new(Mutex::new(images))));
+        }
+        Ok(self.images.as_ref().unwrap().1.clone())
     }
 }
 fn rpc(error: anyhow::Error) -> Failure {
@@ -290,7 +312,7 @@ impl Backend for LineBackend {
             desktop::{self, assets::Pixels},
             pairing,
         };
-        desktop::set_cancellation_token(cancel.clone());
+        crate::client::set_request_cancel(cancel.clone());
         let module = crate::crypto_module::resolve(
             self.wasm_override.clone(),
             self.version_override.clone(),
@@ -302,8 +324,9 @@ impl Backend for LineBackend {
         };
         self.client = SessionClient::Absent(activity.clone());
         let (_qr_directory, qr_cache) = pairing_images(&self.cache).map_err(rpc)?;
+        let state_path = self.state.clone();
         let mut client = pairing::sign_in_validated(
-            &self.state,
+            &state_path,
             module,
             activity,
             &cancel,
@@ -335,7 +358,7 @@ impl Backend for LineBackend {
             |staged, api| {
                 desktop::Client::from_api(
                     staged,
-                    &self.cache,
+                    |mid| self.account_images(mid),
                     serde_json::from_value(crate::credentials::load(staged)?)
                         .map_err(|_| crate::client::error::SignInFailure::SavedSession)?,
                     api,
@@ -398,11 +421,14 @@ impl Backend for LineBackend {
         asset: &crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>> {
-        use crate::client::desktop::assets::{ImageCache, Payload, Purpose};
-        if mid.is_empty() {
+        use crate::client::desktop::assets::{Payload, Purpose};
+        if mid.is_empty()
+            || matches!(&self.client, SessionClient::Open(client) if client.local_mid() != mid)
+        {
             return Ok(None);
         }
-        let mut cache = ImageCache::new(&self.cache, mid).map_err(rpc)?;
+        let images = self.account_images(mid).map_err(rpc)?;
+        let mut cache = images.lock().unwrap();
         match purpose {
             Purpose::Thumbnail => cache.read(asset).map(|path| path.map(Payload::Image)),
             Purpose::Original => cache
@@ -717,6 +743,131 @@ fn decode_id(value: &str) -> Result<ServerId> {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn cached_thumbnail_is_available_without_an_open_client() {
+        use crate::client::desktop::assets::{Asset, ImageCache, Payload, Pixels, Purpose};
+
+        let root = tempfile::tempdir().unwrap();
+        let mid = "account-a";
+        let asset = Asset::avatar("/cached-avatar").unwrap();
+        let path = ImageCache::new(root.path(), mid)
+            .unwrap()
+            .store_pixels(
+                &asset.key(),
+                Pixels {
+                    width: 1,
+                    height: 1,
+                    rgba: vec![10, 20, 30, 255],
+                },
+            )
+            .unwrap();
+        let mut backend = LineBackend {
+            cache: root.path().into(),
+            images: None,
+            session_failure: None,
+            fetchers: None,
+            media_auth: None,
+            client: SessionClient::Absent(NetworkActivity::default()),
+            state: root.path().join("session.json"),
+            wasm_override: None,
+            version_override: None,
+        };
+        let Some(Payload::Image(cached)) = backend
+            .cached_media(mid, &asset, Purpose::Thumbnail)
+            .unwrap()
+        else {
+            panic!("cached thumbnail unavailable without an open client");
+        };
+        assert_eq!(cached, path);
+        assert!(cached.is_file());
+    }
+
+    #[test]
+    fn account_switch_restarts_asset_requests_after_permanent_failure() {
+        use crate::client::desktop::{assets, test_client::asset_client};
+        use std::{io::Write, net::TcpListener, sync::mpsc, thread, time::Duration};
+
+        let root = tempfile::tempdir().unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        let (requested, requests) = mpsc::channel();
+        let server = thread::spawn(move || {
+            use std::io::{BufRead, BufReader};
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .unwrap();
+                let mut stream = BufReader::new(stream);
+                let mut request = String::new();
+                loop {
+                    let mut line = String::new();
+                    assert!(stream.read_line(&mut line).unwrap() > 0);
+                    request.push_str(&line);
+                    if line == "\r\n" {
+                        break;
+                    }
+                }
+                requested.send(request).unwrap();
+                stream
+                    .get_mut()
+                    .write_all(
+                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                    )
+                    .unwrap();
+            }
+        });
+        let mut backend = LineBackend {
+            cache: root.path().into(),
+            images: None,
+            session_failure: None,
+            fetchers: None,
+            media_auth: None,
+            client: SessionClient::Absent(NetworkActivity::default()),
+            state: root.path().join("session.json"),
+            wasm_override: None,
+            version_override: None,
+        };
+        let mut asset =
+            serde_json::to_value(assets::Asset::avatar("/same-asset").unwrap()).unwrap();
+        asset["url"] = format!("{base}/same-asset").into();
+        let asset: assets::Asset = serde_json::from_value(asset).unwrap();
+        for account in ["account-a", "account-b"] {
+            backend.client =
+                SessionClient::Open(Box::new(asset_client(root.path(), account, &base).unwrap()));
+            let stop = Arc::new(CancelToken::new());
+            let (events, pending) = mpsc::channel();
+            backend
+                .start_assets(
+                    stop.clone(),
+                    Arc::new(move |event| events.send(event).is_ok()),
+                )
+                .unwrap();
+            let StreamEvent::AssetRequests(queue) =
+                pending.recv_timeout(Duration::from_secs(3)).unwrap()
+            else {
+                panic!("missing asset request queue");
+            };
+            (queue.request)(asset.clone(), assets::Purpose::Thumbnail);
+            let StreamEvent::Asset(done) = pending.recv_timeout(Duration::from_secs(3)).unwrap()
+            else {
+                panic!("missing asset completion");
+            };
+            assert!(done.network, "{account} reused another account's failure");
+            assert!(matches!(done.result, Err(assets::Failure::Http(404))));
+            assert!(
+                requests
+                    .recv_timeout(Duration::from_secs(3))
+                    .unwrap()
+                    .starts_with("GET /same-asset HTTP/1.1")
+            );
+            stop.cancel();
+            backend.fetchers = None;
+            backend.client = SessionClient::Absent(NetworkActivity::default());
+        }
+        server.join().unwrap();
+    }
 
     #[test]
     fn stream_reply_wait_wakes_for_reply_or_cancellation() {

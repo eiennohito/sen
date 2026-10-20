@@ -336,10 +336,13 @@ pub(crate) fn media_failure(error: &anyhow::Error) -> super::desktop::assets::Fa
 
 impl super::desktop::assets::Failure {
     pub fn retry_read(self) -> bool {
-        self.retry_automatically() || matches!(self, Self::Cancelled | Self::Http(403 | 408 | 429))
-    }
-    pub fn retry_automatically(self) -> bool {
-        matches!(self, Self::Network | Self::Timeout | Self::Http(500..=599))
+        matches!(
+            self,
+            Self::Network
+                | Self::Timeout
+                | Self::Cancelled
+                | Self::Http(403 | 408 | 429 | 500..=599)
+        )
     }
 }
 

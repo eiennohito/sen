@@ -56,7 +56,7 @@ pub(crate) fn private_write(path: &Path, data: &[u8]) -> Result<()> {
 }
 use error::RpcError;
 thread_local! { static REQUEST_CANCEL: std::cell::RefCell<Option<std::sync::Arc<crate::client::http::CancelToken>>> = const { std::cell::RefCell::new(None) }; }
-fn set_request_cancel(cancel: std::sync::Arc<crate::client::http::CancelToken>) {
+pub(crate) fn set_request_cancel(cancel: std::sync::Arc<crate::client::http::CancelToken>) {
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = Some(cancel));
 }
 
@@ -231,7 +231,7 @@ impl Api {
         if poll_seconds > 0 {
             headers.push(("X-LST", millis.as_str()));
         }
-        let (http, _, bytes) = self.http.request(
+        let (http, bytes) = self.http.request(
             path,
             &body,
             &headers,

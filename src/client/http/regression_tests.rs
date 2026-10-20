@@ -40,7 +40,7 @@ fn replaces_idle_connection_closed_by_server() {
         transport
             .request("/api/test", "{}", &[], Duration::from_secs(2))
             .unwrap()
-            .2,
+            .1,
         b"{}"
     );
     server.join().unwrap();

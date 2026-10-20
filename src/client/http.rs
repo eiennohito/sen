@@ -587,7 +587,7 @@ impl Transport {
         body: &str,
         headers: &[(&str, &str)],
         timeout: Duration,
-    ) -> Result<(u16, String, Vec<u8>)> {
+    ) -> Result<(u16, Vec<u8>)> {
         ensure!(path.starts_with("/api/"), "invalid API path");
         let mut reader = self.send(
             "POST",
@@ -598,13 +598,7 @@ impl Transport {
             None,
         )?;
         let status = reader.status;
-        let content_type = reader
-            .headers
-            .get("content-type")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or_default()
-            .to_owned();
-        Ok((status, content_type, reader.capped(MAX_BODY, false)?))
+        Ok((status, reader.capped(MAX_BODY, false)?))
     }
     pub(in crate::client) fn allowed_asset_url(&self, url: &str) -> bool {
         self.config.allowed_asset_url(url, None)
@@ -702,7 +696,8 @@ impl Transport {
                 status: 0
             }
         );
-        consume(reader.status, &reader.headers.clone(), &mut reader)
+        let headers = reader.headers.clone();
+        consume(reader.status, &headers, &mut reader)
     }
     #[cfg(test)]
     pub(in crate::client) fn local(client_version: &str, base: String) -> Self {
