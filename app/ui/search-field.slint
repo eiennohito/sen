@@ -13,36 +13,39 @@ export component SearchField inherits Rectangle {
     callback key-pressed(KeyEvent) -> EventResult;
     callback clear();
     forward-focus: input;
-    height: 36px; min-width: 160px; border-radius: 8px; background: Tokens.surface-2;
-    opacity: root.enabled ? 1 : 0.4;
-    FocusRing { outset: 4px; text-entry: true; focused: input.has-focus; }
-    Image { x: 12px; y: 10px; width: 16px; height: 16px; source: @image-url("../assets/icons/search.svg"); colorize: Tokens.secondary; }
-    editor-clip := Rectangle {
-        x: 36px; y: 0px; width: max(0px, root.width - 48px - (clear-button.visible ? 32px : 0px)); height: root.height; clip: true;
-        ContextMenuArea {
-            Menu {
-                MenuItem { title: "Cut"; activated => { input.cut(); } }
-                MenuItem { title: "Copy"; activated => { input.copy(); } }
-                MenuItem { title: "Paste"; activated => { input.paste(); } }
-                MenuItem { title: "Select All"; activated => { input.select-all(); } }
+    height: 36px; min-width: 160px;
+    // Opacity stays off the root (see Pressable).
+    dimmed := Rectangle {
+        border-radius: 8px; background: Tokens.surface-2;
+        opacity: root.enabled ? 1 : 0.4;
+        FocusRing { outset: 4px; text-entry: true; focused: input.has-focus; }
+        Image { x: 12px; y: 10px; width: 16px; height: 16px; source: @image-url("../assets/icons/search.svg"); colorize: Tokens.secondary; }
+        editor-clip := Rectangle {
+            x: 36px; y: 0px; width: max(0px, root.width - 48px - (clear-button.visible ? 32px : 0px)); height: root.height; clip: true;
+            ContextMenuArea {
+                Menu {
+                    MenuItem { title: "Cut"; activated => { input.cut(); } }
+                    MenuItem { title: "Copy"; activated => { input.copy(); } }
+                    MenuItem { title: "Paste"; activated => { input.paste(); } }
+                    MenuItem { title: "Select All"; activated => { input.select-all(); } }
+                }
+                input := TextInput {
+                    width: 100%; height: 100%;
+                    enabled: root.enabled; single-line: true; vertical-alignment: center;
+                    text <=> root.text; font-size: Tokens.base; color: Tokens.text;
+                    accessible-placeholder-text: root.placeholder-text; accessible-label: root.label;
+                    edited => { root.edited(self.text); }
+                    key-pressed(event) => { root.key-pressed(event) }
+                }
             }
-    input := TextInput {
-        width: 100%; height: 100%;
-        enabled: root.enabled; single-line: true; vertical-alignment: center;
-        text <=> root.text; font-size: Tokens.base; color: Tokens.text;
-        accessible-placeholder-text: root.placeholder-text; accessible-label: root.label;
-
-        edited => { root.edited(self.text); }
-        key-pressed(event) => { root.key-pressed(event) }
-    }
         }
-    }
-    Text { x: 36px; width: input.width; height: root.height; visible: root.text == "" && !input.has-focus; text: root.placeholder-text; color: Tokens.placeholder; font-size: Tokens.base; vertical-alignment: center; overflow: elide; accessible-role: none; }
-    clear-button := IconButton {
-        x: root.width - 36px; y: (root.height - self.height) / 2;
-        visible: root.text != ""; enabled: root.enabled && self.visible;
-        width: 32px; height: 32px;
-        label: "Clear search"; icon: @image-url("../assets/icons/close.svg");
-        activated => { input.focus(); root.clear(); }
+        Text { x: 36px; width: input.width; height: root.height; visible: root.text == "" && !input.has-focus; text: root.placeholder-text; color: Tokens.placeholder; font-size: Tokens.base; vertical-alignment: center; overflow: elide; accessible-role: none; }
+        clear-button := IconButton {
+            x: root.width - 36px; y: (root.height - self.height) / 2;
+            visible: root.text != ""; enabled: root.enabled && self.visible;
+            width: 32px; height: 32px;
+            label: "Clear search"; icon: @image-url("../assets/icons/close.svg");
+            activated => { input.focus(); root.clear(); }
+        }
     }
 }

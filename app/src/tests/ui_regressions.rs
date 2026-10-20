@@ -834,7 +834,11 @@ fn busy_controls_refuse_focus_and_activation() {
                 .next()
                 .unwrap_or_else(|| panic!("missing {label}"));
             assert_eq!(control.accessible_enabled(), Some(false));
-            assert!(control.computed_opacity() < 1.);
+            let dimmed = control
+                .query_descendants()
+                .match_id("Pressable::dimmed")
+                .find_all();
+            assert!(dimmed.first().unwrap().computed_opacity() < 1.);
             control.invoke_accessible_default_action();
             control.mock_single_click(slint::platform::PointerEventButton::Left);
             assert!(
