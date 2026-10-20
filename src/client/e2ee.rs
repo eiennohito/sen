@@ -59,12 +59,13 @@ impl Envelope {
     }
 }
 
-pub(super) fn own_key(api: &mut Api, state: &Session, id: u64) -> Result<u32> {
+pub(super) fn own_key(api: &mut Api, id: u64) -> Result<u32> {
     if let Some(key) = api.own_keys.get(&id) {
         return Ok(*key);
     }
     let rt = &mut api.rt;
-    let key = state
+    let key = api
+        .state
         .e2ee_keys
         .iter()
         .find(|key| key.id == id)
@@ -106,12 +107,7 @@ pub(super) enum Channel {
         sender_key_id: u64,
     },
 }
-pub(super) fn message_channel(
-    api: &mut Api,
-    state: &Session,
-    my_mid: &str,
-    id: &Channel,
-) -> Result<u32> {
+pub(super) fn message_channel(api: &mut Api, my_mid: &str, id: &Channel) -> Result<u32> {
     if let Some(channel) = api.cached_channel(id) {
         return Ok(channel);
     }
@@ -138,7 +134,7 @@ pub(super) fn message_channel(
                 .as_u64()
                 .context("missing creator key ID")?;
             let public = public_key(api, required(&shared, "creator")?, creator_id)?;
-            let key = own_key(api, state, private_id)?;
+            let key = own_key(api, private_id)?;
             let transfer = channel(&mut api.rt, key, &public)?;
             let h = api
                 .rt
@@ -148,7 +144,7 @@ pub(super) fn message_channel(
                 .method(Call::E2EEChannelUnwrapGroupSharedKey, transfer, &[h])?;
             api.rt.release(h)?;
             let public = if sender == my_mid {
-                let own = own_key(api, state, *sender_key_id)?;
+                let own = own_key(api, *sender_key_id)?;
                 bytes_method(&mut api.rt, Call::E2EEKeyGetPublicKey, own, &[])?
             } else {
                 public_key(api, sender, *sender_key_id)?
@@ -163,7 +159,7 @@ pub(super) fn message_channel(
             own_key_id,
             peer_key_id,
         } => {
-            let key = own_key(api, state, *own_key_id)?;
+            let key = own_key(api, *own_key_id)?;
             let public = public_key(api, mid, *peer_key_id)?;
             channel(&mut api.rt, key, &public)?
         }
@@ -174,7 +170,6 @@ pub(super) fn message_channel(
 
 pub(super) fn decrypt(
     api: &mut Api,
-    state: &Session,
     my_mid: &str,
     message: &Value,
     envelope: &Envelope,
@@ -191,7 +186,7 @@ pub(super) fn decrypt(
         to
     };
     // The gateway's opaque MIDs retain a type prefix: U = user, C/R = group/room.
-    let direct = chat_mid.starts_with(['U', 'u']);
+    let direct = crate::store::mid_kind(chat_mid) == Some(crate::store::MidKind::User);
     let (private_id, public_id) = if outgoing {
         (envelope.sender, envelope.receiver)
     } else {
@@ -199,7 +194,6 @@ pub(super) fn decrypt(
     };
     let ch = message_channel(
         api,
-        state,
         my_mid,
         &if direct {
             Channel::Direct {
@@ -239,14 +233,9 @@ pub(super) fn decrypt(
     Ok(plaintext)
 }
 
-pub(super) fn decrypt_body(
-    api: &mut Api,
-    state: &Session,
-    my_mid: &str,
-    raw: &Value,
-) -> Result<Value> {
+pub(super) fn decrypt_body(api: &mut Api, my_mid: &str, raw: &Value) -> Result<Value> {
     let envelope = Envelope::parse(raw)?;
-    let bytes = decrypt(api, state, my_mid, raw, &envelope)?;
+    let bytes = decrypt(api, my_mid, raw, &envelope)?;
     let body: Value = serde_json::from_slice(&bytes)?;
     ensure!(body.is_object(), "invalid decrypted message");
     Ok(body)
@@ -294,11 +283,10 @@ mod tests {
             json!({"from":from,"to":to,"chunks":chunks,"contentMetadata":{"e2eeVersion":"1"}});
         // Empty own-key state makes a channel cache miss fail before any network
         // call. Neither account state nor a real token is read by this test.
-        let state = Session::default();
         let envelope = Envelope::parse(&message)?;
         for _ in 0..2 {
             assert_eq!(
-                decrypt(&mut api, &state, to, &message, &envelope)?,
+                decrypt(&mut api, to, &message, &envelope)?,
                 required(&fixture, "plaintext")?.as_bytes()
             );
         }

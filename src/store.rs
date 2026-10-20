@@ -11,7 +11,7 @@ use std::path::Path;
 use types::Result;
 pub use types::*;
 
-const SCHEMA_VERSION: i64 = 12;
+const SCHEMA_VERSION: i64 = 13;
 
 /// Sole-writer account store. Every mutation commits atomically before returning deltas.
 pub struct Store {

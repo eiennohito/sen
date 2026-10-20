@@ -426,7 +426,7 @@ fn drafts_preferences_and_account() {
     let mut s = store();
     let d = Draft {
         reply: Some(ReplyReference {
-            message_id: "42".into(),
+            message_id: crate::store::ServerId::new("42").unwrap(),
             service_code: Some(1),
         }),
         text: "hello".into(),
@@ -818,4 +818,17 @@ fn pending_row_rejects_retry_and_discard_without_changing_sequence() {
     let row = s.message(key).unwrap();
     assert_eq!(row.request_seq, Some(7));
     assert_eq!(row.delivery, Delivery::Pending);
+}
+
+#[test]
+fn room_identity_is_case_sensitive() {
+    assert!(ChatId("R00000000000000000000000000000001".into()).is_room());
+    for id in [
+        "r00000000000000000000000000000001",
+        "U00000000000000000000000000000001",
+        "C00000000000000000000000000000001",
+        "unknown",
+    ] {
+        assert!(!ChatId(id.into()).is_room());
+    }
 }

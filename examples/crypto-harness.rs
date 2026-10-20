@@ -9,8 +9,8 @@ use line::{
 };
 use std::{env, fs, path::Path};
 
-const TO: &str = "u8ae764e8e69e6bd4ecdd9b6ea0c40fce";
-const FROM: &str = "uf1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6";
+const TO: &str = "U8ae764e8e69e6bd4ecdd9b6ea0c40fce";
+const FROM: &str = "Uf1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6";
 
 fn replay_har(rt: &mut Runtime, path: &Path, version: &str) -> Result<usize> {
     let har: serde_json::Value = serde_json::from_slice(&fs::read(path)?)?;

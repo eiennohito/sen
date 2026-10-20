@@ -109,19 +109,11 @@ impl AppState {
                     .map(|m| &m.contact)
             })
     }
-    pub fn reply_target(&self, message_id: &str) -> Option<&StoredMessage> {
+    pub fn reply_target(&self, message_id: &ServerId) -> Option<&StoredMessage> {
         self.messages
             .values()
-            .find(|m| {
-                m.server_id
-                    .as_ref()
-                    .is_some_and(|id| id.as_str() == message_id)
-            })
-            .or_else(|| {
-                ServerId::new(message_id.to_owned())
-                    .ok()
-                    .and_then(|id| self.reply_targets.get(&id))
-            })
+            .find(|m| m.server_id.as_ref() == Some(message_id))
+            .or_else(|| self.reply_targets.get(message_id))
     }
     pub fn profile_own(&self, mid: &str) -> bool {
         mid == self.profile.mid

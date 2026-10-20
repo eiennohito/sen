@@ -1021,3 +1021,52 @@ fn idle_workers_wake_for_work_and_both_shutdown_signals() {
         worker.join().unwrap();
     }
 }
+
+#[test]
+fn unauthorized_download_renews_and_retries_only_once() {
+    for second_status in [200, 401] {
+        let count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = count.clone();
+        let (base, http, _requests, server) = local_server(2, move |headers, mut socket| {
+            let n = seen.fetch_add(1, Ordering::SeqCst);
+            let token = if n == 0 { "stale" } else { "fresh" };
+            assert!(
+                headers
+                    .to_ascii_lowercase()
+                    .contains(&format!("x-line-access: {token}\r\n"))
+            );
+            let status = if n == 0 { 401 } else { second_status };
+            write!(
+                socket,
+                "HTTP/1.1 {status} Test\r\nContent-Length: 4\r\nConnection: close\r\n\r\nfile"
+            )
+            .unwrap();
+        });
+        let mut asset = avatar(&base, 1);
+        asset.private = true;
+        let job = Job {
+            bypass: false,
+            asset,
+            purpose: Purpose::File {
+                name: "file".into(),
+            },
+        };
+        let (_root, cache) = Cache::new();
+        let requests = std::cell::RefCell::new(Vec::new());
+        let result = fetch(&http, &cache, &job, |renew| {
+            requests.borrow_mut().push(renew);
+            Ok(Some(if renew { "fresh" } else { "stale" }.into()))
+        });
+        assert_eq!(requests.into_inner(), [false, true]);
+        if second_status == 200 {
+            assert!(matches!(result.unwrap(), Payload::File(bytes) if *bytes == b"file"));
+        } else {
+            assert_eq!(
+                result.err().unwrap().downcast_ref::<Failure>(),
+                Some(&Failure::Http(401))
+            );
+        }
+        server.join().unwrap();
+        assert_eq!(count.load(Ordering::SeqCst), 2);
+    }
+}

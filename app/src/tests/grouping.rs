@@ -134,3 +134,41 @@ fn own_member_uses_account_profile_and_keeps_you_note() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn room_detail_uses_member_names_for_uppercase_wire_mid() {
+    std::thread::spawn(|| {
+        let _platform = snapshot::install().unwrap();
+        let ui = window::create_app_window().unwrap();
+        let mut presenter = presenter::Presenter::default();
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        state.push_detail(line::controller::DetailPage::GroupInfo(ChatId(
+            "R00000000000000000000000000000001".into(),
+        )));
+        for (name, is_self, invited) in [
+            ("Self", true, false),
+            ("Alice", false, false),
+            ("Bob", false, false),
+            ("Invitee", false, true),
+        ] {
+            state.members.push(Member {
+                is_self,
+                contact: Friend {
+                    id: name.into(),
+                    name: Some(name.into()),
+                    profile: line::store::ContactProfile {
+                        invited,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            });
+        }
+        presenter.present(&ui, &state, ChatCategory::All);
+        assert_eq!(ui.global::<DetailState>().get_profile_name(), "Alice, Bob");
+        assert!(ui.global::<DetailState>().get_group_room());
+    })
+    .join()
+    .unwrap();
+}

@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ReplyReference {
-    pub message_id: String,
+    pub message_id: ServerId,
     pub service_code: Option<i64>,
 }
 
@@ -135,7 +135,6 @@ pub struct Reaction {
 pub enum ReactionKind {
     Predefined(u32),
     Paid(Option<Asset>),
-    Emoji,
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -164,16 +163,9 @@ pub struct ContactProfile {
 fn optional_number<'de, D: serde::Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<Option<i64>, D::Error> {
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum Number {
-        Int(i64),
-        Text(String),
-    }
-    Ok(Option::<Number>::deserialize(d)?.and_then(|n| match n {
-        Number::Int(n) => Some(n),
-        Number::Text(s) => s.parse().ok(),
-    }))
+    Ok(crate::client::wire_number(&serde_json::Value::deserialize(
+        d,
+    )?))
 }
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Friend {
@@ -235,9 +227,24 @@ impl Default for DesktopPrefs {
 /// Stable chat identity, independent of client transport types.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct ChatId(pub String);
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MidKind {
+    User,
+    Group,
+    Room,
+}
+
+pub fn mid_kind(mid: &str) -> Option<MidKind> {
+    match *mid.as_bytes().first()? {
+        b'U' => Some(MidKind::User),
+        b'C' => Some(MidKind::Group),
+        b'R' => Some(MidKind::Room),
+        _ => None,
+    }
+}
 impl ChatId {
     pub fn is_room(&self) -> bool {
-        self.0.starts_with('r')
+        mid_kind(&self.0) == Some(MidKind::Room)
     }
 }
 

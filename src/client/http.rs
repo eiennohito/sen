@@ -635,7 +635,7 @@ impl Transport {
         &self,
         url: &str,
         headers: &[(&str, &str)],
-        bytes: Vec<u8>,
+        bytes: Bytes,
         progress: &mut dyn FnMut(u64),
     ) -> Result<String> {
         let mut headers = headers.to_vec();
@@ -644,7 +644,7 @@ impl Transport {
             "POST",
             url,
             &headers,
-            Bytes::from(bytes),
+            bytes,
             SendOptions {
                 mode: SendMode::Upload,
                 ..SendOptions::request(self.config.upload_idle, self.config.connect)

@@ -61,8 +61,8 @@ func main() {
 	nonce := make([]byte, 12)
 	binary.BigEndian.PutUint64(nonce, 0x100000001)
 	copy(nonce[8:], []byte{1, 2, 3, 4})
-	to := "u8ae764e8e69e6bd4ecdd9b6ea0c40fce"
-	from := "uf1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6"
+	to := "U8ae764e8e69e6bd4ecdd9b6ea0c40fce"
+	from := "Uf1a2b3c4d5e6f7a8b9c0d1e2f3a4b5c6"
 	aad := append([]byte(to), []byte(from)...)
 	for _, n := range []uint32{42, 99, 2, 0} {
 		aad = binary.BigEndian.AppendUint32(aad, n)

@@ -6,29 +6,15 @@ impl Client {
         clippy::type_complexity,
         reason = "return the concrete upload closure without boxing"
     )]
-    pub fn prepare_attachment(
+    pub fn prepare_attachment<F: FnMut() -> Result<String> + Send + 'static>(
         &mut self,
         to: &str,
         mut item: Attachment,
-        seq: u32,
+        mut renew: F,
     ) -> Result<
-        impl FnOnce(super::NetworkActivity, &mut dyn FnMut(f32)) -> Result<Value> + Send + use<>,
+        impl FnOnce(super::NetworkActivity, &mut dyn FnMut(f32)) -> Result<Value> + Send + use<F>,
     > {
-        ensure!(
-            seq > 0 && seq <= 0x7fff_ffff,
-            "invalid persisted send sequence"
-        );
-        let token_response = self.talk("acquireEncryptedAccessToken", json!([2]))?;
-        let token = token_response
-            .as_str()
-            .context("missing encrypted access token")?;
-        let token = token
-            .split('\x1e')
-            .nth(1)
-            .and_then(|s| s.split('\x1f').next())
-            .filter(|s| !s.is_empty())
-            .context("missing media access token")?
-            .to_string();
+        let mut token = self.media_access()?.to_owned();
         let content_type = if item.photo.is_some() { 1 } else { 14 };
         let flow = self.talk("determineMediaMessageFlow", json!([{"chatMid":to}]))?;
         ensure!(
@@ -71,18 +57,16 @@ impl Client {
                         .expect("JSON"),
                 )
             };
-            let application = format!("CHROMEOS\t{}\tChrome_OS\t", http.client_version);
             let encrypted_len = encrypted.len();
             let total = (encrypted_len + preview.len()) as f32;
             progress(0.);
-            let oid = http.upload(
+            let oid = upload(
+                &http,
                 &format!("https://obs.line-apps.com/r/talk/{sid}/{request_id}"),
-                &[
-                    ("x-obs-params", &params(&name)),
-                    ("x-line-access", &token),
-                    ("x-line-application", &application),
-                ],
+                &params(&name),
                 encrypted,
+                &mut token,
+                &mut renew,
                 &mut |sent| progress((sent as f32 / total).min(0.99)),
             )?;
             ensure!(
@@ -94,14 +78,13 @@ impl Client {
                 "missing or invalid upload object ID"
             );
             if !preview.is_empty() {
-                http.upload(
+                upload(
+                    &http,
                     &format!("https://obs.line-apps.com/r/talk/{sid}/{oid}__ud-preview"),
-                    &[
-                        ("x-obs-params", &params(&format!("{name}.png"))),
-                        ("x-line-access", &token),
-                        ("x-line-application", &application),
-                    ],
+                    &params(&format!("{name}.png")),
                     preview,
+                    &mut token,
+                    &mut renew,
                     &mut |sent| progress(((encrypted_len as u64 + sent) as f32 / total).min(0.99)),
                 )?;
             }
@@ -121,7 +104,12 @@ impl Client {
             Ok(message)
         })
     }
-    pub fn finish_attachment(&mut self, to: &str, uploaded: Value, seq: u32) -> Result<Message> {
+    pub fn finish_attachment(
+        &mut self,
+        to: &str,
+        uploaded: Value,
+        seq: u32,
+    ) -> Result<MessageInput> {
         self.send_encrypted(
             to,
             uploaded["contentType"].as_u64().context("media type")?,
@@ -130,5 +118,102 @@ impl Client {
             seq,
             None,
         )
+    }
+}
+
+fn upload(
+    http: &http::Transport,
+    url: &str,
+    params: &str,
+    bytes: Vec<u8>,
+    token: &mut String,
+    renew: &mut impl FnMut() -> Result<String>,
+    progress: &mut dyn FnMut(u64),
+) -> Result<String> {
+    let bytes = bytes::Bytes::from(bytes);
+    let application = format!("CHROMEOS\t{}\tChrome_OS\t", http.client_version);
+    let send = |token: &str, progress: &mut dyn FnMut(u64)| {
+        http.upload(
+            url,
+            &[
+                ("x-obs-params", params),
+                ("x-line-access", token),
+                ("x-line-application", &application),
+            ],
+            bytes.clone(),
+            progress,
+        )
+    };
+    match send(token, progress) {
+        Err(error)
+            if error
+                .downcast_ref::<RpcError>()
+                .is_some_and(|e| e.http == 401) =>
+        {
+            *token = renew()?;
+            send(token, progress)
+        }
+        result => result,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::client::http::tests::{accept, local_server};
+    use std::io::{BufRead, BufReader, Read};
+
+    #[test]
+    fn unauthorized_upload_renews_and_retries_only_once() -> Result<()> {
+        for second_status in [201, 401] {
+            let (url_tx, url_rx) = std::sync::mpsc::channel();
+            let (http, server) = local_server(move |listener| {
+                url_tx
+                    .send(format!("http://{}/upload", listener.local_addr().unwrap()))
+                    .unwrap();
+                for (status, token) in [(401, "stale"), (second_status, "fresh")] {
+                    let mut socket = BufReader::new(accept(&listener));
+                    let mut headers = String::new();
+                    let mut len = 0;
+                    loop {
+                        let mut line = String::new();
+                        socket.read_line(&mut line).unwrap();
+                        if line == "\r\n" {
+                            break;
+                        }
+                        if let Some(value) =
+                            line.to_ascii_lowercase().strip_prefix("content-length:")
+                        {
+                            len = value.trim().parse().unwrap();
+                        }
+                        headers.push_str(&line.to_ascii_lowercase());
+                    }
+                    assert!(headers.contains(&format!("x-line-access: {token}\r\n")));
+                    let mut body = vec![0; len];
+                    socket.read_exact(&mut body).unwrap();
+                    assert_eq!(body, b"encrypted media");
+                    write!(socket.get_mut(), "HTTP/1.1 {status} Test\r\nx-obs-oid: object\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+                }
+            });
+            let mut token = "stale".to_owned();
+            let mut renewals = 0;
+            let result = upload(
+                &http,
+                &url_rx.recv().unwrap(),
+                "params",
+                b"encrypted media".to_vec(),
+                &mut token,
+                &mut || {
+                    renewals += 1;
+                    Ok("fresh".into())
+                },
+                &mut |_| {},
+            );
+            assert_eq!(result.is_ok(), second_status == 201);
+            assert_eq!(renewals, 1);
+            assert_eq!(token, "fresh");
+            server.join().unwrap();
+        }
+        Ok(())
     }
 }

@@ -48,7 +48,7 @@ impl Presenter {
                 ..Default::default()
             });
         if let Some(reference) = &state.composer_reply {
-            quote.reply_id = reference.message_id.clone().into();
+            quote.reply_id = reference.message_id.as_str().into();
         }
         g.set_composer_reply(quote);
     }

@@ -4,10 +4,7 @@ pub mod error;
 pub mod operation;
 use crate::runtime::{Call, Runtime};
 use anyhow::{Context, Result, bail, ensure};
-use base64::{
-    Engine,
-    engine::general_purpose::{STANDARD, STANDARD_NO_PAD, URL_SAFE, URL_SAFE_NO_PAD},
-};
+use base64::{Engine, engine::general_purpose::STANDARD};
 
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
@@ -361,13 +358,34 @@ fn bytes_method(rt: &mut Runtime, call: Call, ptr: u32, args: &[u64]) -> Result<
     rt.output(h)
 }
 fn decode(value: &str) -> Result<Vec<u8>> {
-    for engine in [&STANDARD, &STANDARD_NO_PAD, &URL_SAFE, &URL_SAFE_NO_PAD] {
-        if let Ok(b) = engine.decode(value) {
-            return Ok(b);
-        }
+    use base64::{
+        alphabet,
+        engine::{DecodePaddingMode, GeneralPurpose, GeneralPurposeConfig},
+    };
+    const WIRE: GeneralPurpose = GeneralPurpose::new(
+        &alphabet::STANDARD,
+        GeneralPurposeConfig::new()
+            .with_decode_padding_mode(DecodePaddingMode::Indifferent)
+            .with_decode_allow_trailing_bits(true),
+    );
+    let value: Vec<_> = value
+        .bytes()
+        .filter(|b| !matches!(b, b' ' | b'\t' | b'\n' | b'\r' | 0x0c))
+        .collect();
+    WIRE.decode(value).context("invalid base64 key material")
+}
+pub(crate) fn wire_number<T>(value: &Value) -> Option<T>
+where
+    T: TryFrom<i64> + TryFrom<u64> + std::str::FromStr,
+{
+    match value {
+        Value::String(s) => s.parse().ok(),
+        Value::Number(n) => n
+            .as_i64()
+            .and_then(|n| T::try_from(n).ok())
+            .or_else(|| n.as_u64().and_then(|n| T::try_from(n).ok())),
+        _ => None,
     }
-    Err(anyhow::Error::new(error::Failure::Bug("decode".into()))
-        .context("invalid base64 key material"))
 }
 fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
     value[field]
@@ -375,17 +393,6 @@ fn required<'a>(value: &'a Value, field: &str) -> Result<&'a str> {
         .filter(|s| !s.is_empty())
         .ok_or(error::Failure::Bug("decode".into()))
         .with_context(|| format!("missing {field}"))
-}
-fn percent_encode(value: &str) -> String {
-    let mut out = String::new();
-    for b in value.bytes() {
-        if b.is_ascii_alphanumeric() || b"-._~".contains(&b) {
-            out.push(b as char)
-        } else {
-            out.push_str(&format!("%{b:02X}"))
-        }
-    }
-    out
 }
 fn callback(base: &str, public: &[u8]) -> Result<String> {
     ensure!(
@@ -396,7 +403,10 @@ fn callback(base: &str, public: &[u8]) -> Result<String> {
     Ok(format!(
         "{base}{}secret={}&e2eeVersion=1",
         if base.contains('?') { "&" } else { "?" },
-        percent_encode(&STANDARD.encode(public))
+        percent_encoding::utf8_percent_encode(
+            &STANDARD.encode(public),
+            percent_encoding::NON_ALPHANUMERIC
+        )
     ))
 }
 fn save_state(path: &Path, state: &Session) -> Result<()> {
@@ -453,13 +463,14 @@ fn access(state: &Session) -> Result<&str> {
     );
     Ok(&state.token_v3_issue_result.access_token)
 }
-fn validate_keys(api: &mut Api, state: &Session) -> Result<()> {
-    ensure!(!state.e2ee_keys.is_empty(), "no saved E2EE keys");
-    for key in &state.e2ee_keys {
-        let ptr = e2ee::own_key(api, state, key.id)?;
+fn validate_keys(api: &mut Api) -> Result<()> {
+    ensure!(!api.state.e2ee_keys.is_empty(), "no saved E2EE keys");
+    for index in 0..api.state.e2ee_keys.len() {
+        let id = api.state.e2ee_keys[index].id;
+        let ptr = e2ee::own_key(api, id)?;
         let public = bytes_method(&mut api.rt, Call::E2EEKeyGetPublicKey, ptr, &[])?;
         ensure!(
-            public.len() == 32 && public == decode(&key.public_key)?,
+            public.len() == 32 && public == decode(&api.state.e2ee_keys[index].public_key)?,
             "restored key mismatch"
         );
     }
@@ -615,4 +626,18 @@ pub(crate) fn decode_response(
         status: response["data"]["statusCode"].as_i64().unwrap_or(0),
     }
     .into())
+}
+
+#[cfg(test)]
+mod wire_base64_tests {
+    use super::*;
+    #[test]
+    fn wire_base64_accepts_atob_padding_and_whitespace() {
+        for encoded in ["AQI=", "AQI", " A\tQ\nI\r=\u{000c}"] {
+            assert_eq!(decode(encoded).unwrap(), [1, 2]);
+        }
+        assert_eq!(decode("AR==").unwrap(), [1]);
+        assert!(decode("A").is_err());
+        assert!(decode("AQI-_").is_err());
+    }
 }

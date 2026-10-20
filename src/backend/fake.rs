@@ -619,10 +619,7 @@ impl Backend for FakeBackend {
         }));
         Ok(())
     }
-    fn authorize(
-        &mut self,
-        _asset: &crate::client::desktop::assets::Asset,
-    ) -> Result<Option<String>> {
+    fn authorize(&mut self, _renew: bool) -> Result<Option<String>> {
         Ok(None)
     }
 
@@ -1044,12 +1041,13 @@ impl Backend for FakeBackend {
     }
     fn decode(&mut self, raw: RawOperation) -> Result<LiveOp> {
         let kind = raw.kind;
+        let replay = raw.replay;
         let raw = raw.data;
         Ok(LiveOp {
             revision: raw["revision"]
                 .as_i64()
                 .ok_or(Failure::Bug("decode".into()))?,
-            replay: raw["replay"].as_bool().unwrap_or(false),
+            replay,
             op: match kind {
                 OperationType::SendReaction | OperationType::NotifiedSendReaction => {
                     reaction_operation(kind, &raw, "self")?

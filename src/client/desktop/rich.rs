@@ -26,9 +26,7 @@ pub struct RichContent {
 
 use crate::store::{InlineEmoji, ReplyReference};
 
-fn number(value: &Value) -> Option<u64> {
-    value.as_u64().or_else(|| value.as_str()?.parse().ok())
-}
+use crate::client::wire_number;
 fn nonempty(value: &Value) -> Option<String> {
     value.as_str().filter(|s| !s.is_empty()).map(str::to_owned)
 }
@@ -53,7 +51,7 @@ pub fn parse(raw: &Value) -> RichContent {
     let mut details = RichContent {
         content_type,
         album_count: matches!(content_type, 1 | 2)
-            .then(|| number(&metadata["GTOTAL"]))
+            .then(|| wire_number(&metadata["GTOTAL"]))
             .flatten()
             .filter(|n| *n > 1),
         caption: matches!(content_type, 1 | 2)
@@ -62,6 +60,7 @@ pub fn parse(raw: &Value) -> RichContent {
         reply: (raw["messageRelationType"].as_i64() == Some(3))
             .then(|| nonempty(&raw["relatedMessageId"]))
             .flatten()
+            .and_then(|id| crate::store::ServerId::new(id).ok())
             .map(|message_id| ReplyReference {
                 message_id,
                 service_code: raw["relatedMessageServiceCode"].as_i64(),
@@ -70,11 +69,11 @@ pub fn parse(raw: &Value) -> RichContent {
         ..Default::default()
     };
     match content_type {
-        2 | 3 => details.duration_ms = number(&metadata["DURATION"]),
+        2 | 3 => details.duration_ms = wire_number(&metadata["DURATION"]),
         13 => details.contact_name = nonempty(&metadata["displayName"]),
         14 => {
             details.file_name = nonempty(&metadata["FILE_NAME"]);
-            details.file_size = number(&metadata["FILE_SIZE"]);
+            details.file_size = wire_number(&metadata["FILE_SIZE"]);
         }
         18 => {
             details.system_text = nonempty(&raw["text"]);
@@ -103,8 +102,8 @@ pub fn emoji_spans(text: &str, metadata: &Value) -> Vec<InlineEmoji> {
     {
         for resource in resources {
             let span = (|| {
-                let start = usize::try_from(number(&resource["S"])?).ok()?;
-                let end = usize::try_from(number(&resource["E"])?).ok()?;
+                let start: usize = wire_number(&resource["S"])?;
+                let end: usize = wire_number(&resource["E"])?;
                 if start >= end {
                     return None;
                 }
@@ -251,12 +250,12 @@ mod tests {
 
     #[test]
     fn typed_optional_details_reject_bad_numbers_and_non_reply_relations() {
-        let mut raw = json!({"contentType":14,"messageRelationType":3,"relatedMessageId":"reply-id","relatedMessageServiceCode":1,
+        let mut raw = json!({"contentType":14,"messageRelationType":3,"relatedMessageId":"123","relatedMessageServiceCode":1,
             "contentMetadata":{"FILE_NAME":"資料.txt","FILE_SIZE":"18446744073709551615"}});
         let details = parse(&raw);
         assert_eq!(details.file_name.as_deref(), Some("資料.txt"));
         assert_eq!(details.file_size, Some(u64::MAX));
-        assert_eq!(details.reply.unwrap().message_id, "reply-id");
+        assert_eq!(details.reply.unwrap().message_id.as_str(), "123");
         raw["contentMetadata"]["FILE_SIZE"] = json!("-1");
         raw["messageRelationType"] = json!(0);
         assert!(parse(&raw).file_size.is_none());

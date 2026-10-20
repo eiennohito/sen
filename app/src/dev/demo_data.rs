@@ -315,7 +315,7 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
         RichContent {
             emoji: vec![span],
             reply: Some(ReplyReference {
-                message_id: target.server_id.as_str().to_owned(),
+                message_id: target.server_id.clone(),
                 service_code: None,
             }),
             ..Default::default()
@@ -854,7 +854,7 @@ pub fn quote_review(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
         );
         row.created_ms += i as i64 * 1000;
         row.reply = Some(Box::new(ReplyReference {
-            message_id: target.to_string(),
+            message_id: ServerId::new(target.to_string()).unwrap(),
             service_code: Some(1),
         }));
         rows.push(row);
