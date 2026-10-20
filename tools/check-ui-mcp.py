@@ -1737,6 +1737,37 @@ def assert_profile_action_geometry(labels):
         assert gap >= 8, f"{label}: action circle overlaps its label spacing ({gap}px)"
 
 
+def assert_inline_profile_edit(text, label):
+    flow = element(text, "Text")
+    button = element(label, "Button")
+    avatar = element("Open profile photo", "Button")
+    centre = lambda item, axis, extent: item["absolutePosition"][axis] + item["size"][extent] / 2
+    dx = centre(flow, "x", "width") - centre(avatar, "x", "width")
+    gap = button["absolutePosition"]["x"] - flow["absolutePosition"]["x"] - flow["size"]["width"]
+    lines = [item for item in tree(flow["handle"])
+             if any(base.get("typeName") == "Text" for base in item.get("typeNamesAndIds", []))
+             and item["size"]["height"] > 0]
+    first = min(lines, key=lambda item: item["absolutePosition"]["y"]) if lines else flow
+    dy = centre(button, "y", "height") - centre(first, "y", "height")
+    first_line = [item for item in lines if abs(item["absolutePosition"]["y"] - first["absolutePosition"]["y"]) < .01]
+    line_dx = dx
+    if first_line:
+        left = min(item["absolutePosition"]["x"] for item in first_line)
+        right = max(item["absolutePosition"]["x"] + item["size"]["width"] for item in first_line)
+        line_dx = (left + right) / 2 - centre(avatar, "x", "width")
+        assert abs(line_dx) <= 1, f"{label}: first line text is {line_dx}px off the avatar centre"
+    assert abs(dx) <= 1, f"{label}: text is {dx}px off the avatar centre"
+    assert abs(gap - 8) <= .01, f"{label}: inline gap is {gap}px"
+    assert abs(dy) <= 1, f"{label}: button is {dy}px off the first line centre"
+    assert button["size"] == {"width": 28, "height": 28}, button
+    width = properties["size"]["width"] / properties.get("scaleFactor", 1)
+    assert 0 <= button["absolutePosition"]["x"] <= width - 28, f"{label}: button clipped"
+    images = [item for item in tree(button["handle"])
+              if any(base.get("typeName") == "Image" for base in item.get("typeNamesAndIds", []))]
+    assert len(images) == 1 and images[0]["size"] == {"width": 16, "height": 16}, images
+    print(f"  {width:g}px {label}: centre dx={dx:.3f}px, first-line dx={line_dx:.3f}px, gap={gap:.3f}px, first-line dy={dy:.3f}px", flush=True)
+
+
 def check_profile_action_geometry():
     show_chats()
     click("Friends")
@@ -1744,6 +1775,7 @@ def check_profile_action_geometry():
     wait_element("Rename")
     screenshot("friend-profile")
     assert_profile_action_geometry(("Chat", "Rename"))
+    assert not any(item.get("accessibleLabel") in ("Edit name", "Edit status message", "Add a status message") for item in tree())
     click("Close details")
     narrow = properties["size"]["width"] / properties.get("scaleFactor", 1) < 740
     if narrow:
@@ -1753,8 +1785,44 @@ def check_profile_action_geometry():
     else:
         click("Your profile")
     wait_element("Edit name")
-    screenshot("own-profile")
-    assert_profile_action_geometry(("Edit name", "Edit status message"))
+    # This wide Arabic ligature reaches elision within the 20 UTF-16-unit name limit.
+    for name, name_case in (("Offline preview", "short"), ("﷽" * 20, "long")):
+        click("Edit name")
+        set_value("Name", name)
+        click("Save")
+        wait_element(name, "Text")
+        for status, status_case in (("", "empty"), ("At the station\nBack this evening", "two-line")):
+            click("Edit status message")
+            set_value("Status message", status)
+            click("Save")
+            status_text = status or "Add a status message"
+            wait_element(status_text, "Text")
+            assert_inline_profile_edit(name, "Edit name")
+            if name_case == "long":
+                element("…", "Text", lambda: tree(element(name, "Text")["handle"]))
+            assert_inline_profile_edit(status_text, "Edit status message")
+            assert not call("find_elements_by_id", windowHandle=window, elementsId="Detail::profile-actions").get("elementHandles", []), "own profile still has an action row"
+            click("Open profile photo")
+            key("\x1b")
+            assert_restored_focus("Open profile photo")
+            for label in ("Edit name", "Edit status message"):
+                focus_tab()
+                assert_restored_focus(label)
+            focus_tab()
+            assert focus_label() not in ("Open profile photo", "Edit name", "Edit status message", "Add a status message"), "Tab did not reach the following controls"
+            focus_tab(True)
+            assert_restored_focus("Edit status message")
+            focus_tab(True)
+            assert_restored_focus("Edit name")
+            focus_tab(True)
+            assert_restored_focus("Open profile photo")
+            if not status:
+                click("Add a status message", "Text")
+                wait_element("Status message", "TextInput")
+                key("\x1b")
+            # Move the pointer away so review images show the resting controls.
+            click("Profile", "Text")
+            screenshot(f"own-{name_case}-{status_case}-status")
     click("Close details")
 
 

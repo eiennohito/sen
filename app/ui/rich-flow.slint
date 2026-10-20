@@ -32,6 +32,7 @@ export component RichFlow inherits Rectangle {
     changed width => { root.reflow(); }
     changed text-size => { root.reflow(); }
     init => { root.reflow(); }
+    out property <length> first-line-height: root.lines.length == 0 ? 0px : root.lines[0].measured-height * 1px;
     property <length> natural-height: root.lines.length == 0 ? 0px : root.lines[root.lines.length - 1].y * 1px + root.lines[root.lines.length - 1].measured-height * 1px;
     height: root.max-lines > 0 && root.lines.length > 0 ? min(root.natural-height, root.lines[0].measured-height * root.max-lines * 1px) : root.natural-height;
     for run in root.lines: Rectangle {
