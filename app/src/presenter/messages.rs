@@ -11,10 +11,14 @@ impl Presenter {
 
         if let Some(id) = &state.selected {
             let chat = state.chats.get(id).map(|c| &c.chat);
-            let contact = state.contact(&id.0);
-            let title = chat
-                .map(|c| chats::chat_title(c, state))
-                .unwrap_or_else(|| contact.map(text::friend_name).unwrap_or("Conversation"));
+            let title = if chat.is_some() {
+                names::chat(state, id, names::CONVERSATION)
+            } else {
+                state
+                    .contact(&id.0)
+                    .map(names::friend_name)
+                    .unwrap_or(names::CONVERSATION)
+            };
             let group = chat.is_some_and(|c| c.is_group);
             let avatar = chats::chat_avatar(state, id);
             g.set_chat_title(single_line(title).into());
@@ -73,19 +77,24 @@ impl Presenter {
                     Some(m) => RowKey::Message(m.key),
                     None => RowKey::Gap(source[i + 1].unwrap().key),
                 };
-                let inputs = message.map(|m| message_inputs(m, state));
-                let assets = inputs.as_ref().map(message_assets).unwrap_or_default();
-                let data = MessageData {
-                    key: key.clone(),
-                    inputs,
-                    today,
-                    group,
-                    previous: i
-                        .checked_sub(1)
-                        .and_then(|i| source[i])
-                        .map(|m| (m.sort.sort_ts, joins(m, *message))),
-                    joins_next: message
-                        .is_some_and(|m| joins(m, source.get(i + 1).copied().flatten())),
+                let (data, assets) = if let Some(m) = message {
+                    let inputs = message_inputs(m, state);
+                    let assets = message_assets(&inputs);
+                    (
+                        MessageData::Message {
+                            inputs,
+                            today,
+                            group,
+                            previous: i
+                                .checked_sub(1)
+                                .and_then(|i| source[i])
+                                .map(|previous| (previous.sort.sort_ts, joins(previous, *message))),
+                            joins_next: joins(m, source.get(i + 1).copied().flatten()),
+                        },
+                        assets,
+                    )
+                } else {
+                    (MessageData::Gap(source[i + 1].unwrap().key), Vec::new())
                 };
                 (key, data, assets)
             })
@@ -141,7 +150,9 @@ fn message_inputs(m: &StoredMessage, state: &AppState) -> MessageInputs {
         own_mid: state.profile.mid.clone(),
         sender: sender.clone(),
         // Only an unnamed sender needs the friend lookup for its fallback.
-        sender_friend: sender.as_ref().is_some_and(|s| s.name.is_none())
+        sender_friend: sender
+            .as_ref()
+            .is_some_and(|s| names::nonblank(s.name.as_deref()).is_none())
             && state.profile_friend(&m.sender_id),
         system_text: system_text.clone(),
         reply_text: reply
@@ -174,12 +185,11 @@ fn build_row(inputs: &MessageInputs, images: &Images) -> MessageRow {
                 ReactorRow {
                     id: id.into(),
                     initial: name_initial(if id == inputs.own_mid {
-                        text::member_name(contact.as_ref().and_then(|c| c.name.as_deref()))
+                        names::member_name(contact.as_ref().and_then(|c| c.name.as_deref()))
                     } else {
                         name
                     }),
                     name: name.as_str().into(),
-                    avatar_key: key.clone().into(),
                     avatar: images.get(&key).unwrap_or_default(),
                 }
             },
@@ -193,21 +203,10 @@ fn build_row(inputs: &MessageInputs, images: &Images) -> MessageRow {
         }
         row.reactions = ModelRc::new(VecModel::from(reactions));
     }
-    row.sender_name = match &inputs.sender {
-        Some(s) if inputs.sender_friend => text::friend_name(s).into(),
-        Some(s) => text::member_name(s.name.as_deref()).into(),
-        None if m.sender_id.is_empty() => "Unknown sender".into(),
-        None => {
-            let start = m
-                .sender_id
-                .char_indices()
-                .rev()
-                .nth(5)
-                .map_or(0, |(i, _)| i);
-            format!("Member · {}", &m.sender_id[start..]).into()
-        }
-    };
-    row.sender_key = asset_key(inputs.sender.as_ref().and_then(|s| s.avatar.as_ref()));
+    row.sender_name = names::sender(inputs.sender.as_ref(), inputs.sender_friend, &m.sender_id)
+        .as_ref()
+        .into();
+    let sender_key = asset_key(inputs.sender.as_ref().and_then(|s| s.avatar.as_ref()));
     row.delivery = match &m.delivery {
         Delivery::Pending => DeliveryState::Pending,
         Delivery::Sent => DeliveryState::Sent,
@@ -251,7 +250,7 @@ fn build_row(inputs: &MessageInputs, images: &Images) -> MessageRow {
         row.picture = image;
         row.has_picture = true;
     }
-    if let Some(image) = images.get(row.sender_key.as_str()) {
+    if let Some(image) = images.get(sender_key.as_str()) {
         row.sender_avatar = image;
         row.has_sender_avatar = true;
     }
@@ -261,7 +260,7 @@ fn build_row(inputs: &MessageInputs, images: &Images) -> MessageRow {
         row.image_retryable = failure.retry_read();
     }
     if let Some((target, name)) = &inputs.reply {
-        row.reply_sender = if target.outgoing { "You" } else { name }.into();
+        row.reply_sender = if target.outgoing { names::YOU } else { name }.into();
         row.reply_sender_id = target.sender_id.clone().into();
         row.reply_preview = single_line(
             &inputs
@@ -270,8 +269,8 @@ fn build_row(inputs: &MessageInputs, images: &Images) -> MessageRow {
                 .unwrap_or_else(|| message_text(&target.body).1),
         )
         .into();
-        row.reply_image_key = asset_key(target.body.image());
-        let picture = images.small(row.reply_image_key.as_str());
+        let reply_image_key = asset_key(target.body.image());
+        let picture = images.small(reply_image_key.as_str());
         row.reply_has_picture = picture.is_some()
             && matches!(target.body, Content::Photo { .. } | Content::Sticker { .. });
         row.reply_picture = picture.unwrap_or_default();
@@ -285,13 +284,16 @@ pub(crate) fn compact_text(content: &Content, state: &AppState, sender: &str) ->
 }
 
 #[derive(Clone, PartialEq)]
-pub(super) struct MessageData {
-    key: RowKey,
-    inputs: Option<MessageInputs>,
-    previous: Option<(i64, bool)>,
-    joins_next: bool,
-    group: bool,
-    today: chrono::NaiveDate,
+#[allow(clippy::large_enum_variant)] // Rows own their inputs; gaps need no allocation.
+pub(super) enum MessageData {
+    Gap(Key),
+    Message {
+        inputs: MessageInputs,
+        previous: Option<(i64, bool)>,
+        joins_next: bool,
+        group: bool,
+        today: chrono::NaiveDate,
+    },
 }
 
 fn message_assets(inputs: &MessageInputs) -> Vec<String> {
@@ -317,30 +319,33 @@ fn message_assets(inputs: &MessageInputs) -> Vec<String> {
 }
 
 pub(super) fn project(data: MessageData, images: &Images) -> MessageRow {
-    let mut row = if let Some(inputs) = &data.inputs {
-        let mut row = build_row(inputs, images);
-        if !data.group {
-            row.sender_name = "".into();
-            row.has_sender_avatar = false;
-            row.sender_avatar = Default::default();
+    let (inputs, previous, joins_next, group) = match data {
+        MessageData::Gap(key) => {
+            return MessageRow {
+                id: format!("gap-{}", key.0).into(),
+                row_kind: HistoryRowKind::Gap,
+                body: "Loading messages…".into(),
+                kind: MessageKind::System,
+                ..Default::default()
+            };
         }
-        row
-    } else {
-        let RowKey::Gap(key) = data.key else {
-            unreachable!()
-        };
-        MessageRow {
-            id: format!("gap-{}", key.0).into(),
-            row_kind: HistoryRowKind::Gap,
-            body: "Loading messages…".into(),
-            kind: MessageKind::System,
-            ..Default::default()
-        }
+        MessageData::Message {
+            inputs,
+            previous,
+            joins_next,
+            group,
+            today: _,
+        } => (inputs, previous, joins_next, group),
     };
-    let timestamp = data.inputs.as_ref().map(|i| i.message.sort.sort_ts);
-    let previous = data.previous;
+    let mut row = build_row(&inputs, images);
+    if !group {
+        row.sender_name = "".into();
+        row.has_sender_avatar = false;
+        row.sender_avatar = Default::default();
+    }
+    let timestamp = inputs.message.sort.sort_ts;
     row.sender_initial = name_initial(&row.sender_name);
-    let time = timestamp.and_then(local_time);
+    let time = local_time(timestamp);
     row.clock = time
         .map(|t| t.format("%H:%M").to_string())
         .unwrap_or_default()
@@ -350,12 +355,9 @@ pub(super) fn project(data: MessageData, images: &Images) -> MessageRow {
             .and_then(|(t, _)| local_time(t))
             .map(|t| t.date_naive())
     {
-        row.day_label = timestamp
-            .map(|t| day_label(t, now_millis()))
-            .unwrap_or_default()
-            .into();
+        row.day_label = day_label(timestamp, now_millis()).into();
     }
-    row.run_position = match (previous.is_some_and(|(_, joins)| joins), data.joins_next) {
+    row.run_position = match (previous.is_some_and(|(_, joins)| joins), joins_next) {
         (false, false) => RunPosition::Single,
         (false, true) => RunPosition::First,
         (true, true) => RunPosition::Middle,

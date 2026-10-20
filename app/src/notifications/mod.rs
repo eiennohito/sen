@@ -57,8 +57,8 @@ impl Notifications {
             let title = state
                 .chats
                 .get(&m.chat_id)
-                .map(|c| presenter::chats::chat_title(&c.chat, state))
-                .unwrap_or("閃");
+                .map(|_| presenter::names::chat(state, &m.chat_id, presenter::names::CONVERSATION))
+                .unwrap_or(presenter::names::NOTIFICATION);
             let text = policy::redact(
                 prefs.preview,
                 title,

@@ -25,12 +25,12 @@ export component PreviewLine inherits Rectangle {
     clip: true;
     for run in root.line: Rectangle {
         x: run.x * 1px; width: run.measured-width * 1px; height: parent.height;
-        if !run.thumbnail && (!run.emoji || !run.has-picture): Text {
+        Text { visible: !run.thumbnail && (!run.emoji || !run.has-picture);
             width: parent.width; height: parent.height;
             text: run.text; color: root.text-color; font-size: run.emoji ? max(11px, Tokens.preview - 2px) : Tokens.preview;
             wrap: no-wrap; overflow: clip; vertical-alignment: center; accessible-role: none;
         }
-        if run.has-picture && (run.emoji || run.thumbnail): Rectangle {
+        Rectangle { visible: run.has-picture && (run.emoji || run.thumbnail);
             width: run.thumbnail ? Tokens.preview * 1.5 : parent.width;
             height: min(parent.height, Tokens.preview * 1.5);
             y: (parent.height - self.height) / 2;

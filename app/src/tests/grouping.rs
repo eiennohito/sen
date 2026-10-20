@@ -115,6 +115,12 @@ fn own_member_uses_account_profile_and_keeps_you_note() {
             },
             is_self: true,
         });
+        let image = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(1, 1));
+        let avatar = state.contact("self").unwrap().avatar.clone();
+        presenter.images.insert(
+            avatar.as_ref().unwrap().key(),
+            crate::tests::image_file(&image),
+        );
         presenter.present(&ui, &state, ChatCategory::All);
         let member = ui
             .global::<DetailState>()
@@ -124,16 +130,8 @@ fn own_member_uses_account_profile_and_keeps_you_note() {
         assert_eq!(member.name, "Account name");
         assert_eq!(member.status, "Account status");
         assert!(member.is_self, "member row must keep its You note");
-        assert_eq!(
-            member.avatar_key,
-            state
-                .contact("self")
-                .unwrap()
-                .avatar
-                .as_ref()
-                .unwrap()
-                .key()
-        );
+        assert_eq!(member.avatar, presenter.images.picture(avatar.as_ref()));
+        assert_eq!(member.avatar.size(), image.size());
     })
     .join()
     .unwrap();

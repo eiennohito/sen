@@ -5,6 +5,7 @@ mod compose;
 pub(crate) mod detail;
 pub(crate) mod format;
 pub(crate) mod messages;
+pub(crate) mod names;
 mod new_chat;
 mod people;
 mod search;

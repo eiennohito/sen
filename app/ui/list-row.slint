@@ -31,7 +31,7 @@ export component ListRow inherits Rectangle {
             time := Text { x: parent.width - self.width; y: 3px; text: root.time; color: Tokens.secondary; font-size: Tokens.time; }
             note := RowText { x: parent.width - self.width - root.trailing-width; width: min(self.preferred-width, parent.width * 0.4); height: parent.height; text: root.title-note; color: Tokens.secondary; font-size: Tokens.small; vertical-alignment: center; }
             name := RowText { x: 0px; y: 0px; width: max(0px, parent.width - time.width - note.width - (root.muted ? Tokens.space-6 : Tokens.space-2) - (root.time == "" ? root.trailing-width : 0px)); height: parent.height; text: root.title; accessible-description: self.width < self.preferred-width ? "Truncated" : ""; color: Tokens.text; font-weight: 600; vertical-alignment: center; }
-            if root.muted: Image { x: name.width + Tokens.space-1; y: 3px; width: 16px; height: 16px; source: @image-url("../assets/icons/muted.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Muted"; }
+            Image { visible: root.muted; x: name.width + Tokens.space-1; y: 3px; width: 16px; height: 16px; source: @image-url("../assets/icons/muted.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Muted"; }
         }
         Rectangle {
             x: 0px; y: title-line.height + 2px; width: max(0px, parent.width - root.trailing-width); height: max(0px, parent.height - self.y); clip: true;

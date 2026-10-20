@@ -22,17 +22,15 @@ export component Pressable inherits FocusScope {
         if event.text == Key.Return || event.text == " " { root.activated(); return accept; }
         reject
     }
-    // Opacity on the root makes Slint 1.18 inline every user of Pressable
-    // (about 3 MB of generated code); keep it on an inner element.
-    dimmed := Rectangle {
-        opacity: root.enabled ? 1 : 0.4;
-        Rectangle {
-            background: root.background; border-radius: root.border-radius;
-            border-width: root.border-width; border-color: root.border-color;
-        }
-        touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { if root.focus-on-activation { root.focus(); } root.activated(); } }
-        @children
+    // enabled is inherited from FocusScope. Children of disableable controls
+    // apply this to their colours; direct Pressable content hosts stay enabled.
+    out property <float> dimming: root.enabled ? 0 : 0.6;
+    Rectangle {
+        background: root.background.transparentize(root.dimming); border-radius: root.border-radius;
+        border-width: root.border-width; border-color: root.border-color.transparentize(root.dimming);
     }
+    touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { if root.focus-on-activation { root.focus(); } root.activated(); } }
+    @children
 }
 
 export component FocusRing inherits Rectangle {
@@ -101,6 +99,6 @@ export component Button inherits Pressable {
     min-width: self.preferred-width;
     height: 32px; border-radius: 8px;
     background: root.primary ? (root.danger ? Tokens.danger : Tokens.accent-strong) : root.has-hover ? Tokens.surface-hover : root.text-button ? transparent : Tokens.surface-2;
-    label := Text { text: root.text; font-size: Tokens.base; font-weight: 600; color: root.primary ? Tokens.on-accent : root.danger ? Tokens.danger : root.text-button ? Tokens.accent-strong : Tokens.text; horizontal-alignment: center; vertical-alignment: center; }
+    label := Text { text: root.text; font-size: Tokens.base; font-weight: 600; color: (root.primary ? Tokens.on-accent : root.danger ? Tokens.danger : root.text-button ? Tokens.accent-strong : Tokens.text).transparentize(root.dimming); horizontal-alignment: center; vertical-alignment: center; }
     FocusRing { outset: 4px; focused: root.has-focus; }
 }

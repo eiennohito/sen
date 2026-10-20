@@ -197,10 +197,8 @@ pub(crate) fn layout(
             }
             run.measured_width = run.measured_width.min((available - x).max(0.));
             run.measured_height = height;
-            run.available = available;
             run.x = x;
             run.y = y;
-            run.positioned = true;
             run.link_start = run.link_id != 0;
             run.link_first = run.link_start && first_links.insert(run.link_id);
             run.link_width = if run.link_start {

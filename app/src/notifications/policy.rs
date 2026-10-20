@@ -55,7 +55,8 @@ pub struct NotificationText {
 }
 
 pub fn redact(level: PreviewLevel, name: &str, text: &str) -> NotificationText {
-    let name = if name.is_empty() { "閃" } else { name };
+    let name = crate::presenter::names::nonblank(Some(name))
+        .unwrap_or(crate::presenter::names::NOTIFICATION);
     match level {
         PreviewLevel::NameAndText => NotificationText {
             summary: name.into(),
@@ -157,6 +158,15 @@ mod tests {
         let hidden = redact(PreviewLevel::NewMessage, "葵", "Private text 🐈");
         assert_eq!(hidden.summary, "New message");
         assert!(hidden.body.is_empty());
+    }
+    #[test]
+    fn blank_notification_names_use_the_application_name() {
+        for name in ["", " \t\n"] {
+            assert_eq!(
+                redact(PreviewLevel::NameOnly, name, "private").summary,
+                "閃"
+            );
+        }
     }
     #[test]
     fn body_is_bounded_by_characters_including_ellipsis() {

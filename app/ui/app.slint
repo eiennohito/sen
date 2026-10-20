@@ -34,13 +34,13 @@ export component AppWindow inherits Window {
         return FocusOpener.none;
     }
     public function restore-opener(opener: FocusOpener) {
-        if ((opener == FocusOpener.search || opener == FocusOpener.chats) && (!shell.visible || !browser.visible || !chats-surface.visible))
-            || ((opener == FocusOpener.friend-search || opener == FocusOpener.friends) && (!shell.visible || !browser.visible || !friends-surface.visible))
+        if ((opener == FocusOpener.search || opener == FocusOpener.chats) && (!shell.visible || !browser.visible || !chats-host.visible))
+            || ((opener == FocusOpener.friend-search || opener == FocusOpener.friends) && (!shell.visible || !browser.visible || !friends-host.visible))
             || (opener == FocusOpener.navigation && (!shell.visible || !rail.visible))
             || (opener == FocusOpener.member-list && (!DetailState.detail-open || DetailState.detail-page != DetailPageMode.members))
             || (opener == FocusOpener.group-members && (!DetailState.detail-open || DetailState.detail-page != DetailPageMode.group))
             || (opener == FocusOpener.profile-photo && (!DetailState.detail-open || DetailState.detail-page == DetailPageMode.members))
-            || ((opener == FocusOpener.title || opener == FocusOpener.more || opener == FocusOpener.history || opener == FocusOpener.composer || opener == FocusOpener.members-button) && (!shell.visible || !conversation.visible))
+            || ((opener == FocusOpener.title || opener == FocusOpener.more || opener == FocusOpener.history || opener == FocusOpener.composer || opener == FocusOpener.members-button) && (!shell.visible || !conversation-host.visible))
             || (opener == FocusOpener.members-button && !ConversationState.chat-group)
             || opener == FocusOpener.none { root.focus-composer(); return; }
         if opener == FocusOpener.search { chats-surface.focus-search(); }
@@ -112,11 +112,11 @@ export component AppWindow inherits Window {
                 width: ShellState.narrow ? ShellState.window-width : ShellState.browser-width;
                 horizontal-stretch: 0;
                 background: Tokens.alternate-background; clip: true;
-                friends-surface := Friends {}
-                chats-surface := Chats {}
+                friends-host := Rectangle { visible: ShellState.section == Section.friends; friends-surface := Friends {} }
+                chats-host := Rectangle { visible: ShellState.section == Section.chats; chats-surface := Chats {} }
             }
 
-            conversation := Conversation { x: ShellState.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!ShellState.profile-sheet && DetailState.detail-open ? ShellState.panel-width : 0px)); height: parent.height; visible: ((ShellState.account-mid != "") || ConversationState.has-chat) && (!ShellState.narrow || ShellState.show-conversation) && !(DetailState.detail-open && ShellState.profile-sheet); }
+            conversation-host := Rectangle { x: ShellState.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!ShellState.profile-sheet && DetailState.detail-open ? ShellState.panel-width : 0px)); height: parent.height; visible: ((ShellState.account-mid != "") || ConversationState.has-chat) && (!ShellState.narrow || ShellState.show-conversation) && !(DetailState.detail-open && ShellState.profile-sheet); conversation := Conversation {} }
         }
         layers := Layers {}
         NewChat { width: parent.width; height: parent.height; }

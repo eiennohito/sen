@@ -10,9 +10,11 @@ component Action inherits Pressable {
     width: self.preferred-width;
     height: 32px;
     border-radius: 8px;
-    background: Tokens.surface-2; states [ hovered when root.has-hover: { background: Tokens.surface-hover; in-out { animate background { duration: 100ms; } } } ]
+    private property <brush> fill: Tokens.surface-2;
+    background: root.fill;
+    states [ hovered when root.has-hover: { fill: Tokens.surface-hover; in-out { animate fill { duration: 100ms; } } } ]
     FocusRing { focused: root.has-focus; border-radius: 8px; border-color: Tokens.accent; }
-    caption := Text { width: 100%; height: 100%; text: root.label; font-size: root.text-size; color: root.pressed ? Tokens.selection-foreground : Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; }
+    caption := Text { width: 100%; height: 100%; text: root.label; font-size: root.text-size; color: (root.pressed ? Tokens.selection-foreground : Tokens.foreground).transparentize(root.dimming); horizontal-alignment: center; vertical-alignment: center; }
     accessible-label: root.description;
 }
 
@@ -20,24 +22,26 @@ export component ConnectionNotice inherits Rectangle {
     callback dismissed();
     out property <bool> has-focus: notice-focus.has-focus || root.action-focused;
     property <bool> action-focused;
-    width: 100%; height: ShellState.connection-notice-height;
-    visible: ShellState.connection-feedback-visible;
-    background: Tokens.warning-surface;
+    height: ShellState.connection-notice-height;
     property <string> status: ShellState.signed-out ? AuthState.session-cause : ShellState.fatal ? "Something went wrong — restart" : "Offline. Reconnecting…";
-    accessible-role: banner; accessible-label: ShellState.connection-failed ? "Connection needs attention" : "Connection restored";
-    TouchArea { scroll-event(event) => { accept } }
-    notice-focus := FocusScope {
-        focus-on-tab-navigation: false;
-        key-pressed(event) => { if event.text == Key.F6 { root.dismissed(); return accept; } reject }
-        HorizontalLayout {
-            padding-left: 16px; padding-right: 16px; spacing: 8px; alignment: start;
-            Rectangle { width: 20px; height: 36px; Image { y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/warning.svg"); colorize: Tokens.text; } }
-            Text { horizontal-stretch: 1; min-width: 0px; text: root.status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
-            if ShellState.connection-failed && ShellState.sign-in-available: sign-in := Action {
-                changed has-focus => { root.action-focused = self.has-focus; }
-                label: "Sign in"; description: "Sign in again";
-                enabled: ShellState.sign-in-available && !ShellState.retrying-connection && !AuthState.auth-busy;
-                activated => { AuthState.open-sign-in(); }
+    surface := Rectangle {
+        visible: ShellState.connection-feedback-visible;
+        background: Tokens.warning-surface;
+        accessible-role: banner; accessible-label: ShellState.connection-failed ? "Connection needs attention" : "Connection restored";
+        TouchArea { scroll-event(event) => { accept } }
+        notice-focus := FocusScope {
+            focus-on-tab-navigation: false;
+            key-pressed(event) => { if event.text == Key.F6 { root.dismissed(); return accept; } reject }
+            HorizontalLayout {
+                padding-left: 16px; padding-right: 16px; spacing: 8px; alignment: start;
+                Rectangle { width: 20px; height: 36px; Image { y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/warning.svg"); colorize: Tokens.text; } }
+                Text { horizontal-stretch: 1; min-width: 0px; text: root.status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
+                if ShellState.connection-failed && ShellState.sign-in-available: sign-in := Action {
+                    changed has-focus => { root.action-focused = self.has-focus; }
+                    label: "Sign in"; description: "Sign in again";
+                    enabled: ShellState.sign-in-available && !ShellState.retrying-connection && !AuthState.auth-busy;
+                    activated => { AuthState.open-sign-in(); }
+                }
             }
         }
     }

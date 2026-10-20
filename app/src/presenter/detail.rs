@@ -15,7 +15,7 @@ impl Presenter {
                     } else {
                         &m.contact
                     };
-                    if !query.matches([text::member_name(contact.name.as_deref())]) {
+                    if !query.matches([names::member_name(contact.name.as_deref())]) {
                         return None;
                     }
                     Some((
@@ -81,20 +81,17 @@ impl Presenter {
             let f = state.contact(id);
             let c = state.chats.get(&ChatId(id.into())).map(|c| &c.chat);
             let name = if kind != DetailPageMode::Profile {
-                c.map(|c| c.title.as_str())
-                    .filter(|name| !name.is_empty())
-                    .or_else(|| f.and_then(|f| f.name.as_deref()))
-                    .unwrap_or("Group")
+                names::chat(state, &ChatId(id.into()), "Group")
             } else if let Some(friend) = f.filter(|_| state.profile_friend(id)) {
-                text::friend_name(friend)
+                names::friend_name(friend)
             } else {
-                text::member_name(f.and_then(|f| f.name.as_deref()))
+                names::member_name(f.and_then(|f| f.name.as_deref()))
             };
             let room_title = state
                 .members
                 .iter()
                 .filter(|m| !m.is_self && !m.contact.profile.invited)
-                .map(|m| text::member_name(m.contact.name.as_deref()))
+                .map(|m| names::member_name(m.contact.name.as_deref()))
                 .collect::<Vec<_>>()
                 .join(", ");
             let name = if kind != DetailPageMode::Profile && room && !room_title.is_empty() {

@@ -147,9 +147,10 @@ fn own_reactor_avatar_follows_profile_contact_and_profile_changes() {
             assert_eq!(actor.name, "You");
             assert_eq!(
                 actor.initial,
-                name_initial(text::member_name(contact.name.as_deref()))
+                name_initial(crate::presenter::names::member_name(
+                    contact.name.as_deref()
+                ))
             );
-            assert_eq!(actor.avatar_key, key);
             assert_eq!(
                 actor.avatar.size(),
                 if picture.is_some() {
@@ -207,18 +208,31 @@ fn sender_fallback_tracks_friend_relation_even_when_contact_is_unchanged() {
         state.contacts.insert(contact.id.clone(), contact.clone());
         let mut message = crate::tests::message("hello");
         message.sender_id = contact.id.clone();
-        assert_eq!(
-            present(&ui, &mut presenter, &mut state, &message).sender_name,
-            "Unknown member"
-        );
-        assert_eq!(system_events::name(&state, "sender"), "Unknown member");
-        state.friends.push(contact);
-        assert_eq!(
-            present(&ui, &mut presenter, &mut state, &message).sender_name,
-            "Unnamed friend"
-        );
-        assert_eq!(system_events::name(&state, "sender"), "Unnamed friend");
+        for (friend, expected) in [(false, "Unknown member"), (true, "Unnamed friend")] {
+            if friend {
+                state.friends.push(contact.clone());
+            }
+            for name in [None, Some(""), Some(" \t\n")] {
+                state.contacts.get_mut("sender").unwrap().name = name.map(str::to_owned);
+                assert_eq!(
+                    present(&ui, &mut presenter, &mut state, &message).sender_name,
+                    expected
+                );
+                assert_eq!(system_events::name(&state, "sender"), expected);
+            }
+        }
     })
     .join()
     .unwrap();
+}
+
+#[test]
+fn blank_contact_card_names_omit_the_separator() {
+    for name in [None, Some(""), Some(" \t\n")] {
+        let content = Content::Contact {
+            mid: "contact".into(),
+            name: name.map(str::to_owned),
+        };
+        assert_eq!(presenter::format::kind_label(&content).1, "Contact");
+    }
 }

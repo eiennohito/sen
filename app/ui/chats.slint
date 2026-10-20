@@ -16,7 +16,7 @@ export component Chats inherits Rectangle {
     property <int> result-focus: -1;
     property <length> row-height: max(68px, Tokens.base * 2.8 + 20px);
     property <[{kind: ChatCategory, label: string}]> categories: [{kind: ChatCategory.all, label: "All"}, {kind: ChatCategory.friends, label: "Friends"}, {kind: ChatCategory.groups, label: "Groups"}];
-    visible: ShellState.section == Section.chats;
+
     out property <bool> search-focused: search.contains-focus;
     out property <bool> has-focus: new-chat-button.has-focus || search.contains-focus || chips-focus.has-focus || list-focus.has-focus;
     out property <bool> editing: search.has-focus;
@@ -30,7 +30,7 @@ export component Chats inherits Rectangle {
         if root.result-focus >= 0 && root.result-focus < ChatsState.chats.length { ChatsState.select-chat(ChatsState.chats[root.result-focus].index); ShellState.show-conversation = true; ShellState.focus-composer(); }
     }
             VerticalLayout {
-                y: 0px; height: parent.height; visible: ShellState.section == Section.chats;
+                y: 0px; height: parent.height;
                 padding: 12px; spacing: 10px;
                 HorizontalLayout {
                     height: 42px;

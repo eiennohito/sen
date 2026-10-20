@@ -1,5 +1,6 @@
 import { ContentState } from "globals.slint";
 import { Tokens } from "tokens.slint";
+import { IconButton } from "icon-button.slint";
 import { RowText } from "list-row.slint";
 export component ReplyQuote inherits Rectangle {
     in property <color> surface: Tokens.bg;
@@ -9,6 +10,8 @@ export component ReplyQuote inherits Rectangle {
     in property <string> preview;
     in property <image> picture;
     in property <bool> has-picture;
+    in property <bool> cancellable;
+    callback cancelled();
     height: max(44px, Tokens.small * 2.8 + 12px);
     background: root.surface; border-radius: 8px; clip: true;
     Rectangle { x: 0px; y: 0px; width: 3px; height: parent.height; background: root.name-tint; }
@@ -20,6 +23,6 @@ export component ReplyQuote inherits Rectangle {
             RowText { text: root.preview; vertical-alignment: center; color: Tokens.secondary; font-size: Tokens.small; }
         }
         if root.has-picture: Image { width: 32px; height: 32px; source: root.picture; image-fit: contain; }
-        @children
+        if root.cancellable: IconButton { focus-on-tab-navigation: false; label: "Cancel reply"; icon: @image-url("../assets/icons/close.svg"); activated => { root.cancelled(); } }
     }
 }

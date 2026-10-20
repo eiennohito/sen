@@ -14,7 +14,7 @@ impl Presenter {
         let friends: Vec<_> = state
             .friends
             .iter()
-            .filter(|f| query.matches([text::friend_name(f)]))
+            .filter(|f| query.matches([names::friend_name(f)]))
             .collect();
         self.status_assets = friends
             .iter()
@@ -80,12 +80,11 @@ pub(super) fn friend_row(entry: FriendEntry, images: &Images) -> FriendRow {
                 .collect::<Vec<_>>();
             FriendRow {
                 id: f.id.clone().into(),
-                name: single_line(text::friend_name(&f)).into(),
-                initial: name_initial(text::friend_name(&f)),
+                name: single_line(names::friend_name(&f)).into(),
+                initial: name_initial(names::friend_name(&f)),
                 status: single_line(&f.status).into(),
                 status_runs: rich_content::preview::preview_runs(&f.status, &metadata, images),
                 group: f.group,
-                avatar_key: asset_key(f.avatar.as_ref()),
                 avatar: images.picture(f.avatar.as_ref()),
                 ..Default::default()
             }
@@ -98,13 +97,12 @@ pub(super) fn member_row(
 ) -> MemberRow {
     MemberRow {
         id: contact.id.into(),
-        name: single_line(text::member_name(contact.name.as_deref())).into(),
-        initial: name_initial(text::member_name(contact.name.as_deref())),
+        name: single_line(names::member_name(contact.name.as_deref())).into(),
+        initial: name_initial(names::member_name(contact.name.as_deref())),
         status: single_line(&contact.status).into(),
         is_self,
         friend,
         invited: contact.profile.invited,
-        avatar_key: asset_key(contact.avatar.as_ref()),
         avatar: images.picture(contact.avatar.as_ref()),
     }
 }

@@ -111,20 +111,6 @@ pub fn sign_in_failure(reason: &line::client::error::SignInFailure) -> String {
 
 pub(crate) const LINK_FAILURE: &str = "Couldn't open link";
 
-pub(crate) fn member_name(name: Option<&str>) -> &str {
-    name.unwrap_or("Unknown member")
-}
-pub(crate) fn friend_name(friend: &line::store::Friend) -> &str {
-    if friend.group {
-        group_name(friend.name.as_deref())
-    } else {
-        friend.name.as_deref().unwrap_or("Unnamed friend")
-    }
-}
-pub(crate) fn group_name(name: Option<&str>) -> &str {
-    name.unwrap_or("Unnamed group")
-}
-
 pub fn sign_out_reason(reason: &line::client::error::SignOutReason) -> String {
     use line::client::error::SignOutReason::*;
     match reason {

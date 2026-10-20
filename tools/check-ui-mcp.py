@@ -4,6 +4,7 @@ import argparse
 import base64
 import datetime
 import json
+import io
 import os
 from pathlib import Path
 import random
@@ -17,6 +18,8 @@ import time
 import traceback
 import urllib.error
 import urllib.request
+
+from PIL import Image
 
 from run_ui_debug import UI_TEMP, launch_demo
 
@@ -181,6 +184,12 @@ def bodies():
     return [item for item in tree() if item.get("accessibleRole") == "TextInput" and any(base.get("id", "").endswith("::body") for base in item.get("typeNamesAndIds", []))]
 
 
+def screenshot_pixels():
+    result = rpc("tools/call", {"name": "take_screenshot", "arguments": {"windowHandle": window}})
+    picture = next(item for item in result["content"] if item["type"] == "image")
+    return Image.open(io.BytesIO(base64.b64decode(picture["data"]))).convert("RGB")
+
+
 def screenshot(name):
     if args.screenshots:
         args.screenshots.mkdir(parents=True, exist_ok=True)
@@ -222,14 +231,31 @@ def check_detail_stack():
     click("Members (25)")
     wait_element("Search members", "TextInput")
     call("hover_element", elementHandle=element("Search members", "TextInput")["handle"])
-    assert all(call("get_element_properties", elementHandle=item["handle"]).get("computedOpacity", 0) == 0 for item in tree() if item.get("accessibleLabel", "").startswith("Chat with ")), "pointer users saw a keyboard-selected row's Chat with action"
+    pixels = screenshot_pixels()
+    checked = 0
+    for item in tree():
+        if not item.get("accessibleLabel", "").startswith("Chat with "):
+            continue
+        x, y = (round(item["absolutePosition"][axis]) for axis in ("x", "y"))
+        width, height = (round(item["size"][axis]) for axis in ("width", "height"))
+        # Probe every painted icon; rows below the viewport have no pixels.
+        if y + height <= pixels.height:
+            region = pixels.crop((x + 6, y + 6, x + width - 6, y + height - 6))
+            expected = (30, 31, 34) if args.dark else (255, 255, 255)
+            assert region.tobytes() == bytes(expected) * region.width * region.height, f"pointer users saw a keyboard-selected row's Chat with action: {item['accessibleLabel']}"
+            checked += 1
+    assert checked > 0, "no member Chat icons were available for the pixel probe"
     set_value("Search members", "葵")
     click("Search members", "TextInput")
     key("\uf701")
     assert_restored_focus("Group members", "List")
     focus_tab()
     assert_restored_focus("Chat with 葵")
-    assert call("get_element_properties", elementHandle=element("Chat with 葵", "Button")["handle"]).get("computedOpacity", 0) == 1, "keyboard-selected Chat with action is hidden"
+    pixels = screenshot_pixels()
+    button = element("Chat with 葵", "Button")
+    x, y = (round(button["absolutePosition"][axis]) for axis in ("x", "y"))
+    foreground = (236, 236, 236) if args.dark else (17, 17, 17)
+    assert any(pixels.getpixel((xx, yy)) == foreground for yy in range(y + 6, y + 26) for xx in range(x + 6, x + 26)), "keyboard-selected Chat with action is hidden"
     focus_tab(True)
     assert_restored_focus("Group members", "List")
     click("Open member: 葵")

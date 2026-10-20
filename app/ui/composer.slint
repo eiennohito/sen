@@ -24,7 +24,7 @@ export component Composer inherits Rectangle {
             sender: "Replying to " + ComposerState.composer-reply.sender-name;
             sender-id: ComposerState.composer-reply.sender-id; preview: ComposerState.composer-reply.body;
             picture: ComposerState.composer-reply.picture; has-picture: ComposerState.composer-reply.has-picture && (ComposerState.composer-reply.kind == MessageKind.photo || ComposerState.composer-reply.kind == MessageKind.sticker);
-            IconButton { focus-on-tab-navigation: false; label: "Cancel reply"; icon: @image-url("../assets/icons/close.svg"); activated => { ComposerState.cancel-reply(); } }
+            cancellable: true; cancelled => { ComposerState.cancel-reply(); }
         }
         HorizontalLayout {
             cross-axis-alignment: end;

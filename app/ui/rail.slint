@@ -18,7 +18,7 @@ component RailButton inherits Rectangle {
     border-radius: 8px;
     background: root.selected ? Tokens.surface-selected : touch.pressed || touch.has-hover ? Tokens.surface-hover : transparent;
     Image { x: (parent.width - 24px) / 2; y: (parent.height - 24px) / 2; width: 24px; height: 24px; source: root.icon; colorize: root.selected ? Tokens.accent : Tokens.foreground; }
-    if root.badge != "" || root.stale: Rectangle { x: parent.width - 22px; y: 0px; width: root.stale ? 8px : 22px; height: root.stale ? 8px : 20px; border-radius: 10px; background: Tokens.accent; Text { visible: !root.stale; text: root.badge; color: Tokens.on-accent; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
+    Rectangle { visible: root.badge != "" || root.stale; x: parent.width - 22px; y: 0px; width: root.stale ? 8px : 22px; height: root.stale ? 8px : 20px; border-radius: 10px; background: Tokens.accent; Text { visible: !root.stale; text: root.badge; color: Tokens.on-accent; font-size: Tokens.time; horizontal-alignment: center; vertical-alignment: center; } }
     FocusRing { focused: root.focused; border-radius: root.border-radius; }
     touch := TouchArea { width: root.width; height: root.height; accessible-role: button; accessible-label: root.label; accessible-item-selectable: root.selectable; accessible-item-selected: root.selected; clicked => { root.activated(); } Tooltip { Text { text: root.label; color: Tokens.text; font-size: Tokens.small; } } }
 }
