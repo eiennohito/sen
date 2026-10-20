@@ -24,7 +24,7 @@ impl Presenter {
             let item = &state.chats[id];
             let c = &item.chat;
             let title = names::chat(state, id, names::CONVERSATION);
-            if !query.matches([title])
+            if !query.matches([title], &mut self.search_fields)
                 || (category == ChatCategory::Friends && c.is_group)
                 || (category == ChatCategory::Groups && !c.is_group)
             {

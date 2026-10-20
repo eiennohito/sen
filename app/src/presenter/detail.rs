@@ -15,7 +15,10 @@ impl Presenter {
                     } else {
                         &m.contact
                     };
-                    if !query.matches([names::member_name(contact.name.as_deref())]) {
+                    if !query.matches(
+                        [names::member_name(contact.name.as_deref())],
+                        &mut self.search_fields,
+                    ) {
                         return None;
                     }
                     Some((

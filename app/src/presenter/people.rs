@@ -14,7 +14,7 @@ impl Presenter {
         let friends: Vec<_> = state
             .friends
             .iter()
-            .filter(|f| query.matches([names::friend_name(f)]))
+            .filter(|f| query.matches([names::friend_name(f)], &mut self.search_fields))
             .collect();
         self.status_assets = friends
             .iter()
