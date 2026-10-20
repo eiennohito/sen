@@ -48,6 +48,10 @@ impl Blocked {
     }
 }
 impl Backend for Blocked {
+    fn logout(&mut self) -> Result<()> {
+        self.wait(&FakeRpc::Logout);
+        self.fake.logout()
+    }
     fn set_network_activity(&mut self, activity: sen::client::NetworkActivity) {
         self.fake.set_network_activity(activity);
     }

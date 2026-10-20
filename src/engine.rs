@@ -50,6 +50,7 @@ enum AccountSession {
         epoch: u64,
     },
     NoSession,
+    LoggingOut,
     SessionUnusable {
         reason: SignOutReason,
     },
@@ -118,6 +119,9 @@ pub enum Intent {
     MoreChats,
     SignIn,
     CancelSignIn,
+    Logout {
+        delete_data: bool,
+    },
     Friends,
     Contact(String),
     GroupInfo(ChatId),
@@ -179,6 +183,7 @@ impl Intent {
             Self::Window(_) => "window",
             Self::MoreChats => "more-chats",
             Self::SignIn => "sign-in",
+            Self::Logout { .. } => "logout",
             Self::CancelSignIn => "cancel-sign-in",
             Self::Friends => "friends",
             Self::Contact(_) => "contact",
@@ -209,7 +214,8 @@ impl Intent {
 }
 fn account_allows(intent: &Intent, ready: bool, known: bool) -> bool {
     match intent {
-        Intent::SignIn
+        Intent::Logout { .. }
+        | Intent::SignIn
         | Intent::CancelSignIn
         | Intent::Prefs(_)
         | Intent::ChatList { .. }
@@ -372,6 +378,7 @@ pub enum Delta {
     UnsendFailed(Key),
     StorageFailed(StorageFailure),
     InternalError(&'static str),
+    LogoutCleanupFailed,
     StoreSaved,
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -516,7 +523,11 @@ fn upload_completed(inbox: &Inbox, completed: Completion) {
 pub enum StoreLocation {
     Memory,
     Directory(PathBuf),
-    Account { root: PathBuf, mid: Option<String> },
+    Account {
+        root: PathBuf,
+        cache: PathBuf,
+        mid: Option<String>,
+    },
 }
 type DeltaWake = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
 #[derive(Clone)]
@@ -582,19 +593,29 @@ impl Worker {
             let outcome =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> anyhow::Result<()> {
                     let mut account_root = None;
+                    let mut cache_root = None;
                     let mut store_mid = None;
+                    let mut recovered_logout = None;
                     let store = match location {
                         StoreLocation::Memory => Store::open_in_memory(),
                         StoreLocation::Directory(p) => Store::open(&p),
-                        StoreLocation::Account { root, mid } => {
-                            let mid = mid.or_else(|| {
-                                std::fs::read_to_string(root.join("auth/last-account"))
-                                    .ok()
-                                    .map(|mid| mid.trim().to_owned())
-                                    .filter(|mid| {
-                                        crate::locations::account_directory(&root, mid).is_ok()
-                                    })
-                            });
+                        StoreLocation::Account { root, cache, mid } => {
+                            recovered_logout = crate::logout::resume(
+                                &crate::locations::Locations::account(root.clone(), cache.clone()),
+                            );
+                            cache_root = Some(cache);
+                            let mid = if recovered_logout.is_some() {
+                                None
+                            } else {
+                                mid.or_else(|| {
+                                    std::fs::read_to_string(root.join("auth/last-account"))
+                                        .ok()
+                                        .map(|mid| mid.trim().to_owned())
+                                        .filter(|mid| {
+                                            crate::locations::account_directory(&root, mid).is_ok()
+                                        })
+                                })
+                            };
                             store_mid = mid.clone();
                             let store = if let Some(mid) = mid {
                                 Store::open_account(&root, &mid)
@@ -653,6 +674,7 @@ impl Worker {
                                 force_window: false,
                                 store,
                                 account_root,
+                                cache_root,
                                 store_mid,
                                 inbox,
                                 tx,
@@ -674,7 +696,7 @@ impl Worker {
                                 #[cfg(any(test, feature = "demo"))]
                                 waiters: Vec::new(),
                             };
-                            e.run()?;
+                            e.run(recovered_logout)?;
                         }
                         Err(e) => return Err(e.into()),
                     }
@@ -753,6 +775,7 @@ struct Engine {
     force_window: bool,
     store: Store,
     account_root: Option<PathBuf>,
+    cache_root: Option<PathBuf>,
     store_mid: Option<String>,
     inbox: Arc<Inbox>,
     tx: DeltaSender,
@@ -942,7 +965,7 @@ impl Engine {
                 reason: SignOutReason::NoSession,
             }),
             AccountSession::Opening { .. } => self.connection(Connection::Local),
-            AccountSession::SigningIn { .. } => {}
+            AccountSession::SigningIn { .. } | AccountSession::LoggingOut => {}
         }
         Ok(())
     }
@@ -973,16 +996,11 @@ impl Engine {
                 if matches!(self.connection, Connection::SignedOut { .. }) {
                     return;
                 }
-                self.generation.fetch_add(1, Ordering::SeqCst);
-                self.stop_stream();
-                if let Some(media) = self.media.take() {
-                    media.stop.cancel();
+                if matches!(self.account, AccountSession::LoggingOut) {
+                    return;
                 }
-                self.continuous = false;
-                self.inbox.lanes.lock().unwrap().refresh.clear();
-                self.retry_after.clear();
-                self.waiting_assets.clear();
-                self.waiting_retries.clear();
+                self.generation.fetch_add(1, Ordering::SeqCst);
+                self.reset_account();
                 self.account = AccountSession::SessionUnusable {
                     reason: reason.clone(),
                 };
@@ -1086,7 +1104,7 @@ impl Engine {
         );
     }
 
-    fn run(&mut self) -> Result<()> {
+    fn run(&mut self, recovered_logout: Option<bool>) -> Result<()> {
         if let Some(accounts) = &self.account_root {
             // Retain retry sources from every account sharing this clipboard directory.
             // If any store cannot be read, leave the files alone.
@@ -1108,7 +1126,17 @@ impl Engine {
         if let Some(chat) = self.store.prefs()?.last_chat {
             self.open(WindowSub::unread(1, chat))?;
         }
-        self.probe_session();
+        if let Some(clean) = recovered_logout {
+            self.account = AccountSession::NoSession;
+            self.connection(Connection::SignedOut {
+                reason: SignOutReason::NoSession,
+            });
+            if !clean {
+                self.emit(Delta::LogoutCleanupFailed);
+            }
+        } else {
+            self.probe_session();
+        }
         loop {
             #[cfg(any(test, feature = "demo"))]
             {
@@ -1225,6 +1253,38 @@ impl Engine {
         }
         Ok(())
     }
+    fn locations(&self) -> Option<crate::locations::Locations> {
+        self.account_root.clone().map(|root| {
+            crate::locations::Locations::account(root, self.cache_root.clone().unwrap_or_default())
+        })
+    }
+    fn reset_account(&mut self) {
+        self.local_previews = None;
+        self.assets_stop.cancel();
+        if let Some(media) = self.media.take() {
+            media.stop.cancel();
+            (media.join)();
+        }
+        self.stop_stream();
+        self.continuous = false;
+        self.reaction_flights.clear();
+        self.group_requests.clear();
+        self.retry_after.clear();
+        self.retry_attempts.clear();
+        self.waiting_assets.clear();
+        self.waiting_retries.clear();
+        self.chat_keys.clear();
+        self.message_keys.clear();
+        self.list_sweep.clear();
+        self.list_cursor = None;
+        self.list_more = false;
+        self.refresh_failures.clear();
+        self.refused_refreshes.clear();
+        let mut lanes = self.inbox.lanes.lock().unwrap();
+        lanes.live.clear();
+        lanes.refresh.clear();
+        self.assets_stop = Arc::new(CancelToken::new());
+    }
     fn stop_stream(&mut self) {
         if let Some((stop, j)) = self.stream.take() {
             {
@@ -1236,7 +1296,7 @@ impl Engine {
                 stop.cancel();
                 self.inbox.notify();
             }
-            drop(j);
+            let _ = j.join();
         }
     }
     fn start_stream(&mut self) -> Result<()> {
@@ -1483,6 +1543,9 @@ impl Engine {
         Ok(())
     }
     fn intent(&mut self, i: Intent) -> Result<()> {
+        if matches!(self.account, AccountSession::LoggingOut) {
+            return Ok(());
+        }
         if !account_allows(
             &i,
             matches!(self.account, AccountSession::Ready),
@@ -1491,8 +1554,60 @@ impl Engine {
             return Ok(());
         }
         match i {
+            Intent::Logout { delete_data } => {
+                if self.account.signing_in() {
+                    return Ok(());
+                }
+                self.generation.fetch_add(1, Ordering::SeqCst);
+                self.account = AccountSession::LoggingOut;
+                self.in_flight.clear();
+                let locations = self.locations();
+                let pending = locations.as_ref().map(|locations| {
+                    crate::logout::Pending::begin(locations, self.store_mid.clone(), delete_data)
+                });
+                self.reset_account();
+                self.rpc(
+                    move |backend| backend.logout(),
+                    move |engine, result, _| {
+                        if !matches!(engine.account, AccountSession::LoggingOut) {
+                            return Ok(());
+                        }
+                        if let Err(error) = result {
+                            crate::reporting::log("logout", "server", &error);
+                        }
+                        // Leave LoggingOut even when opening the empty store fails.
+                        engine.account = AccountSession::NoSession;
+                        engine.store_mid = None;
+                        let empty = Store::open_in_memory();
+                        let mut clean = empty.is_ok();
+                        match empty {
+                            Ok(empty) => engine.store = empty,
+                            Err(error) => crate::reporting::log("logout", "store", &error),
+                        }
+                        if let (Some(locations), Some((pending, began))) = (locations, pending) {
+                            clean &= pending.finish(&locations, began);
+                        }
+                        engine.window = None;
+                        engine.emit(Delta::Reset);
+                        engine.connection(Connection::SignedOut {
+                            reason: SignOutReason::NoSession,
+                        });
+                        if !clean {
+                            engine.emit(Delta::LogoutCleanupFailed);
+                        }
+                        Ok(())
+                    },
+                );
+            }
             Intent::SignIn => {
                 if self.account.signing_in() {
+                    return Ok(());
+                }
+                // Finish the previous deletion before installing another session.
+                if let Some(locations) = self.locations()
+                    && crate::logout::resume(&locations) == Some(false)
+                {
+                    self.emit(Delta::LogoutCleanupFailed);
                     return Ok(());
                 }
                 self.generation.fetch_add(1, Ordering::SeqCst);
@@ -1502,12 +1617,7 @@ impl Engine {
                     &mut self.store,
                     Refusal::SignedOut,
                 )?;
-                self.stop_stream();
-                self.waiting_assets.clear();
-                self.waiting_retries.clear();
-                if let Some(media) = self.media.take() {
-                    media.stop.cancel();
-                }
+                self.reset_account();
                 let cancel = Arc::new(CancelToken::new());
                 *self.inbox.pair_cancel.lock().unwrap() = cancel.clone();
                 let previous = std::mem::replace(&mut self.account, AccountSession::NoSession);
@@ -1565,22 +1675,10 @@ impl Engine {
                                 if !paired {
                                     return engine.online();
                                 }
-                                {
-                                    let mut lanes = engine.inbox.lanes.lock().unwrap();
-                                    lanes.live.clear();
-                                    lanes.refresh.clear();
-                                }
-                                engine.inbox.notify();
-                                engine.list_sweep.clear();
-                                engine.list_cursor = None;
-                                engine.list_more = false;
-                                engine.retry_after.clear();
+                                engine.reset_account();
                                 engine.store = Store::open_in_memory()?;
                                 engine.store_mid = None;
-                                engine.refused_refreshes.clear();
                                 engine.window = None;
-                                engine.chat_keys.clear();
-                                engine.message_keys.clear();
                                 engine.emit(Delta::Reset);
                                 engine.account = AccountSession::Ready;
                                 engine.online()?;
@@ -2092,7 +2190,9 @@ impl Engine {
                     let progress_account = account.clone();
                     let failed_address = address.clone();
                     let operation = engine.operation.clone();
+                    let upload_cancel = engine.assets_stop.clone();
                     let work = Box::new(move || {
+                        crate::client::set_request_cancel(upload_cancel);
                         if generation != live_generation.load(Ordering::SeqCst) {
                             upload_completed(
                                 &inbox,
@@ -2222,7 +2322,9 @@ impl Engine {
         result: std::result::Result<MessageInput, Failure>,
         generation: u64,
     ) -> Result<()> {
-        self.in_flight.remove(&address);
+        if !self.in_flight.remove(&address) {
+            return Ok(());
+        }
         let (account, key) = address;
         let active = self.account_mid() == account;
         let same_session = generation == self.generation.load(Ordering::SeqCst) && self.known();

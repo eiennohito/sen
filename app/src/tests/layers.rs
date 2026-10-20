@@ -286,3 +286,85 @@ fn replacing_feedback_gets_a_full_dismissal_interval() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn logout_dialog_and_signed_out_screen() {
+    std::thread::spawn(|| {
+        i_slint_backend_testing::init_no_event_loop();
+        let (ui, runtime, worker) = test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
+        let apply = |delta| runtime.update(|d| d.apply_batch(&ui, [delta]));
+        let timeout = std::time::Duration::from_secs(10);
+        let wait = |online| loop {
+            let delta = worker.deltas.recv_timeout(timeout).unwrap();
+            let done =
+                matches!(&delta, Delta::Connection(c) if matches!(c, Connection::Online) == online);
+            apply(delta);
+            if done {
+                break;
+            }
+        };
+        wait(true);
+        ui.window().set_size(slint::LogicalSize::new(980., 720.));
+        ui.show().unwrap();
+        ui.invoke_focus_settings_opener();
+        let settings_focus = focus_item(&ui);
+        ui.invoke_focus_auth_start();
+        apply(Delta::Pair(sen::backend::PairEvent::Stage(
+            sen::client::pairing::Stage::Authenticated,
+        )));
+        apply(Delta::Reset);
+        apply(Delta::Connection(Connection::Online));
+        assert!(focus_item(&ui) != settings_focus);
+        ui.global::<ShellState>().set_account_mid("self".into());
+        ui.global::<ShellState>().set_panel(PanelState::Settings);
+        ui.invoke_focus_settings_close();
+        press(&ui, "\t");
+        press(&ui, slint::platform::Key::End);
+        press(&ui, "\t");
+        press(&ui, "\n");
+        assert!(!ui.global::<SettingsState>().get_logout_delete_data());
+        assert_eq!(focus_label(&ui), "Cancel");
+        let checkbox = "Also delete this account's chats and drafts from this computer";
+        for _ in 0..8 {
+            press(&ui, "\t");
+            assert!(["Cancel", "Log out", checkbox].contains(&focus_label(&ui).as_str()));
+        }
+        press(&ui, "\u{1b}");
+        assert!(!ui.global::<SettingsState>().get_logout_open());
+        element(&ui, "Log out…").invoke_accessible_default_action();
+        ui.global::<SettingsState>().set_logout_busy(true);
+        let confirmed = Rc::new(std::cell::Cell::new(false));
+        let flag = confirmed.clone();
+        ui.global::<SettingsState>()
+            .on_confirm_logout(move || flag.set(true));
+        for label in ["Cancel", "Log out"] {
+            let button = element(&ui, label);
+            assert_eq!(button.accessible_enabled(), Some(false));
+            button.invoke_accessible_default_action();
+            button.mock_single_click(slint::platform::PointerEventButton::Left);
+        }
+        for key in ["\u{1b}", "\t", "\n"] {
+            press(&ui, key);
+        }
+        assert!(!confirmed.get());
+        assert!(ui.global::<SettingsState>().get_logout_open());
+        callbacks::install(&ui, runtime.clone());
+        ui.global::<SettingsState>().set_logout_busy(false);
+        element(&ui, "Log out").invoke_accessible_default_action();
+        assert!(ui.global::<SettingsState>().get_logout_busy());
+        wait(false);
+        assert!(!ui.global::<SettingsState>().get_logout_open());
+        assert!(!ui.global::<SettingsState>().get_logout_busy());
+        for label in ["Not signed in", "Sign in"] {
+            assert!(visible(&ui, label));
+        }
+        assert_eq!(ui.global::<ShellState>().get_unread_conversations(), 0);
+        assert_eq!(ui.global::<ShellState>().get_account_mid(), "");
+        assert_eq!(ui.global::<ComposerState>().get_draft(), "");
+        apply(Delta::LogoutCleanupFailed);
+        assert!(visible(&ui, "Some local data could not be deleted"));
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}

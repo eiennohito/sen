@@ -46,7 +46,7 @@ export global ShellState {
     out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
     in-out property <bool> ime-active: false;
     callback quit();
-    out property <bool> window-modal-open: self.startup-notice != "" || self.extension-modal-open || AttachmentState.attachments-open || NewChatState.new-chat-open || AuthState.auth-open || ViewerState.viewer-open || SettingsState.settings-open || ConversationState.recovery-kind != RecoveryKind.none || DetailState.detail-dialog != DetailAction.none;
+    out property <bool> window-modal-open: self.startup-notice != "" || SettingsState.logout-open || self.extension-modal-open || AttachmentState.attachments-open || NewChatState.new-chat-open || AuthState.auth-open || ViewerState.viewer-open || SettingsState.settings-open || ConversationState.recovery-kind != RecoveryKind.none || DetailState.detail-dialog != DetailAction.none;
     out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && DetailState.detail-open);
     in-out property <ConnectionState> connection: local;
     out property <bool> connected: self.connection == ConnectionState.online;
@@ -253,8 +253,13 @@ export global ViewerState {
     public function close-viewer() { ShellState.request-panel(PanelState.none); }
 }
 export enum NotificationPreview { name-and-text, name-only, new-message }
-export enum SettingsSection { chats, notifications, background, shortcuts, about }
+export enum SettingsSection { chats, notifications, background, shortcuts, about, account }
 export global SettingsState {
+    in-out property <bool> logout-open;
+    in-out property <bool> logout-busy;
+    in-out property <bool> logout-delete-data;
+    callback confirm-logout();
+
     in-out property <int> text-size: 15;
     out property <[int]> text-sizes: [13, 15, 18, 22];
     out property <int> text-size-index: self.text-size <= self.text-sizes[0] ? 0 : self.text-size <= self.text-sizes[1] ? 1 : self.text-size <= self.text-sizes[2] ? 2 : 3;

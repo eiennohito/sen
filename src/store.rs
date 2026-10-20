@@ -32,6 +32,9 @@ impl Store {
     // remove after the first release
     pub(crate) fn copy_first_start(root: &Path, mid: &str, directory: &Path) -> Result<()> {
         use sha2::{Digest, Sha256};
+        if crate::locations::account_directory(&root.join("auth/forgotten"), mid)?.try_exists()? {
+            return Ok(());
+        }
         let destination = directory.join("store.sqlite3");
         let old = root
             .parent()

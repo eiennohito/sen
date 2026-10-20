@@ -1,5 +1,6 @@
 use super::*;
-use crate::{client::error::classify, controller::AppState};
+use crate::{client::error::classify, controller::AppState, test_support::TempDir};
+use std::fs;
 
 fn resync_reply(
     rx: &async_channel::Receiver<crate::backend::Result<()>>,
@@ -13,27 +14,63 @@ fn resync_reply(
     ))
 }
 
+fn draft(text: &str) -> Draft {
+    Draft {
+        text: text.into(),
+        cursor: 0,
+        anchor: 0,
+        updated: 0,
+        reply: None,
+    }
+}
+fn set_draft(e: &mut Engine, text: &str) {
+    let chat = ChatId("alice".into());
+    let draft = draft(text);
+    e.intent(Intent::Draft { chat, draft }).unwrap();
+}
+fn pending(store: &mut Store, body: Content, seq: u32, at: i64) -> Key {
+    let chat = ChatId("alice".into());
+    let id = LocalId(seq.to_string());
+    store
+        .insert_pending(&chat, id, seq, body, at, None)
+        .unwrap()
+}
+fn account_location(locations: &crate::locations::Locations) -> StoreLocation {
+    StoreLocation::Account {
+        root: locations.data.clone(),
+        cache: locations.cache.clone(),
+        mid: None,
+    }
+}
 type App = harness::App<FakeBackend>;
 impl App {
     fn new() -> Self {
         Self::at(StoreLocation::Memory)
     }
-    fn at(location: StoreLocation) -> Self {
-        let fake = FakeBackend::canned();
+    fn start(location: StoreLocation, fake: FakeBackend) -> Self {
         let opener = fake.clone();
-        let worker = Worker::start(
-            location,
-            move || Ok(opener.clone()),
-            WorkerOptions {
-                timing: harness::test_timing(),
-            },
-        );
-        let mut app = Self::with_fake(worker, fake);
+        let timing = harness::test_timing();
+        let options = WorkerOptions { timing };
+        let worker = Worker::start(location, move || opener.open(), options);
+        Self::with_fake(worker, fake)
+    }
+    fn at(location: StoreLocation) -> Self {
+        let mut app = Self::start(location, FakeBackend::canned());
         app.online();
         app.select("alice");
         app.until(|state| !state.messages.is_empty());
         app.settle();
         app
+    }
+    fn account(locations: &crate::locations::Locations) -> Self {
+        Self::at(account_location(locations))
+    }
+    fn send_text(&self, text: &str) {
+        self.send(Intent::Send {
+            chat: ChatId("alice".into()),
+            text: text.into(),
+            reply: None,
+        });
     }
     fn expire_session(&self) {
         let error = crate::client::error::classify(
@@ -70,9 +107,9 @@ fn persistent_stream_loss_shows_offline_and_success_clears_it() {
     app.worker.sender.0.live(StreamEvent::Retry {
         error: Failure::Unanswered,
     });
-    app.on_engine(|engine| {
-        let now = (engine.timing.health_now)() + engine.timing.offline_after;
-        engine.timing.health_now = Arc::new(move || now);
+    app.on_engine(|e| {
+        let now = (e.timing.health_now)() + e.timing.offline_after;
+        e.timing.health_now = Arc::new(move || now);
     });
     app.until(|state| state.connection == Connection::Offline);
     let response = crate::client::decode_response("/api/test", 503, b"unavailable").unwrap_err();
@@ -87,9 +124,9 @@ fn health_deadline_is_recomputed_after_a_message() {
     let mut app = App::new();
     let clock = Arc::new(Mutex::new(Instant::now()));
     let engine_clock = clock.clone();
-    app.on_engine(move |engine| {
-        engine.timing.health_now = Arc::new(move || *engine_clock.lock().unwrap());
-        engine.timing.offline_after = Duration::from_secs(3600);
+    app.on_engine(move |e| {
+        e.timing.health_now = Arc::new(move || *engine_clock.lock().unwrap());
+        e.timing.offline_after = Duration::from_secs(3600);
     });
     app.worker.sender.0.live(StreamEvent::Retry {
         error: Failure::Unanswered,
@@ -109,9 +146,9 @@ fn retry_deadline_set_by_completion_wakes_idle_engine() {
         ChatId("alice".into()),
         vec![FakeBackend::message("alice", 9000, "after retry", false)],
     );
-    app.on_engine(|engine| {
-        engine.timing.retry_initial = Duration::from_millis(20);
-        engine.retry_later(Refresh::Recent(ChatId("alice".into())));
+    app.on_engine(|e| {
+        e.timing.retry_initial = Duration::from_millis(20);
+        e.retry_later(Refresh::Recent(ChatId("alice".into())));
     });
     app.until(|state| {
         state
@@ -125,11 +162,7 @@ fn retry_deadline_set_by_completion_wakes_idle_engine() {
 fn expired_session_cancels_queued_work_without_changing_the_reason() {
     let mut app = App::new();
     let (entered, release) = app.fake.block_send();
-    app.worker.sender.send(Intent::Send {
-        chat: ChatId("alice".into()),
-        text: "in flight".into(),
-        reply: None,
-    });
+    app.send_text("in flight");
     entered.recv_timeout(harness::WAIT).unwrap();
     app.fake.fail_rpc(
         FakeRpc::StickerPackages,
@@ -144,11 +177,7 @@ fn expired_session_cancels_queued_work_without_changing_the_reason() {
     app.worker
         .sender
         .send(Intent::ProfileAction(action.clone()));
-    app.worker.sender.send(Intent::Send {
-        chat: ChatId("alice".into()),
-        text: "queued".into(),
-        reply: None,
-    });
+    app.send_text("queued");
     app.on_engine(|_| {});
     app.expire_session();
     app.until(|state| {
@@ -191,9 +220,9 @@ fn expired_session_cancels_queued_work_without_changing_the_reason() {
 #[test]
 fn refresh_503_backoff_does_not_hold_a_send() {
     let mut app = App::new();
-    app.on_engine(|engine| {
-        engine.timing.retry_initial = Duration::from_secs(3600);
-        engine.timing.retry_max = Duration::from_secs(3600);
+    app.on_engine(|e| {
+        e.timing.retry_initial = Duration::from_secs(3600);
+        e.timing.retry_max = Duration::from_secs(3600);
     });
     let chat = ChatId("alice".into());
     let before = app
@@ -209,11 +238,7 @@ fn refresh_503_backoff_does_not_hold_a_send() {
         chat: chat.clone(),
         kind: PageKind::Recent,
     });
-    app.wait_engine(move |engine| {
-        engine
-            .retry_after
-            .contains_key(&Refresh::Recent(chat.clone()))
-    });
+    app.wait_engine(move |e| e.retry_after.contains_key(&Refresh::Recent(chat.clone())));
     let chat = ChatId("alice".into());
     app.worker.sender.send(Intent::Send {
         chat: chat.clone(),
@@ -284,18 +309,11 @@ fn cached_thumbnail_does_not_clear_offline() {
             rgba: vec![0; 4],
         },
     );
-    app.on_engine(|engine| {
-        engine.connection(Connection::Offline);
+    app.on_engine(|e| {
+        e.connection(Connection::Offline);
     });
     app.worker.sender.send(Intent::Asset(asset));
-    loop {
-        let delta = app.worker.deltas.recv_timeout(harness::WAIT).unwrap();
-        let received = matches!(delta, Delta::Asset { .. });
-        app.state.apply(delta);
-        if received {
-            break;
-        }
-    }
+    app.until_delta(|d| matches!(d, Delta::Asset { .. }), harness::WAIT);
     app.settle();
     assert_eq!(app.state.connection, Connection::Offline);
 }
@@ -304,12 +322,11 @@ fn cached_thumbnail_does_not_clear_offline() {
 fn reconnect_without_revision_change_does_not_refresh_chats() {
     let mut app = App::new();
     let before = app.fake.calls();
-    app.on_engine(|engine| {
-        engine
-            .live(StreamEvent::Connection(Err(Failure::NotDelivered)))
+    app.on_engine(|e| {
+        e.live(StreamEvent::Connection(Err(Failure::NotDelivered)))
             .unwrap();
-        engine.live(StreamEvent::Connection(Ok(()))).unwrap();
-        engine.live(StreamEvent::Connection(Ok(()))).unwrap();
+        e.live(StreamEvent::Connection(Ok(()))).unwrap();
+        e.live(StreamEvent::Connection(Ok(()))).unwrap();
     });
     app.settle();
     let after = app.fake.calls();
@@ -339,7 +356,7 @@ fn refused_chat_refresh_stays_suppressed_across_resync_until_opened() {
         app.fake
             .fail_rpc(FakeRpc::Messages(chat.clone()), failure.clone());
         let (tx, rx) = async_channel::bounded(1);
-        app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+        app.on_engine(move |e| e.resync(None, tx).unwrap());
         assert_eq!(resync_reply(&rx), Err(failure));
         app.until(|s| {
             s.refresh_failures
@@ -357,11 +374,11 @@ fn refused_chat_refresh_stays_suppressed_across_resync_until_opened() {
         // Exercise both the selected-chat path and the background-chat path.
         for selected in [true, false] {
             let (tx, rx) = async_channel::bounded(1);
-            app.on_engine(move |engine| {
+            app.on_engine(move |e| {
                 if !selected {
-                    engine.window = None;
+                    e.window = None;
                 }
-                engine.resync(None, tx).unwrap();
+                e.resync(None, tx).unwrap();
             });
             resync_reply(&rx).unwrap();
             app.settle();
@@ -387,7 +404,7 @@ fn live_chat_operation_allows_a_previously_refused_refresh() {
         );
         app.fake.fail_rpc(FakeRpc::Messages(chat.clone()), failure);
         let (tx, rx) = async_channel::bounded(1);
-        app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+        app.on_engine(move |e| e.resync(None, tx).unwrap());
         assert!(resync_reply(&rx).is_err());
         app.settle();
         let before = app
@@ -396,14 +413,13 @@ fn live_chat_operation_allows_a_previously_refused_refresh() {
             .iter()
             .filter(|c| **c == FakeRpc::Messages(chat.clone()))
             .count();
-        app.on_engine(|engine| {
-            engine
-                .live(StreamEvent::Operation(LiveOp {
-                    revision: engine.store.sync_revision().unwrap() + 1,
-                    replay: false,
-                    op: Op::Recent(ChatId("alice".into())),
-                }))
-                .unwrap();
+        app.on_engine(|e| {
+            e.live(StreamEvent::Operation(LiveOp {
+                revision: e.store.sync_revision().unwrap() + 1,
+                replay: false,
+                op: Op::Recent(ChatId("alice".into())),
+            }))
+            .unwrap();
         });
         app.settle();
         assert_eq!(
@@ -415,7 +431,7 @@ fn live_chat_operation_allows_a_previously_refused_refresh() {
             before + 1
         );
         let (tx, rx) = async_channel::bounded(1);
-        app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+        app.on_engine(move |e| e.resync(None, tx).unwrap());
         resync_reply(&rx).unwrap();
         app.settle();
         assert_eq!(
@@ -452,27 +468,22 @@ fn sticker_failure_is_visible_and_retry_recovers() {
 #[test]
 fn unchanged_revision_connection_after_exit_restores_head_continuity() {
     let app = App::new();
-    app.on_engine(|engine| {
+    app.on_engine(|e| {
         let chat = ChatId("continuity".into());
         let first = FakeBackend::message("continuity", 10000, "first", false);
-        engine
-            .store
+        e.store
             .apply_page(&chat, PageKind::Recent, &[first], true)
             .unwrap();
-        engine.live(StreamEvent::Exited).unwrap();
-        engine.live(StreamEvent::Connection(Ok(()))).unwrap();
-        let revision = engine.store.sync_revision().unwrap() + 1;
-        engine
-            .live(StreamEvent::Operation(LiveOp {
-                revision,
-                replay: false,
-                op: Op::Message(FakeBackend::message("continuity", 10001, "next", false).into()),
-            }))
-            .unwrap();
-        let window = engine
-            .store
-            .window(&chat, Anchor::Latest, 100, 100)
-            .unwrap();
+        e.live(StreamEvent::Exited).unwrap();
+        e.live(StreamEvent::Connection(Ok(()))).unwrap();
+        let revision = e.store.sync_revision().unwrap() + 1;
+        e.live(StreamEvent::Operation(LiveOp {
+            revision,
+            replay: false,
+            op: Op::Message(FakeBackend::message("continuity", 10001, "next", false).into()),
+        }))
+        .unwrap();
+        let window = e.store.window(&chat, Anchor::Latest, 100, 100).unwrap();
         assert_eq!(window.rows.len(), 2);
         assert!(
             window.gaps.is_empty(),
@@ -486,8 +497,8 @@ fn empty_live_op_target_still_checkpoints_and_unknown_types_survive() {
     use crate::client::operation::{OperationType, RawOperation};
     let mut app = App::new();
     let (done, wait) = mpsc::channel();
-    app.on_engine(move |engine| {
-        let mut revision = engine.store.sync_revision().unwrap();
+    app.on_engine(move |e| {
+        let mut revision = e.store.sync_revision().unwrap();
         for (wire, kind) in [
             (121, OperationType::UpdateChat),
             (-4000, OperationType::Unknown),
@@ -498,13 +509,13 @@ fn empty_live_op_target_still_checkpoints_and_unknown_types_survive() {
             })
             .into();
             assert_eq!(raw.kind, kind);
-            engine.live(StreamEvent::Raw(raw)).unwrap();
-            assert!(engine.inbox.lanes.lock().unwrap().refresh.is_empty());
+            e.live(StreamEvent::Raw(raw)).unwrap();
+            assert!(e.inbox.lanes.lock().unwrap().refresh.is_empty());
         }
-        engine.rpc(
+        e.rpc(
             |_| Ok(()),
-            move |engine, _, _| {
-                assert_eq!(engine.store.sync_revision()?, revision);
+            move |e, _, _| {
+                assert_eq!(e.store.sync_revision()?, revision);
                 done.send(()).unwrap();
                 Ok(())
             },
@@ -601,26 +612,26 @@ fn startup_probe_preserves_failure_classes_and_can_recover_offline() {
 fn cached_rpc_cannot_erase_a_network_failure() {
     let mut app = App::new();
     let (done, wait) = mpsc::channel();
-    app.on_engine(move |engine| {
-        engine.timing.offline_after = Duration::ZERO;
-        engine.health.failure((engine.timing.health_now)());
-        engine.connection(Connection::Offline);
-        engine.rpc(
+    app.on_engine(move |e| {
+        e.timing.offline_after = Duration::ZERO;
+        e.health.failure((e.timing.health_now)());
+        e.connection(Connection::Offline);
+        e.rpc(
             |backend| backend.session(),
-            move |engine, result, current| {
+            move |e, result, current| {
                 assert_eq!(result, Ok(true));
                 assert!(current);
                 assert_eq!(
-                    engine.connection,
+                    e.connection,
                     Connection::Offline,
                     "cache hit cleared offline health"
                 );
                 // A remote response must clear the same failure.
-                engine.rpc(
+                e.rpc(
                     |backend| backend.profile(),
-                    move |engine, result, _| {
+                    move |e, result, _| {
                         assert!(result.is_ok());
-                        assert_eq!(engine.connection, Connection::Online);
+                        assert_eq!(e.connection, Connection::Online);
                         done.send(()).unwrap();
                         Ok(())
                     },
@@ -657,24 +668,16 @@ fn cleanup_failures_are_reported_without_dropping_attachments() {
         }
         return;
     }
-    let temp = crate::test_support::TempDir::new("cleanup");
+    let temp = TempDir::new("cleanup");
     let root = temp.0.clone();
-    std::fs::write(root.join("clipboard-attachments"), b"not a directory").unwrap();
+    fs::write(root.join("clipboard-attachments"), b"not a directory").unwrap();
     let fake = FakeBackend::canned();
     fake.fail_rpc(FakeRpc::StartAssets, Failure::Refused(Refusal::Internal));
-    let opener = fake.clone();
-    let worker = Worker::start(
-        StoreLocation::Account {
-            root: root.clone(),
-            mid: None,
-        },
-        move || Ok(opener.clone()),
-        Default::default(),
-    );
-    let mut app = App::with_fake(worker, fake);
+    let paths = crate::locations::Locations::account(root.clone(), temp.0.join("cache"));
+    let mut app = App::start(account_location(&paths), fake);
     app.until(|s| s.connection == Connection::Online);
     let path = root.join("attachment");
-    std::fs::write(&path, b"attachment body").unwrap();
+    fs::write(&path, b"attachment body").unwrap();
     let mut item = crate::attachments::Attachment::prepare(&path).unwrap();
     item.preview = b"broken preview".to_vec();
     app.worker.sender.send(Intent::SendAttachments {
@@ -682,9 +685,8 @@ fn cleanup_failures_are_reported_without_dropping_attachments() {
         items: vec![item],
     });
     app.settle();
-    let (done, wait) = mpsc::channel();
-    app.on_engine(move |engine| {
-        let window = engine
+    app.on_engine(move |e| {
+        let window = e
             .store
             .window(&ChatId("alice".into()), Anchor::Latest, 80, 80)
             .unwrap();
@@ -692,11 +694,10 @@ fn cleanup_failures_are_reported_without_dropping_attachments() {
             window
                 .rows
                 .iter()
-                .any(|row| matches!(&row.body, Content::File { name, .. } if name.as_deref() == Some("attachment")))
+                .any(|row| matches!(&row.body, Content::File { name, .. }
+                    if name.as_deref() == Some("attachment")))
         );
-        done.send(()).unwrap();
     });
-    wait.recv_timeout(harness::WAIT).unwrap();
     drop(app);
 }
 
@@ -737,16 +738,15 @@ fn local_preview_is_ready_before_any_fetcher_request_or_upload() {
         .unwrap();
     let item = crate::attachments::Attachment::prepare(&path).unwrap();
     let key = crate::client::desktop::assets::Asset::local(item.clone()).key();
-    app.on_engine(move |engine| {
+    app.on_engine(move |e| {
         // A missing media handle must not delay a local preview in the fetch queue.
-        engine.media = None;
-        engine
-            .intent(Intent::SendAttachments {
-                chat: ChatId("alice".into()),
-                items: vec![item],
-            })
-            .unwrap();
-        assert!(engine.waiting_assets.is_empty());
+        e.media = None;
+        e.intent(Intent::SendAttachments {
+            chat: ChatId("alice".into()),
+            items: vec![item],
+        })
+        .unwrap();
+        assert!(e.waiting_assets.is_empty());
     });
     let deltas: Vec<_> = app.worker.deltas.try_iter().collect();
     let path = deltas
@@ -783,20 +783,14 @@ fn stale_window_row_does_not_remove_current_reply_target() {
 #[test]
 fn saving_draft_keeps_pending_window_updates() {
     let app = App::new();
-    app.on_engine(|engine| {
-        let key = engine
-            .store
-            .insert_pending(
-                &ChatId("alice".into()),
-                LocalId("discard-before-draft".into()),
-                1234,
-                Content::text("discard me"),
-                i64::MAX / 2,
-                None,
-            )
-            .unwrap();
-        engine
-            .store
+    let removed_key = app.on_engine(|e| {
+        let key = pending(
+            &mut e.store,
+            Content::text("discard me"),
+            1234,
+            i64::MAX / 2,
+        );
+        e.store
             .mark_failed(
                 key,
                 Delivery::Rejected {
@@ -804,51 +798,33 @@ fn saving_draft_keeps_pending_window_updates() {
                 },
             )
             .unwrap();
-        engine.publish().unwrap();
-        engine.store.discard(key).unwrap();
-        engine
-            .intent(Intent::Draft {
-                chat: ChatId("alice".into()),
-                draft: Draft {
-                    text: "draft".into(),
-                    cursor: 0,
-                    updated: 0,
-                    anchor: 0,
-                    reply: None,
-                },
-            })
-            .unwrap();
+        e.publish().unwrap();
+        e.store.discard(key).unwrap();
+        set_draft(e, "draft");
+        key
     });
     let deltas: Vec<_> = app.worker.deltas.try_iter().collect();
-    let removed_key = deltas
-        .iter()
-        .find_map(|d| match d {
-            Delta::Window { upsert, .. } => upsert
-                .iter()
-                .find(|row| row.body.as_text() == "discard me")
-                .map(|row| row.key),
-            _ => None,
-        })
-        .unwrap();
     assert!(
         deltas
             .iter()
             .any(|d| matches!(d, Delta::Window { remove, .. } if remove.contains(&removed_key)))
     );
-    assert!(deltas.iter().any(|d| matches!(d, Delta::Chats { upsert, .. } if upsert.iter().any(|r| r.draft.as_ref().is_some_and(|d| d.text == "draft")))));
-    app.on_engine(|engine| {
-        engine
-            .intent(Intent::Draft {
-                chat: ChatId("alice".into()),
-                draft: Draft {
-                    text: "draft again".into(),
-                    cursor: 0,
-                    updated: 0,
-                    anchor: 0,
-                    reply: None,
-                },
-            })
-            .unwrap();
+    assert!(deltas.iter().any(|d| {
+        match d {
+            Delta::Chats { upsert, .. } => upsert
+                .iter()
+                .any(|r| r.draft.as_ref().is_some_and(|d| d.text == "draft")),
+            _ => false,
+        }
+    }));
+    assert!(
+        deltas
+            .iter()
+            .any(|d| matches!(d, Delta::Window { upsert, .. }
+        if upsert.iter().any(|row| row.key == removed_key)))
+    );
+    app.on_engine(|e| {
+        set_draft(e, "draft again");
     });
     assert!(
         !app.worker
@@ -863,16 +839,10 @@ fn failed_pairing_preserves_reason_and_transport_health() {
     use crate::client::error::SignInFailure;
     let fake = FakeBackend::signed_out();
     fake.fail_sign_in(Some(SignInFailure::Server));
-    let opener = fake.clone();
-    let worker = Worker::start(
-        StoreLocation::Memory,
-        move || Ok(opener.clone()),
-        Default::default(),
-    );
-    let mut app = App::with_fake(worker, fake);
+    let mut app = App::start(StoreLocation::Memory, fake);
     app.until(|s| matches!(s.connection, Connection::SignedOut { .. }));
     let failed_since = Instant::now();
-    app.on_engine(move |engine| engine.health.failure(failed_since));
+    app.on_engine(move |e| e.health.failure(failed_since));
     app.send(Intent::SignIn);
     app.until_delta(
         |d| {
@@ -891,78 +861,290 @@ fn failed_pairing_preserves_reason_and_transport_health() {
             reason: SignOutReason::NoSession
         }
     );
-    app.on_engine(move |engine| assert_eq!(engine.health.failed_since, Some(failed_since)));
+    app.on_engine(move |e| assert_eq!(e.health.failed_since, Some(failed_since)));
 }
 
 #[test]
-fn last_account_whitespace_and_corruption_do_not_block_startup() {
-    for value in ["U123\n", "../corrupt", "\n", "broken/filename"] {
-        let temp = crate::test_support::TempDir::new("last-account");
-        let root = temp.0.join("sen");
-        std::fs::create_dir_all(root.join("auth")).unwrap();
-        std::fs::write(root.join("auth/last-account"), value).unwrap();
+fn last_account_startup_and_logout_when_backend_cannot_open() -> anyhow::Result<()> {
+    for value in [
+        "U123\n",
+        "../corrupt",
+        "\n",
+        "broken/filename",
+        "self",
+        "auth",
+    ] {
+        let temp = TempDir::new("last-account");
+        let paths = temp.locations();
+        let root = &paths.data;
+        let logout = matches!(value, "self" | "auth");
+        temp.write(&root.join("auth/last-account"), value.as_bytes());
         let valid = value.trim() == "U123";
         if valid {
-            let mut store = Store::open_account(&root, "U123").unwrap();
-            store
-                .save_draft(
-                    &ChatId("alice".into()),
-                    &Draft {
-                        text: "kept".into(),
-                        reply: None,
-                        cursor: 0,
-                        anchor: 0,
-                        updated: 1,
-                    },
-                )
-                .unwrap();
+            let kept = Draft {
+                updated: 1,
+                ..draft("kept")
+            };
+            Store::open_account(root, "U123")?.save_draft(&ChatId("alice".into()), &kept)?;
         }
         let fake = FakeBackend::signed_out();
-        let worker = Worker::start(
-            StoreLocation::Account {
-                root: root.clone(),
-                mid: None,
-            },
-            move || Ok(fake.clone()),
-            WorkerOptions {
-                timing: harness::test_timing(),
-            },
-        );
-        let mut app = App::with_fake(worker, FakeBackend::signed_out());
-        app.until(|s| matches!(s.connection, Connection::SignedOut { .. }));
-        app.on_engine(move |engine| {
-            assert_eq!(engine.store_mid.as_deref(), valid.then_some("U123"));
-            if valid {
-                assert_eq!(
-                    engine
+        if logout {
+            for path in [
+                paths.session.clone(),
+                root.join("auth/keep"),
+                paths.cache.join(value).join("keep"),
+            ] {
+                temp.write(&path, b"{}");
+            }
+            fake.fail_open(Some(crate::client::error::SignInFailure::ExtensionMissing));
+        }
+        let mut app = App::start(account_location(&paths), fake);
+        app.signed_out();
+        if logout {
+            app.send(Intent::Logout { delete_data: true });
+            app.until_delta(|d| matches!(d, Delta::Reset), harness::WAIT);
+            app.signed_out();
+            assert_eq!(
+                app.state.connection,
+                Connection::SignedOut {
+                    reason: SignOutReason::NoSession
+                }
+            );
+            assert!(!paths.session.exists());
+            assert!(!root.join("auth/last-account").exists());
+            assert_eq!(paths.cache.join(value).exists(), value == "auth");
+            assert!(root.join("auth/keep").exists());
+        } else {
+            app.on_engine(move |e| {
+                assert_eq!(e.store_mid.as_deref(), valid.then_some("U123"));
+                if valid {
+                    let kept = e
                         .store
                         .load_draft(&ChatId("alice".into()))
                         .unwrap()
-                        .unwrap()
-                        .text,
-                    "kept"
-                );
-            }
-        });
+                        .unwrap();
+                    assert_eq!(kept.text, "kept");
+                }
+            });
+        }
     }
+    Ok(())
 }
 
 #[test]
 fn identified_account_survives_copy_failure_without_publishing_a_store() {
-    use sha2::{Digest, Sha256};
-    let temp = crate::test_support::TempDir::new("identity-copy-failure");
+    let temp = TempDir::new("identity-copy-failure");
     let root = temp.0.join("sen");
-    let old = temp
-        .0
-        .join("line-desktop/accounts")
-        .join(format!("{:x}", Sha256::digest("self")));
-    std::fs::create_dir_all(&old).unwrap();
-    std::fs::write(old.join("store.sqlite3"), b"corrupt").unwrap();
-    let mut app = App::at(StoreLocation::Account {
-        root: root.clone(),
-        mid: None,
-    });
+    let old = temp.old_account("self");
+    fs::create_dir_all(&old).unwrap();
+    fs::write(old.join("store.sqlite3"), b"corrupt").unwrap();
+    let mut app = App::account(&temp.locations());
     assert_eq!(app.state.connection, Connection::Online);
     assert!(!root.join("self/store.sqlite3").exists());
     app.settle();
+}
+
+#[test]
+fn logout_keeps_history_and_isolates_the_next_account() {
+    let temp = TempDir::new("logout-keep");
+    let paths = temp.locations();
+    let mut app = App::account(&paths);
+    app.on_engine(|e| set_draft(e, "private draft"));
+    app.fake.fail_rpc(FakeRpc::Logout, Failure::NotDelivered);
+    app.on_engine(|e| {
+        e.account = AccountSession::SigningIn {
+            epoch: 0,
+            previous: Box::new(AccountSession::Ready),
+        };
+        e.intent(Intent::Logout { delete_data: false }).unwrap();
+        assert!(e.account.signing_in());
+        e.account = AccountSession::Ready;
+    });
+    app.send(Intent::Logout { delete_data: false });
+    app.signed_out();
+    assert!(app.fake.calls().contains(&FakeRpc::Logout));
+    app.fake.configure(|c| c.complete_sign_in = true);
+    app.send(Intent::SignIn);
+    app.online();
+    app.select("alice");
+    app.until(|s| s.composer == "private draft");
+    app.on_engine(|e| {
+        e.intent(Intent::Logout { delete_data: false }).unwrap();
+        e.generation.fetch_add(1, Ordering::SeqCst);
+    });
+    app.signed_out();
+    app.on_engine(|e| assert!(matches!(e.account, AccountSession::NoSession)));
+    app.fake.configure(|c| {
+        c.mid = Some("other".into());
+        c.chats = vec![ChatInput {
+            id: ChatId("second-only".into()),
+            ..Default::default()
+        }];
+    });
+    for chat in ["alice", "weekend"] {
+        app.fake.set_page(ChatId(chat.into()), vec![]);
+    }
+    app.send(Intent::SignIn);
+    app.until(|s| {
+        s.connection == Connection::Online && s.chats.contains_key(&ChatId("second-only".into()))
+    });
+    app.select("second-only");
+    app.settle();
+    assert_eq!(app.state.chats.len(), 1);
+    assert_ne!(app.state.composer, "private draft");
+    assert!(app.state.messages.is_empty());
+}
+
+#[test]
+fn logout_deletes_only_the_requested_account_after_joining_writers() -> anyhow::Result<()> {
+    let temp = TempDir::new("logout-delete");
+    let paths = temp.locations();
+    let root = &paths.data;
+    let mut app = App::account(&paths);
+    let previews = root.join("images/local-previews-crash");
+    let roots = [root, &paths.cache, &previews];
+    for mid in ["self", "other"] {
+        for base in roots {
+            temp.write(&base.join(mid).join("keep"), b"private");
+        }
+        let path = root.join(format!("clipboard-attachments/{mid}.txt"));
+        temp.write(&path, b"attachment");
+        let mut item = crate::attachments::Attachment::prepare(&path)?;
+        item.clipboard = true;
+        let mut store = Store::open_account(root, mid)?;
+        pending(&mut store, item.content(), 99, now_ms());
+    }
+    let output = paths.cache.join("self/late-image");
+    let joined = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done = joined.clone();
+    let (key, generation) = app.on_engine(move |e| {
+        let key = pending(&mut e.store, Content::text("pending"), 100, now_ms());
+        e.in_flight.insert(("self".into(), key));
+        e.media = Some(AssetRequests {
+            stop: Arc::new(CancelToken::new()),
+            request: Arc::new(|_, _| {}),
+            retry: Arc::new(|_| {}),
+            join: Arc::new(move || {
+                fs::create_dir_all(output.parent().unwrap()).unwrap();
+                fs::write(&output, b"image").unwrap();
+                done.store(true, Ordering::SeqCst);
+            }),
+        });
+        (key, e.generation.load(Ordering::SeqCst))
+    });
+    temp.write(&paths.session, b"{}");
+    let (entered, release) = app.fake.block_send();
+    app.send_text("blocked during logout");
+    entered.recv_timeout(harness::WAIT)?;
+    app.send(Intent::Logout { delete_data: true });
+    app.on_engine(|_| {});
+    let detached = !paths.session.exists()
+        && !root.join("auth/last-account").exists()
+        && root.join("auth/logout-pending").exists();
+    release.send(()).unwrap();
+    assert!(detached, "logout must be durable before the server call");
+    app.signed_out();
+    app.on_engine(move |e| {
+        let result = Err(Failure::NotDelivered);
+        e.sent(("self".into(), key), 100, result, generation)
+            .unwrap()
+    });
+    assert!(joined.load(Ordering::SeqCst), "media worker was detached");
+    for base in roots {
+        assert!(!base.join("self").exists());
+        assert!(base.join("other/keep").exists());
+    }
+    let clipboard = root.join("clipboard-attachments");
+    assert!(!clipboard.join("self.txt").exists());
+    assert!(clipboard.join("other.txt").exists());
+    Store::open(&temp.old_account("self"))?;
+    Store::copy_first_start(root, "self", &root.join("self"))?;
+    assert!(
+        !root.join("self").exists(),
+        "deleted history was imported again"
+    );
+    Ok(())
+}
+
+#[test]
+fn logout_reports_each_local_cleanup_failure_and_leaves_a_retry_marker() -> anyhow::Result<()> {
+    for failed in [
+        "sen/auth/session.json",
+        "sen/auth/last-account",
+        "keyring",
+        "sen/self",
+        "cache/self",
+        "sen/auth/logout-pending",
+    ] {
+        let temp = TempDir::new("logout-failure");
+        let paths = temp.locations();
+        let root = &paths.data;
+        let mut app = App::account(&paths);
+        let path = temp.0.join(failed);
+        if failed == "keyring" {
+            temp.write(
+                &paths.session,
+                br#"{"format":"line-desktop-sealed-session","key_id":"fake-key"}"#,
+            );
+        } else if failed.ends_with("self") {
+            fs::create_dir_all(path.parent().unwrap())?;
+            if path.exists() {
+                fs::rename(&path, temp.0.join("outside"))?;
+            }
+            std::os::unix::fs::symlink(root, path)?;
+        } else {
+            let _ = fs::remove_file(&path);
+            fs::create_dir(path)?;
+        }
+        app.send(Intent::Logout { delete_data: true });
+        app.until_delta(|d| matches!(d, Delta::LogoutCleanupFailed), harness::WAIT);
+        app.signed_out();
+        assert!(root.join("auth/logout-pending").exists(), "{failed}");
+        app.send(Intent::SignIn);
+        app.on_engine(|e| assert!(matches!(e.account, AccountSession::NoSession)));
+        assert!(!app.fake.calls().contains(&FakeRpc::SignIn));
+    }
+    Ok(())
+}
+
+#[test]
+fn startup_finishes_a_logout_interrupted_at_each_local_step() -> anyhow::Result<()> {
+    for step in 0..5 {
+        let temp = TempDir::new("logout-crash");
+        let locations = temp.locations();
+        let paths = [
+            "sen/auth/session.json",
+            "sen/auth/last-account",
+            "sen/self",
+            "cache/self",
+        ];
+        for (i, path) in paths.iter().enumerate() {
+            let path = temp.0.join(path);
+            temp.write(&if i < 2 { path } else { path.join("keep") }, b"self");
+        }
+        let marker = locations.data.join("auth/logout-pending");
+        temp.write(
+            &marker,
+            br#"{"mid":"self","key_id":null,"delete_data":true}"#,
+        );
+        for path in paths.into_iter().take(step) {
+            let path = temp.0.join(path);
+            if path.is_dir() {
+                fs::remove_dir_all(path)?;
+            } else {
+                fs::remove_file(path)?;
+            }
+        }
+        let mut app = App::start(account_location(&locations), FakeBackend::canned());
+        app.signed_out();
+        assert!(
+            app.fake.calls().is_empty(),
+            "recovery must not open the backend"
+        );
+        assert!(!marker.exists());
+        for path in paths {
+            assert!(!temp.0.join(path).exists(), "{step}: {path}");
+        }
+    }
+    Ok(())
 }

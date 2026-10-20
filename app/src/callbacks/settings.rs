@@ -2,6 +2,14 @@ use crate::SettingsState as G;
 use crate::*;
 
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
+    global_callback!(ui, actions, G, on_confirm_logout, |ui, d| {
+        d.capture_draft(&ui);
+        let g = ui.global::<G>();
+        g.set_logout_busy(true);
+        d.sender.send(Intent::Logout {
+            delete_data: g.get_logout_delete_data(),
+        });
+    });
     global_callback!(ui, actions, G, on_settings_changed, |ui, d| {
         let g = ui.global::<G>();
         d.sender.send(Intent::Prefs(Prefs {

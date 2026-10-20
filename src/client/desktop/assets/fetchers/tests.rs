@@ -702,7 +702,7 @@ fn paused_fetchers() -> Fetchers {
             global_stop: Arc::default(),
             failures: Failures::default(),
         }),
-        threads: Vec::new(),
+        threads: Vec::new().into(),
     }
 }
 
@@ -863,7 +863,7 @@ fn idle_workers_wake_for_work_and_both_shutdown_signals() {
         let (_root, cache) = Cache::new();
         let stop = Arc::new(CancelToken::new());
         let (published, completions) = mpsc::channel();
-        let mut fetchers = Fetchers::start(
+        let fetchers = Fetchers::start(
             http::Transport::local_assets("http://127.0.0.1".into()),
             cache,
             stop.clone(),
@@ -884,7 +884,7 @@ fn idle_workers_wake_for_work_and_both_shutdown_signals() {
         let worker = thread::spawn(move || {
             if global {
                 stop.cancel();
-                for worker in fetchers.threads.drain(..) {
+                for worker in fetchers.threads.lock().unwrap().drain(..) {
                     worker.join().unwrap();
                 }
             }

@@ -153,10 +153,16 @@ impl Shared {
 
 pub struct Fetchers {
     shared: Arc<Shared>,
-    threads: Vec<JoinHandle<()>>,
+    threads: Mutex<Vec<JoinHandle<()>>>,
 }
 
 impl Fetchers {
+    pub fn stop_and_join(&self) {
+        self.shared.stop.cancel();
+        for thread in self.threads.lock().unwrap().drain(..) {
+            let _ = thread.join();
+        }
+    }
     pub(in crate::client::desktop) fn start(
         http: http::Transport,
         cache: Arc<Mutex<ImageCache>>,
@@ -281,7 +287,10 @@ impl Fetchers {
                     .expect("spawn asset fetcher")
             })
             .collect();
-        Self { shared, threads }
+        Self {
+            shared,
+            threads: Mutex::new(threads),
+        }
     }
 
     pub fn failure(&self, key: &str) -> Option<Failure> {
@@ -382,10 +391,7 @@ impl Fetchers {
 
 impl Drop for Fetchers {
     fn drop(&mut self) {
-        self.shared.stop.cancel();
-        for thread in self.threads.drain(..) {
-            let _ = thread.join();
-        }
+        self.stop_and_join();
     }
 }
 

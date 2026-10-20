@@ -482,6 +482,7 @@ fn first_identity_keeps_local_work_and_sends_pending() {
         fake.clone(),
         StoreLocation::Account {
             root: root.clone(),
+            cache: root.parent().unwrap().join("cache/sen"),
             mid: None,
         },
     );
@@ -1345,6 +1346,7 @@ fn attachment_send_success_after_sign_in_still_confirms_the_row() {
         fake.clone(),
         StoreLocation::Account {
             root: root.clone(),
+            cache: root.parent().unwrap().join("cache/sen"),
             mid: Some("self".into()),
         },
     );

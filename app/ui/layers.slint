@@ -10,19 +10,19 @@ import { IconButton } from "icon-button.slint";
 
 component SettingsSections inherits FocusScope {
     in-out property <SettingsSection> current;
-    property <[SettingsSection]> pages: [SettingsSection.chats, SettingsSection.notifications, SettingsSection.background, SettingsSection.shortcuts, SettingsSection.about];
-    property <int> index: root.current == SettingsSection.chats ? 0 : root.current == SettingsSection.notifications ? 1 : root.current == SettingsSection.background ? 2 : root.current == SettingsSection.shortcuts ? 3 : 4;
+    property <[SettingsSection]> pages: [SettingsSection.chats, SettingsSection.notifications, SettingsSection.background, SettingsSection.shortcuts, SettingsSection.about, SettingsSection.account];
+    property <int> index: root.current == SettingsSection.chats ? 0 : root.current == SettingsSection.notifications ? 1 : root.current == SettingsSection.background ? 2 : root.current == SettingsSection.shortcuts ? 3 : root.current == SettingsSection.about ? 4 : 5;
     property <length> row-height: max(36px, Tokens.small * 1.5 + 16px);
-    preferred-height: 5 * root.row-height;
+    preferred-height: 6 * root.row-height;
     accessible-role: tab-list; accessible-label: "Settings section";
     key-pressed(event) => {
         if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.current = root.pages[max(0, root.index - 1)]; return accept; }
-        if event.text == Key.DownArrow || event.text == Key.RightArrow { root.current = root.pages[min(4, root.index + 1)]; return accept; }
+        if event.text == Key.DownArrow || event.text == Key.RightArrow { root.current = root.pages[min(5, root.index + 1)]; return accept; }
         if event.text == Key.Home { root.current = SettingsSection.chats; return accept; }
-        if event.text == Key.End { root.current = SettingsSection.about; return accept; }
+        if event.text == Key.End { root.current = SettingsSection.account; return accept; }
         reject
     }
-    for section[i] in ["Chats", "Notifications", "Background", "Shortcuts", "About"]: Rectangle {
+    for section[i] in ["Chats", "Notifications", "Background", "Shortcuts", "About", "Account"]: Rectangle {
         x: 0px;
         y: i * root.row-height;
         width: root.width; height: root.row-height - 4px;
@@ -94,6 +94,25 @@ export component Layers inherits Rectangle {
         }
     }
 
+    Dialog {
+        visible: SettingsState.logout-open;
+        panel-width: min(440px, root.width - 32px);
+        dismissed => { if !SettingsState.logout-busy { SettingsState.logout-open = false; settings-section.focus(); } }
+        VerticalLayout {
+            padding: 24px; spacing: 16px;
+            Text { text: "Log out?"; font-size: Tokens.heading; font-weight: 700; }
+            Text { text: "This device will sign out of LINE. Drafts and chat history stay on this computer for when you sign in to this account again."; wrap: word-wrap; }
+            CheckBox { wrap-text: true; text: "Also delete this account's chats and drafts from this computer"; checked <=> SettingsState.logout-delete-data; enabled: !SettingsState.logout-busy; }
+            HorizontalLayout { alignment: end; spacing: 8px;
+                logout-cancel := Button { text: "Cancel"; enabled: !SettingsState.logout-busy;
+                    clicked => { SettingsState.logout-open = false; settings-section.focus(); }
+                }
+                Button { text: "Log out"; danger: true; primary: true; enabled: !SettingsState.logout-busy;
+                    clicked => { SettingsState.confirm-logout(); }
+                }
+            }
+        }
+    }
     profile := Rectangle {
         x: ShellState.profile-sheet ? (ShellState.narrow ? 0px : ShellState.rail-width + ShellState.browser-width) : parent.width - ShellState.panel-width;
         width: ShellState.profile-sheet ? parent.width - self.x : ShellState.panel-width; height: parent.height;
@@ -103,7 +122,7 @@ export component Layers inherits Rectangle {
         detail := Detail { open-dialog(kind) => { DetailState.detail-dialog = kind;  } }
     }
     Dialog {
-        visible: SettingsState.settings-open && !AuthState.auth-open && !ViewerState.viewer-open;
+        visible: SettingsState.settings-open && !SettingsState.logout-open && !AuthState.auth-open && !ViewerState.viewer-open;
         panel-width: min(640px, root.width - 32px);
         panel-height: min(root.height - 32px, settings-title.height + 56px + max(settings-section.preferred-height, settings-content.preferred-height));
         shadow: true;
@@ -130,6 +149,13 @@ export component Layers inherits Rectangle {
                     content-width: self.width;
                     settings-content := VerticalLayout {
                         padding-right: 12px; spacing: 0px; alignment: start;
+                        if root.settings-section == SettingsSection.account: VerticalLayout {
+                            spacing: 12px;
+                            Text { text: "Account"; font-weight: 600; }
+                            logout-open := Button { text: "Log out…"; danger: true; enabled: ShellState.account-mid != "";
+                                clicked => { SettingsState.logout-delete-data = false; SettingsState.logout-open = true; logout-cancel.focus(); }
+                            }
+                        }
                         if root.settings-section == SettingsSection.chats: VerticalLayout {
                             spacing: 12px;
                             Text { text: "Message text size"; }

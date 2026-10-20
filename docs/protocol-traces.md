@@ -252,3 +252,20 @@ these are extension call shapes, not a live capture.
   UTF-16 ranges and emoji resource fields as message content metadata. Without
   this metadata, parenthesized codes remain literal text. Status metadata is
   persisted with contacts and rendered through the existing emoji preview path.
+
+## Logout (2026-10-20; from main.js source, not captured)
+
+Read only the installed LINE Chrome 3.7.2 manifest and `static/js/main.js`.
+The path table defines `sj = SD("talk/thrift/Talk/AuthService/logoutV2")`.
+The logout handler `xT` awaits `sj({ignoreTalkAuthException: true})` and
+performs local cleanup in `finally`. `SD(e,t)` returns `(n={}, ...r)`;
+`n` is Axios configuration and `r` is the JSON request body. Therefore:
+
+- POST `/api/talk/thrift/Talk/AuthService/logoutV2`
+- Service: `AuthService` (under `Talk`)
+- Arguments: `[]`; `ignoreTalkAuthException` is not a wire argument.
+
+Sen uses the existing authenticated/signed request, with a three-second
+whole-request timeout and no refresh/retry. Server errors are logged and do
+not prevent local logout. Loopback tests verify the path and argument array;
+the real call remains live unverified.

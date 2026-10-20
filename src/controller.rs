@@ -477,6 +477,7 @@ impl AppState {
             | Delta::MoreChats(_)
             | Delta::MediaFailed { .. }
             | Delta::UnsendFailed(_)
+            | Delta::LogoutCleanupFailed
             | Delta::InternalError(_)
             | Delta::ProfileAction { .. }
             | Delta::Members { .. }

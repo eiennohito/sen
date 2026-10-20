@@ -29,6 +29,9 @@ impl Keyring {
     }
 }
 impl Keys for Keyring {
+    fn delete(&self, id: &str) -> Result<()> {
+        Session::open()?.delete_items(id)
+    }
     fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>> {
         let session = Session::open()?;
         let service = session.proxy(PATH, "Service")?;
@@ -97,6 +100,27 @@ struct Session {
     path: OwnedObjectPath,
 }
 impl Session {
+    fn delete_items(&self, id: &str) -> Result<()> {
+        let (unlocked, locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) = self
+            .proxy(PATH, "Service")?
+            .call("SearchItems", &(attributes("sen", id),))?;
+        let mut items = unlocked;
+        if !locked.is_empty() {
+            items.extend(self.unlock(locked)?);
+        }
+        for item in items {
+            let prompt: OwnedObjectPath = self.proxy(item.as_str(), "Item")?.call("Delete", &())?;
+            if prompt.as_str() != "/" {
+                self.prompt(prompt)?;
+            }
+        }
+        Ok(())
+    }
+    #[cfg(test)]
+    fn open() -> Result<Self> {
+        bail!("tests must not use the desktop keyring")
+    }
+    #[cfg(not(test))]
     fn open() -> Result<Self> {
         let connection = Connection::session()?;
         let service = Proxy::new(&connection, SERVICE, PATH, "org.freedesktop.Secret.Service")?;
@@ -163,5 +187,54 @@ impl Drop for Session {
         if let Ok(proxy) = self.proxy(self.path.as_str(), "Session") {
             let _ = proxy.call::<_, _, ()>("Close", &());
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use zbus::blocking::connection::Builder;
+    #[test]
+    fn logout_unlocks_locked_items_before_deleting_them() -> Result<()> {
+        assert!(Keyring.delete("current").is_err());
+        let (server, client) = std::os::unix::net::UnixStream::pair()?;
+        let worker = std::thread::spawn(move || -> Result<()> {
+            let builder = Builder::async_io_unix_stream(server).p2p();
+            let service = builder.server(zbus::Guid::generate())?.build()?;
+            let item: OwnedObjectPath = "/org/freedesktop/secrets/item".try_into().unwrap();
+            let mut messages = zbus::blocking::MessageIterator::from(&service);
+            use zbus::zvariant::Structure;
+            let items = vec![item.clone()];
+            let root = OwnedObjectPath::default();
+            let empty = Vec::<OwnedObjectPath>::new();
+            let replies = [
+                ("SearchItems", Structure::from((empty, items.clone()))),
+                ("Unlock", Structure::from((items.clone(), root.clone()))),
+                ("Delete", Structure::from((root,))),
+            ];
+            for (expected, reply) in replies {
+                let message = messages.next().unwrap()?;
+                assert_eq!(message.header().member().unwrap().as_str(), expected);
+                let body = message.body();
+                if expected == "SearchItems" {
+                    let (attrs,): (HashMap<&str, &str>,) = body.deserialize()?;
+                    assert_eq!(attrs, attributes("sen", "current"));
+                } else if expected == "Unlock" {
+                    assert_eq!(body.deserialize::<(Vec<OwnedObjectPath>,)>()?.0, items);
+                } else {
+                    assert_eq!(message.header().path().unwrap().as_str(), item.as_str());
+                }
+                service.reply(&message.header(), &reply)?;
+            }
+            Ok(())
+        });
+        let connection = Builder::async_io_unix_stream(client).p2p().build()?;
+        Session {
+            connection,
+            path: OwnedObjectPath::default(),
+        }
+        .delete_items("current")?;
+        worker.join().unwrap()?;
+        Ok(())
     }
 }

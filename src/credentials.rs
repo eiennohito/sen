@@ -41,6 +41,7 @@ impl Store {
 
 /// Where sealing keys are kept. The Secret Service in production; a map in tests.
 trait Keys {
+    fn delete(&self, id: &str) -> Result<()>;
     fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>>;
     fn put(&self, application: &str, id: &str, key: &[u8; 32]) -> Result<()>;
 }
@@ -51,6 +52,28 @@ pub fn load(path: &Path) -> Result<Value> {
         Store::from_environment().context(SignInFailure::SessionStoreMismatch)?,
         &Keyring,
     )
+}
+pub(crate) fn saved_key_id(path: &Path) -> Result<Option<String>> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let value = parse(&bytes)?;
+            if sealed(&value) {
+                Ok(Some(
+                    value["key_id"]
+                        .as_str()
+                        .context("sealed session has no key ID")?
+                        .to_owned(),
+                ))
+            } else {
+                Ok(None)
+            }
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error.into()),
+    }
+}
+pub(crate) fn delete_key(id: &str) -> Result<()> {
+    Keyring.delete(id)
 }
 pub fn save(path: &Path, state: &Value) -> Result<()> {
     save_with(path, state, Store::from_environment()?, &Keyring)
@@ -222,6 +245,9 @@ mod secret_service {
         }
     }
     impl Keys for Keyring {
+        fn delete(&self, _: &str) -> Result<()> {
+            bail!("tests must not use the desktop keyring")
+        }
         fn get(&self, _: &str, _: &str) -> Result<Option<[u8; 32]>> {
             bail!("tests must not use the desktop keyring")
         }
@@ -234,3 +260,9 @@ use secret_service::Keyring;
 
 #[cfg(test)]
 mod tests;
+
+// Protocol tests inject a private socket pair; Keyring remains the guarded stub.
+#[cfg(test)]
+#[allow(dead_code)]
+#[path = "credentials/secret_service.rs"]
+mod secret_service_contract;
