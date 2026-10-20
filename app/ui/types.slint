@@ -3,7 +3,7 @@ export enum DeliveryState { sent, pending, read, rejected }
 export enum HistoryRowKind { message, gap, unread }
 export struct RichRun { text: string, break-before: bool, url: string, link-start: bool, link-first: bool, link-id: int, link-width: float, natural-width: float, line-width: float, image-key: string, picture: image, has-picture: bool, emoji: bool, thumbnail: bool, contain: bool, thumbnail-text: string, newline: bool, x: float, y: float, measured-width: float, measured-height: float }
 export enum RunPosition { single, first, middle, last }
-export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
+export enum MessageKind { text, flex, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
 export struct LinkRow { label: string, url: string }
 export struct ChatRow { accessible-label: string, badge: string, unread: int, unread-unknown: bool, member-count: int, preview-mode: PreviewMode, preview-prefix: string, display-preview: string, failed: bool, muted: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, time: string, avatar: image }
 export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, status-runs: [RichRun], group: bool, avatar: image }
@@ -16,7 +16,7 @@ export struct MessageRow {
     has-inline-emoji: bool, rich-fallback: bool,
     rich-runs: [RichRun], reply-id: string, reply-sender: string, reply-preview: string, reply-sender-id: string, reply-picture: image, reply-has-picture: bool, detail: string,
     kind: MessageKind, links: [LinkRow], accessible-label: string,
-    id: string, body: string, time: string, outgoing: bool,
+    id: string, body: string, alt-text: string, time: string, outgoing: bool,
     sender-id: string, sender-name: string, sender-initial: string, sender-avatar: image, has-sender-avatar: bool,
     run-position: RunPosition, day-label: string, clock: string,
     image-key: string, picture: image, has-picture: bool, image-failed: bool, image-error: string, image-retryable: bool,

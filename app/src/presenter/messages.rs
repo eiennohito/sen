@@ -45,7 +45,7 @@ impl Presenter {
         let rows = rows
             .iter()
             .copied()
-            .filter(|m| sen::system_events::displayable(&m.body))
+            .filter(|m| !m.skip_badge || sen::system_events::displayable(&m.body))
             .collect::<Vec<_>>();
         if self.history_chat != state.selected && content.get_link_feedback() == text::LINK_FAILURE
         {

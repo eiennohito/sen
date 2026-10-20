@@ -271,3 +271,55 @@ fn switching_chats_restores_both_editor_drafts_and_reply() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn unread_flex_and_unsupported_messages_have_history_rows() {
+    std::thread::spawn(|| {
+        let _platform = crate::snapshot::install().unwrap();
+        let (ui, mut presenter, mut state) = fixture();
+        let mut m = message("");
+        m.body = sen::client::desktop::flex::parse(&serde_json::json!({
+            "contentMetadata":{"ALT_TEXT":"Login notice","FLEX_JSON":{
+                "type":"bubble","body":{"type":"box","contents":[
+                    {"type":"text","text":"New login"},
+                    {"type":"button","action":{"type":"uri","label":"Review","uri":"https://example.org/login"}},
+                    {"type":"button","action":{"type":"uri","uri":"line://app/example.org"}}
+                ]}}
+            }}));
+        state.chat_order.push(m.chat_id.clone());
+        let item = state.chats.get_mut(&m.chat_id).unwrap();
+        item.chat.id = m.chat_id.clone();
+        item.unread_count = 1;
+        item.preview = Some(m.clone());
+        state.unread_divider = Some(m.key);
+        let row = present(&ui, &mut presenter, &mut state, &m);
+        assert_eq!(row.kind, MessageKind::Flex);
+        assert_eq!(row.body, "New login\nReview\nhttps://example.org/login\nline://app/example.org");
+        assert!(row.detail.is_empty());
+        assert!(row.accessible_label.contains("Login notice\nNew login"));
+        assert_eq!(row.links.row_count(), 1);
+        assert_eq!(row.links.row_data(0).unwrap().url, "https://example.org/login");
+        assert!(!row.rich_runs.iter().any(|r| r.url.starts_with("line:")));
+        assert_eq!(
+            presenter::messages::compact_text(&m.body, &state, &m.sender_id),
+            "Login notice"
+        );
+        let chat = ui.global::<ChatsState>().get_chats().row_data(0).unwrap();
+        assert_eq!(chat.preview, "Login notice");
+        assert_eq!(chat.unread, 1);
+        m.body = Content::Flex { alt_text: "Alt only".into(), lines: vec![], links: vec![] };
+        let row = present(&ui, &mut presenter, &mut state, &m);
+        assert_eq!(row.body, "Alt only");
+        assert_eq!(row.detail, "Open on your phone");
+        for content in [
+            Content::Unknown { content_type: 22 },
+            Content::System { kind: Some("future".into()), params: None, text: None },
+            Content::System { kind: Some("C_MJ".into()), params: None, text: None },
+        ] {
+            m.body = content;
+            let row = present(&ui, &mut presenter, &mut state, &m);
+            assert_eq!(row.kind, MessageKind::Unknown);
+            assert_eq!(row.body, "This message type isn't supported yet");
+        }
+    }).join().unwrap();
+}

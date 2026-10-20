@@ -270,3 +270,37 @@ Sen uses the existing authenticated/signed request, with a three-second
 whole-request timeout and no refresh/retry. Server errors are logged and do
 not prevent local logout. Loopback tests verify the path and argument array;
 the real call remains live unverified.
+
+## Flex messages (2026-10-21; from main.js source, not captured)
+
+Read only LINE Chrome 3.7.2's public manifest and `static/js/main.js` in
+`ophjlpahpchlmihnnnihgmmeilfjmjjc/3.7.2_0`. The content-type enum maps
+`FLEX` to 22. `ZQ` reads `message.contentMetadata.FLEX_JSON` and passes it
+through `MR`, which JSON-parses strings and accepts an already parsed object.
+The history dispatcher routes `EU.FLEX` to `ZQ`; the preview/copy text paths
+read `contentMetadata.ALT_TEXT` (defaulting to an empty string). These paths
+read metadata, not the decrypted `text` body; no captured encrypted Flex
+message was examined.
+
+The parsed source is a `bubble` (header, hero, body, footer) or `carousel`
+(contents of bubbles), with nested `box.contents`, `text.text` and component
+`action` objects. `ZQ` passes the source to `kQ`, the Flex web component
+renderer (including `flex-box`/`flex-text`, shadow DOM and carousel sizing).
+Its action callback handles `type: "uri"` using `action.uri`; message,
+postback and datetimepicker actions are converted to `linepostback:` URLs.
+Sen extracts readable text in section/contents order and URI action labels
+and addresses; only HTTP(S) actions become desktop links. Unknown component
+types and non-URI actions are skipped. Text weight/layout/images are omitted;
+missing or blank alt text uses “Flex message”. With no extracted lines the
+bubble shows alt text and “Open on your phone”. Fixtures are synthetic.
+
+The store saves parsed `body_json`, not raw wire messages. Existing
+`{"Unknown":{"content_type":22}}` rows still load and show the generic
+unsupported card. A subsequent fetch of the same message replaces Unknown-22
+with Flex even at the same or an older fetch revision, preserving the stored
+revision and other metadata; this does not force a network fetch or change
+the store version. The history audit also found unknown/incomplete
+System events hidden by the presenter despite being eligible for unread
+counts. They now show the generic unsupported card when `skip_badge` is false;
+known service events retain their existing presentation. Unknown bodies
+already reached history and now use the same generic card styling.

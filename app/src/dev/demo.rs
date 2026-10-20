@@ -105,7 +105,17 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
         }
 
         Protocol => {
+            let mut flex = FakeBackend::message("protocol", 6303, "", false);
+            flex.body = sen::client::desktop::flex::parse(&serde_json::json!({
+            "contentMetadata": {"ALT_TEXT":"Synthetic login notice", "FLEX_JSON":{
+                "type":"bubble", "body":{"type":"box", "contents":[
+                    {"type":"text", "text":"New login on a desktop"},
+                    {"type":"button", "action":{"type":"uri", "label":"Review login", "uri":"https://example.org/login"}},
+                    {"type":"button", "action":{"type":"uri", "uri":"line://app/login"}}
+                ]}}
+            }}));
             let rows = vec![
+                flex,
                 FakeBackend::message("protocol", 6300, "Unsend success fixture", true),
                 FakeBackend::message("protocol", 6301, "Unsend failure fixture", true),
                 FakeBackend::official_image("protocol", 6302),

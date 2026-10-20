@@ -103,20 +103,27 @@ pub(crate) fn rendered_text(row: &MessageRow) -> String {
 
 pub(crate) fn decorate_message(row: &mut MessageRow) {
     let rendered = rendered_text(row);
-    row.links = ModelRc::new(VecModel::from(
-        detect(&rendered)
-            .into_iter()
-            .map(|(label, url)| LinkRow {
-                label: label.into(),
-                url: url.into(),
-            })
-            .collect::<Vec<_>>(),
-    ));
+    if row.kind != crate::MessageKind::Flex {
+        row.links = ModelRc::new(VecModel::from(
+            detect(&rendered)
+                .into_iter()
+                .map(|(label, url)| LinkRow {
+                    label: label.into(),
+                    url: url.into(),
+                })
+                .collect::<Vec<_>>(),
+        ));
+    }
     decorate_links(row, &rendered);
     let sender = if row.sender_name.is_empty() {
         crate::presenter::names::CONTACT
     } else {
         row.sender_name.as_str()
+    };
+    let body = if row.alt_text.is_empty() || row.alt_text == row.body {
+        row.body.to_string()
+    } else {
+        format!("{}\n{}", row.alt_text, row.body)
     };
     row.accessible_label = if row.outgoing {
         format!(
@@ -128,10 +135,10 @@ pub(crate) fn decorate_message(row: &mut MessageRow) {
                 crate::DeliveryState::Read => "Read",
                 crate::DeliveryState::Rejected => "Not sent",
             },
-            row.body
+            body
         )
     } else {
-        format!("Incoming from {sender}, {}: {}", row.time, row.body)
+        format!("Incoming from {sender}, {}: {}", row.time, body)
     }
     .into();
 }

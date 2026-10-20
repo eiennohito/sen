@@ -29,6 +29,11 @@ pub enum Content {
         text: String,
         spans: Vec<InlineEmoji>,
     },
+    Flex {
+        alt_text: String,
+        lines: Vec<String>,
+        links: Vec<String>,
+    },
     Photo {
         asset: Option<Asset>,
         size: Option<(u32, u32)>,
