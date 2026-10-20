@@ -122,27 +122,7 @@ impl Presenter {
             Connection::Fatal => ConnectionState::Fatal,
             Connection::SigningIn => ConnectionState::SigningIn,
         });
-        ui.global::<State>().set_connection_status(
-            match &state.connection {
-                Connection::Local => "Cached conversations",
-                Connection::Online => "Connected",
-                Connection::Connecting { .. } => "Connecting…",
-                Connection::Offline => "Offline — reconnecting automatically",
-                Connection::SignedOut { .. } => "Signed out",
-                Connection::Fatal => "Something went wrong — restart",
-                Connection::SigningIn => "Signing in…",
-            }
-            .into(),
-        );
         ui.global::<State>()
             .set_send_pending(state.submitting.is_some());
-        ui.global::<State>().set_send_reason(
-            if state.connection == Connection::Online {
-                ""
-            } else {
-                "Messages can be sent when connected"
-            }
-            .into(),
-        );
     }
 }

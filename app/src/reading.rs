@@ -60,7 +60,6 @@ pub(crate) struct Geometry {
     pub interacting: bool,
     pub narrow: bool,
     pub conversation: bool,
-    pub older_start_known: bool,
 }
 
 #[derive(Default)]
@@ -197,7 +196,7 @@ pub(crate) fn page_older(
 ) -> Vec<Intent> {
     let mut intents = Vec::new();
     if view.y >= -30.
-        && !view.older_start_known
+        && !state.reaches_start
         && let Some((chat, before)) = reading.oldest.clone()
     {
         if let Some(key) = state

@@ -37,17 +37,12 @@ export global State {
     in-out property <int> unread-conversations;
     in-out property <bool> unread-stale;
     in-out property <string> unread-divider;
-    in-out property <bool> unread-locating;
-    in-out property <bool> unread-boundary-unknown;
     callback read-state-changed();
     changed list-y => { self.read-state-changed(); }
     changed chats => { self.read-state-changed(); }
     changed section => { self.read-state-changed(); }
-    in-out property <length> chat-list-height;
-    changed chat-list-height => { self.read-state-changed(); }
     changed window-active => { self.read-state-changed(); }
     changed modal-open => { self.read-state-changed(); }
-    changed unread-locating => { self.read-state-changed(); }
     changed show-conversation => { self.read-state-changed(); }
 
     in-out property <int> section: 0;
@@ -112,7 +107,6 @@ export global State {
     callback back-to-members();
     callback pop-detail(bool);
     callback remember-detail-focus(bool);
-    callback forget-detail-focus();
     callback restore-detail-focus(bool);
     callback finish-detail-restore(bool);
     callback detail-action(DetailAction, string);
@@ -181,7 +175,6 @@ export global State {
     in-out property <string> profile-name;
     in-out property <string> profile-id;
     in-out property <string> profile-status;
-    in-out property <bool> profile-group;
     in-out property <image> profile-avatar;
     in-out property <bool> profile-available;
     in-out property <bool> ime-active: false;
@@ -195,7 +188,6 @@ export global State {
     in-out property <bool> enter-sends: false;
     in-out property <int> editor-caret;
     in-out property <int> editor-anchor;
-    in-out property <bool> composer-focused;
     in-out property <string> unsend-feedback-id;
     in-out property <RecoveryKind> recovery-kind;
     in-out property <string> recovery-id;
@@ -209,10 +201,7 @@ export global State {
     in-out property <bool> send-pending;
     pure callback has-text(string) -> bool;
     out property <bool> can-send: self.connected && !self.chat-left && self.has-chat && !self.send-pending && self.has-text(self.draft);
-    in-out property <string> send-reason;
-    in-out property <bool> list-pressed;
-    in-out property <bool> list-release-pending;
-    in-out property <length> chat-row-height: max(68px, self.text-size * 2.8px + 20px);
+    out property <length> chat-row-height: max(68px, self.text-size * 2.8px + 20px);
     in-out property <bool> background-mode;
     in-out property <bool> tray-available;
     in-out property <bool> autostart;
@@ -226,7 +215,6 @@ export global State {
     in-out property <bool> notification-group-events;
     in-out property <bool> notification-available;
     in-out property <string> notification-status;
-    in-out property <string> transient-notice;
     callback test-notification();
     out property <bool> settings-open: self.panel == PanelState.settings;
     out property <bool> viewer-open: self.panel == PanelState.viewer;
@@ -246,7 +234,7 @@ export global State {
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
     out property <bool> window-modal-open: ExtensionState.modal-open || self.attachments-open || self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.recovery-kind != RecoveryKind.none || self.detail-dialog != DetailAction.none;
-    in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
+    out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
     callback viewer-step(int);
     callback save-photo();
     public function close-settings() { self.request-panel(PanelState.none); self.focus-settings-opener(); }
@@ -280,7 +268,6 @@ export global State {
     in-out property <bool> has-chat;
     in-out property <string> storage-error;
     in-out property <string> desktop-warning;
-    in-out property <string> connection-status;
     in-out property <bool> has-account;
     in-out property <string> account-mid;
     in-out property <string> account-name;
@@ -295,17 +282,16 @@ export global State {
     in-out property <length> search-list-y;
     in-out property <bool> searching;
     in-out property <int> result-focus: -1;
-    in-out property <bool> narrow: self.window-width < self.narrow-width;
+    out property <bool> narrow: self.window-width < self.narrow-width;
     in-out property <length> window-width;
     in-out property <length> window-height;
-    in-out property <length> history-width;
     in-out property <length> history-extent;
     callback browse(int);
-    callback refresh-friends();
     callback filter-friends();
     callback open-profile(string);
     callback start-friend-chat();
     callback open-photo(string);
+    callback copy-text(string);
     callback open-link(string);
     pure callback rich-source([RichRun]) -> [RichRun];
     callback preview-layout([RichRun], string, float, float) -> [RichRun];
@@ -383,15 +369,11 @@ export global State {
     in-out property <length> history-viewport-height;
     changed history-viewport-height => { self.read-state-changed(); }
     in-out property <length> history-visible-top;
-    in-out property <length> history-cover-inset;
     in-out property <length> history-pill-height;
     changed history-pill-height => { self.read-state-changed(); }
-    in-out property <bool> older-start-known;
     in-out property <string> older-status;
     in-out property <string> highlight-message;
     in-out property <bool> return-visible;
-    in-out property <bool> history-needs-refresh;
-    in-out property <bool> history-budget-warning;
     in-out property <bool> history-can-follow: true;
     in-out property <bool> history-interacting;
     changed history-interacting => { self.read-state-changed(); }

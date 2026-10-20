@@ -203,6 +203,8 @@ def check_detail_stack():
     call("set_element_value",elementHandle=search["handle"],value="")
     click("Open profile: Weekend plans")
     wait_element("Group info", "Text")
+    call("click_element", elementHandle=element("Group info", "Text")["handle"], button="Right")
+    assert not any(item.get("accessibleLabel") == "Copy name" for item in tree()), "right-click on Detail content opened the profile menu"
     assert any(item.get("accessibleLabel")=="Weekend plans" for item in tree()), "group info is not bound to its chat"
     click("Members (25)")
     wait_element("Search members", "TextInput")

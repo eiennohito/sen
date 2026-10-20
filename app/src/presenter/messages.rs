@@ -270,10 +270,6 @@ impl Presenter {
                 .unwrap_or_default()
                 .into(),
         );
-        ui.global::<State>()
-            .set_unread_boundary_unknown(state.unread_boundary_unknown());
-        ui.global::<State>()
-            .set_older_start_known(state.reaches_start);
         ui.global::<State>().set_older_status(
             if state.reaches_start {
                 "Beginning of conversation"

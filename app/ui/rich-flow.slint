@@ -47,10 +47,9 @@ export component RichFlow inherits Rectangle {
             Menu {
                 MenuItem { title: run.url; enabled: false; }
                 MenuItem { title: "Open link"; activated => { State.open-link(run.url); } }
-                MenuItem { title: "Copy link"; activated => { link-copy.select-all(); link-copy.copy(); } }
+                MenuItem { title: "Copy link"; activated => { State.copy-text(run.url); } }
             }
             Rectangle { y: parent.height - 2px; height: 1px; background: Tokens.accent-strong; }
-            link-copy := TextInput { visible: false; text: run.url; read-only: true; }
             link-focus := FocusScope {
                 visible: run.link-first;
                 accessible-role: button; accessible-label: "Open link " + run.url; accessible-description: run.url;

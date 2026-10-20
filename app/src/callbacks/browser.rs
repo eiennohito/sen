@@ -93,9 +93,6 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
         d.render(&ui);
     });
-    global_callback!(ui, actions, on_refresh_friends, |_ui, d| {
-        d.sender.send(Intent::Friends);
-    });
     global_callback!(ui, actions, on_filter_friends, |ui, d| {
         d.render(&ui);
     });

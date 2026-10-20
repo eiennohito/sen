@@ -46,7 +46,7 @@ export component Conversation inherits Rectangle {
     changed window-sub => { root.loading-delayed = false; loading-timer.restart(); }
     loading-timer := Timer { interval: 300ms; running: State.window-loading && !root.loading-delayed; triggered => { root.loading-delayed = true; } }
     property <bool> latest-visible: !State.following && State.has-chat;
-    property <string> latest-label: State.history-needs-refresh ? "Latest · updates available" : State.new-count > 0 ? "Latest · " + State.new-count + " new" : "Latest";
+    property <string> latest-label: State.new-count > 0 ? "Latest · " + State.new-count + " new" : "Latest";
 
           visible: !State.narrow || State.show-conversation;
           VerticalLayout {
@@ -101,14 +101,12 @@ export component Conversation inherits Rectangle {
                             title-touch := TouchArea { clicked => { title-focus.focus(); State.open-profile(State.chat-id); } }
                         }
                         members-button := IconButton { visible: State.chat-group; enabled: self.visible; width: self.visible ? 32px : 0px; label: State.member-count >= 0 ? "Members, " + State.member-count : "Members"; icon: @image-url("../assets/icons/members.svg"); activated => { State.open-members(); } }
-                        more-button := IconButton { label: "More"; icon: @image-url("../assets/icons/more.svg"); activated => { more-menu.show(); } }
+                        more-button := IconButton { label: "More"; icon: @image-url("../assets/icons/more.svg"); activated => { more-menu.show({x: header.width - 200px, y: 52px}); } }
                     }
                 }
-                more-menu := PopupWindow {
-                    x: max(0px, header.width - self.width - 16px); y: 52px; width: 184px; height: 40px;
-                    Rectangle { background: Tokens.bg; border-width: 1px; border-color: Tokens.divider; border-radius: 8px;
-                        Button { x: 4px; y: 4px; text: State.chat-group ? "Group info" : "Profile"; text-button: true; clicked => { more-menu.close(); State.open-profile(State.chat-id); } }
-                    }
+                more-menu := ContextMenuArea {
+                    enabled: false;
+                    Menu { MenuItem { title: State.chat-group ? "Group info" : "Profile"; activated => { State.open-profile(State.chat-id); } } }
                 }
             }
             if State.conversation-error != "": Text { text: State.conversation-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
@@ -195,7 +193,7 @@ export component Conversation inherits Rectangle {
                     visible: root.latest-visible; enabled: self.visible;
                     width: self.visible ? min(self.preferred-width, parent.width - (State.return-visible ? return-button.width + 8px : 0px)) : 0px;
                     label: root.latest-label;
-                    text: State.return-visible && !State.history-needs-refresh && State.new-count > 0 ? "Latest · " + State.new-count : root.latest-label;
+                    text: State.return-visible && State.new-count > 0 ? "Latest · " + State.new-count : root.latest-label;
                     activated => { State.latest(); State.focus-history(); }
                     traversed(back) => { if back { history-focus.focus(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } }
                 }
@@ -212,7 +210,6 @@ export component Conversation inherits Rectangle {
                 font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap;
               }
             }
-            if State.history-budget-warning: Text { text: "Some images in this long message may be unavailable"; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
 composer-surface := Composer { }
             if State.storage-error != "": HorizontalLayout {
                 padding: 8px;
@@ -230,13 +227,10 @@ composer-surface := Composer { }
     public function focus-reading-before-editor() { if State.return-visible { return-button.focus-pill(); } else if root.latest-visible { latest-button.focus-pill(); } else { history-focus.focus(); } }
     public function scroll(delta: length) { history.scroll(delta); history.scrolled(); }
     public function jump(y: length) { history.jump(y); }
-    changed width => { State.history-width = history.width; }
     property <length> viewport-height: history.visible-height;
     changed viewport-height => { State.history-viewport-height = root.viewport-height; }
     property <length> visible-top: history.visible-top;
     changed visible-top => { State.history-visible-top = root.visible-top; }
-    property <length> cover-inset: history.inset;
-    changed cover-inset => { State.history-cover-inset = root.cover-inset; }
     // Pills plus the 8 px gap below them remain outside read exposure.
     property <length> pill-height: root.latest-visible || State.return-visible ? history-surface.height - history-pills.y : 0px;
     changed pill-height => { State.history-pill-height = root.pill-height; }

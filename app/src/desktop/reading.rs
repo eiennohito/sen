@@ -16,19 +16,19 @@ impl crate::Desktop {
             interacting: global.get_history_interacting(),
             narrow: global.get_narrow(),
             conversation: ui.global::<State>().get_show_conversation(),
-            older_start_known: global.get_older_start_known(),
         }
     }
     pub(crate) fn observe_reading(&mut self, ui: &AppWindow) {
-        let effects = reading::observe(&mut self.history, &self.state, Self::reading_geometry(ui));
+        let geometry = Self::reading_geometry(ui);
+        let effects = reading::observe(&mut self.history, &self.state, geometry);
         for intent in effects.intents {
             self.sender.send(intent);
         }
         if let Some((y, latest)) = effects.show {
             ui.global::<State>().invoke_show_history(y, latest);
         }
-        for intent in reading::exposure(&mut self.history, &self.state, Self::reading_geometry(ui))
-        {
+        let geometry = Self::reading_geometry(ui);
+        for intent in reading::exposure(&mut self.history, &self.state, geometry) {
             self.sender.send(intent);
         }
         if let Some(y) = reading::restore(&mut self.history) {

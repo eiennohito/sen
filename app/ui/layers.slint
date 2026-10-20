@@ -9,9 +9,8 @@ import { IconButton } from "icon-button.slint";
 
 component SettingsSections inherits FocusScope {
     in-out property <int> current;
-    in property <bool> narrow;
     property <length> row-height: max(36px, Tokens.small * 1.5 + 16px);
-    preferred-height: (root.narrow ? 3 : 5) * root.row-height;
+    preferred-height: 5 * root.row-height;
     accessible-role: tab-list; accessible-label: "Settings section";
     key-pressed(event) => {
         if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.current = max(0, root.current - 1); return accept; }
@@ -21,9 +20,9 @@ component SettingsSections inherits FocusScope {
         reject
     }
     for section[i] in ["Chats", "Notifications", "Background", "Shortcuts", "About"]: Rectangle {
-        x: root.narrow ? mod(i, 2) * (root.width + 8px) / 2 : 0px;
-        y: (root.narrow ? floor(i / 2) : i) * root.row-height;
-        width: root.narrow ? (root.width - 8px) / 2 : root.width; height: root.row-height - 4px;
+        x: 0px;
+        y: i * root.row-height;
+        width: root.width; height: root.row-height - 4px;
         border-radius: 8px; background: root.current == i ? Tokens.surface-selected : touch.has-hover ? Tokens.surface-hover : transparent;
         border-width: root.has-focus && root.current == i ? 2px : 0px; border-color: Tokens.accent;
         accessible-role: tab; accessible-label: section;
@@ -36,6 +35,13 @@ component SettingsSections inherits FocusScope {
 
 export component Layers inherits Rectangle {
     property <bool> cancel-confirm <=> State.auth-cancel-confirm;
+    property <string> unsend-feedback-id: State.unsend-feedback-id;
+    changed unsend-feedback-id => { if root.unsend-feedback-id != "" { unsend-feedback-timer.running = true; unsend-feedback-timer.restart(); } }
+    unsend-feedback-timer := Timer { interval: 3s; running: false; triggered => { self.running = false; State.unsend-feedback-id = ""; } }
+    property <string> reaction-error-id: State.reaction-error-id;
+    changed reaction-error-id => { if root.reaction-error-id != "" { reaction-error-timer.running = true; reaction-error-timer.restart(); } }
+    reaction-error-timer := Timer { interval: 4s; running: false; triggered => { self.running = false; State.reaction-error-id = ""; } }
+    Timer { interval: 5s; running: State.viewer-save-status != "" && !State.viewer-saving; triggered => { State.viewer-save-status = ""; } }
     property <int> settings-section;
     property <int> message-text-size: State.text-size;
     changed message-text-size => { text-size.current-index = root.message-text-size <= 13 ? 0 : root.message-text-size <= 15 ? 1 : root.message-text-size <= 18 ? 2 : 3; }
@@ -43,20 +49,10 @@ export component Layers inherits Rectangle {
     changed auth-visible => { if !self.auth-visible { root.cancel-confirm = false; } }
     property <bool> approval-busy: State.auth-busy;
     changed approval-busy => { if !self.approval-busy && root.cancel-confirm { root.cancel-confirm = false; root.focus-auth(); } }
-    Timer { interval: 5s; running: State.viewer-save-status != "" && !State.viewer-saving; triggered => { State.viewer-save-status = ""; } }
     public function dismiss-auth() {
         if State.auth-cancelling { return; }
         if State.auth-busy { root.cancel-confirm = true; keep-waiting.focus(); }
         else { State.close-sign-in(); }
-    }
-    Timer { interval: 3s; running: State.unsend-feedback-id != ""; triggered => { State.unsend-feedback-id = ""; } }
-    Timer { interval: 3s; running: State.transient-notice != ""; triggered => { State.transient-notice = ""; } }
-    Rectangle {
-        x: max(12px, parent.width - self.width - 12px); y: 12px;
-        width: min(320px, parent.width - 24px); height: notice.preferred-height + 24px;
-        visible: State.transient-notice != "" && !State.modal-open;
-        background: Tokens.surface; border-width: 1px; border-color: Tokens.border; border-radius: 8px;
-        notice := Text { x: 12px; y: 12px; width: parent.width - 24px; text: State.transient-notice; wrap: word-wrap; }
     }
     Rectangle {
         x: 0px; y: 0px; width: 100%; height: 100%;
@@ -134,7 +130,7 @@ export component Layers inherits Rectangle {
                 Rectangle {
                     settings-section := SettingsSections {
                         x: 0px; y: 0px;
-                        current <=> root.settings-section; narrow: false;
+                        current <=> root.settings-section;
                         width: State.narrow ? 104px : max(132px, Tokens.small * 7.5);
                         height: self.preferred-height;
                     }

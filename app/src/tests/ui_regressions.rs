@@ -143,3 +143,65 @@ fn gap_before_unread_message_keeps_its_geometry() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn copy_message_preserves_the_selected_text() {
+    std::thread::spawn(|| {
+        use i_slint_backend_testing::ElementHandle;
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = test_window();
+        let mut presenter = presenter::Presenter::default();
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        state.select(ChatId("chat".into()));
+        let message = message("keep this selection");
+        state.messages.insert(message.key, message);
+        presenter.present(&ui, &state, "", ChatCategory::All);
+        ui.global::<State>().set_show_conversation(true);
+        let copied = Rc::new(RefCell::new(String::new()));
+        let capture = copied.clone();
+        ui.global::<State>()
+            .on_copy_text(move |text| *capture.borrow_mut() = text.to_string());
+        ui.show().unwrap();
+        slint::platform::update_timers_and_animations();
+        let body = ElementHandle::find_by_element_id(&ui, "Message::body")
+            .next()
+            .unwrap();
+        body.mock_single_click(slint::platform::PointerEventButton::Left);
+        body.set_accessible_selection_offsets(5, 9);
+        body.mock_single_click(slint::platform::PointerEventButton::Right);
+        slint::platform::update_timers_and_animations();
+        ElementHandle::find_by_accessible_label(&ui, "Copy message")
+            .next()
+            .expect("message menu did not open")
+            .mock_single_click(slint::platform::PointerEventButton::Left);
+        slint::platform::update_timers_and_animations();
+        assert_eq!(*copied.borrow(), "keep this selection");
+        let ctrl = |text: &str| {
+            use slint::platform::WindowEvent;
+            let keys = [
+                slint::platform::Key::Control.into(),
+                slint::SharedString::from(text),
+            ];
+            for text in &keys {
+                ui.window()
+                    .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            }
+            for text in keys.into_iter().rev() {
+                ui.window()
+                    .dispatch_event(WindowEvent::KeyReleased { text });
+            }
+        };
+        ctrl("c");
+        ui.invoke_focus_composer();
+        ui.global::<State>().on_paste_attachment(|| false);
+        ctrl("v");
+        assert_eq!(
+            ui.global::<State>().get_draft(),
+            "this",
+            "Copy message changed the selection"
+        );
+    })
+    .join()
+    .unwrap();
+}

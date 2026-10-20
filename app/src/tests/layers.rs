@@ -204,6 +204,13 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
         ui.global::<State>().set_draft(draft.into()); // Programmatic restoration emits no typing event.
         assert!(ui.global::<State>().get_can_send());
         ui.show().unwrap();
+        slint::platform::update_timers_and_animations();
+        let history = i_slint_backend_testing::ElementHandle::find_by_element_id(
+            &ui,
+            "Conversation::history",
+        )
+        .next()
+        .unwrap();
         ui.global::<State>().set_detail_depth(1);
         ui.global::<State>().set_panel(PanelState::Detail);
         for width in [740, 800] {
@@ -211,7 +218,7 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
                 .set_size(slint::LogicalSize::new(width as f32, 720.));
             slint::platform::update_timers_and_animations();
             assert!(
-                ui.global::<State>().get_history_width() >= 300.,
+                history.size().width >= 300.,
                 "profile left an unusable reading width at {width}"
             );
             assert_eq!(ui.global::<State>().get_draft(), draft);
@@ -316,6 +323,53 @@ fn selecting_another_loading_chat_restarts_the_indicator_delay() {
         assert!(!visible(), "reselecting C must restart its loading delay");
         advance(300);
         assert!(visible());
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn replacing_feedback_gets_a_full_dismissal_interval() {
+    std::thread::spawn(|| {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = test_window();
+        ui.show().unwrap();
+        let g = ui.global::<State>();
+        let advance = |ms| {
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
+            slint::platform::update_timers_and_animations();
+        };
+        for reaction in [false, true] {
+            let set = |value: &str| {
+                if reaction {
+                    g.set_reaction_error_id(value.into());
+                } else {
+                    g.set_unsend_feedback_id(value.into());
+                }
+                slint::platform::update_timers_and_animations();
+            };
+            let get = || {
+                if reaction {
+                    g.get_reaction_error_id()
+                } else {
+                    g.get_unsend_feedback_id()
+                }
+            };
+            let duration = if reaction { 4000 } else { 3000 };
+            set("first");
+            advance(duration - 1000);
+            set("replacement");
+            advance(1000);
+            assert_eq!(
+                get(),
+                "replacement",
+                "replacement inherited the old timeout"
+            );
+            advance(duration - 1001);
+            assert_eq!(get(), "replacement");
+            advance(1);
+            assert_eq!(get(), "", "feedback did not dismiss");
+        }
     })
     .join()
     .unwrap();

@@ -38,6 +38,17 @@ pub(crate) fn install(ui: &AppWindow, actions: Runtime) {
             });
         });
     });
+    ui.global::<State>().on_copy_text({
+        let weak = ui.as_weak();
+        move |text| {
+            if let Some(ui) = weak.upgrade() {
+                slint::private_unstable_api::re_exports::WindowInner::from_pub(ui.window())
+                    .context()
+                    .platform()
+                    .set_clipboard_text(&text, slint::platform::Clipboard::DefaultClipboard);
+            }
+        }
+    });
     rich_content::install(ui);
 }
 
