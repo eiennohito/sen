@@ -1,6 +1,37 @@
 use super::*;
 
 #[test]
+fn chats_find_katakana_titles_by_hiragana_and_romaji() {
+    std::thread::spawn(|| {
+        let _platform = snapshot::install().unwrap();
+        let ui = window::create_app_window().unwrap();
+        let mut presenter = presenter::Presenter::default();
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        let id = ChatId("ramen".into());
+        state.chat_order.push(id.clone());
+        state.chats.insert(
+            id.clone(),
+            chat_item(ChatInput {
+                id,
+                title: "ラーメン".into(),
+                ..Default::default()
+            }),
+        );
+        let chats = ui.global::<ChatsState>();
+        for query in ["らあめん", "raamen"] {
+            chats.set_chat_query(query.into());
+            presenter.present(&ui, &state, ChatCategory::All);
+            let rows = chats.get_chats();
+            assert_eq!(rows.row_count(), 1, "query {query:?}");
+            assert_eq!(rows.row_data(0).unwrap().id, "ramen");
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn all_lists_search_names_with_the_same_case_and_whitespace_rules() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();

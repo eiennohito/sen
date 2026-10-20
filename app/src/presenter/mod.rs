@@ -36,6 +36,7 @@ pub struct Presenter {
     sticker_tabs: Rc<KeyedModel<usize, (String, Option<Content>)>>,
     sticker_items: Rc<KeyedModel<usize, (usize, Content)>>,
     status_assets: Vec<Asset>,
+    search_fields: search::Fields,
     compose_ids: std::collections::HashSet<String>,
 }
 #[derive(Clone, PartialEq)]
@@ -178,5 +179,6 @@ impl Presenter {
         self.present_header(ui, state);
         self.present_draft(ui, state);
         self.present_history(ui, state);
+        self.search_fields.finish();
     }
 }

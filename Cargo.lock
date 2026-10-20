@@ -4428,6 +4428,7 @@ dependencies = [
  "i-slint-backend-selector",
  "i-slint-backend-testing",
  "i-slint-core",
+ "icu_normalizer",
  "image",
  "libc",
  "sen",

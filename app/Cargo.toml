@@ -15,6 +15,7 @@ i-slint-backend-testing = "=1.18.1"
 sen = { path = "..", features = ["demo"] }
 
 [dependencies]
+icu_normalizer = { version = "=2.3.0", default-features = false, features = ["compiled_data"] }
 libc = "0.2"
 tempfile = { version = "3", optional = true }
 slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "unstable-winit-030", "unstable-fontique-011", "renderer-software", "accessibility"] }

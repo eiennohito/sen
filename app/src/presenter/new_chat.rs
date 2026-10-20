@@ -30,7 +30,7 @@ impl Presenter {
                     names.push(name.clone());
                     chosen.push(row.clone());
                 }
-                if query.matches([names::friend_name(f)]) {
+                if query.matches([names::friend_name(f)], &mut self.search_fields) {
                     friends.push(row);
                 }
             }
