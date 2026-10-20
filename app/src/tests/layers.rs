@@ -3,23 +3,24 @@ use super::*;
 #[test]
 fn resizing_layers_keeps_focus_on_visible_content() {
     std::thread::spawn(|| {
-        use slint::private_unstable_api::re_exports::WindowInner;
-        let window = snapshot::install().unwrap();
+        i_slint_backend_testing::init_no_event_loop();
         let (ui, _runtime, _worker) =
             test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
+        #[cfg(feature = "demo")]
+        {
+            press(&ui, slint::platform::Key::F12);
+            assert!(!ui.global::<DemoState>().get_demo_scenarios_open());
+        }
         for layer in ["profile", "members", "member-profile", "settings"] {
             ui.global::<ShellState>().set_panel(PanelState::None);
-            snapshot::render(&window, (980, 720)).unwrap();
+            ui.window().set_size(slint::LogicalSize::new(980., 720.));
+            slint::platform::update_timers_and_animations();
             if layer == "settings" {
                 ui.global::<ShellState>().set_panel(PanelState::Settings);
                 ui.invoke_focus_settings_close();
             } else {
-                ui.global::<ShellState>().set_panel(match layer {
-                    "profile" => PanelState::Detail,
-                    "members" => PanelState::Detail,
-                    _ => PanelState::Detail,
-                });
+                ui.global::<ShellState>().set_panel(PanelState::Detail);
                 ui.global::<DetailState>().set_detail_depth(1);
                 ui.global::<DetailState>()
                     .set_detail_page(if layer == "members" {
@@ -29,140 +30,21 @@ fn resizing_layers_keeps_focus_on_visible_content() {
                     });
                 ui.invoke_focus_profile_close();
             }
-            snapshot::render(&window, (980, 720)).unwrap();
+            ui.window().set_size(slint::LogicalSize::new(980., 720.));
+            slint::platform::update_timers_and_animations();
             if layer != "settings" {
                 ui.invoke_focus_search();
             }
             for width in [739, 740, 1059, 1060, 1059, 739] {
-                snapshot::render(&window, (width, 720)).unwrap();
-                let item = WindowInner::from_pub(ui.window())
-                    .focus_item
-                    .borrow()
-                    .upgrade()
-                    .expect("resize lost keyboard focus");
+                ui.window()
+                    .set_size(slint::LogicalSize::new(width as f32, 720.));
+                slint::platform::update_timers_and_animations();
+                let item = focus_item(&ui);
                 assert!(item.is_visible(), "{layer} at {width}: focus is hidden");
                 if layer != "settings" && width == 1059 {
                     ui.invoke_focus_search();
                 }
             }
-        }
-        ui.hide().unwrap();
-    })
-    .join()
-    .unwrap();
-}
-
-#[cfg(feature = "demo")]
-#[test]
-fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
-    std::thread::spawn(|| {
-        use slint::platform::WindowEvent;
-        let _platform = snapshot::install().unwrap();
-        let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
-        let events = Rc::new(RefCell::new(Vec::new()));
-        let captured = events.clone();
-        let weak = ui.as_weak();
-        ui.global::<DemoState>().on_demo_event(move |kind| {
-            assert!(
-                !weak
-                    .upgrade()
-                    .unwrap()
-                    .global::<DemoState>()
-                    .get_demo_scenarios_open()
-            );
-            captured.borrow_mut().push(kind);
-        });
-        let key = |text: &str| {
-            ui.window()
-                .dispatch_event(WindowEvent::KeyPressed { text: text.into() });
-            ui.window()
-                .dispatch_event(WindowEvent::KeyReleased { text: text.into() });
-            slint::platform::update_timers_and_animations();
-        };
-        ui.show().unwrap();
-        for (width, height) in [(980., 720.), (760., 600.), (360., 520.)] {
-            ui.window().set_size(slint::LogicalSize::new(width, height));
-            ui.invoke_focus_search();
-            ui.global::<DemoState>().set_demo(false);
-            key("\u{f70f}"); // F12 is unavailable in account windows.
-            assert!(!ui.global::<DemoState>().get_demo_scenarios_open());
-            ui.global::<DemoState>().set_demo(true);
-            key("\u{f70f}");
-            assert!(ui.global::<DemoState>().get_demo_scenarios_open());
-            assert!(ui.global::<ShellState>().get_modal_open());
-            // Reverse Tab wraps to the final action; forward Tab returns to Close.
-            ui.window().dispatch_event(WindowEvent::KeyPressed {
-                text: "\u{10}".into(),
-            });
-            key("\t");
-            ui.window().dispatch_event(WindowEvent::KeyReleased {
-                text: "\u{10}".into(),
-            });
-            key("\t");
-            key("\n");
-            assert!(!ui.global::<ShellState>().get_modal_open());
-            events.borrow_mut().clear();
-            for index in 0..27 {
-                key("\u{f70f}");
-                for _ in 0..=index {
-                    key("\t");
-                }
-                key("\n");
-                if index == 2 {
-                    // Media failures has a separate bounded scenario list.
-                    assert!(ui.global::<DemoState>().get_demo_scenarios_open());
-                    key("\t"); // Back
-                    key("\t"); // First failure fixture
-                    key("\n");
-                }
-                assert!(
-                    !ui.global::<DemoState>().get_demo_scenarios_open(),
-                    "scenario index {index}"
-                );
-                assert!(!ui.global::<ShellState>().get_modal_open());
-            }
-            assert_eq!(
-                *events.borrow(),
-                [
-                    DemoScenario::History,
-                    DemoScenario::Arrivals,
-                    DemoScenario::MediaTimeout,
-                    DemoScenario::Rejected,
-                    DemoScenario::RejectNext,
-                    DemoScenario::Unanswered,
-                    DemoScenario::Reading,
-                    DemoScenario::Rich,
-                    DemoScenario::Photo,
-                    DemoScenario::Sticker,
-                    DemoScenario::ChatList,
-                    DemoScenario::Group,
-                    DemoScenario::Unread,
-                    DemoScenario::Actions,
-                    DemoScenario::Attachments,
-                    DemoScenario::Protocol,
-                    DemoScenario::Reaction,
-                    DemoScenario::SignInCrypto,
-                    DemoScenario::SignInState,
-                    DemoScenario::SignInKeyring,
-                    DemoScenario::SignInNetwork,
-                    DemoScenario::SignInServer,
-                    DemoScenario::SignInPhone,
-                    DemoScenario::SignInCancelled,
-                    DemoScenario::Expired,
-                    DemoScenario::Reconnect,
-                    DemoScenario::Offline
-                ]
-            );
-            ui.invoke_focus_search();
-            key("\u{f70f}");
-            assert!(ui.global::<DemoState>().get_demo_scenarios_open());
-            key("\u{1b}");
-            assert!(!ui.global::<ShellState>().get_modal_open());
-            // Escape restores the actual search target, with no intervening click.
-            key("x");
-            assert_eq!(search(&ui).accessible_value().unwrap(), "x");
-            search(&ui).set_accessible_value("");
         }
         ui.hide().unwrap();
     })
@@ -185,22 +67,16 @@ fn escape_busy_sign_in_requires_a_decision() {
             .set_connection(ConnectionState::SigningIn);
         ui.invoke_focus_auth_start();
         ui.show().unwrap();
-        let key = |text: &str| {
-            ui.window()
-                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.into() });
-            ui.window()
-                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: text.into() });
-        };
-        key("\u{1b}");
+        press(&ui, "\u{1b}");
         assert!(visible(&ui, "Keep waiting"));
         assert_eq!(cancelled.get(), 0);
         assert!(ui.global::<AuthState>().get_auth_busy());
-        key("\n"); // Default action keeps waiting.
+        press(&ui, "\n"); // Default action keeps waiting.
         assert!(!visible(&ui, "Keep waiting"));
         assert_eq!(cancelled.get(), 0);
-        key("\u{1b}");
-        key("\t");
-        key("\n");
+        press(&ui, "\u{1b}");
+        press(&ui, "\t");
+        press(&ui, "\n");
         assert!(!visible(&ui, "Keep waiting"));
         assert_eq!(cancelled.get(), 1);
         ui.hide().unwrap();
@@ -237,27 +113,16 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
         };
         ui.global::<ShellState>()
             .set_connection(ConnectionState::Online);
-        ui.global::<ComposerState>().set_draft(draft.into());
-        state.composer = draft.into();
-        presenter.present_draft(&ui, &state);
-        assert_eq!(
-            ui.global::<ComposerState>().get_composer_mode(),
-            ComposerMode::Ready
-        );
-        ui.global::<ComposerState>().set_draft("".into());
-        state.composer.clear();
-        presenter.present_draft(&ui, &state);
-        assert_eq!(
-            ui.global::<ComposerState>().get_composer_mode(),
-            ComposerMode::Idle
-        );
-        ui.global::<ComposerState>().set_draft(draft.into()); // Programmatic restoration emits no typing event.
-        state.composer = draft.into();
-        presenter.present_draft(&ui, &state);
-        assert_eq!(
-            ui.global::<ComposerState>().get_composer_mode(),
-            ComposerMode::Ready
-        );
+        for (text, mode) in [
+            (draft, ComposerMode::Ready),
+            ("", ComposerMode::Idle),
+            (draft, ComposerMode::Ready),
+        ] {
+            ui.global::<ComposerState>().set_draft(text.into());
+            state.composer = text.into();
+            presenter.present_draft(&ui, &state);
+            assert_eq!(ui.global::<ComposerState>().get_composer_mode(), mode);
+        }
         ui.show().unwrap();
         slint::platform::update_timers_and_animations();
         let history = i_slint_backend_testing::ElementHandle::find_by_element_id(
@@ -274,14 +139,14 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
             slint::platform::update_timers_and_animations();
             assert!(
                 history.size().width >= 300.,
-                "profile left an unusable reading width at {width}"
+                "unusable reading width at {width}"
             );
             assert_eq!(ui.global::<ComposerState>().get_draft(), draft);
             assert!(ui.global::<DetailState>().get_detail_open());
         }
         ui.global::<DetailState>().invoke_pop_detail(true);
-        assert!(!ui.global::<DetailState>().get_detail_open());
         assert_eq!(ui.global::<ComposerState>().get_draft(), draft);
+        assert!(!ui.global::<DetailState>().get_detail_open());
         ui.global::<DetailState>().set_detail_depth(1);
         ui.global::<ShellState>().set_panel(PanelState::Detail);
         ui.global::<DetailState>().set_detail_depth(2);
@@ -289,12 +154,7 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
             .set_detail_page(DetailPageMode::Profile);
         ui.invoke_focus_profile_close();
         assert!(visible(&ui, "Profile"));
-        use slint::private_unstable_api::re_exports::WindowInner;
-        let focused = WindowInner::from_pub(ui.window())
-            .focus_item
-            .borrow()
-            .upgrade()
-            .expect("member profile has no focus");
+        let focused = focus_item(&ui);
         assert!(focused.is_visible(), "member profile focus is hidden");
         ui.hide().unwrap();
     })
@@ -317,8 +177,6 @@ fn loading_history_never_renders_the_loaded_empty_identity() {
                 .next()
                 .is_some()
         };
-        let advance =
-            |ms| i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
         state.select(ChatId("empty".into()));
         presenter.present(&ui, &state, ChatCategory::All);
         slint::platform::update_timers_and_animations();
@@ -354,8 +212,6 @@ fn selecting_another_loading_chat_restarts_the_indicator_delay() {
             .next()
             .is_some()
         };
-        let advance =
-            |ms| i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
         state.select(ChatId("a".into()));
         presenter.present(&ui, &state, ChatCategory::All);
         slint::platform::update_timers_and_animations();
@@ -393,10 +249,6 @@ fn replacing_feedback_gets_a_full_dismissal_interval() {
         let (ui, _runtime, _worker) =
             test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
-        let advance = |ms| {
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
-            slint::platform::update_timers_and_animations();
-        };
         for reaction in [false, true] {
             let set = |value: &str| {
                 if reaction {

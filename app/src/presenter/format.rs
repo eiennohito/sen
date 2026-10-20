@@ -447,4 +447,10 @@ mod calendar_tests {
         assert!(relative_time(0, now).is_empty());
         assert!(day_label(i64::MAX, now).is_empty());
     }
+    #[test]
+    fn media_metadata_uses_minutes_and_byte_units() {
+        assert_eq!(duration(125000), "2:05");
+        assert_eq!(file_size(1024), "1.0 KB");
+        assert_eq!(file_size(12), "12 B");
+    }
 }

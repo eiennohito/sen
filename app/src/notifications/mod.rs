@@ -138,39 +138,12 @@ mod tests {
     #[test]
     fn queued_notification_opens_preserve_both_persisted_drafts() {
         std::thread::spawn(|| {
-            use line::{
-                backend::FakeBackend,
-                engine::{StoreLocation, Worker},
-            };
-            let worker = Worker::start(
-                StoreLocation::Memory,
-                {
-                    let mut fake = Some(FakeBackend::canned());
-                    move || Ok(fake.take().unwrap())
-                },
-                line::engine::WorkerOptions::default(),
-            );
+            let worker = crate::tests::test_worker(line::backend::FakeBackend::canned());
             let _window = crate::snapshot::install().unwrap();
             let ui = crate::window::create_app_window().unwrap();
             let chat_a = ChatId("alice".into());
             let chat_b = ChatId("weekend".into());
-            let mut desktop = Desktop {
-                clipboard_root: std::env::temp_dir(),
-                history: Default::default(),
-                shown_composer: String::new(),
-                reveal: None,
-                viewer_asset: None,
-                viewer_source: None,
-                viewer_name: String::new(),
-                attachments: Default::default(),
-                notifications: None,
-                background: Default::default(),
-                assets: Default::default(),
-                state: AppState::default(),
-                presenter: Default::default(),
-                sender: worker.sender.clone(),
-                category: ChatCategory::All,
-            };
+            let mut desktop = crate::tests::desktop(worker.sender.clone());
             let receive = |reason: &str| {
                 worker
                     .deltas
@@ -211,7 +184,7 @@ mod tests {
             ui.global::<ComposerState>().set_editor_anchor(3);
             let (events, receiver) = std::sync::mpsc::channel();
             desktop.notifications = Some(Notifications {
-                service: notifications::worker::Attention::disconnected(),
+                service: notifications::worker::Attention::start(),
                 events: receiver,
             });
             events

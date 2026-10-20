@@ -68,13 +68,11 @@ mod tests {
     fn emoji_presentation_renders_in_colour_and_text_presentation_stays_grey() {
         let path =
             std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../fonts/NotoColorEmoji.ttf");
-        if !path.is_file() {
-            eprintln!(
-                "SKIP emoji render test: missing {}; run python3 tools/fetch_emoji_font.py",
-                path.display()
-            );
-            return;
-        }
+        assert!(
+            path.is_file(),
+            "missing {}; run python3 tools/fetch_emoji_font.py",
+            path.display()
+        );
         let data = std::fs::read(path).unwrap();
         std::thread::spawn(move || {
             let window = crate::snapshot::install().unwrap();

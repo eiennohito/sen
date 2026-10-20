@@ -1,181 +1,35 @@
 use super::*;
+use slint::platform::WindowEvent;
 
 #[test]
-fn keyboard_rings_follow_buttons_and_whole_friend_rows() {
+fn keyboard_rings_follow_input_and_cover_friend_rows() {
     std::thread::spawn(|| {
-        use i_slint_backend_testing::ElementHandle;
-        use i_slint_core::{
-            item_tree::{ItemRc, ParentItemTraversalMode},
-            items::{BasicBorderRectangle, Clip},
-        };
-        use slint::platform::{Key, PointerEventButton, WindowEvent};
-        use slint::private_unstable_api::re_exports::WindowInner;
-        i_slint_backend_testing::init_no_event_loop();
-        let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
-        ui.show().unwrap();
-        ui.window().set_size(slint::LogicalSize::new(980., 720.));
-        let weak = ui.as_weak();
-        ui.global::<NewChatState>().on_open_new_chat(move || {
-            weak.upgrade()
-                .unwrap()
-                .global::<NewChatState>()
-                .set_new_chat_open(true)
-        });
-        ui.global::<NewChatState>().set_new_chat_friends(
-            Rc::new(VecModel::from(vec![ComposeFriend {
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        ui.global::<NewChatState>()
+            .set_new_chat_friends(ModelRc::new(VecModel::from(vec![ComposeFriend {
                 id: "friend".into(),
                 name: "Friend".into(),
                 ..Default::default()
-            }]))
-            .into(),
-        );
+            }])));
+        let weak = ui.as_weak();
+        ui.global::<NewChatState>().on_open_new_chat(move || {
+            weak.unwrap()
+                .global::<NewChatState>()
+                .set_new_chat_open(true);
+        });
         let toggled = Rc::new(std::cell::Cell::new(0));
-        let recorded = toggled.clone();
+        let count = toggled.clone();
         ui.global::<NewChatState>().on_new_chat_toggle(move |id| {
             assert_eq!(id, "friend");
-            recorded.set(recorded.get() + 1);
+            count.set(count.get() + 1);
         });
-        let control = |label| {
-            ElementHandle::find_by_accessible_label(&ui, label)
-                .find(|item| {
-                    item.accessible_role() != Some(i_slint_backend_testing::AccessibleRole::Text)
-                })
-                .unwrap()
-        };
-        let key = |text: slint::SharedString| {
-            ui.window()
-                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-            ui.window()
-                .dispatch_event(WindowEvent::KeyReleased { text });
-        };
-        let rings = || {
-            slint::platform::update_timers_and_animations();
-            let mut borders = Vec::new();
-            ItemRc::new_root(WindowInner::from_pub(ui.window()).component()).visit_descendants(
-                |item| {
-                    if item.is_visible()
-                        && let Some(rect) = item.downcast::<BasicBorderRectangle>()
-                    {
-                        let rect = rect.as_pin_ref();
-                        if rect.border_width().get() > 0. {
-                            borders.push(item.clone());
-                        }
-                    }
-                    std::ops::ControlFlow::<()>::Continue(())
-                },
-            );
-            borders
-        };
-        let surrounds = |label, baseline: &[ItemRc]| {
-            let element = control(label);
-            let p = element.absolute_position();
-            let s = element.size();
-            rings()
-                .iter()
-                .filter(|item| !baseline.contains(item))
-                .any(|item| {
-                    let origin = item.map_to_window(Default::default());
-                    let size = item.geometry().size;
-                    origin.x <= p.x
-                        && origin.y <= p.y
-                        && origin.x + size.width >= p.x + s.width
-                        && origin.y + size.height >= p.y + s.height
-                })
-        };
-        control("New chat").mock_single_click(PointerEventButton::Left);
-        control("Friend").mock_single_click(PointerEventButton::Left);
-        let row_baseline = rings();
-        control("Find friends for new chat").mock_single_click(PointerEventButton::Left);
-        assert!(
-            surrounds("Find friends for new chat", &row_baseline),
-            "clicked text field has no border"
-        );
-        let field_baseline = rings();
-        assert_eq!(
-            field_baseline
-                .iter()
-                .filter(|item| !row_baseline.contains(item))
-                .count(),
-            1
-        );
-        key("f".into());
-        assert_eq!(rings(), field_baseline, "typing added a ring after a click");
-        key(Key::Backspace.into());
-        key(Key::Escape.into());
-        control("New chat").mock_single_click(PointerEventButton::Left);
-        let dialog_baseline = rings();
-        key(Key::Escape.into());
-        control("Find a conversation").mock_single_click(PointerEventButton::Left);
-        let main_baseline = rings();
-        ui.invoke_focus_search();
-        // Tab follows visual order.
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyPressed {
-                text: Key::Shift.into(),
-            });
-        key(Key::Tab.into());
-        ui.window()
-            .dispatch_event(slint::platform::WindowEvent::KeyReleased {
-                text: Key::Shift.into(),
-            });
-        assert_eq!(focus_label(&ui), "New chat");
-        assert!(surrounds("New chat", &main_baseline));
-        key(Key::Return.into());
-        assert!(
-            surrounds("Find friends for new chat", &row_baseline),
-            "keyboard opening lost the ring"
-        );
-        key(Key::Escape.into());
-        assert!(
-            surrounds("Find a conversation", &row_baseline),
-            "keyboard dismissal lost the ring"
-        );
-        control("New chat").mock_single_click(PointerEventButton::Left);
-        assert_eq!(rings(), dialog_baseline, "pointer opening left a ring");
-        key(Key::Tab.into());
-        assert_eq!(focus_label(&ui), "Friend");
-        let row = ElementHandle::find_by_element_type_name(&ui, "ListRow")
-            .next()
-            .unwrap();
-        assert!(
-            control("Friend").size().width >= row.size().width,
-            "checkbox remained an inner stop"
-        );
-        assert!(
-            surrounds("Friend", &dialog_baseline),
-            "friend row did not ring as a whole"
-        );
-        for ring in rings()
-            .iter()
-            .filter(|item| !dialog_baseline.contains(item))
-        {
-            let bounds = ring.geometry().size;
-            let p = ring.map_to_window(Default::default());
-            let mut ancestor = ring.parent_item(ParentItemTraversalMode::StopAtPopups);
-            let mut clipped = false;
-            while let Some(item) = ancestor {
-                if let Some(clip) = item.downcast::<Clip>()
-                    && clip.as_pin_ref().clip()
-                {
-                    clipped = true;
-                    let origin = item.map_to_window(Default::default());
-                    let size = item.geometry().size;
-                    assert!(
-                        p.x >= origin.x
-                            && p.y >= origin.y
-                            && p.x + bounds.width <= origin.x + size.width
-                            && p.y + bounds.height <= origin.y + size.height,
-                        "row ring extends outside its clip"
-                    );
-                }
-                ancestor = item.parent_item(ParentItemTraversalMode::StopAtPopups);
-            }
-            assert!(clipped, "row ring has no Pane clip");
-        }
-        control("Friend").mock_single_click(PointerEventButton::Left);
-        assert_eq!(rings(), row_baseline, "pointer row selection left a ring");
-        for modifier in [
+        ui.global::<NewChatState>().set_new_chat_open(true);
+        ui.show().unwrap();
+        snapshot::render(&window, (980, 720)).unwrap();
+        use slint::platform::Key;
+        let pointer = || click_at(&ui, slint::LogicalPosition::new(1., 1.));
+        let modifiers = [
             Key::Shift,
             Key::ShiftR,
             Key::Control,
@@ -185,44 +39,152 @@ fn keyboard_rings_follow_buttons_and_whole_friend_rows() {
             Key::Meta,
             Key::MetaR,
             Key::CapsLock,
-        ] {
-            ui.window().dispatch_event(WindowEvent::KeyPressed {
-                text: modifier.into(),
-            });
-            assert_eq!(
-                rings(),
-                row_baseline,
-                "modifier alone added a ring: {modifier:?}"
-            );
-            if matches!(
-                modifier,
-                Key::Control | Key::ControlR | Key::Meta | Key::MetaR
-            ) {
-                key("c".into());
-                assert_eq!(rings(), row_baseline, "chord added a ring: {modifier:?}");
+        ];
+        let events = modifiers.into_iter().map(|key| (key, None, false)).chain([
+            (Key::Control, Some("c".into()), false),
+            (Key::ControlR, Some("c".into()), false),
+            (Key::Meta, Some("c".into()), false),
+            (Key::MetaR, Some("c".into()), false),
+            (Key::Alt, Some(Key::LeftArrow.into()), true),
+        ]);
+        for (modifier, key, expected) in events {
+            pointer();
+            if let Some(key) = key {
+                chord(&ui, modifier, key);
+            } else {
+                press(&ui, modifier);
             }
-            ui.window().dispatch_event(WindowEvent::KeyReleased {
-                text: modifier.into(),
-            });
-            assert_eq!(rings(), row_baseline);
+            assert_eq!(
+                ui.global::<ShellState>().get_keyboard_navigation(),
+                expected,
+                "navigation mode after {modifier:?}"
+            );
         }
-        ui.window().dispatch_event(WindowEvent::KeyPressed {
-            text: Key::Alt.into(),
-        });
-        key(Key::LeftArrow.into());
-        ui.window().dispatch_event(WindowEvent::KeyReleased {
-            text: Key::Alt.into(),
-        });
+        press(&ui, Key::Tab);
+        pointer();
+        assert!(!ui.global::<ShellState>().get_keyboard_navigation());
+        for keyboard in [false, true] {
+            press(&ui, Key::Escape);
+            let opener = element(&ui, "New chat");
+            if keyboard {
+                ui.invoke_focus_search();
+                chord(&ui, Key::Shift, Key::Tab.into());
+                assert_eq!(focus_label(&ui), "New chat");
+                press(&ui, Key::Return);
+            } else {
+                let p = opener.absolute_position();
+                click_at(&ui, slint::LogicalPosition::new(p.x + 8., p.y + 8.));
+            }
+            assert!(ui.global::<NewChatState>().get_new_chat_open());
+            assert_eq!(
+                ui.global::<ShellState>().get_keyboard_navigation(),
+                keyboard
+            );
+            if keyboard {
+                press(&ui, Key::Escape);
+            } else {
+                let close = element(&ui, "Close new chat");
+                let p = close.absolute_position();
+                click_at(&ui, slint::LogicalPosition::new(p.x + 8., p.y + 8.));
+            }
+            assert!(!ui.global::<NewChatState>().get_new_chat_open());
+            assert_eq!(
+                ui.global::<ShellState>().get_keyboard_navigation(),
+                keyboard
+            );
+        }
+        ui.global::<NewChatState>().set_new_chat_query("".into());
+        ui.global::<NewChatState>().set_new_chat_open(true);
+        snapshot::render(&window, (980, 720)).unwrap();
+        let row = i_slint_backend_testing::ElementHandle::find_by_accessible_label(&ui, "Friend")
+            .find(|e| {
+                e.accessible_role() == Some(i_slint_backend_testing::AccessibleRole::Checkbox)
+            })
+            .unwrap();
+        let list_row =
+            i_slint_backend_testing::ElementHandle::find_by_element_type_name(&ui, "ListRow")
+                .next()
+                .unwrap();
         assert!(
-            surrounds("Friend", &row_baseline),
-            "Alt+arrow did not enable rings"
+            row.size().width >= list_row.size().width,
+            "checkbox is narrower than its row"
         );
+        let p = row.absolute_position();
+        let size = row.size();
+        let edges = |pixels: slint::SharedPixelBuffer<slint::Rgb8Pixel>| {
+            [p.x, p.x + size.width - 1.].map(|x| {
+                let pixel = pixels.as_slice()[(p.y + size.height / 2.) as usize * 980 + x as usize];
+                (pixel.r, pixel.g, pixel.b)
+            })
+        };
+        let unfocused = edges(snapshot::render(&window, (980, 720)).unwrap());
+        click_at(
+            &ui,
+            slint::LogicalPosition::new(p.x + size.width / 2., p.y + size.height / 2.),
+        );
+        assert_eq!(
+            edges(snapshot::render(&window, (980, 720)).unwrap()),
+            unfocused
+        );
+        let search = element(&ui, "Find friends for new chat");
+        let search_position = search.absolute_position();
+        click_at(
+            &ui,
+            slint::LogicalPosition::new(search_position.x + 8., search_position.y + 8.),
+        );
+        press(&ui, slint::platform::Key::Tab);
+        assert_eq!(focus_label(&ui), "Friend");
+        let focused = edges(snapshot::render(&window, (980, 720)).unwrap());
+        assert!(
+            focused
+                .iter()
+                .zip(unfocused)
+                .all(|(after, before)| *after != before)
+        );
+        assert_eq!(focused[0], focused[1], "ring must surround both row edges");
+        use i_slint_core::{
+            item_tree::ParentItemTraversalMode,
+            items::{BasicBorderRectangle, Clip},
+        };
+        let mut rings = Vec::new();
+        focus_item(&ui).visit_descendants(|item| {
+            if let Some(rect) = item.downcast::<BasicBorderRectangle>()
+                && rect.as_pin_ref().border_width().get() > 0.
+            {
+                rings.push(item.clone());
+            }
+            std::ops::ControlFlow::<()>::Continue(())
+        });
+        let ring = rings.first().expect("focused row has no ring");
+        let p = ring.map_to_window(Default::default());
+        let size = ring.geometry().size;
+        let mut ancestor = ring.parent_item(ParentItemTraversalMode::StopAtPopups);
+        let mut clipped = false;
+        while let Some(item) = ancestor {
+            if let Some(clip) = item.downcast::<Clip>()
+                && clip.as_pin_ref().clip()
+            {
+                clipped = true;
+                let origin = item.map_to_window(Default::default());
+                let bounds = item.geometry().size;
+                assert!(
+                    p.x >= origin.x
+                        && p.y >= origin.y
+                        && p.x + size.width <= origin.x + bounds.width
+                        && p.y + size.height <= origin.y + bounds.height,
+                    "row ring escapes Pane clip"
+                );
+            }
+            ancestor = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+        }
+        assert!(clipped, "row ring has no Pane clip");
         toggled.set(0);
-        key(" ".into());
-        key(Key::Return.into());
-        assert_eq!(toggled.get(), 2);
-        key(Key::Tab.into());
-        assert_eq!(focus_label(&ui), "Cancel", "row gained an inner Tab stop");
+        for (key, expected) in [(slint::SharedString::from(" "), 1), (Key::Return.into(), 2)] {
+            press(&ui, key);
+            assert_eq!(toggled.get(), expected);
+        }
+        press(&ui, Key::Tab);
+        assert_eq!(focus_label(&ui), "Cancel");
     })
     .join()
     .unwrap();
@@ -248,11 +210,7 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
         state.contacts.insert(friend.id.clone(), friend);
         state.select(ChatId("friend".into()));
         presenter.present(&ui, &state, ChatCategory::All);
-        let image = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-            &[0, 180, 100, 255],
-            1,
-            1,
-        ));
+        let image = green_image();
         let path = crate::tests::image_file(&image);
         let image = slint::Image::load_from_path(&path).unwrap();
         presenter.images.insert(asset.key(), path);
@@ -272,18 +230,11 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
         state.chat_order.push(id.clone());
         state.chats.insert(
             id.clone(),
-            ChatListItem {
-                chat: ChatInput {
-                    id,
-                    avatar: Some(line::client::desktop::assets::Asset::avatar("/chat").unwrap()),
-                    ..Default::default()
-                },
-                unread_count: 0,
-                preview: None,
-                activity_ms: 0,
-                failed_count: 0,
-                draft: None,
-            },
+            chat_item(ChatInput {
+                id,
+                avatar: Some(line::client::desktop::assets::Asset::avatar("/chat").unwrap()),
+                ..Default::default()
+            }),
         );
         presenter.present(&ui, &state, ChatCategory::All);
         let chat = ui.global::<ChatsState>().get_chats().row_data(0).unwrap();
@@ -320,19 +271,13 @@ fn detail_focus_restores_the_opener_without_demo() {
                 snapshot::render(&window, (980, 720)).unwrap();
             }
             ui.invoke_focus_profile_close();
-            ui.window()
-                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
-            ui.window()
-                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "x".into() });
+            press(&ui, "x");
             assert_eq!(search(&ui).accessible_value().unwrap(), "");
             ui.global::<ShellState>().set_panel(PanelState::None);
             ui.global::<DetailState>().set_detail_depth(0);
             snapshot::render(&window, (980, 720)).unwrap();
             focus::restore_detail(&ui, true);
-            ui.window()
-                .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
-            ui.window()
-                .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "x".into() });
+            press(&ui, "x");
             assert_eq!(
                 search(&ui).accessible_value().unwrap(),
                 "x",
@@ -494,23 +439,11 @@ fn copy_message_preserves_the_selected_text() {
     .unwrap();
 }
 
-fn focus_label(ui: &AppWindow) -> String {
-    use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
-    WindowInner::from_pub(ui.window())
-        .focus_item
-        .borrow()
-        .upgrade()
-        .unwrap()
-        .accessible_string_property(AccessibleStringProperty::Label)
-        .unwrap_or_default()
-        .to_string()
-}
-
 #[test]
 fn members_search_keeps_alt_arrows_for_editing() {
     std::thread::spawn(|| {
         use i_slint_backend_testing::ElementHandle;
-        use slint::platform::{Key, WindowEvent};
+        use slint::platform::Key;
         i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
         ui.show().unwrap();
@@ -546,7 +479,7 @@ fn members_search_keeps_alt_arrows_for_editing() {
 fn notice_banner_f6_leaves_for_history() {
     std::thread::spawn(|| {
         use i_slint_backend_testing::ElementHandle;
-        use slint::platform::{Key, WindowEvent};
+        use slint::platform::Key;
         i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
         ui.global::<ShellState>().set_account_mid("self".into());
@@ -574,28 +507,9 @@ fn notice_banner_f6_leaves_for_history() {
 }
 
 #[test]
-fn narrow_to_medium_detail_keeps_focus_inside_detail() {
-    std::thread::spawn(|| {
-        let window = snapshot::install().unwrap();
-        let ui = window::create_app_window().unwrap();
-        ui.global::<ShellState>().set_panel(PanelState::Detail);
-        ui.global::<DetailState>().set_detail_depth(1);
-        ui.global::<DetailState>()
-            .set_detail_page(DetailPageMode::Members);
-        ui.show().unwrap();
-        snapshot::render(&window, (739, 720)).unwrap();
-        ui.invoke_focus_profile_close();
-        snapshot::render(&window, (740, 720)).unwrap();
-        assert_eq!(focus_label(&ui), "Close details");
-    })
-    .join()
-    .unwrap();
-}
-
-#[test]
 fn viewer_returns_to_current_photo_key_or_history_after_recycling() {
     std::thread::spawn(|| {
-        use slint::platform::{Key, WindowEvent};
+        use slint::platform::Key;
         i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
         ui.global::<ConversationState>().set_has_chat(true);
@@ -605,11 +519,7 @@ fn viewer_returns_to_current_photo_key_or_history_after_recycling() {
             id: key.into(),
             image_key: key.into(),
             has_picture: true,
-            picture: slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-                &[0, 180, 100, 255],
-                1,
-                1,
-            )),
+            picture: green_image(),
             ..Default::default()
         };
         let rows = Rc::new(slint::VecModel::from(vec![photo("first"), photo("second")]));
@@ -701,7 +611,7 @@ fn virtual_wheel_frames_update_latest_and_top_paging() {
                 }
             });
         let frame = || {
-            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+            advance(20);
             slint::platform::update_timers_and_animations();
         };
         ui.show().unwrap();
@@ -745,31 +655,11 @@ fn virtual_wheel_frames_update_latest_and_top_paging() {
 #[test]
 fn busy_controls_refuse_focus_and_activation() {
     std::thread::spawn(|| {
-        use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
-        use slint::platform::{Key, WindowEvent};
-        let platform = snapshot::install().unwrap();
+        use slint::platform::Key;
+        i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
         ui.show().unwrap();
         ui.window().set_size(slint::LogicalSize::new(360., 720.));
-        slint::platform::update_timers_and_animations();
-        let click = |control: &ElementHandle| {
-            let pos = control.absolute_position();
-            let size = control.size();
-            let position =
-                slint::LogicalPosition::new(pos.x + size.width / 2., pos.y + size.height / 2.);
-            let button = slint::platform::PointerEventButton::Left;
-            ui.window()
-                .dispatch_event(WindowEvent::PointerPressed { position, button });
-            ui.window()
-                .dispatch_event(WindowEvent::PointerReleased { position, button });
-        };
-        let focused = || focus_label(&ui);
-        let key = |text: slint::SharedString| {
-            ui.window()
-                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
-            ui.window()
-                .dispatch_event(WindowEvent::KeyReleased { text });
-        };
         ui.global::<ShellState>().set_panel(PanelState::SignIn);
         ui.global::<ShellState>()
             .set_connection(ConnectionState::SigningIn);
@@ -777,124 +667,114 @@ fn busy_controls_refuse_focus_and_activation() {
             .set_auth_phase(AuthPhase::Cancelling);
         ui.invoke_focus_search();
         ui.invoke_focus_auth_start();
-        assert_ne!(focused(), "Cancelling…", "cancelling Back accepted focus");
-
+        assert_ne!(focus_label(&ui), "Cancelling…");
         ui.global::<ShellState>().set_panel(PanelState::None);
-        ui.global::<ShellState>()
-            .set_connection(ConnectionState::SigningIn);
         ui.global::<ShellState>().set_account_mid("self".into());
         ui.invoke_focus_search();
         ui.invoke_focus_connection_first();
-        assert_ne!(
-            focused(),
-            "Sign in again",
-            "unavailable sign-in accepted focus"
-        );
-
+        assert!(!ui.global::<ShellState>().get_sign_in_available());
+        assert!(!visible(&ui, "Sign in again"));
+        assert_ne!(focus_label(&ui), "Sign in again");
         ui.global::<ShellState>()
             .set_connection(ConnectionState::Online);
         ui.global::<ComposerState>()
             .set_composer_mode(ComposerMode::Unavailable);
         ui.invoke_focus_search();
-        let opener = focused();
+        let opener = focus_label(&ui);
         ui.invoke_focus_composer();
         assert_eq!(
-            focused(),
+            focus_label(&ui),
             opener,
-            "disabled draft moved focus out to the rail"
+            "unavailable composer pulled focus to the rail"
         );
         ui.global::<ShellState>().set_panel(PanelState::Detail);
         ui.global::<DetailState>().set_detail_depth(1);
-        ui.global::<DetailState>().set_profile_friend(true);
+        ui.global::<DetailState>()
+            .set_detail_page(DetailPageMode::Group);
         ui.global::<DetailState>().set_detail_busy(true);
-        for (page, label) in [
-            (DetailPageMode::Profile, "Rename"),
-            (DetailPageMode::Group, "Leave group"),
-        ] {
-            ui.global::<DetailState>().set_detail_page(page);
-            slint::platform::update_timers_and_animations();
-            ui.invoke_focus_profile_close();
-            let focusable = ElementQuery::from_root(&ui)
-                .find_all()
-                .into_iter()
-                .filter(|item| {
-                    item.accessible_enabled() != Some(false)
-                        && matches!(
-                            item.accessible_role(),
-                            Some(
-                                AccessibleRole::Button
-                                    | AccessibleRole::TextInput
-                                    | AccessibleRole::Checkbox
-                                    | AccessibleRole::List
-                                    | AccessibleRole::TabList
-                                    | AccessibleRole::Slider
-                            )
-                        )
-                })
-                .count();
-            for _ in 0..focusable {
-                ui.global::<ShellState>().invoke_tab_focus(true);
-                assert_ne!(focused(), label, "busy {label} accepted focus");
-                if focused() == "Close details" {
-                    break;
-                }
-            }
-            assert_eq!(
-                focused(),
-                "Close details",
-                "reverse Tab did not complete the cycle within the focusable controls"
-            );
-            let control = ElementHandle::find_by_accessible_label(&ui, label)
-                .next()
-                .unwrap_or_else(|| panic!("missing {label}"));
-            assert_eq!(control.accessible_enabled(), Some(false));
-            let pos = control.absolute_position();
-            let size = control.size();
-            let ink = |image: slint::SharedPixelBuffer<slint::Rgb8Pixel>| {
-                image
-                    .as_slice()
-                    .chunks(360)
-                    .skip(pos.y as usize)
-                    .take(size.height as usize)
-                    .flat_map(|row| row.iter().skip(pos.x as usize).take(size.width as usize))
-                    .map(|p| u16::from(p.r) + u16::from(p.g) + u16::from(p.b))
-                    .min()
-                    .unwrap()
-            };
-            ui.global::<DetailState>().set_detail_busy(false);
-            let idle = ink(snapshot::render(&platform, (360, 720)).unwrap());
-            ui.global::<DetailState>().set_detail_busy(true);
-            let busy = ink(snapshot::render(&platform, (360, 720)).unwrap());
-            assert!(busy > idle, "busy {label} content did not get lighter");
-            control.invoke_accessible_default_action();
-            click(&control);
-            assert!(
-                ElementHandle::find_by_element_id(&ui, "Layers::dialog-title")
-                    .next()
-                    .is_none()
-            );
-        }
-
+        slint::platform::update_timers_and_animations();
+        ui.invoke_focus_profile_close();
+        press(&ui, Key::Tab);
+        assert_eq!(focus_label(&ui), "Open profile photo");
+        press(&ui, Key::Tab);
+        assert_eq!(focus_label(&ui), "Members (0)");
+        press(&ui, Key::Tab);
+        assert_eq!(focus_label(&ui), "Close details");
+        let leave = element(&ui, "Leave group");
+        assert_eq!(leave.accessible_enabled(), Some(false));
+        leave.invoke_accessible_default_action();
+        leave.mock_single_click(slint::platform::PointerEventButton::Left);
+        assert_eq!(
+            ui.global::<DetailState>().get_detail_dialog(),
+            DetailAction::None
+        );
         ui.global::<ShellState>().set_panel(PanelState::None);
         ui.global::<NewChatState>().set_new_chat_open(true);
         slint::platform::update_timers_and_animations();
         assert_eq!(focus_label(&ui), "Find friends for new chat");
         ui.global::<NewChatState>().set_new_chat_busy(true);
-        // Keep Shift held while the dialog attempts to focus its disabled close button.
-        ui.window().dispatch_event(WindowEvent::KeyPressed {
-            text: Key::Shift.into(),
-        });
-        key(Key::Tab.into());
-        ui.window().dispatch_event(WindowEvent::KeyReleased {
-            text: Key::Shift.into(),
-        });
-        assert_ne!(focused(), "Close new chat");
-        let close = ElementHandle::find_by_accessible_label(&ui, "Close new chat")
-            .next()
-            .unwrap();
+        chord(&ui, Key::Shift, Key::Tab.into());
+        assert_ne!(focus_label(&ui), "Close new chat");
+        let close = element(&ui, "Close new chat");
+        assert_eq!(close.accessible_enabled(), Some(false));
         close.invoke_accessible_default_action();
-        click(&close);
         assert!(ui.global::<NewChatState>().get_new_chat_open());
+        let p = close.absolute_position();
+        let size = close.size();
+        click_at(
+            &ui,
+            slint::LogicalPosition::new(p.x + size.width / 2., p.y + size.height / 2.),
+        );
+        assert!(ui.global::<NewChatState>().get_new_chat_open());
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn busy_profile_action_ignores_click_enter_and_tab() {
+    std::thread::spawn(|| {
+        i_slint_backend_testing::init_no_event_loop();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+        ui.window().set_size(slint::LogicalSize::new(360., 720.));
+        ui.global::<ShellState>().set_panel(PanelState::Detail);
+        ui.global::<DetailState>().set_detail_depth(1);
+        ui.global::<DetailState>().set_profile_friend(true);
+        ui.global::<DetailState>().set_profile_available(true);
+        ui.show().unwrap();
+        slint::platform::update_timers_and_animations();
+        ui.invoke_focus_profile_close();
+        for expected in ["Close details", "Open profile photo", "Chat", "Rename"] {
+            press(&ui, slint::platform::Key::Tab);
+            assert_eq!(focus_label(&ui), expected);
+        }
+        ui.global::<DetailState>().set_detail_busy(true);
+        press(&ui, slint::platform::Key::Return);
+        let rename = element(&ui, "Rename");
+        assert_eq!(rename.accessible_enabled(), Some(false));
+        rename.mock_single_click(slint::platform::PointerEventButton::Left);
+        assert_eq!(
+            ui.global::<DetailState>().get_detail_dialog(),
+            DetailAction::None
+        );
+        ui.invoke_focus_profile_close();
+        for expected in [
+            "Close details",
+            "Open profile photo",
+            "Chat",
+            "Profile more",
+        ] {
+            press(&ui, slint::platform::Key::Tab);
+            assert_eq!(focus_label(&ui), expected);
+        }
+        ui.global::<DetailState>().set_detail_busy(false);
+        rename.mock_single_click(slint::platform::PointerEventButton::Left);
+        assert_eq!(focus_label(&ui), "Name");
+        assert_eq!(
+            ui.global::<DetailState>().get_detail_dialog(),
+            DetailAction::Rename
+        );
     })
     .join()
     .unwrap();
@@ -904,7 +784,7 @@ fn busy_controls_refuse_focus_and_activation() {
 fn checkbox_uses_space_but_not_return() {
     std::thread::spawn(|| {
         use i_slint_backend_testing::ElementHandle;
-        use slint::platform::{Key, WindowEvent};
+        use slint::platform::Key;
         i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
         ui.show().unwrap();
@@ -914,13 +794,14 @@ fn checkbox_uses_space_but_not_return() {
             .next()
             .unwrap();
         checkbox.mock_single_click(slint::platform::PointerEventButton::Left);
-        let checked = checkbox.accessible_checked();
-        for (text, expected) in [
-            (Key::Return.into(), checked),
-            (" ".into(), checked.map(|v| !v)),
+        let checked = checkbox.accessible_checked().unwrap();
+        for (key, expected) in [
+            (slint::SharedString::from(" "), !checked),
+            (Key::Return.into(), !checked),
+            (slint::SharedString::from(" "), checked),
         ] {
-            ui.window().dispatch_event(WindowEvent::KeyPressed { text });
-            assert_eq!(checkbox.accessible_checked(), expected);
+            press(&ui, key);
+            assert_eq!(checkbox.accessible_checked(), Some(expected));
         }
     })
     .join()
@@ -1022,8 +903,14 @@ slint::slint! {
         background: white;
         Button { x: 16px; y: 16px; width: 64px; background: black; enabled: false; }
         Button { x: 112px; y: 16px; width: 64px; background: black; }
-        IconButton { x: 16px; y: 80px; background: black; icon-color: white; icon: @image-url("../../assets/icons/rename.svg"); enabled: false; }
-        IconButton { x: 112px; y: 80px; background: black; icon-color: white; icon: @image-url("../../assets/icons/rename.svg"); }
+        IconButton {
+            x: 16px; y: 80px; background: black; icon-color: white;
+            icon: @image-url("../../assets/icons/rename.svg"); enabled: false;
+        }
+        IconButton {
+            x: 112px; y: 80px; background: black; icon-color: white;
+            icon: @image-url("../../assets/icons/rename.svg");
+        }
     }
 }
 

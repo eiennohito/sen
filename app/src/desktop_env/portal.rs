@@ -12,6 +12,10 @@ pub(crate) fn choose(
     title: &str,
     mut options: HashMap<&str, OwnedValue>,
 ) -> Result<Result<Vec<String>, u32>, Box<dyn std::error::Error>> {
+    #[cfg(test)]
+    if std::env::var("LINE_DESKTOP_TEST_BUS").as_deref() != Ok("1") {
+        return Err("tests require a private dbus-run-session".into());
+    }
     let bus = Connection::session()?;
     static NEXT: AtomicU64 = AtomicU64::new(1);
     let token = format!(

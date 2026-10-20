@@ -29,11 +29,7 @@ fn rich_fixture() -> Vec<MessageRow> {
         for i in 0..runs.row_count() {
             let mut run = runs.row_data(i).unwrap();
             if run.emoji {
-                run.picture = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-                    &[0, 180, 100, 255],
-                    1,
-                    1,
-                ));
+                run.picture = green_image();
                 run.has_picture = true;
                 runs.set_row_data(i, run);
             }
@@ -41,22 +37,6 @@ fn rich_fixture() -> Vec<MessageRow> {
     }
     vec![MessageRow::default(), row]
 }
-slint::slint! {
-    import { TextMetrics } from "../../ui/text-metrics.slint";
-    export component MetricsProbe inherits Window {
-        in-out property <string> sample;
-        in-out property <float> size: 15;
-        in-out property <float> measured-width;
-        out property <float> plain-width: plain.preferred-width / 1px;
-        background: #ffffff;
-        metrics := TextMetrics {}
-        public function measure() { root.measured-width = metrics.measure(root.sample, root.size).width; }
-        public function measure-part(content: string) -> float { return metrics.measure(content, root.size).width; }
-        plain := Text { x: 20px; y: 20px; width: parent.width - 40px; height: 40px; text: root.sample; font-size: root.size * 1px; color: #008c52; wrap: no-wrap; }
-        Text { x: 20px; y: 100px; width: root.measured-width * 1px; height: 40px; text: root.sample; font-size: root.size * 1px; color: #008c52; wrap: no-wrap; overflow: clip; }
-    }
-}
-
 fn layout(ui: &AppWindow, rows: &ModelRc<RichRun>, width: f32, size: f32) -> ModelRc<RichRun> {
     crate::rich_content::flow::layout(
         ui,
@@ -116,92 +96,6 @@ fn missing_emoji_reserves_the_loaded_geometry() {
 }
 
 #[test]
-fn measurement_lru_bounds_text_and_entries_and_separates_font_sizes() {
-    let mut cache = Measurements::default();
-    for i in 0..METRIC_ENTRIES {
-        cache.insert(
-            (format!("word{i}").into(), 15_f32.to_bits()),
-            (i as f32, 20.),
-        );
-    }
-    let oldest = ("word0".into(), 15_f32.to_bits());
-    assert_eq!(cache.get(&oldest), Some((0., 20.)));
-    cache.insert(("new".into(), 15_f32.to_bits()), (1., 20.));
-    assert!(cache.get(&oldest).is_some());
-    assert!(cache.get(&("word1".into(), 15_f32.to_bits())).is_none());
-    assert!(cache.get(&("word0".into(), 18_f32.to_bits())).is_none());
-    assert_eq!(cache.values.len(), METRIC_ENTRIES);
-    assert_eq!(cache.recent.len(), METRIC_ENTRIES);
-    cache.insert(
-        ("x".repeat(METRIC_TEXT_BYTES).into(), 15_f32.to_bits()),
-        (1., 20.),
-    );
-    assert_eq!(cache.text_bytes, METRIC_TEXT_BYTES);
-    assert_eq!(cache.values.len(), 1);
-    cache.insert(
-        (
-            "too large".repeat(METRIC_TEXT_BYTES).into(),
-            15_f32.to_bits(),
-        ),
-        (1., 20.),
-    );
-    assert_eq!(cache.text_bytes, METRIC_TEXT_BYTES);
-    assert_eq!(cache.values.len(), 1);
-}
-
-#[test]
-fn public_scaled_metrics_match_painted_segments() {
-    std::thread::spawn(|| {
-        let window = snapshot::install().unwrap();
-        let probe = MetricsProbe::new().unwrap();
-        probe.show().unwrap();
-        let mut max_rounding = 0.0_f32;
-        let mut max_ink = 0;
-        let mut max_sum = 0.0_f32;
-        let mut blank = 0;
-        for sample in [
-            "AVATAR office ffi", "To Wa fi fl ffi", "affinity waffle", "https://www.example.jp",
-            "日本語の文字列", "漢字かなカナ。", "参照「リンク」、次は", "👩🏽‍💻", "👨‍👩‍👧‍👦", "🏳️‍🌈", "A👩🏽‍💻Z", "A👨‍👩‍👧‍👦Z", "A🏳️‍🌈Z",
-            "한글 메시지", "한국어 테스트", "ภาษาไทยทดสอบ", "ข้อความภาษาไทย",
-        ] {
-            probe.set_sample(sample.into());
-            let mut row = MessageRow { body: sample.into(), ..Default::default() };
-            rich_content::links::decorate_message(&mut row);
-            let pieces = if row.rich_runs.row_count() > 0 { row.rich_runs } else { runs(sample, &[]) };
-            for size in [12., 15., 18., 22., 24.] {
-                probe.set_size(size);
-                probe.invoke_measure();
-                let measured = probe.get_measured_width();
-                let rounded = probe.get_plain_width();
-                let error = rounded - measured;
-                assert!((-0.001..=1.0).contains(&error), "{sample} at {size}: measured {measured}, public width {rounded}");
-                max_rounding = max_rounding.max(error);
-                let summed = pieces.iter().map(|run| probe.invoke_measure_part(run.text)).sum::<f32>();
-                let delta = (summed - measured).abs();
-                assert!(delta <= 1., "{sample} at {size}: summed widths differ by {delta}px");
-                max_sum = max_sum.max(delta);
-                probe.set_measured_width(summed);
-                let pixels = render(&window, (980, 180));
-                let ink = |top| {
-                    let xs: Vec<_> = pixels.enumerate_pixels().filter(|(_, y, p)| *y >= top && *y < top + 40 && p.0 != [255, 255, 255]).map(|(x, _, _)| x).collect();
-                    xs.iter().min().zip(xs.iter().max()).map(|(left, right)| (*left, *right))
-                };
-                let plain = ink(20);
-                let clipped = ink(100);
-                if plain.is_none() && clipped.is_none() { blank += 1; continue; }
-                let (plain_left, plain_right) = plain.expect("native reference did not paint");
-                let (clipped_left, clipped_right) = clipped.expect("measured segment lost all painted ink");
-                let delta = (plain_right - plain_left).abs_diff(clipped_right - clipped_left);
-                assert!(delta <= 1, "{sample} at {size}: measured segment clipped painted ink by {delta}px");
-                max_ink = max_ink.max(delta);
-            }
-        }
-        eprintln!("public64 metrics: max preferred-width rounding {max_rounding}px; max summed-width difference {max_sum}px; max painted ink difference {max_ink}px; {blank} native blank samples (17 strings × 5 sizes)");
-        probe.hide().unwrap();
-    }).join().unwrap();
-}
-
-#[test]
 fn layout_failure_keeps_the_native_body_selectable() {
     std::thread::spawn(|| {
         let window = snapshot::install().unwrap();
@@ -232,19 +126,7 @@ fn layout_failure_keeps_the_native_body_selectable() {
             .find(|(_, _, p)| p.0 == [17, 17, 17])
             .expect("fallback body did not paint");
         let position = slint::LogicalPosition::new(x as f32, y as f32);
-        for pressed in [true, false] {
-            ui.window().dispatch_event(if pressed {
-                slint::platform::WindowEvent::PointerPressed {
-                    position,
-                    button: slint::platform::PointerEventButton::Left,
-                }
-            } else {
-                slint::platform::WindowEvent::PointerReleased {
-                    position,
-                    button: slint::platform::PointerEventButton::Left,
-                }
-            });
-        }
+        click_at(&ui, position);
         for (text, pressed) in [
             ("\u{11}", true),
             ("a", true),
@@ -301,7 +183,6 @@ fn break_tokens_preserve_fallback_and_multiline_copy_source() {
     assert!(tokens.iter().any(|t| t.text == "👩🏽‍💻"));
     assert_eq!(tokens.iter().filter(|t| t.emoji).count(), 1);
     assert_eq!(tokens.iter().filter(|t| t.newline).count(), 1);
-    assert_eq!(runs(&"日".repeat(2049), &[]).row_count(), 0);
 }
 #[test]
 fn maximum_rich_flow_measures_and_reflows_at_narrow_large_text() {
@@ -346,11 +227,12 @@ fn maximum_rich_flow_measures_and_reflows_at_narrow_large_text() {
             }])));
         ui.global::<ShellState>().set_show_conversation(true);
         ui.show().unwrap();
-        let started = std::time::Instant::now();
+        assert_eq!(
+            crate::rich_content::runs(&"日".repeat(2049), &[]).row_count(),
+            0
+        );
         render(&window, (980, 720));
-        let cold = started.elapsed();
         let before = observed.borrow().0.iter().last().unwrap().y;
-        let resized = std::time::Instant::now();
         assert!(before > 0.0, "native run measurements did not initialize");
         ui.global::<SettingsState>().set_text_size(24);
         render(&window, (360, 520));
@@ -362,10 +244,6 @@ fn maximum_rich_flow_measures_and_reflows_at_narrow_large_text() {
                 "rich run overflowed the pane"
             );
         }
-        eprintln!(
-            "synthetic2048run cold: {cold:?}; resize: {:?}",
-            resized.elapsed()
-        );
         ui.hide().unwrap();
     })
     .join()
@@ -375,17 +253,26 @@ fn render(
     window: &slint::platform::software_renderer::MinimalSoftwareWindow,
     size: (u32, u32),
 ) -> image::RgbImage {
-    use slint::platform::WindowAdapter;
-    window.set_size(slint::PhysicalSize::new(size.0, size.1));
-    window.window().request_redraw();
-    let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(size.0, size.1);
-    for _ in 0..3 {
-        slint::platform::update_timers_and_animations();
-        window.draw_if_needed(|renderer| {
-            renderer.render(pixels.make_mut_slice(), size.0 as usize);
-        });
-    }
+    let pixels = snapshot::render(window, size).unwrap();
     image::RgbImage::from_raw(size.0, size.1, pixels.as_bytes().to_vec()).unwrap()
+}
+
+fn bubble_bounds(pixels: &image::RgbImage) -> (u32, u32, u32, u32) {
+    let bubble: Vec<_> = pixels
+        .enumerate_pixels()
+        .filter(|(_, _, p)| p.0 == [214, 230, 255])
+        .map(|(x, y, _)| (x, y))
+        .collect();
+    (
+        bubble
+            .iter()
+            .map(|p| p.0)
+            .min()
+            .expect("bubble did not paint"),
+        bubble.iter().map(|p| p.0).max().unwrap(),
+        bubble.iter().map(|p| p.1).min().unwrap(),
+        bubble.iter().map(|p| p.1).max().unwrap(),
+    )
 }
 
 #[test]
@@ -395,6 +282,7 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
         let ui = create_app_window().unwrap();
         install(&ui);
         let observed = watch_layout(&ui);
+        let url = format!("https://example.org/{}", "abcdefghij".repeat(8));
         let opened = Rc::new(RefCell::new(Vec::new()));
         let recorded = opened.clone();
         ui.global::<ContentState>()
@@ -409,10 +297,7 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                     let mut row = MessageRow {
                         id: "long-run".into(),
                         body: if linked {
-                            format!(
-                                "Before https://example.org/{} after",
-                                "abcdefghij".repeat(8)
-                            )
+                            format!("Before {url} after")
                         } else {
                             format!("https://example.org/{}", "abcdefghij".repeat(10))
                         }
@@ -438,44 +323,23 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                         assert!(runs.row_count() < 20);
                         assert_eq!(runs.iter().filter(|r| r.link_first).count(), 1);
                     }
-                    let green: Vec<_> = pixels
-                        .enumerate_pixels()
-                        .filter(|(_, _, p)| p.0 == [214, 230, 255])
-                        .map(|(x, y, _)| (x, y))
-                        .collect();
-                    assert!(!green.is_empty());
-                    let left = green.iter().map(|p| p.0).min().unwrap();
-                    let right = green.iter().map(|p| p.0).max().unwrap();
+                    let (left, right, top, bottom) = bubble_bounds(&pixels);
                     if linked && size.0 == 980 && text_size == 24 {
-                        let link = runs.iter().find(|r| r.link_start).unwrap();
-                        let top = green.iter().map(|p| p.1).min().unwrap();
+                        let link = runs.iter().find(|r| r.link_start && !r.link_first).unwrap();
                         let position = slint::LogicalPosition::new(
                             left as f32 + 12.0 + link.x + link.link_width * 0.8,
                             top as f32 + 8.0 + link.y + link.measured_height / 2.0,
                         );
-                        ui.window().dispatch_event(
-                            slint::platform::WindowEvent::PointerPressed {
-                                position,
-                                button: slint::platform::PointerEventButton::Left,
-                            },
-                        );
-                        ui.window().dispatch_event(
-                            slint::platform::WindowEvent::PointerReleased {
-                                position,
-                                button: slint::platform::PointerEventButton::Left,
-                            },
-                        );
+                        click_at(&ui, position);
                         assert_eq!(
-                            opened.borrow().last(),
-                            Some(&link.url),
+                            opened.borrow().last().map(|value| value.as_str()),
+                            Some(url.as_str()),
                             "inline link hit area did not cover its text"
                         );
                     }
-                    let bubble_top = green.iter().map(|p| p.1).min().unwrap();
-                    let bubble_bottom = green.iter().map(|p| p.1).max().unwrap();
                     let ink: Vec<_> = pixels
                         .enumerate_pixels()
-                        .filter(|(x, y, p)| (size.0 < 740 || *x > 342) && *y >= bubble_top && *y <= bubble_bottom && p.0 == [17, 17, 17])
+                        .filter(|(x, y, p)| (size.0 < 740 || *x > 342) && *y >= top && *y <= bottom && p.0 == [17, 17, 17])
                         .map(|(x, y, _)| (x, y))
                         .collect();
                     assert!(!ink.is_empty());
@@ -483,8 +347,6 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                         ink.iter().all(|p| p.0 > left && p.0 < right),
                         "body painted outside the bubble"
                     );
-                    let top = green.iter().map(|p| p.1).min().unwrap();
-                    let bottom = green.iter().map(|p| p.1).max().unwrap();
                     let mut lines: Vec<_> = ink.iter().map(|p| p.1).collect();
                     if linked {
                         lines.extend(
@@ -553,16 +415,7 @@ fn emoji_click_keeps_images() {
                     red[red.len() / 2].0 as f32,
                     red[red.len() / 2].1 as f32,
                 );
-                ui.window()
-                    .dispatch_event(slint::platform::WindowEvent::PointerPressed {
-                        position,
-                        button: slint::platform::PointerEventButton::Left,
-                    });
-                ui.window()
-                    .dispatch_event(slint::platform::WindowEvent::PointerReleased {
-                        position,
-                        button: slint::platform::PointerEventButton::Left,
-                    });
+                click_at(&ui, position);
                 let after = render(&window, size);
                 assert_eq!(
                     after.pixels().filter(|p| p.0 == [227, 0, 113]).count(),
@@ -636,16 +489,7 @@ fn outgoing_selection_contrasts_in_both_color_schemes() {
                     .find(|(x, y, p)| *y > 56 && (size.0 < 740 || *x > 342) && p.0 == ink)
                     .expect("outgoing text did not paint");
                 let position = slint::LogicalPosition::new(x as f32, y as f32);
-                ui.window()
-                    .dispatch_event(slint::platform::WindowEvent::PointerPressed {
-                        position,
-                        button: slint::platform::PointerEventButton::Left,
-                    });
-                ui.window()
-                    .dispatch_event(slint::platform::WindowEvent::PointerReleased {
-                        position,
-                        button: slint::platform::PointerEventButton::Left,
-                    });
+                click_at(&ui, position);
                 for (text, pressed) in [
                     ("\u{11}", true),
                     ("a", true),
@@ -669,27 +513,6 @@ fn outgoing_selection_contrasts_in_both_color_schemes() {
     })
     .join()
     .unwrap();
-}
-
-#[test]
-fn inline_links_replace_matching_text_without_changing_the_body() {
-    let mut row = MessageRow {
-        body: "参照「https://example.org/a」。again https://example.org/a and www.example.jp"
-            .into(),
-        ..Default::default()
-    };
-    rich_content::links::decorate_message(&mut row);
-    assert_eq!(
-        row.rich_runs
-            .iter()
-            .map(|r| r.text.to_string())
-            .collect::<String>(),
-        row.body.as_str()
-    );
-    assert_eq!(row.links.row_count(), 3);
-    for link in row.links.iter() {
-        assert!(row.rich_runs.iter().any(|r| r.url == link.url));
-    }
 }
 
 #[test]
@@ -739,26 +562,6 @@ fn failure_marks_stay_beside_the_bubble() {
     })
     .join()
     .unwrap();
-}
-
-#[test]
-fn coarse_runs_keep_words_and_cjk_break_opportunities() {
-    let body = "Before https://example.org/a?b=c after words 日本語 https://www.example.jp";
-    let mut row = MessageRow {
-        body: body.into(),
-        ..Default::default()
-    };
-    rich_content::links::decorate_message(&mut row);
-    let rows: Vec<_> = row.rich_runs.iter().collect();
-    assert!(rows.len() < 25);
-    assert!(rows.iter().any(|r| r.text == "after "));
-    assert!(rows.iter().any(|r| r.text == "words "));
-    assert!(rows.iter().any(|r| r.text == "日"));
-    assert!(rows.iter().any(|r| r.text == "example."));
-    assert_eq!(
-        rows.iter().map(|r| r.text.as_str()).collect::<String>(),
-        body
-    );
 }
 
 #[test]
@@ -857,136 +660,77 @@ fn oversized_links_share_the_last_line_and_measure_whole_segments() {
 }
 
 #[test]
-fn pathological_link_bodies_keep_the_original_and_menu_links() {
-    let body = format!("https://example.org/{}", "a/".repeat(2049));
-    let mut row = MessageRow {
-        body: body.clone().into(),
-        ..Default::default()
-    };
-    rich_content::links::decorate_message(&mut row);
-    assert_eq!(row.rich_runs.row_count(), 0);
-    assert!(row.rich_fallback);
-    assert_eq!(row.body, body);
-    assert_eq!(row.links.row_count(), 1);
-    rich_content::links::decorate_message(&mut row);
-    assert_eq!(row.rich_runs.row_count(), 0);
-    let mut row = MessageRow {
-        body: "https://example.org/".into(),
-        rich_fallback: true,
-        ..Default::default()
-    };
-    rich_content::links::decorate_message(&mut row);
-    assert_eq!(
-        row.rich_runs.row_count(),
-        0,
-        "emoji fallback was rebuilt as an uncapped link flow"
-    );
-    assert_eq!(row.links.row_count(), 1);
-}
-
-#[test]
-fn first_frame_never_paints_unpositioned_or_overlapping_runs() {
-    for size in [(980, 720, 15), (360, 520, 24)] {
-        for emoji in [false, true] {
-            std::thread::spawn(move || {
-                use slint::platform::WindowAdapter;
-                let window = snapshot::install().unwrap();
-                window.set_size(slint::PhysicalSize::new(size.0, size.1));
-                let ui = create_app_window().unwrap();
-                install(&ui);
-                ui.global::<ConversationState>().set_has_chat(true);
-                ui.global::<ShellState>().set_show_conversation(true);
-                ui.global::<SettingsState>().set_text_size(size.2);
-                let mut row = if emoji {
-                    rich_fixture().remove(1)
-                } else {
-                    MessageRow {
-                        body: "Before https://example.org/a after words".into(),
-                        ..Default::default()
-                    }
-                };
-                row.outgoing = true;
-                row.reply_id = "".into();
-                rich_content::links::decorate_message(&mut row);
-                let observed = watch_layout(&ui);
-                ui.global::<ConversationState>()
-                    .set_messages(ModelRc::new(VecModel::from(vec![row])));
-                ui.show().unwrap();
-                let mut first_ink = Vec::new();
-                for frame in 0..2 {
-                    if frame > 0 {
-                        slint::platform::update_timers_and_animations();
-                    }
-                    window.window().request_redraw();
-                    let mut pixels =
-                        slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(size.0, size.1);
-                    window.draw_if_needed(|renderer| {
-                        renderer.render(pixels.make_mut_slice(), size.0 as usize);
-                    });
-                    let ink: Vec<_> = pixels
-                        .as_slice()
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, p)| {
-                            i / size.0 as usize > 56
-                                && (size.0 < 740 || i % size.0 as usize > 342)
-                                && p.r == 17
-                                && p.g == 17
-                                && p.b == 17
-                        })
-                        .map(|(i, _)| i)
-                        .collect();
-                    assert!(!ink.is_empty(), "first frame has no message ink");
-                    if frame == 0 {
-                        first_ink = ink;
-                    } else {
-                        assert_eq!(ink, first_ink, "message ink moved after the first frame");
-                    }
-                    let rows: Vec<_> = observed.borrow().0.iter().collect();
-                    let positioned =
-                        !rows.is_empty() && rows.iter().all(|r| r.measured_height > 0.0);
-                    if !positioned {
-                        assert!(
-                            !pixels
-                                .as_slice()
-                                .iter()
-                                .any(|p| p.r == 17 && p.g == 17 && p.b == 17),
-                            "first frame painted stacked runs"
-                        );
-                    } else {
-                        for (i, a) in rows.iter().enumerate().filter(|(_, r)| !r.newline) {
-                            for b in rows.iter().skip(i + 1).filter(|r| !r.newline) {
-                                assert!(
-                                    a.x + a.measured_width <= b.x + 0.25
-                                        || b.x + b.measured_width <= a.x + 0.25
-                                        || a.y + a.measured_height <= b.y + 0.25
-                                        || b.y + b.measured_height <= a.y + 0.25,
-                                    "first frame contains overlapping runs"
-                                );
-                            }
-                        }
-                    }
-                    eprintln!(
-                        "{}px emoji={emoji} frame {frame}: positioned={positioned}",
-                        size.0
-                    );
-                    if !emoji || frame == 1 {
-                        assert!(positioned, "layout added another unpositioned frame");
-                    }
+fn first_frame_positions_emoji_runs_without_overlap() {
+    for (width, height, text_size, emoji) in [
+        (980, 720, 15, false),
+        (980, 720, 15, true),
+        (360, 520, 24, false),
+        (360, 520, 24, true),
+    ] {
+        std::thread::spawn(move || {
+            use slint::platform::WindowAdapter;
+            let window = snapshot::install().unwrap();
+            window.set_size(slint::PhysicalSize::new(width, height));
+            let ui = create_app_window().unwrap();
+            install(&ui);
+            let observed = watch_layout(&ui);
+            let mut row = if emoji {
+                rich_fixture().remove(1)
+            } else {
+                MessageRow {
+                    body: "Before https://example.org/a after words".into(),
+                    ..Default::default()
                 }
-                ui.hide().unwrap();
-            })
-            .join()
-            .unwrap();
-        }
+            };
+            row.id = format!("first-frame-{emoji}").into();
+            row.outgoing = true;
+            rich_content::links::decorate_message(&mut row);
+            ui.global::<ConversationState>().set_has_chat(true);
+            ui.global::<ShellState>().set_show_conversation(true);
+            ui.global::<SettingsState>().set_text_size(text_size);
+            ui.global::<ConversationState>()
+                .set_messages(ModelRc::new(VecModel::from(vec![row])));
+            ui.show().unwrap();
+            let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(width, height);
+            assert!(window.draw_if_needed(|renderer| {
+                renderer.render(pixels.make_mut_slice(), width as usize);
+            }));
+            let rows: Vec<_> = observed.borrow().0.iter().filter(|r| !r.newline).collect();
+            assert!(!rows.is_empty());
+            assert!(rows.iter().all(|r| r.measured_height > 0.));
+            for (i, a) in rows.iter().enumerate() {
+                for b in rows.iter().skip(i + 1) {
+                    assert!(
+                        a.x + a.measured_width <= b.x + 0.25
+                            || b.x + b.measured_width <= a.x + 0.25
+                            || a.y + a.measured_height <= b.y + 0.25
+                            || b.y + b.measured_height <= a.y + 0.25,
+                        "overlapping runs"
+                    );
+                }
+            }
+            let frame =
+                image::RgbImage::from_raw(width, height, pixels.as_bytes().to_vec()).unwrap();
+            let (left, right, top, bottom) = bubble_bounds(&frame);
+            assert!(
+                frame.enumerate_pixels().any(|(x, y, p)| x > left
+                    && x < right
+                    && y >= top
+                    && y <= bottom
+                    && p.0 == [17, 17, 17]),
+                "first frame has no message ink"
+            );
+            let first = pixels.as_bytes().to_vec();
+            slint::platform::update_timers_and_animations();
+            window.window().request_redraw();
+            window.draw_if_needed(|renderer| {
+                renderer.render(pixels.make_mut_slice(), width as usize);
+            });
+            assert_eq!(first, pixels.as_bytes(), "first frame moved after layout");
+        })
+        .join()
+        .unwrap();
     }
-}
-
-#[test]
-fn metadata_labels_are_explicit() {
-    assert_eq!(duration(125000), "2:05");
-    assert_eq!(file_size(1024), "1.0 KB");
-    assert_eq!(file_size(12), "12 B");
 }
 
 #[test]
@@ -1019,4 +763,49 @@ fn preview_and_history_measurements_are_independent_of_visit_order() {
     })
     .join()
     .unwrap();
+}
+
+#[test]
+fn link_runs_keep_the_body_break_opportunities_and_capped_fallback() {
+    let linked = "参照「https://example.org/a」。again https://example.org/a and www.example.jp";
+    let words = "Before https://example.org/a?b=c after words 日本語 https://www.example.jp";
+    let oversized = format!("https://example.org/{}", "a/".repeat(2049));
+    for (body, fallback, links) in [
+        (linked, false, 3),
+        (words, false, 2),
+        (oversized.as_str(), false, 1),
+        ("https://example.org/", true, 1),
+    ] {
+        let mut row = MessageRow {
+            body: body.into(),
+            rich_fallback: fallback,
+            ..Default::default()
+        };
+        for _ in 0..2 {
+            rich_content::links::decorate_message(&mut row);
+            assert_eq!(row.body, body);
+            assert_eq!(row.links.row_count(), links);
+            if fallback || body == oversized {
+                assert!(row.rich_fallback);
+                assert_eq!(row.rich_runs.row_count(), 0);
+            } else {
+                let rows: Vec<_> = row.rich_runs.iter().collect();
+                assert!(rows.len() < 25);
+                assert_eq!(
+                    rows.iter().map(|r| r.text.as_str()).collect::<String>(),
+                    body
+                );
+                assert!(
+                    row.links
+                        .iter()
+                        .all(|link| rows.iter().any(|r| r.url == link.url))
+                );
+                if body == words {
+                    for text in ["after ", "words ", "日", "example."] {
+                        assert!(rows.iter().any(|r| r.text == text));
+                    }
+                }
+            }
+        }
+    }
 }

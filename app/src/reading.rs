@@ -242,10 +242,7 @@ mod tests {
     #[test]
     fn exposing_hidden_incoming_events_clears_the_chat_badge() {
         std::thread::spawn(|| {
-            use line::{
-                backend::FakeBackend,
-                engine::{StoreLocation, Worker},
-            };
+            use line::backend::FakeBackend;
             use line_desktop_ui::ReadingGeometry;
             use slint::Model;
             let fake = FakeBackend::canned();
@@ -264,14 +261,7 @@ mod tests {
                 ..Default::default()
             });
             fake.set_page(chat.clone(), vec![hidden]);
-            let worker = Worker::start(
-                StoreLocation::Memory,
-                {
-                    let mut backend = Some(fake);
-                    move || Ok(backend.take().expect("backend already opened"))
-                },
-                line::engine::WorkerOptions::default(),
-            );
+            let worker = crate::tests::test_worker(fake);
             let mut state = AppState::default();
             worker.sender.send(state.select(chat.clone()));
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
@@ -348,15 +338,11 @@ mod tests {
             chat.clone(),
             ChatListItem {
                 unread_count: 2,
-                chat: ChatInput {
+                ..crate::tests::chat_item(ChatInput {
                     id: chat.clone(),
                     server_unread: 2,
                     ..Default::default()
-                },
-                preview: None,
-                activity_ms: 0,
-                failed_count: 0,
-                draft: None,
+                })
             },
         );
         for (key, id) in [(Key(1), "9"), (Key(2), "10")] {
@@ -366,23 +352,14 @@ mod tests {
                     key,
                     chat_id: chat.clone(),
                     server_id: Some(ServerId::new(id).unwrap()),
-                    local_id: None,
-                    request_seq: None,
                     sort: Cursor {
                         sort_ts: key.0,
                         sort_id: id.into(),
                     },
                     sender_id: "sender".into(),
-                    outgoing: false,
                     body: Content::default(),
-                    reactions: vec![],
-                    reactions_rev: 0,
-                    body_rev: None,
-                    delivery: Delivery::Sent,
                     created_at_local: 0,
-                    mentioned: false,
-                    reply: None,
-                    skip_badge: false,
+                    ..crate::tests::message("")
                 },
             );
         }

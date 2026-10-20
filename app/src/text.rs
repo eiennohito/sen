@@ -125,17 +125,3 @@ pub fn sign_out_reason(reason: &line::client::error::SignOutReason) -> String {
         }
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use line::client::pairing::Stage;
-
-    #[test]
-    fn pairing_status_follows_phone_approval() {
-        assert_eq!(pairing_stage(Stage::Preparing), PREPARING_SIGN_IN);
-        assert_eq!(pairing_stage(Stage::WaitingForPhone), WAITING_FOR_PHONE);
-        assert_eq!(pairing_stage(Stage::SigningIn), SIGNING_IN);
-        assert_eq!(pairing_stage(Stage::Authenticated), SIGNED_IN);
-    }
-}

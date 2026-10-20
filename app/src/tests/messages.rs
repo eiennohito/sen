@@ -12,17 +12,10 @@ fn fixture() -> (AppWindow, Presenter, AppState) {
     };
     state.chats.insert(
         ChatId("chat".into()),
-        ChatListItem {
-            chat: ChatInput {
-                is_group: true,
-                ..Default::default()
-            },
-            unread_count: 0,
-            preview: None,
-            activity_ms: 0,
-            failed_count: 0,
-            draft: None,
-        },
+        chat_item(ChatInput {
+            is_group: true,
+            ..Default::default()
+        }),
     );
     (ui, presenter, state)
 }

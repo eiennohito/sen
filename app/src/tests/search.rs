@@ -30,18 +30,11 @@ fn all_lists_search_names_with_the_same_case_and_whitespace_rules() {
             state.chat_order.push(id.clone());
             state.chats.insert(
                 id.clone(),
-                ChatListItem {
-                    chat: ChatInput {
-                        id,
-                        title: name.into(),
-                        ..Default::default()
-                    },
-                    preview: None,
-                    activity_ms: 0,
-                    unread_count: 0,
-                    failed_count: 0,
-                    draft: None,
-                },
+                chat_item(ChatInput {
+                    id,
+                    title: name.into(),
+                    ..Default::default()
+                }),
             );
         }
         let chats = ui.global::<ChatsState>();

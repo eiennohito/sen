@@ -46,7 +46,7 @@ pub(crate) fn save_photo(ui: &AppWindow, source: Option<PathBuf>) {
     });
 }
 
-#[cfg(all(test, feature = "demo"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     #[test]
