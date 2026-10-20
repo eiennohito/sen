@@ -12,11 +12,12 @@ export component CheckBox inherits Pressable {
     accessible-role: checkbox; accessible-label: root.text; accessible-checked: root.checked;
     key-event(event) => { event.text == Key.Return ? accept : reject }
     activated => { root.checked = !root.checked; root.toggled(); }
-    Rectangle { x: 0px; y: (root.height - self.height) / 2; width: 20px; height: 20px; border-radius: 4px; background: root.checked ? Tokens.accent : Tokens.surface-2;
+    indicator := Rectangle { x: 0px; y: (root.height - self.height) / 2; width: 20px; height: 20px; border-radius: 4px; background: root.checked ? Tokens.accent : Tokens.surface-2;
         Image { x: 2px; y: 2px; width: 16px; height: 16px; source: @image-url("../assets/icons/check.svg"); colorize: Tokens.on-accent; visible: root.checked; }
     }
-    label := RowText { x: 28px; width: max(0px, root.width - 28px); height: root.height; visible: !root.indicator-only; text: root.indicator-only ? "" : root.text; font-size: Tokens.base; color: Tokens.text; vertical-alignment: center; }
-    FocusRing { outset: 4px; focused: root.has-focus; border-radius: 8px; }
+    label := RowText { x: 28px; width: max(0px, root.width - 28px); height: root.height; text: root.text; font-size: Tokens.base; color: Tokens.text; vertical-alignment: center; }
+    states [ row when root.indicator-only: { indicator.x: root.width - 28px; label.visible: false; label.text: ""; ring.outset: 0px; } ]
+    ring := FocusRing { outset: 4px; focused: root.has-focus; border-radius: 8px; }
 }
 export component ComboBox inherits Pressable {
     in property <[string]> model;

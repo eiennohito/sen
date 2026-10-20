@@ -17,7 +17,7 @@ export component SearchField inherits Rectangle {
     forward-focus: input;
     height: 36px; min-width: 160px; border-radius: 8px; background: Tokens.surface-2;
     opacity: root.enabled ? 1 : 0.4;
-    FocusRing { outset: 4px; focused: input.has-focus; }
+    FocusRing { outset: 4px; text-entry: true; focused: input.has-focus; }
     Image { x: 12px; y: 10px; width: 16px; height: 16px; source: @image-url("../assets/icons/search.svg"); colorize: Tokens.secondary; }
     editor-clip := Rectangle {
         x: 36px; y: 0px; width: max(0px, root.width - 48px - (clear-button.visible ? 32px : 0px)); height: root.height; clip: true;

@@ -7,10 +7,9 @@ description = "Software-rendered Slint LINE client using the original crypto WAS
 
 [features]
 demo = ["line/demo", "line-desktop-ui/demo"]
-ui-debug = ["demo", "line-desktop-ui/ui-debug", "dep:i-slint-backend-selector", "dep:i-slint-core"]
+ui-debug = ["demo", "line-desktop-ui/ui-debug", "dep:i-slint-backend-selector"]
 
 [dev-dependencies]
-i-slint-core = { version = "=1.18.1", default-features = false }
 line-desktop-ui = { path = "../ui", features = ["testing"] }
 i-slint-backend-testing = "=1.18.1"
 line = { path = "..", features = ["demo"] }
@@ -29,6 +28,6 @@ unicode-segmentation = "1.13"
 unicode-linebreak = "0.1.5"
 zbus = { version = "5.19", default-features = false, features = ["async-io", "blocking-api"] }
 
-i-slint-core = { version = "=1.18.1", default-features = false, optional = true }
+i-slint-core = { version = "=1.18.1", default-features = false }
 
 i-slint-backend-selector = { version = "=1.18.1", default-features = false, features = ["mcp"], optional = true }

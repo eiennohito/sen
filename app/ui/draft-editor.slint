@@ -26,7 +26,7 @@ export component DraftEditor inherits Rectangle {
     changed caret => { if input.has-focus { State.editor-caret = root.caret; } }
     changed anchor => { if input.has-focus { State.editor-anchor = root.anchor; } }
     background: Tokens.surface-2; border-radius: 18px;
-    FocusRing { outset: 4px; focused: input.has-focus; border-radius: 22px; }
+    FocusRing { outset: 4px; text-entry: true; focused: input.has-focus; border-radius: 22px; }
     Text {
         x: 12px; y: 8px; width: parent.width - 24px;
         visible: State.draft == "" && !State.ime-active && !input.has-focus;

@@ -33,7 +33,7 @@ export component NewChat inherits Dialog {
             VerticalLayout { spacing: 4px; alignment: start;
                 for friend in State.new-chat-friends: ListRow { height: 52px;
                     identity: friend.id; initial: friend.initial; avatar: friend.avatar; title: friend.name; avatar-size: 40px; trailing-width: 32px;
-                    CheckBox { x: parent.width - 28px; y: (parent.height - self.height) / 2; width: 20px; indicator-only: true; text: friend.name; checked: friend.selected; enabled: !State.new-chat-busy; toggled => { State.new-chat-toggle(friend.id); } }
+                    CheckBox { width: 100%; height: 100%; indicator-only: true; text: friend.name; checked: friend.selected; enabled: !State.new-chat-busy; key-event(event) => { reject } toggled => { State.new-chat-toggle(friend.id); } }
                 }
             }
         }
@@ -41,7 +41,7 @@ export component NewChat inherits Dialog {
             height: 36px; border-radius: 8px; background: Tokens.surface-2;
             Text { x: 12px; width: parent.width - 24px; height: parent.height; text: State.new-chat-placeholder; visible: State.new-chat-name == "" && !group-name.has-focus; font-size: Tokens.base; color: Tokens.secondary; overflow: elide; vertical-alignment: center; }
             group-name := TextInput { x: 12px; width: parent.width - 24px; height: parent.height; text <=> State.new-chat-name; single-line: true; enabled: !State.new-chat-busy; font-size: Tokens.base; color: Tokens.text; accessible-label: "Group name"; vertical-alignment: center; }
-            FocusRing { outset: 4px; focused: group-name.has-focus; }
+            FocusRing { outset: 4px; text-entry: true; focused: group-name.has-focus; }
         }
         if State.new-chat-error != "": Text { text: State.new-chat-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
         HorizontalLayout { alignment: end; spacing: 8px;
