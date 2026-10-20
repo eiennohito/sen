@@ -130,7 +130,9 @@ person-run verification.
 
 The root `line` crate is the default Cargo target. The optional crypto harness
 uses synthetic fixtures and discovers the installed module by default. An
-explicit WASM argument overrides discovery:
+explicit WASM argument overrides discovery. AES helpers, Curve25519 key
+import/export, runtime inspection and history benchmarks are compiled only with
+`harness`; product startup validates only the crypto bindings it calls:
 
 ```sh
 cargo run --offline --release --features harness --example crypto-harness

@@ -1,5 +1,8 @@
 //! Rust host for the installed LINE Chrome extension's Emscripten/embind WASM.
 //! Binding registration and emval conventions informed by beeper/line (MIT).
+#[cfg(feature = "harness")]
+mod harness;
+
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use std::collections::BTreeMap;
 use wasmi::{Caller, Engine, ExternType, Func, Instance, Linker, Memory, Module, Store, Val};
@@ -968,6 +971,9 @@ impl Runtime {
             });
         }
         for (name, id) in &self.class_ids {
+            if !INTERFACE.iter().any(|call| call.binding().0 == name) {
+                continue;
+            }
             let class = &self.store.data().classes[id];
             if class.destructor_signature != "vi" {
                 return Err(crypto_changed(
@@ -1043,20 +1049,6 @@ impl Runtime {
             .with_context(|| format!("class {name}"))?;
         Ok(&self.store.data().classes[id])
     }
-    #[cfg(any(test, feature = "harness"))]
-    pub fn bindings(&self) -> Vec<(String, Vec<String>)> {
-        self.store
-            .data()
-            .classes
-            .values()
-            .map(|c| {
-                (
-                    c.name.clone(),
-                    c.methods.keys().chain(c.statics.keys()).cloned().collect(),
-                )
-            })
-            .collect()
-    }
     pub fn static_call(&mut self, call: Call, args: &[u64]) -> Result<u32> {
         assert!(
             call.binding().3 == BindingKind::Static,
@@ -1123,20 +1115,6 @@ impl Runtime {
         self.indirect(f, &[ptr as u64])?;
         Ok(())
     }
-    /// Read immutable module data for the synthetic opaque-ID test helper.
-    #[cfg(any(test, feature = "harness"))]
-    pub fn read_memory(&self, address: usize, len: usize) -> Result<Vec<u8>> {
-        let mem = self
-            .instance
-            .get_memory(&self.store, "O")
-            .context("missing memory")?;
-        let end = address.checked_add(len).context("memory range overflow")?;
-        Ok(mem
-            .data(&self.store)
-            .get(address..end)
-            .context("memory read bounds")?
-            .to_vec())
-    }
     pub fn bytes(&mut self, bytes: &[u8]) -> u64 {
         self.store.data_mut().put(Value::Bytes(bytes.to_vec())) as u64
     }
@@ -1198,29 +1176,30 @@ enum BindingKind {
 use BindingKind::{Constructor, Method, Static};
 // The protocol interface is defined once: validation and calls use these IDs.
 macro_rules! interface {
-    ($($id:ident => ($class:literal, $method:literal, $arity:literal, $kind:ident)),* $(,)?) => {
+    ($($(#[$attr:meta])* $id:ident => ($class:literal, $method:literal, $arity:literal, $kind:ident)),* $(,)?) => {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-        pub enum Call { $($id),* }
+        pub enum Call { $($(#[$attr])* $id),* }
         impl Call {
             fn binding(self) -> (&'static str, &'static str, usize, BindingKind) {
-                match self { $(Self::$id => ($class, $method, $arity, $kind)),* }
+                match self { $( $(#[$attr])* Self::$id => ($class, $method, $arity, $kind)),* }
             }
         }
-        const INTERFACE: &[Call] = &[$(Call::$id),*];
+        const INTERFACE: &[Call] = &[$($(#[$attr])* Call::$id),*];
     };
 }
 interface! {
     SecureKeyLoadToken => ("SecureKey", "loadToken", 1, Static),
+    #[cfg(feature = "harness")]
     SecureKeyLoadKey => ("SecureKey", "loadKey", 1, Static),
     SecureKeyDeriveKey => ("SecureKey", "deriveKey", 3, Method),
-    SecureKeyExportKey => ("SecureKey", "exportKey", 1, Method),
     HmacNew => ("Hmac", "constructor", 1, Constructor),
     HmacDigest => ("Hmac", "digest", 2, Method),
-    Curve25519KeyNew => ("Curve25519Key", "constructor", 1, Constructor),
+    #[cfg(feature = "harness")]
     Curve25519KeyLoadKey => ("Curve25519Key", "loadKey", 1, Static),
     Curve25519KeyGenerate => ("Curve25519Key", "generate", 1, Static),
     Curve25519KeyCreateChannel => ("Curve25519Key", "createChannel", 2, Method),
     Curve25519KeyGetPublicKey => ("Curve25519Key", "getPublicKey", 1, Method),
+    #[cfg(feature = "harness")]
     Curve25519KeyExportKey => ("Curve25519Key", "exportKey", 1, Method),
     E2EEKeyLoadKey => ("E2EEKey", "loadKey", 1, Static),
     E2EEKeyCreateChannel => ("E2EEKey", "createChannel", 2, Method),
@@ -1228,7 +1207,6 @@ interface! {
     E2EEKeyExportKey => ("E2EEKey", "exportKey", 1, Method),
     E2EEKeyGetKeyId => ("E2EEKey", "getKeyId", 1, Method),
     E2EEKeyGetVersion => ("E2EEKey", "getVersion", 1, Method),
-    E2EEChannelNew => ("E2EEChannel", "constructor", 1, Constructor),
     E2EEChannelUnwrapE2EEKeyChain => ("E2EEChannel", "unwrapE2EEKeyChain", 2, Method),
     E2EEChannelUnwrapGroupSharedKey => ("E2EEChannel", "unwrapGroupSharedKey", 2, Method),
     E2EEChannelEncryptV1 => ("E2EEChannel", "encryptV1", 2, Method),
@@ -1237,9 +1215,13 @@ interface! {
     E2EEChannelDecryptV2 => ("E2EEChannel", "decryptV2", 7, Method),
     E2EEKeychainSize => ("E2EEKeychain", "size", 1, Method),
     E2EEKeychainGet => ("E2EEKeychain", "get", 2, Method),
+    #[cfg(feature = "harness")]
     AesKeyNew => ("AesKey", "constructor", 1, Constructor),
+    #[cfg(feature = "harness")]
     AesKeyGenerate => ("AesKey", "generate", 2, Static),
+    #[cfg(feature = "harness")]
     AesKeyEncrypt => ("AesKey", "encrypt", 2, Method),
+    #[cfg(feature = "harness")]
     AesKeyDecrypt => ("AesKey", "decrypt", 2, Method),
 }
 
@@ -1289,5 +1271,53 @@ mod contract_tests {
                 Some(crate::client::error::SignInFailure::CryptoChanged { .. })
             ));
         }
+    }
+}
+
+#[cfg(all(test, not(feature = "harness")))]
+mod product_interface_tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn product_bindings_match_product_calls() {
+        let callers = [
+            include_str!("client.rs"),
+            include_str!("client/pairing.rs"),
+            include_str!("client/desktop.rs"),
+            include_str!("client/e2ee.rs")
+                .split("#[cfg(test)]")
+                .next()
+                .unwrap(),
+        ];
+        let used: BTreeSet<_> = callers
+            .iter()
+            .flat_map(|source| {
+                source.split("Call::").skip(1).map(|tail| {
+                    tail.split(|c: char| !c.is_ascii_alphanumeric())
+                        .next()
+                        .unwrap()
+                        .to_owned()
+                })
+            })
+            .collect();
+        let required = INTERFACE.iter().map(|call| format!("{call:?}")).collect();
+        assert_eq!(used, required);
+    }
+
+    #[test]
+    fn product_starts_without_harness_aes_class() -> Result<()> {
+        let module = crate::test_support::installed_module();
+        let mut wasm = module.read()?;
+        let mut renamed = 0;
+        for i in 0..wasm.len() - 7 {
+            if &wasm[i..i + 7] == b"AesKey\0" {
+                wasm[i] = b'X';
+                renamed += 1;
+            }
+        }
+        assert!(renamed > 0, "installed module has no AES class to remove");
+        Runtime::new(&wasm, &module.version)?;
+        Ok(())
     }
 }

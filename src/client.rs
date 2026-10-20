@@ -24,11 +24,11 @@ const UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (
 
 pub mod desktop;
 mod e2ee;
+#[cfg(feature = "harness")]
+pub mod harness;
 pub mod http;
 pub mod pairing;
 mod qr;
-#[cfg(feature = "harness")]
-pub use e2ee::benchmark_history;
 
 pub(crate) fn private_write(path: &Path, data: &[u8]) -> Result<()> {
     let parent = path

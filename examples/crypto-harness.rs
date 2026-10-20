@@ -375,7 +375,8 @@ fn benchmark(wasm: &[u8], version: &str) -> Result<()> {
         )?;
     }
     let send_after = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT);
-    let history = line::client::benchmark_history(wasm, version, &fixture, &mids.to, &mids.from)?;
+    let history =
+        line::client::harness::benchmark_history(wasm, version, &fixture, &mids.to, &mids.from)?;
     let started = Instant::now();
     let expected_key = signing_key(&mut rt, "synthetic-access", version)?;
     let expected = sign(&mut rt, &expected_key, "/synthetic", "{}")?;
