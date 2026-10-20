@@ -412,7 +412,7 @@ mod service_tests {
     #[test]
     #[ignore = "requires a private dbus-run-session"]
     fn unavailable_service_reports_each_probe_and_test_outcome() {
-        assert_eq!(std::env::var("LINE_DESKTOP_TEST_BUS").as_deref(), Ok("1"));
+        assert_eq!(std::env::var("SEN_TEST_BUS").as_deref(), Ok("1"));
         let attention = Attention::start();
         let (sender, events) = mpsc::channel();
         attention.on_event(move |event| sender.send(event).unwrap());
@@ -443,9 +443,9 @@ mod service_tests {
     #[ignore = "requires a private dbus-run-session"]
     fn synthetic_notification_service_contract() {
         assert_eq!(
-            std::env::var("LINE_DESKTOP_TEST_BUS").as_deref(),
+            std::env::var("SEN_TEST_BUS").as_deref(),
             Ok("1"),
-            "contract tests require LINE_DESKTOP_TEST_BUS=1 on a private session bus"
+            "contract tests require SEN_TEST_BUS=1 on a private session bus"
         );
         let calls: Calls = Arc::default();
         let (closed, closes) = mpsc::channel();

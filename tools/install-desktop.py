@@ -10,14 +10,14 @@ import subprocess
 import json
 import sys
 
-APP_ID = "org.lineclient.Desktop"
+APP_ID = "org.senclient.Sen"
 ROOT = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--destdir", type=Path, help="stage bin/ and share/ under this directory instead of installing")
 args = parser.parse_args()
-binary = ROOT / "target/release/line-desktop"
+binary = ROOT / "target/release/sen"
 if not binary.is_file():
-    parser.error("build first: cargo build --release -p line-desktop")
+    parser.error("build first: cargo build --release -p sen-desktop")
 build_info = json.loads(subprocess.check_output([str(binary), "--build-info"]))
 if build_info["demo"] or build_info["mcp_debug"]:
     parser.error("refusing to install a demo or UI-debug build; rebuild without features")
@@ -32,7 +32,7 @@ icon = data_dir / "icons/hicolor/scalable/apps" / f"{APP_ID}.svg"
 service = data_dir / "dbus-1/services" / f"{APP_ID}.service"
 for directory in (bin_dir, launcher.parent, icon.parent, service.parent):
     directory.mkdir(parents=True, exist_ok=True)
-destination = bin_dir / "line-desktop"
+destination = bin_dir / "sen"
 # Atomic replacement also permits updating an executable that is running.
 temporary = destination.with_suffix(".new")
 shutil.copyfile(binary, temporary)
@@ -43,7 +43,7 @@ try:
 except (OSError, ValueError) as error:
     print(f"Warning: emoji font unavailable: {error}", file=sys.stderr)
 else:
-    font_dir = data_dir / "line-desktop/fonts"
+    font_dir = data_dir / "sen/fonts"
     font_dir.mkdir(parents=True, exist_ok=True)
     for source in font_files:
         shutil.copyfile(source, font_dir / source.name)
@@ -80,8 +80,22 @@ SingleMainWindow=true
 StartupNotify=true
 DBusActivatable=true
 Keywords=chat;messaging;
+X-Sen-Managed=true
 """)
 launcher.chmod(0o644)
+# remove after the first release
+old_launcher = launcher.with_name("org.lineclient.Desktop.desktop")
+if old_launcher.is_file():
+    old_text = old_launcher.read_text()
+    if "X-Sen-Managed=true" in old_text.splitlines() or "X-LINE-Managed=true" in old_text.splitlines():
+        old_launcher.unlink()
+old_service = service.with_name("org.lineclient.Desktop.service")
+if old_service.is_file():
+    old_lines = old_service.read_text().splitlines()
+    if ("X-Sen-Managed=true" in old_lines or "X-LINE-Managed=true" in old_lines
+            or old_lines == ["[D-BUS Service]", "Name=org.lineclient.Desktop",
+                             "Exec=" + shlex.quote(str(bin_dir / "line-desktop"))]):
+        old_service.unlink()
 print(f"Installed app: {destination}")
 print(f"Installed launcher: {launcher}")
 print(f"Installed icon: {icon}")

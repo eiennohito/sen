@@ -186,7 +186,7 @@ impl Session {
             demo::settle(ui, desktop, &worker.borrow());
         }
         #[cfg(feature = "ui-debug")]
-        if args.enabled && std::env::var_os("LINE_UI_LATENCY").is_some() {
+        if args.enabled && std::env::var_os("SEN_UI_LATENCY").is_some() {
             let window = self
                 .snapshot
                 .as_ref()
@@ -219,9 +219,9 @@ pub(crate) fn rendered() {
 }
 
 fn image_mut(
-    content: &mut line::store::Content,
-) -> &mut Option<line::client::desktop::assets::Asset> {
-    use line::store::Content;
+    content: &mut sen::store::Content,
+) -> &mut Option<sen::client::desktop::assets::Asset> {
+    use sen::store::Content;
     match content {
         Content::Photo { asset, .. } | Content::Sticker { asset, .. } => asset,
         Content::Video { preview, .. } => preview,

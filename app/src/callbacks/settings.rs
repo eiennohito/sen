@@ -12,14 +12,14 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
                 autostart: g.get_autostart(),
                 notifications: g.get_notifications_enabled(),
                 preview: match g.get_notification_preview() {
-                    line_desktop_ui::NotificationPreview::NameAndText => {
-                        line::store::NotificationPreview::NameAndText
+                    sen_ui::NotificationPreview::NameAndText => {
+                        sen::store::NotificationPreview::NameAndText
                     }
-                    line_desktop_ui::NotificationPreview::NameOnly => {
-                        line::store::NotificationPreview::NameOnly
+                    sen_ui::NotificationPreview::NameOnly => {
+                        sen::store::NotificationPreview::NameOnly
                     }
-                    line_desktop_ui::NotificationPreview::NewMessage => {
-                        line::store::NotificationPreview::NewMessage
+                    sen_ui::NotificationPreview::NewMessage => {
+                        sen::store::NotificationPreview::NewMessage
                     }
                 },
                 sound: g.get_notification_sound(),

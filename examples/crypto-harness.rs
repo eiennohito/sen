@@ -3,7 +3,7 @@ use base64::{
     Engine,
     engine::general_purpose::{STANDARD, URL_SAFE_NO_PAD},
 };
-use line::{
+use sen::{
     client::{sign, signing_key},
     runtime::{Call, Runtime},
 };
@@ -376,7 +376,7 @@ fn benchmark(wasm: &[u8], version: &str) -> Result<()> {
     }
     let send_after = started.elapsed().as_secs_f64() * 1000. / f64::from(COUNT);
     let history =
-        line::client::harness::benchmark_history(wasm, version, &fixture, &mids.to, &mids.from)?;
+        sen::client::harness::benchmark_history(wasm, version, &fixture, &mids.to, &mids.from)?;
     let started = Instant::now();
     let expected_key = signing_key(&mut rt, "synthetic-access", version)?;
     let expected = sign(&mut rt, &expected_key, "/synthetic", "{}")?;
@@ -427,7 +427,7 @@ fn main() -> Result<()> {
     } else {
         args.first()
     };
-    let module = line::crypto_module::resolve(override_path.map(Into::into), None)?;
+    let module = sen::crypto_module::resolve(override_path.map(Into::into), None)?;
     let version = module.version.as_str();
     let bytes = module.read()?;
     if export {

@@ -340,8 +340,8 @@ def check_idle():
 def check_latency(log):
     with tempfile.TemporaryDirectory(dir=UI_TEMP, prefix='latency-') as directory:
         environment = os.environ.copy()
-        environment.update(LINE_UI_LATENCY='1', LINE_DEMO_DIRECTORY=directory, TMPDIR=directory,
-                           LINE_EMOJI_FONT=str(ROOT / 'fonts/NotoColorEmoji.ttf'))
+        environment.update(SEN_UI_LATENCY='1', SEN_DEMO_DIRECTORY=directory, TMPDIR=directory,
+                           SEN_EMOJI_FONT=str(ROOT / 'fonts/NotoColorEmoji.ttf'))
         subprocess.run(
             [str(args.binary.resolve()), '--demo', '--snapshot', str(Path(directory) / 'latency.ppm')],
             env=environment, text=True, stdout=log, stderr=subprocess.STDOUT,
@@ -900,7 +900,7 @@ def check_compose():
     wait_for(lambda: any(item.get("accessibleLabel") == "Compose test group" for item in tree()), "created group did not open")
     # The portal is unavailable in headless runs; this guarded field injects local paths.
     import struct, zlib
-    with tempfile.TemporaryDirectory(dir=UI_TEMP, prefix="line-attach-ui-") as directory:
+    with tempfile.TemporaryDirectory(dir=UI_TEMP, prefix="sen-attach-ui-") as directory:
         directory = Path(directory)
         def png_chunk(kind, data):
             return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
@@ -1702,7 +1702,7 @@ def connect(process):
     def initialize():
         assert process.poll() is None, 'headless demo exited before MCP initialization'
         return rpc('initialize', {'protocolVersion': '2025-03-26', 'capabilities': {},
-                                 'clientInfo': {'name': 'line-ui-check', 'version': '2'}}, timeout=1)
+                                 'clientInfo': {'name': 'sen-ui-check', 'version': '2'}}, timeout=1)
     def ready():
         try:
             return initialize()
@@ -1769,7 +1769,7 @@ def main():
     parser.add_argument('--group', choices=GROUPS, action='append', help='Run a group (repeatable; defaults to smoke)')
     parser.add_argument('--dark', action='store_true', help='Use the dark demo palette')
     parser.add_argument('--wide', action='store_true', help='Use a 1280×900 demo for selected groups')
-    parser.add_argument('--binary', type=Path, default=ROOT / 'target/release/line-desktop')
+    parser.add_argument('--binary', type=Path, default=ROOT / 'target/release/sen')
     parser.add_argument('--screenshots', type=Path, help='Save group and intermediate surface screenshots in this directory')
     args = parser.parse_args()
     if args.all and (args.group or args.wide):
@@ -1840,7 +1840,7 @@ def main():
                     demo_directory = process.demo_directory
                     connect(process)
                     children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
-                    demo_pid = next(int(pid) for pid in children if Path(f"/proc/{pid}/comm").read_text().strip() == "line-desktop")
+                    demo_pid = next(int(pid) for pid in children if Path(f"/proc/{pid}/comm").read_text().strip() == "sen")
                     for index, group in enumerate(groups):
                         current_group = group + size_suffix
                         group_started = launch_started if index == 0 else time.monotonic()

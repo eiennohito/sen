@@ -195,10 +195,10 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
-        let asset = line::client::desktop::assets::Asset::avatar("/friend").unwrap();
+        let asset = sen::client::desktop::assets::Asset::avatar("/friend").unwrap();
         let friend = Friend {
             id: "friend".into(),
             name: Some("Friend".into()),
@@ -232,7 +232,7 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
             id.clone(),
             chat_item(ChatInput {
                 id,
-                avatar: Some(line::client::desktop::assets::Asset::avatar("/chat").unwrap()),
+                avatar: Some(sen::client::desktop::assets::Asset::avatar("/chat").unwrap()),
                 ..Default::default()
             }),
         );
@@ -382,7 +382,7 @@ fn copy_message_preserves_the_selected_text() {
         use i_slint_backend_testing::ElementHandle;
         i_slint_backend_testing::init_no_event_loop();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
         let mut state = AppState::default();
@@ -736,7 +736,7 @@ fn busy_profile_action_ignores_click_enter_and_tab() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         ui.window().set_size(slint::LogicalSize::new(360., 720.));
         ui.global::<ShellState>().set_panel(PanelState::Detail);
         ui.global::<DetailState>().set_detail_depth(1);

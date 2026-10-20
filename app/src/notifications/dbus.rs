@@ -21,7 +21,7 @@ pub(super) fn notification_available(connection: &zbus::blocking::Connection) ->
 }
 pub(super) fn connect() -> Option<zbus::blocking::Connection> {
     #[cfg(test)]
-    if std::env::var("LINE_DESKTOP_TEST_BUS").as_deref() != Ok("1") {
+    if std::env::var("SEN_TEST_BUS").as_deref() != Ok("1") {
         return None;
     }
     zbus::blocking::connection::Builder::session()

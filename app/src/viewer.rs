@@ -54,7 +54,7 @@ mod tests {
         std::thread::spawn(|| {
             let _platform = crate::snapshot::install().unwrap();
             let (ui, _runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             ui.invoke_show_viewer("fixture".into());
             ui.global::<ViewerState>()
                 .set_viewer_image(slint::Image::from_rgba8(slint::SharedPixelBuffer::<

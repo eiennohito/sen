@@ -29,11 +29,11 @@ impl Keyring {
     }
 }
 impl Keys for Keyring {
-    fn get(&self, id: &str) -> Result<Option<[u8; 32]>> {
+    fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>> {
         let session = Session::open()?;
         let service = session.proxy(PATH, "Service")?;
         let (unlocked, locked): (Vec<OwnedObjectPath>, Vec<OwnedObjectPath>) =
-            service.call("SearchItems", &(attributes(id),))?;
+            service.call("SearchItems", &(attributes(application, id),))?;
         let items = if unlocked.is_empty() && !locked.is_empty() {
             session.unlock(locked)?
         } else {
@@ -52,7 +52,7 @@ impl Keys for Keyring {
             .map_err(|_| anyhow::anyhow!("keyring secret has the wrong size"))?;
         Ok(Some(key))
     }
-    fn put(&self, id: &str, key: &[u8; 32]) -> Result<()> {
+    fn put(&self, application: &str, id: &str, key: &[u8; 32]) -> Result<()> {
         let session = Session::open()?;
         let collection = session.default_collection()?;
         let proxy = session.proxy(collection.as_str(), "Collection")?;
@@ -66,7 +66,7 @@ impl Keys for Keyring {
             ),
             (
                 "org.freedesktop.Secret.Item.Attributes",
-                Value::from(attributes(id)),
+                Value::from(attributes(application, id)),
             ),
         ]);
         let secret: Secret = (
@@ -76,7 +76,7 @@ impl Keys for Keyring {
             "application/octet-stream".into(),
         );
         let (item, prompt): (OwnedObjectPath, OwnedObjectPath) =
-            proxy.call("CreateItem", &(properties, secret, true))?;
+            proxy.call("CreateItem", &(properties, secret, false))?;
         if item.as_str() == "/" {
             session.prompt(prompt)?;
         }
@@ -84,9 +84,9 @@ impl Keys for Keyring {
     }
 }
 
-fn attributes(id: &str) -> HashMap<&str, &str> {
+fn attributes<'a>(application: &'a str, id: &'a str) -> HashMap<&'a str, &'a str> {
     HashMap::from([
-        ("application", "line-desktop"),
+        ("application", application),
         ("purpose", "session-key"),
         ("key-id", id),
     ])

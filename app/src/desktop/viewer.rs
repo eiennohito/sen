@@ -102,7 +102,7 @@ mod tests {
         std::thread::spawn(|| {
             let _platform = crate::snapshot::install().unwrap();
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             runtime.update(|desktop| {
                 ui.global::<DetailState>()
                     .set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::new(
@@ -113,7 +113,7 @@ mod tests {
                     "contact".into(),
                     Friend {
                         id: "contact".into(),
-                        avatar: line::client::desktop::assets::Asset::avatar("/contact"),
+                        avatar: sen::client::desktop::assets::Asset::avatar("/contact"),
                         ..Default::default()
                     },
                 );
@@ -128,7 +128,7 @@ mod tests {
                     &ui,
                     Delta::MediaFailed {
                         key: key.clone(),
-                        failure: line::client::desktop::assets::Failure::Network,
+                        failure: sen::client::desktop::assets::Failure::Network,
                     },
                 );
                 assert!(!ui.global::<ViewerState>().get_viewer_loading());

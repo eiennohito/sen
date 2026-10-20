@@ -112,6 +112,14 @@ impl Attachment {
             let _ = std::fs::remove_file(&self.path);
         }
     }
+    /// Pending messages may reference files belonging to the old app.
+    pub(crate) fn delete_clipboard_in(&self, data: Option<&Path>) {
+        if let Some(root) = data.and_then(|p| p.join("clipboard-attachments").canonicalize().ok())
+            && self.path.parent().and_then(|p| p.canonicalize().ok()) == Some(root)
+        {
+            self.delete_clipboard();
+        }
+    }
     fn limit(&self) -> u64 {
         if self.photo.is_some() {
             PHOTO_LIMIT
@@ -159,6 +167,24 @@ impl Attachment {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn copied_clipboard_files_are_kept_in_the_old_root() {
+        let temp = crate::test_support::TempDir::new("clipboard-copy");
+        let data = temp.0.join("sen");
+        for directory in [
+            data.join("clipboard-attachments"),
+            temp.0.join("line-desktop/clipboard-attachments"),
+        ] {
+            std::fs::create_dir_all(&directory).unwrap();
+            let path = directory.join("pending.txt");
+            std::fs::write(&path, b"pending").unwrap();
+            let mut item = Attachment::prepare(&path).unwrap();
+            item.clipboard = true;
+            item.delete_clipboard_in(Some(&data));
+            assert_eq!(path.exists(), !directory.starts_with(&data));
+        }
+    }
 
     #[test]
     fn corrupt_photos_can_be_sent_as_files() -> Result<()> {

@@ -187,7 +187,7 @@ impl Fetchers {
                 let publish = publish.clone();
                 let authorize = authorize.clone();
                 thread::Builder::new()
-                    .name(format!("line-asset-{index}"))
+                    .name(format!("sen-asset-{index}"))
                     .spawn(move || {
                         set_request_cancel(shared.stop.clone());
                         loop {

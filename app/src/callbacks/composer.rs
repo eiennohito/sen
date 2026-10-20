@@ -7,7 +7,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             && let Some(message) = d.state.messages.get(&key)
             && let Some(server) = &message.server_id
         {
-            d.state.composer_reply = Some(line::store::ReplyReference {
+            d.state.composer_reply = Some(sen::store::ReplyReference {
                 message_id: server.clone(),
                 service_code: Some(1),
             });

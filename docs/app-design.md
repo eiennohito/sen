@@ -354,10 +354,10 @@ unless an explicit background-mode preference is enabled; S12 owns that opt-in.
 
 ## Developer UI checks
 
-Use `cargo build --profile fast --offline -p line-desktop` for local iteration.
+Use `cargo build --profile fast --offline -p sen-desktop` for local iteration.
 The app and generated UI crate use opt-level 0 with incremental compilation;
 renderer, protocol and crypto dependencies stay optimised. Use `release` for
-release gates and performance measurements, including crypto benchmarks. Keep generated Slint modules in `line-desktop-ui`
+release gates and performance measurements, including crypto benchmarks. Keep generated Slint modules in `sen-ui`
 so app Rust edits reuse the compiled UI; retain Slint sources under `app/ui/`
 to preserve resource paths. See [build iteration](build-iteration.md) for profile
 commands, generated-code costs and guidance for evaluating further reductions.
@@ -392,11 +392,11 @@ from now. Past-day fixtures otherwise keep their calendar dates and clock times.
 Sends use the same clock as fixtures. The injectable clock is test-only; there
 is no demo clock CLI option. Headless snapshots fix now to 2026-10-18 14:00 local
 time, including list times and date dividers.
-For iteration, build with `cargo build --profile fast --offline -p line-desktop
+For iteration, build with `cargo build --profile fast --offline -p sen-desktop
 --features ui-debug`, then run `python3 tools/check-ui-mcp.py --group focus
---binary target/fast/line-desktop`. Final validation uses a release ui-debug
+--binary target/fast/sen`. Final validation uses a release ui-debug
 binary and `python3 tools/check-ui-mcp.py --all --binary
-target/release/line-desktop`, three times consecutively.
+target/release/sen`, three times consecutively.
 The full matrix uses one 980×720 instance and one 1280×900 instance. The existing
 F12 automation hook replaces the synthetic backend and in-memory store between
 groups. Signed-out and missing-module groups have separate signed-out demos.

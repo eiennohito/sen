@@ -3,12 +3,12 @@ use super::*;
 pub(super) fn install_reset(ui: &AppWindow, actions: &Runtime, session: &Rc<dev::Session>) {
     ui.global::<DemoState>().set_demo_reset_enabled(true);
     ui.global::<DemoState>()
-        .set_demo_instance(std::env::var("LINE_UI_INSTANCE").unwrap_or_default().into());
+        .set_demo_instance(std::env::var("SEN_UI_INSTANCE").unwrap_or_default().into());
     let session = Rc::downgrade(session);
     let weak = ui.as_weak();
     let actions = actions.clone();
     ui.global::<DemoState>().on_demo_automation(move |hook| {
-        if hook != line_desktop_ui::DemoAutomation::Reset {
+        if hook != sen_ui::DemoAutomation::Reset {
             return;
         }
         let weak = weak.clone();

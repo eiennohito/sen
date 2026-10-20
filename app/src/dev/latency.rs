@@ -1,4 +1,4 @@
-//! Opt-in offline measurements: LINE_UI_LATENCY=1 with --demo --snapshot PATH.
+//! Opt-in offline measurements: SEN_UI_LATENCY=1 with --demo --snapshot PATH.
 use super::*;
 use slint::platform::software_renderer::MinimalSoftwareWindow;
 use std::{cell::Cell, time::Instant};
@@ -29,7 +29,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
     }
     d.state.selected = Some(d.state.chat_order[0].clone());
     d.state.messages.clear();
-    let count = std::env::var("LINE_UI_LATENCY_ROWS")
+    let count = std::env::var("SEN_UI_LATENCY_ROWS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
@@ -55,7 +55,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
     let pixels = demo_data::avatar(0).to_rgba8().unwrap();
     let path = fake.set_image(
         &FakeBackend::asset(true),
-        line::client::desktop::assets::Pixels {
+        sen::client::desktop::assets::Pixels {
             rgba: pixels.as_bytes().to_vec(),
             width: pixels.width(),
             height: pixels.height(),
@@ -129,7 +129,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
     d.state.chat_order.clear();
     d.state.selected = None;
     let contacts = (0..300)
-        .map(|i| line::store::Friend {
+        .map(|i| sen::store::Friend {
             profile: Default::default(),
             id: format!("contact-{i}"),
             name: Some(format!("Contact {i}")),
@@ -150,7 +150,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
             d.state.members = contacts
                 .iter()
                 .cloned()
-                .map(|contact| line::store::Member {
+                .map(|contact| sen::store::Member {
                     contact,
                     is_self: false,
                 })

@@ -32,7 +32,7 @@ mod tests {
     #[test]
     fn reentrant_panel_requests_are_queued_without_borrowing_the_controller() {
         use super::ActionQueue;
-        use line::controller::{AppState, Panel};
+        use sen::controller::{AppState, Panel};
         let mut state = AppState::default();
         let actions = ActionQueue::<AppState>::default();
         let callbacks = actions.clone();

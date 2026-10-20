@@ -115,7 +115,7 @@ mod tests {
     use super::*;
     #[test]
     fn panic_reports_keep_default_diagnostics_and_operation() {
-        const CHILD: &str = "LINE_TEST_REPORTING_CHILD";
+        const CHILD: &str = "SEN_TEST_REPORTING_CHILD";
         if std::env::var_os(CHILD).is_none() {
             let output = std::process::Command::new(std::env::current_exe().unwrap())
                 .args([

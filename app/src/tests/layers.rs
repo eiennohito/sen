@@ -5,7 +5,7 @@ fn resizing_layers_keeps_focus_on_visible_content() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         #[cfg(feature = "demo")]
         {
@@ -57,7 +57,7 @@ fn escape_busy_sign_in_requires_a_decision() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         let cancelled = Rc::new(std::cell::Cell::new(0));
         let count = cancelled.clone();
         ui.global::<AuthState>()
@@ -90,7 +90,7 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         ui.global::<ConversationState>().set_has_chat(true);
         ui.global::<ShellState>().set_show_conversation(true);
         ui.global::<ConversationState>()
@@ -167,7 +167,7 @@ fn loading_history_never_renders_the_loaded_empty_identity() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
@@ -199,7 +199,7 @@ fn selecting_another_loading_chat_restarts_the_indicator_delay() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
@@ -247,7 +247,7 @@ fn replacing_feedback_gets_a_full_dismissal_interval() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         for reaction in [false, true] {
             let set = |value: &str| {

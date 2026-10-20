@@ -1,8 +1,8 @@
 //! Synthetic data enters through the backend and follows the normal commit path.
 use super::*;
-use line::backend::{Failure, FakeRpc, LiveOp, Op};
-const REFUSED: Failure = Failure::Refused(line::client::error::Refusal::Server(
-    line::client::error::ServerRefusal::Gateway(13),
+use sen::backend::{Failure, FakeRpc, LiveOp, Op};
+const REFUSED: Failure = Failure::Refused(sen::client::error::Refusal::Server(
+    sen::client::error::ServerRefusal::Gateway(13),
 ));
 
 pub(crate) struct Args {
@@ -72,7 +72,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
     match kind {
         SignInCrypto | SignInState | SignInKeyring | SignInNetwork | SignInServer | SignInPhone
         | SignInCancelled => {
-            use line::client::error::SignInFailure::*;
+            use sen::client::error::SignInFailure::*;
             fake.fail_sign_in(Some(match kind {
                 SignInCrypto => CryptoModule("/demo/crypto.wasm".into()),
                 SignInState => StateDirectory("/demo/state".into()),
@@ -124,12 +124,12 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                     "param2":serde_json::json!({"chatMid":chat.0,"curr":{"predefinedReactionType":2}}).to_string()}));
                 let curr = serde_json::json!({"paidReactionType":{"productId":"demo", "emojiId":"reaction"}});
                 if let Some(ReactionKind::Paid(Some(asset))) =
-                    line::client::desktop::reaction_kind(&curr)
+                    sen::client::desktop::reaction_kind(&curr)
                 {
                     let pixels = demo_data::avatar(1).to_rgba8().unwrap();
                     fake.set_image(
                         &asset,
-                        line::client::desktop::assets::Pixels {
+                        sen::client::desktop::assets::Pixels {
                             width: pixels.width(),
                             height: pixels.height(),
                             rgba: pixels.as_bytes().to_vec(),
@@ -296,7 +296,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                     text: d.state.composer.clone(),
                     cursor: 0,
                     anchor: 0,
-                    updated: line::engine::now_ms(),
+                    updated: sen::engine::now_ms(),
                 },
             });
         }
@@ -319,7 +319,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
 pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
     if scene == "signed-out" {
         if case == Some("missing-module") {
-            fake.fail_open(Some(line::client::error::SignInFailure::CryptoModule(
+            fake.fail_open(Some(sen::client::error::SignInFailure::CryptoModule(
                 "/demo/crypto.wasm".into(),
             )));
         }
@@ -400,7 +400,7 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
 
         demo_data::rich(
             &mut row,
-            line::client::desktop::rich::RichContent {
+            sen::client::desktop::rich::RichContent {
                 content_type: 1,
                 ..Default::default()
             },
@@ -442,11 +442,11 @@ pub fn install(ui: &AppWindow, actions: Runtime, fake: FakeBackend, session: &Rc
     });
 }
 
-fn media_row(chat: &str, id: i64, failure: line::client::desktop::assets::Failure) -> MessageInput {
+fn media_row(chat: &str, id: i64, failure: sen::client::desktop::assets::Failure) -> MessageInput {
     let mut row = FakeBackend::message(chat, id, "", false);
     demo_data::rich(
         &mut row,
-        line::client::desktop::rich::RichContent {
+        sen::client::desktop::rich::RichContent {
             content_type: 1,
             ..Default::default()
         },
@@ -456,9 +456,9 @@ fn media_row(chat: &str, id: i64, failure: line::client::desktop::assets::Failur
     *super::image_mut(&mut row.body) = Some(serde_json::from_value(asset).unwrap());
     row
 }
-fn media_failure(kind: DemoScenario) -> line::client::desktop::assets::Failure {
+fn media_failure(kind: DemoScenario) -> sen::client::desktop::assets::Failure {
     use DemoScenario::*;
-    use line::client::desktop::assets::Failure::*;
+    use sen::client::desktop::assets::Failure::*;
     match kind {
         MediaTimeout => Timeout,
         MediaNetwork => Network,
@@ -523,7 +523,7 @@ fn fixture(
             text: d.state.composer.clone(),
             cursor: ui.global::<ComposerState>().get_editor_caret() as usize,
             anchor: ui.global::<ComposerState>().get_editor_anchor() as usize,
-            updated: line::engine::now_ms(),
+            updated: sen::engine::now_ms(),
         },
     });
     d.sender.send(Intent::MoreChats);
@@ -616,7 +616,7 @@ pub(crate) fn stage(
 }
 
 pub(crate) fn directory() -> std::path::PathBuf {
-    std::env::var_os("LINE_DEMO_DIRECTORY")
+    std::env::var_os("SEN_DEMO_DIRECTORY")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
 }
@@ -639,7 +639,7 @@ pub(crate) fn worker(
         .prefix("store-")
         .tempdir_in(directory)
         .expect("create empty demo store");
-    let mut store = line::store::Store::open(root.path()).expect("open demo store");
+    let mut store = sen::store::Store::open(root.path()).expect("open demo store");
     store
         .set_prefs(&Prefs {
             text_size,
@@ -650,8 +650,8 @@ pub(crate) fn worker(
     let worker = Worker::start(
         StoreLocation::Directory(root.path().to_owned()),
         move || fake.open(),
-        line::engine::WorkerOptions {
-            timing: line::engine::Timing {
+        sen::engine::WorkerOptions {
+            timing: sen::engine::Timing {
                 offline_after: std::time::Duration::from_millis(300),
                 ..Default::default()
             },
@@ -692,7 +692,7 @@ mod tests {
                 .map(|entry| entry.unwrap().path())
                 .collect();
             assert_eq!(paths.len(), 1);
-            let mut store = line::store::Store::open(&paths[0]).unwrap();
+            let mut store = sen::store::Store::open(&paths[0]).unwrap();
             assert!(store.chat_list(10, 0).unwrap().is_empty());
             store
                 .upsert_chats(

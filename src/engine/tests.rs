@@ -635,7 +635,7 @@ fn cached_rpc_cannot_erase_a_network_failure() {
 
 #[test]
 fn cleanup_failures_are_reported_without_dropping_attachments() {
-    const CHILD: &str = "LINE_TEST_CLEANUP_CHILD";
+    const CHILD: &str = "SEN_TEST_CLEANUP_CHILD";
     if std::env::var_os(CHILD).is_none() {
         let output = std::process::Command::new(std::env::current_exe().unwrap())
             .args([
@@ -659,14 +659,13 @@ fn cleanup_failures_are_reported_without_dropping_attachments() {
     }
     let temp = crate::test_support::TempDir::new("cleanup");
     let root = temp.0.clone();
-    std::fs::create_dir_all(root.join("accounts")).unwrap();
     std::fs::write(root.join("clipboard-attachments"), b"not a directory").unwrap();
     let fake = FakeBackend::canned();
     fake.fail_rpc(FakeRpc::StartAssets, Failure::Refused(Refusal::Internal));
     let opener = fake.clone();
     let worker = Worker::start(
         StoreLocation::Account {
-            root: root.join("accounts"),
+            root: root.clone(),
             mid: None,
         },
         move || Ok(opener.clone()),
@@ -893,4 +892,77 @@ fn failed_pairing_preserves_reason_and_transport_health() {
         }
     );
     app.on_engine(move |engine| assert_eq!(engine.health.failed_since, Some(failed_since)));
+}
+
+#[test]
+fn last_account_whitespace_and_corruption_do_not_block_startup() {
+    for value in ["U123\n", "../corrupt", "\n", "broken/filename"] {
+        let temp = crate::test_support::TempDir::new("last-account");
+        let root = temp.0.join("sen");
+        std::fs::create_dir_all(root.join("auth")).unwrap();
+        std::fs::write(root.join("auth/last-account"), value).unwrap();
+        let valid = value.trim() == "U123";
+        if valid {
+            let mut store = Store::open_account(&root, "U123").unwrap();
+            store
+                .save_draft(
+                    &ChatId("alice".into()),
+                    &Draft {
+                        text: "kept".into(),
+                        reply: None,
+                        cursor: 0,
+                        anchor: 0,
+                        updated: 1,
+                    },
+                )
+                .unwrap();
+        }
+        let fake = FakeBackend::signed_out();
+        let worker = Worker::start(
+            StoreLocation::Account {
+                root: root.clone(),
+                mid: None,
+            },
+            move || Ok(fake.clone()),
+            WorkerOptions {
+                timing: harness::test_timing(),
+            },
+        );
+        let mut app = App::with_fake(worker, FakeBackend::signed_out());
+        app.until(|s| matches!(s.connection, Connection::SignedOut { .. }));
+        app.on_engine(move |engine| {
+            assert_eq!(engine.store_mid.as_deref(), valid.then_some("U123"));
+            if valid {
+                assert_eq!(
+                    engine
+                        .store
+                        .load_draft(&ChatId("alice".into()))
+                        .unwrap()
+                        .unwrap()
+                        .text,
+                    "kept"
+                );
+            }
+        });
+    }
+}
+
+#[test]
+fn identified_account_survives_copy_failure_without_publishing_a_store() {
+    use sha2::{Digest, Sha256};
+    let temp = crate::test_support::TempDir::new("identity-copy-failure");
+    let root = temp.0.join("sen");
+    let old = temp
+        .0
+        .join("line-desktop/accounts")
+        .join(format!("{:x}", Sha256::digest("self")));
+    std::fs::create_dir_all(&old).unwrap();
+    std::fs::write(old.join("store.sqlite3"), b"corrupt").unwrap();
+    let mut app = App::at(StoreLocation::Account {
+        root: root.clone(),
+        mid: None,
+    });
+    assert_eq!(app.state.connection, Connection::Online);
+    assert!(!root.join("self/store.sqlite3").exists());
+    app.settle();
 }

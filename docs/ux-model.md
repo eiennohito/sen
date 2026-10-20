@@ -556,17 +556,17 @@ not belong in the shell.
 
 | Concern | Requirement | Mechanism |
 | --- | --- | --- |
-| Identity | Wayland app id, X11 class, desktop entry, and icon all `org.lineclient.Desktop`; window title "LINE" plus optional unread count, never the account name | `slint::set_xdg_app_id`, desktop entry `StartupWMClass`, `SingleMainWindow=true`, `StartupNotify=true`, `Keywords`, `Categories` |
-| Single instance | A second launch activates the running window and exits; a launch with a URL or notification action is forwarded | Own well-known D-Bus name `org.lineclient.Desktop`; implement `org.freedesktop.Application` (Activate, Open, ActivateAction); `DBusActivatable=true` |
+| Identity | Wayland app id, X11 class, desktop entry, and icon all `org.senclient.Sen`; window title "閃" plus optional unread count, never the account name | `slint::set_xdg_app_id`, desktop entry `StartupWMClass`, `SingleMainWindow=true`, `StartupNotify=true`, `Keywords`, `Categories` |
+| Single instance | A second launch activates the running window and exits; a launch with a URL or notification action is forwarded | Own well-known D-Bus name `org.senclient.Sen`; implement `org.freedesktop.Application` (Activate, Open, ActivateAction); `DBusActivatable=true` |
 | Activation | Raising the window from a notification works under Wayland | Use the activation token from the notification daemon (`ActivationToken` signal) when the toolkit can consume it; fall back to `request_user_attention` so the task entry highlights |
 | Notifications | Native desktop notifications with actions, replacement, withdrawal, per-app settings in Plasma | `org.freedesktop.Notifications`: hints `desktop-entry`, `category=im.received`, `urgency`, `image-data` (privacy level 1 only), `replaces_id` per conversation, `resident=false`, default action opens the chat |
 | Sound | At most one sound per burst; follows the desktop sound theme and mute | Hint `sound-name=message-new-instant`; if the daemon ignores sounds, defer in-app playback to a later session rather than bundling audio |
-| Badge | Unread conversation count on the task manager entry | `com.canonical.Unity.LauncherEntry` `Update` signal with `application://org.lineclient.Desktop.desktop`, `count` and `count-visible`; `progress` unused |
+| Badge | Unread conversation count on the task manager entry | `com.canonical.Unity.LauncherEntry` `Update` signal with `application://org.senclient.Sen.desktop`, `count` and `count-visible`; `progress` unused |
 | Attention hint | Inactive window with new unread highlights in the task bar | winit `request_user_attention(Informational)` |
 | Window state | Know when the window is inactive or hidden | winit `Focused`, `Occluded`; treat unknown as inactive |
 | Background mode | Off by default: closing the window quits. When enabled in Settings, close hides to a tray item and sync continues | StatusNotifierItem (`org.kde.StatusNotifierItem`) with menu Open, Mute, Quit; preference explains that notifications continue |
-| Autostart | Off by default, explicit preference | `~/.config/autostart/org.lineclient.Desktop.desktop` |
-| Paths | No app state inside the repository | session → `$XDG_DATA_HOME/line-desktop`, drafts/outbox/prefs → `$XDG_STATE_HOME/line-desktop`, caches → `$XDG_CACHE_HOME/line-desktop`; `--state`/`--cache-dir` remain overrides |
+| Autostart | Off by default, explicit preference | `~/.config/autostart/org.senclient.Sen.desktop` |
+| Paths | No app state inside the repository | session → `$XDG_DATA_HOME/sen/auth/session.json`, drafts/outbox/prefs → `$XDG_DATA_HOME/sen/<mid>`, caches → `$XDG_CACHE_HOME/sen/<mid>`; `--state`/`--cache-dir` remain overrides |
 | Theme and scale | Follow system light/dark, accent, font, and per-monitor scale | Slint `Palette.color-scheme`, default font from fontconfig, no custom DPI handling |
 | Input method | Fcitx5 composition works in every text field | Compositor `text-input-v3` through winit; app never intercepts composition keys |
 | Clipboard and links | Copy as text; open links with the default browser after deliberate activation; show the full URL on hover or in the menu | `xdg-open` via `open`-style helper off the UI thread |

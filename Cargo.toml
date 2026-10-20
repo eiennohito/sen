@@ -1,5 +1,5 @@
 [package]
-name = "line"
+name = "sen"
 version = "0.1.0"
 edition = "2024"
 description = "Core for an unofficial desktop client for the LINE messaging service"
@@ -53,7 +53,7 @@ sys-locale = "0.3"
 tempfile = "3"
 
 [dev-dependencies]
-line = { path = ".", features = ["demo"] }
+sen = { path = ".", features = ["demo"] }
 socket2 = "0.6"
 rcgen = { version = "=0.14.10", default-features = false, features = ["ring"] }
 rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std"] }
@@ -62,10 +62,10 @@ rustls = { version = "=0.23.45", default-features = false, features = ["ring", "
 inherits = "release"
 incremental = true
 
-[profile.fast.package.line-desktop]
+[profile.fast.package.sen-desktop]
 opt-level = 0
 
-[profile.fast.package.line-desktop-ui]
+[profile.fast.package.sen-ui]
 opt-level = 0
 
 # The Slint compiler runs in ui/build.rs on every .slint edit.

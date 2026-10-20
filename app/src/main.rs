@@ -1,8 +1,8 @@
 #[cfg(feature = "demo")]
-use line::backend::FakeBackend;
+use sen::backend::FakeBackend;
 mod action_queue;
 use action_queue::ActionQueue;
-use line::{
+use sen::{
     backend::{LineBackend, ProfileAction},
     controller::{AppState, DetailPage, Panel},
     engine::{Connection, Delta, Intent, Sender, StoreLocation, Worker},
@@ -35,15 +35,15 @@ mod presenter;
 mod rich_content;
 mod text;
 mod viewer;
-pub use line_desktop_ui::*;
 use presenter::format::*;
+pub use sen_ui::*;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     #[cfg(feature = "demo")]
     let mut dev_args = dev::demo::Args::default();
     let mut client_version = None;
     let mut wasm_override = None;
-    let mut locations = line::locations::Locations::from_environment()?;
+    let mut locations = sen::locations::Locations::from_environment()?;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {

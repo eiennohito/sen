@@ -9,6 +9,17 @@ pub struct Locations {
     pub cache: PathBuf,
 }
 impl Locations {
+    // remove after the first release
+    pub fn copy_first_start(&self) -> anyhow::Result<()> {
+        let old = self.data.parent().unwrap().join("line-desktop");
+        copy_if_absent(&old.join("session.json"), &self.session)?;
+        copy_if_absent(
+            &old.join("accounts/last-mid"),
+            &self.data.join("auth/last-account"),
+        )?;
+        Ok(())
+    }
+
     pub fn fonts(&self) -> PathBuf {
         self.data.join("fonts")
     }
@@ -29,12 +40,41 @@ impl Locations {
                 .filter(|p| p.is_absolute())
                 .unwrap_or_else(|| home.join(suffix))
         };
-        let data = base("XDG_DATA_HOME", ".local/share").join("line-desktop");
+        let data = base("XDG_DATA_HOME", ".local/share").join("sen");
         Ok(Self {
             config_home: base("XDG_CONFIG_HOME", ".config"),
-            session: data.join("session.json"),
+            session: data.join("auth/session.json"),
             data,
-            cache: base("XDG_CACHE_HOME", ".cache").join("line-desktop"),
+            cache: base("XDG_CACHE_HOME", ".cache").join("sen"),
         })
     }
 }
+
+// remove after the first release
+fn copy_if_absent(old: &std::path::Path, new: &std::path::Path) -> anyhow::Result<()> {
+    if !new.exists() && old.exists() {
+        crate::client::private_write(new, &std::fs::read(old)?)?;
+    }
+    Ok(())
+}
+
+/// Account IDs are single path segments, using the same alphabet as service IDs.
+pub fn account_directory(
+    root: &std::path::Path,
+    mid: &str,
+) -> Result<PathBuf, crate::store::StoreError> {
+    if mid.is_empty()
+        || mid.len() > 256
+        || !mid
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"_-".contains(&b))
+    {
+        return Err(crate::store::StoreError::Invalid(
+            "invalid account MID".into(),
+        ));
+    }
+    Ok(root.join(mid))
+}
+
+#[cfg(test)]
+mod tests;

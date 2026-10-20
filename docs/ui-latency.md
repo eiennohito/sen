@@ -25,8 +25,8 @@ Measured offline in a release `ui-debug` build, using the software snapshot
 backend at 980×720. The opt-in harness is in `app/src/dev/latency.rs`:
 
 ```sh
-cargo build --release --offline -p line-desktop --features ui-debug
-LINE_UI_LATENCY=1 target/release/line-desktop --demo --snapshot /tmp/latency.ppm
+cargo build --release --offline -p sen-desktop --features ui-debug
+SEN_UI_LATENCY=1 target/release/sen --demo --snapshot /tmp/latency.ppm
 ```
 
 The controlled fixture contains 300 chats, a 500-message window, and 100 distinct
@@ -76,10 +76,10 @@ individual row update, below the 16 ms threshold.
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --offline -- -D warnings`
-- `cargo clippy -p line-desktop --all-targets --features ui-debug --offline -- -D warnings`
+- `cargo clippy -p sen-desktop --all-targets --features ui-debug --offline -- -D warnings`
 - `cargo test --workspace --offline`
-- `cargo build --release --offline -p line-desktop --features ui-debug`
-- `python3 tools/check-ui-mcp.py --all --binary target/release/line-desktop`
+- `cargo build --release --offline -p sen-desktop --features ui-debug`
+- `python3 tools/check-ui-mcp.py --all --binary target/release/sen`
   runs all behavioural groups, reusing one normal and one wide headless demo
   with fresh synthetic state between groups; signed-out and missing-module
   each have their own launch. Run this command three consecutive times for

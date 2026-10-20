@@ -53,10 +53,10 @@ impl Presenter {
                 .action
                 .as_ref()
                 .map(|a| match a {
-                    line::backend::ProfileAction::Rename { .. } => DetailAction::Rename,
-                    line::backend::ProfileAction::AddFriend { .. } => DetailAction::Add,
-                    line::backend::ProfileAction::Mute { .. } => DetailAction::Mute,
-                    line::backend::ProfileAction::Leave { .. } => DetailAction::Leave,
+                    sen::backend::ProfileAction::Rename { .. } => DetailAction::Rename,
+                    sen::backend::ProfileAction::AddFriend { .. } => DetailAction::Add,
+                    sen::backend::ProfileAction::Mute { .. } => DetailAction::Mute,
+                    sen::backend::ProfileAction::Leave { .. } => DetailAction::Leave,
                 })
                 .unwrap_or(DetailAction::None),
         );
@@ -70,7 +70,7 @@ impl Presenter {
                 .into(),
         );
         if let Some(page) = state.detail_page() {
-            use line::controller::DetailPage;
+            use sen::controller::DetailPage;
             let (id, kind) = match page {
                 DetailPage::Profile(id) => (id.as_str(), DetailPageMode::Profile),
                 DetailPage::GroupInfo(id) => (id.0.as_str(), DetailPageMode::Group),

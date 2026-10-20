@@ -1,5 +1,5 @@
 //! Name fallbacks are contextual; keep their wording in one place.
-use line::{
+use sen::{
     controller::AppState,
     store::{ChatId, Friend},
 };

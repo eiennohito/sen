@@ -1,5 +1,5 @@
 //! Visible asset requests.
-use line::{client::desktop::assets::Asset, engine::Intent};
+use sen::{client::desktop::assets::Asset, engine::Intent};
 use std::{
     cell::RefCell,
     collections::{HashMap, HashSet},
@@ -26,16 +26,16 @@ impl Assets {
             .insert(asset.key(), asset.request());
         true
     }
-    pub(crate) fn reload(&self, key: &str, sender: &line::engine::Sender) {
+    pub(crate) fn reload(&self, key: &str, sender: &sen::engine::Sender) {
         if let Some(asset) = self.reloads.borrow().get(key) {
             sender.send(Intent::Asset(asset.clone()));
         }
     }
     pub(crate) fn stickers(
         &mut self,
-        state: &line::controller::AppState,
+        state: &sen::controller::AppState,
         selected: usize,
-        sender: &line::engine::Sender,
+        sender: &sen::engine::Sender,
     ) {
         for asset in state
             .sticker_packages
@@ -60,9 +60,9 @@ impl Assets {
     }
     pub(crate) fn visible(
         &mut self,
-        state: &line::controller::AppState,
+        state: &sen::controller::AppState,
         selected: usize,
-        sender: &line::engine::Sender,
+        sender: &sen::engine::Sender,
     ) {
         for asset in state
             .chats
@@ -92,11 +92,11 @@ impl Assets {
             .chain(state.chats.values().filter_map(|c| c.preview.as_ref()))
             .chain(state.reply_targets.values())
         {
-            use line::client::desktop::assets::Asset;
+            use sen::client::desktop::assets::Asset;
             let media = m.body.image().cloned();
             let emoji = m.body.spans().iter().filter_map(Asset::inline_emoji);
             let reactions = m.reactions.iter().filter_map(|r| match &r.kind {
-                line::store::ReactionKind::Paid(asset) => asset.clone(),
+                sen::store::ReactionKind::Paid(asset) => asset.clone(),
                 _ => None,
             });
             for asset in media.into_iter().chain(emoji).chain(reactions) {
@@ -120,8 +120,8 @@ mod tests {
     use super::*;
     #[test]
     fn requests_distinguish_failures_for_the_same_url() {
-        use line::client::desktop::assets::Failure;
-        let mut value = serde_json::to_value(line::backend::FakeBackend::asset(true)).unwrap();
+        use sen::client::desktop::assets::Failure;
+        let mut value = serde_json::to_value(sen::backend::FakeBackend::asset(true)).unwrap();
         let mut assets = Assets::default();
         for failure in [Failure::Timeout, Failure::Http(404)] {
             value["failure"] = serde_json::to_value(failure).unwrap();
@@ -132,7 +132,7 @@ mod tests {
     }
     #[test]
     fn local_requests_deduplicate_by_identity_without_retaining_preview_bytes() {
-        let asset = Asset::local(line::attachments::Attachment {
+        let asset = Asset::local(sen::attachments::Attachment {
             path: "synthetic.png".into(),
             name: "synthetic.png".into(),
             size: 4,

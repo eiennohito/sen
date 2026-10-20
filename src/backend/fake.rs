@@ -61,7 +61,7 @@ impl FakeState {
     fn image_cache(&mut self) -> &mut crate::client::desktop::assets::ImageCache {
         use crate::client::desktop::assets::ImageCache;
         if self.cache.is_none() {
-            let root = std::env::var_os("LINE_DEMO_DIRECTORY")
+            let root = std::env::var_os("SEN_DEMO_DIRECTORY")
                 .map(std::path::PathBuf::from)
                 .unwrap_or_else(|| {
                     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/tmp")

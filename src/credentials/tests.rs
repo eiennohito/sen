@@ -3,23 +3,31 @@ use std::{os::unix::fs::PermissionsExt, path::PathBuf};
 
 /// In-memory keys for credential store tests.
 #[derive(Default)]
-struct MapKeys(std::sync::Mutex<std::collections::HashMap<String, [u8; 32]>>);
+struct MapKeys(std::sync::Mutex<std::collections::HashMap<(String, String), [u8; 32]>>);
 impl Keys for MapKeys {
-    fn get(&self, id: &str) -> Result<Option<[u8; 32]>> {
-        Ok(self.0.lock().unwrap().get(id).copied())
+    fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>> {
+        Ok(self
+            .0
+            .lock()
+            .unwrap()
+            .get(&(application.into(), id.into()))
+            .copied())
     }
-    fn put(&self, id: &str, key: &[u8; 32]) -> Result<()> {
-        self.0.lock().unwrap().insert(id.to_owned(), *key);
+    fn put(&self, application: &str, id: &str, key: &[u8; 32]) -> Result<()> {
+        self.0
+            .lock()
+            .unwrap()
+            .insert((application.into(), id.to_owned()), *key);
         Ok(())
     }
 }
 
 struct Unreachable;
 impl Keys for Unreachable {
-    fn get(&self, _: &str) -> Result<Option<[u8; 32]>> {
+    fn get(&self, _: &str, _: &str) -> Result<Option<[u8; 32]>> {
         bail!("no keyring")
     }
-    fn put(&self, _: &str, _: &[u8; 32]) -> Result<()> {
+    fn put(&self, _: &str, _: &str, _: &[u8; 32]) -> Result<()> {
         bail!("no keyring")
     }
 }
@@ -158,7 +166,7 @@ fn saved_session_fixtures_preserve_all_fields() -> Result<()> {
     // writer (6e058db0d8048abd2054fcdf2d15559656ef6730) wrote format: 1.
     let root = root("session-fixtures");
     let keys = MapKeys::default();
-    keys.put("synthetic-session-fixture", &[0x42; 32])?;
+    keys.put("sen", "synthetic-session-fixture", &[0x42; 32])?;
     for (name, bytes, store) in [
         (
             "current",
@@ -237,5 +245,54 @@ fn saved_session_failure_kinds_stay_distinct() -> Result<()> {
         "saved-session-key-missing"
     );
     fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn old_key_is_copied_without_replacing_or_removing_it() -> Result<()> {
+    let root = root("old-key");
+    let path = root.join("session.json");
+    let keys = MapKeys::default();
+    let id = "old-synthetic-key";
+    let key = [0x42; 32];
+    keys.0
+        .lock()
+        .unwrap()
+        .insert(("line-desktop".into(), id.into()), key);
+    private_write(&path, &seal(id, &key, &serde_json::to_vec(&synthetic())?)?)?;
+    assert_eq!(load_with(&path, Store::Keyring, &keys)?, synthetic());
+    assert_eq!(keys.get("sen", id)?, Some(key));
+    assert_eq!(keys.get("line-desktop", id)?, Some(key));
+    assert_eq!(keys.0.lock().unwrap().len(), 2);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+#[test]
+fn old_key_load_survives_a_failed_put_and_retries_later() -> Result<()> {
+    struct ReadOnly<'a>(&'a MapKeys);
+    impl Keys for ReadOnly<'_> {
+        fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>> {
+            self.0.get(application, id)
+        }
+        fn put(&self, _: &str, _: &str, _: &[u8; 32]) -> Result<()> {
+            bail!("collection locked")
+        }
+    }
+    let root = crate::test_support::TempDir::new("key-put-retry");
+    let path = root.0.join("session.json");
+    let keys = MapKeys::default();
+    let id = "old-read-only";
+    let key = [42; 32];
+    keys.put("line-desktop", id, &key)?;
+    private_write(&path, &seal(id, &key, &serde_json::to_vec(&synthetic())?)?)?;
+    assert_eq!(
+        load_with(&path, Store::Keyring, &ReadOnly(&keys))?,
+        synthetic()
+    );
+    assert_eq!(keys.get("sen", id)?, None);
+    assert_eq!(load_with(&path, Store::Keyring, &keys)?, synthetic());
+    assert_eq!(keys.get("sen", id)?, Some(key));
+    assert_eq!(keys.get("line-desktop", id)?, Some(key));
     Ok(())
 }

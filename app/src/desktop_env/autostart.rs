@@ -5,7 +5,7 @@ use std::{
     path::{Path, PathBuf},
 };
 pub(crate) fn directory() -> Result<PathBuf, String> {
-    line::locations::Locations::config_home()
+    sen::locations::Locations::config_home()
         .map(|path| path.join("autostart"))
         .map_err(|_| "Home folder is unavailable.".to_owned())
 }
@@ -58,7 +58,7 @@ pub(crate) fn set_enabled(
         .mode(0o700)
         .create(directory)
         .map_err(|_| "Could not create the autostart folder.")?;
-    let temporary = directory.join(format!(".line-desktop-{}.tmp", std::process::id()));
+    let temporary = directory.join(format!(".sen-desktop-{}.tmp", std::process::id()));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -77,6 +77,13 @@ pub(crate) fn set_enabled(
         let _ = fs::remove_file(&temporary);
         return Err("Could not save autostart.".into());
     }
+    // remove after the first release
+    let old = directory.join("org.lineclient.Desktop.desktop");
+    if fs::read_to_string(&old).is_ok_and(|text| {
+        text.contains("X-Sen-Managed=true\n") || text.contains("X-LINE-Managed=true\n")
+    }) {
+        fs::remove_file(old).map_err(|_| "Could not remove the old autostart entry.")?;
+    }
     Ok(())
 }
 #[cfg(test)]
@@ -84,13 +91,15 @@ mod tests {
     use super::*;
     #[test]
     fn existing_managed_entry_is_rebranded_in_place() {
-        let directory = line::test_support::TempDir::new("autostart");
+        let directory = sen::test_support::TempDir::new("autostart");
         let root = &directory.0;
         let entry = root.join(crate::desktop_env::desktop_integration::DESKTOP_FILE);
-        fs::write(&entry, "[Desktop Entry]\nName=LINE\nX-LINE-Managed=true\n").unwrap();
-        for _ in 0..2 {
+        let old = root.join("org.lineclient.Desktop.desktop");
+        for marker in ["X-LINE-Managed", "X-Sen-Managed"] {
+            fs::write(&old, format!("[Desktop Entry]\nName=LINE\n{marker}=true\n")).unwrap();
             set_enabled(root, Path::new("/synthetic/client"), true).unwrap();
             let contents = fs::read_to_string(&entry).unwrap();
+            assert!(!old.exists());
             assert!(contents.contains("Name=閃\n"));
             assert!(contents.contains("X-Sen-Managed=true\n"));
             assert!(!contents.contains("X-LINE-Managed"));
@@ -100,8 +109,23 @@ mod tests {
         assert!(!entry.exists());
     }
     #[test]
+    fn custom_old_name_entry_is_kept() {
+        let directory = sen::test_support::TempDir::new("autostart-custom-old");
+        let old = directory.0.join("org.lineclient.Desktop.desktop");
+        let custom = "[Desktop Entry]\nName=Custom\n";
+        fs::write(&old, custom).unwrap();
+        set_enabled(&directory.0, Path::new("/synthetic/client"), true).unwrap();
+        assert_eq!(fs::read_to_string(old).unwrap(), custom);
+        assert!(
+            directory
+                .0
+                .join(crate::desktop_env::desktop_integration::DESKTOP_FILE)
+                .exists()
+        );
+    }
+    #[test]
     fn autostart_is_explicit_and_keeps_custom_entries() {
-        let directory = line::test_support::TempDir::new("autostart");
+        let directory = sen::test_support::TempDir::new("autostart");
         let root = &directory.0;
         let entry = root.join(crate::desktop_env::desktop_integration::DESKTOP_FILE);
         assert!(!entry.exists());

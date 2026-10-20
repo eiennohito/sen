@@ -1,6 +1,6 @@
 use super::*;
-use line::client::desktop::assets::Asset;
 use presenter::{Presenter, system_events};
+use sen::client::desktop::assets::Asset;
 
 fn fixture() -> (AppWindow, Presenter, AppState) {
     let ui = crate::window::create_app_window().unwrap();
@@ -115,7 +115,7 @@ fn own_reactor_avatar_follows_profile_contact_and_profile_changes() {
             kind: ReactionKind::Predefined(3),
         }];
         for (name, picture) in [("Offline preview", None), ("Renamed", Some("/own-photo"))] {
-            state.apply(Delta::Profile(line::store::Profile {
+            state.apply(Delta::Profile(sen::store::Profile {
                 mid: "self".into(),
                 display_name: name.into(),
                 picture_path: picture.map(str::to_owned),
@@ -166,11 +166,11 @@ fn reply_rows_keep_full_text_while_composer_quotes_are_compact() {
         for (body, compact, full) in crate::tests::previews::label_cases() {
             let mut target = crate::tests::message("");
             target.body = body;
-            target.server_id = Some(line::store::ServerId::new("10").unwrap());
+            target.server_id = Some(sen::store::ServerId::new("10").unwrap());
             let mut reply = crate::tests::message("reply");
             reply.key = Key(2);
-            reply.reply = Some(Box::new(line::store::ReplyReference {
-                message_id: line::store::ServerId::new("10").unwrap(),
+            reply.reply = Some(Box::new(sen::store::ReplyReference {
+                message_id: sen::store::ServerId::new("10").unwrap(),
                 service_code: None,
             }));
             let (ui, mut presenter, mut state) = fixture();
@@ -234,8 +234,8 @@ fn blank_contact_card_names_omit_the_separator() {
 fn switching_chats_restores_both_editor_drafts_and_reply() {
     std::thread::spawn(|| {
         let _platform = crate::snapshot::install().unwrap();
-        let fake = line::backend::FakeBackend::canned();
-        let mut app = line::engine::harness::App::new(fake.clone(), StoreLocation::Memory);
+        let fake = sen::backend::FakeBackend::canned();
+        let mut app = sen::engine::harness::App::new(fake.clone(), StoreLocation::Memory);
         app.online();
         app.select("alice");
         let key = app.body_key("Hello! 日本語も使えます。");

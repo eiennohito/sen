@@ -491,7 +491,7 @@ fn upload_workers() -> mpsc::Sender<UploadTask> {
     for index in 0..2 {
         let rx = rx.clone();
         thread::Builder::new()
-            .name(format!("line-upload-{index}"))
+            .name(format!("sen-upload-{index}"))
             .spawn(move || {
                 loop {
                     let task = rx.lock().unwrap().recv();
@@ -581,18 +581,23 @@ impl Worker {
             let worker_inbox = inbox.clone();
             let outcome =
                 std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> anyhow::Result<()> {
-                    use sha2::{Digest, Sha256};
                     let mut account_root = None;
                     let mut store_mid = None;
                     let store = match location {
                         StoreLocation::Memory => Store::open_in_memory(),
                         StoreLocation::Directory(p) => Store::open(&p),
                         StoreLocation::Account { root, mid } => {
-                            let mid =
-                                mid.or_else(|| std::fs::read_to_string(root.join("last-mid")).ok());
+                            let mid = mid.or_else(|| {
+                                std::fs::read_to_string(root.join("auth/last-account"))
+                                    .ok()
+                                    .map(|mid| mid.trim().to_owned())
+                                    .filter(|mid| {
+                                        crate::locations::account_directory(&root, mid).is_ok()
+                                    })
+                            });
                             store_mid = mid.clone();
                             let store = if let Some(mid) = mid {
-                                Store::open(&root.join(format!("{:x}", Sha256::digest(mid))))
+                                Store::open_account(&root, &mid)
                             } else {
                                 Store::open_in_memory()
                             };
@@ -607,7 +612,7 @@ impl Worker {
                                     let (jobs, rx) = mpsc::channel::<NetJob>();
                                     let inbox = inbox.clone();
                                     let net_cancel = worker_cancel.clone();
-                                    thread::Builder::new().name("line-net".into()).spawn(
+                                    thread::Builder::new().name("sen-net".into()).spawn(
                                         move || {
                                             crate::client::set_request_cancel(net_cancel);
                                             let mut backend = None;
@@ -1082,14 +1087,12 @@ impl Engine {
     }
 
     fn run(&mut self) -> Result<()> {
-        if let Some(accounts) = &self.account_root
-            && let Some(data) = accounts.parent()
-        {
+        if let Some(accounts) = &self.account_root {
             // Retain retry sources from every account sharing this clipboard directory.
             // If any store cannot be read, leave the files alone.
             if let Err(error) = self
                 .store
-                .prune_clipboard(&data.join("clipboard-attachments"), accounts)
+                .prune_clipboard(&accounts.join("clipboard-attachments"), accounts)
             {
                 crate::reporting::log("clipboard-prune", "cleanup", &error);
             }
@@ -1260,7 +1263,7 @@ impl Engine {
                 };
                 let stream_stop = stop.clone();
                 let j = thread::Builder::new()
-                    .name("line-sync".into())
+                    .name("sen-sync".into())
                     .spawn(move || {
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(run));
                         if !stream_stop.is_cancelled() {
@@ -1316,18 +1319,28 @@ impl Engine {
                     && engine.store_mid.as_deref() != Some(p.mid.as_str())
                     && let Some(root) = &engine.account_root
                 {
-                    use sha2::{Digest, Sha256};
-                    let directory = root.join(format!("{:x}", Sha256::digest(&p.mid)));
+                    let directory = crate::locations::account_directory(root, &p.mid)?;
+                    let copy = Store::copy_first_start(root, &p.mid, &directory);
+                    if let Err(error) = &copy {
+                        crate::reporting::log("store-copy", "first-start", error);
+                    }
                     let first_identity =
                         engine.store_mid.is_none() && !directory.join("store.sqlite3").exists();
-                    let target = if first_identity {
-                        engine.store.persist_to(&directory)?
-                    } else {
-                        let mut target = Store::open(&directory)?;
-                        reject_pending(&p.mid, &engine.in_flight, &mut target, Refusal::AppClosed)?;
-                        target
-                    };
-                    engine.store = target;
+                    if copy.is_ok() {
+                        let target = if first_identity {
+                            engine.store.persist_to(&directory)?
+                        } else {
+                            let mut target = Store::open(&directory)?;
+                            reject_pending(
+                                &p.mid,
+                                &engine.in_flight,
+                                &mut target,
+                                Refusal::AppClosed,
+                            )?;
+                            target
+                        };
+                        engine.store = target;
+                    }
                     engine.store_mid = Some(p.mid.clone());
                     engine
                         .inbox
@@ -1353,9 +1366,8 @@ impl Engine {
                 engine.store_mid = Some(p.mid.clone());
                 engine.store.set_account(&p.mid, p.clone())?;
                 if let Some(root) = &engine.account_root {
-                    std::fs::create_dir_all(root)?;
-                    std::fs::write(root.join("last-mid.tmp"), &p.mid)?;
-                    std::fs::rename(root.join("last-mid.tmp"), root.join("last-mid"))?;
+                    crate::client::private_write(&root.join("auth/last-account"), p.mid.as_bytes())
+                        .map_err(|error| StoreError::Io(std::io::Error::other(error)))?;
                 }
                 engine.emit(Delta::Profile(p));
                 engine.account = AccountSession::Ready;
@@ -2199,7 +2211,7 @@ impl Engine {
     fn cleanup_clipboard(&self, key: Key) -> Result<()> {
         let row = self.store.message(key)?;
         if let Some(item) = row.body.local_attachment() {
-            item.delete_clipboard();
+            item.delete_clipboard_in(self.account_root.as_deref());
         }
         Ok(())
     }
@@ -2235,19 +2247,18 @@ impl Engine {
         let store = if active {
             &mut self.store
         } else {
-            use sha2::{Digest, Sha256};
             let root = self
                 .account_root
                 .as_ref()
                 .ok_or_else(|| StoreError::Invalid("account store root missing".into()))?;
-            other = Store::open(&root.join(format!("{:x}", Sha256::digest(&account))))?;
+            other = Store::open_account(root, &account)?;
             &mut other
         };
         match result {
             Ok(row) => {
                 let pending = store.message(key)?;
                 if let Some(item) = pending.body.local_attachment() {
-                    item.delete_clipboard();
+                    item.delete_clipboard_in(self.account_root.as_deref());
                 }
                 store.link_sent(seq, row.server_id, row.created_ms)?;
             }
@@ -2738,7 +2749,7 @@ impl Engine {
                     };
                     self.store.apply_operation(&op, self.continuous)?;
                     if let Some(item) = clipboard {
-                        item.delete_clipboard();
+                        item.delete_clipboard_in(self.account_root.as_deref());
                     }
                     if fresh
                         && !op.replay
