@@ -38,7 +38,6 @@ impl Presenter {
                     .preview
                     .as_ref()
                     .and_then(|m| system_events::text(&m.body, state, &m.sender_id)),
-                offline: state.connection != Connection::Online,
                 index,
             };
             let assets = inputs
@@ -73,7 +72,8 @@ pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         initial: name_initial(&inputs.title),
         unread: inputs.item.unread_count as i32,
         failed: inputs.item.failed_count > 0,
-        unread_unknown: inputs.item.chat.unread_stale || inputs.offline,
+        // Offline or connecting keeps the last known count; only a detected sync gap is unknown.
+        unread_unknown: inputs.item.chat.unread_stale,
         muted: inputs.item.chat.muted,
         group: inputs.item.chat.is_group,
         member_count: inputs.item.chat.member_count.unwrap_or(0) as i32,

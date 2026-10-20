@@ -57,7 +57,6 @@ pub(crate) struct ChatInputs {
     pub(crate) title: String,
     pub(crate) avatar: Option<Asset>,
     pub(crate) system_text: Option<String>,
-    pub(crate) offline: bool,
     pub(crate) index: usize,
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]

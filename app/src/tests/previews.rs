@@ -39,7 +39,6 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
             title: "葵".into(),
             avatar: None,
             system_text: None,
-            offline: false,
             index: 0,
         },
         &presenter::Images::default(),
@@ -310,4 +309,46 @@ fn content_labels_agree_across_rows_previews_and_accessibility() {
         assert_eq!(chat.preview, compact);
         assert!(row.accessible_label.ends_with(full));
     }
+}
+
+#[test]
+fn startup_and_offline_keep_known_unread_counts_without_unknown_dots() {
+    std::thread::spawn(|| {
+        let _platform = snapshot::install().unwrap();
+        let ui = window::create_app_window().unwrap();
+        let mut presenter = presenter::Presenter::default();
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        for (id, unread, stale) in [("read", 0, false), ("unread", 3, false), ("gap", 0, true)] {
+            let id = ChatId(id.into());
+            state.chat_order.push(id.clone());
+            state.chats.insert(
+                id.clone(),
+                ChatListItem {
+                    unread_count: unread,
+                    ..chat_item(ChatInput {
+                        id,
+                        unread_stale: stale,
+                        ..Default::default()
+                    })
+                },
+            );
+        }
+        for connection in [
+            Connection::Local,
+            Connection::Connecting,
+            Connection::Offline,
+        ] {
+            state.connection = connection;
+            presenter.present(&ui, &state, ChatCategory::All);
+            let rows: Vec<_> = ui.global::<ChatsState>().get_chats().iter().collect();
+            let row = |id: &str| rows.iter().find(|row| row.id == id).unwrap();
+            assert!(!row("read").unread_unknown);
+            assert_eq!(row("unread").unread, 3);
+            assert!(!row("unread").unread_unknown);
+            assert!(row("gap").unread_unknown);
+        }
+    })
+    .join()
+    .unwrap();
 }
