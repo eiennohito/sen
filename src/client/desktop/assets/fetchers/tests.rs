@@ -978,8 +978,8 @@ fn workers_publish_evictions_after_inflight_fetches_finish() {
             assert!(matches!(completion.result, Ok(Payload::Image(_))));
         }
     }
-    drop(fetchers);
     server.join().unwrap();
+    drop(fetchers);
 }
 
 #[test]

@@ -3,7 +3,6 @@ export component IconButton inherits Rectangle {
     out property <bool> has-focus: focus.has-focus;
     in property <image> icon;
     in property <string> label;
-    in property <string> focus-description;
     in property <bool> enabled: true;
     in property <color> icon-color: Tokens.text;
     callback activated();
@@ -21,7 +20,7 @@ export component IconButton inherits Rectangle {
             // ignores FocusOut on a disabled FocusScope). Gate entry and actions.
             focus-on-tab-navigation: root.enabled && root.visible;
             focus-on-click: root.enabled && root.visible;
-            accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled; accessible-description: root.enabled && root.visible && focus.has-focus ? root.focus-description : "";
+            accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled;
             accessible-action-default => { if root.enabled { root.activated(); } }
             Rectangle { x: -4px; y: -4px; width: root.width + 8px; height: root.height + 8px; background: transparent; border-radius: root.border-radius + 4px; border-color: Tokens.accent-strong; border-width: focus.has-focus ? 2px : 0px; }
             key-pressed(event) => { if !root.enabled { return reject; } if root.key-pressed(event) == accept { return accept; } if event.text == Key.Return || event.text == " " { root.activated(); return accept; } reject }

@@ -74,7 +74,13 @@ impl Presenter {
             }
         }
         for (_, row) in self.rendered_chats.values_mut() {
-            patch_chat_asset(row, key, image, failure.is_some(), ui.get_text_size());
+            patch_chat_asset(
+                row,
+                key,
+                image,
+                failure.is_some(),
+                ui.global::<State>().get_text_size(),
+            );
         }
         for (i, id) in self.chat_keys.iter().enumerate() {
             if let Some((_, cached)) = self.rendered_chats.get(id)
@@ -91,7 +97,7 @@ impl Presenter {
                 key,
                 image,
                 failure.is_some(),
-                Some(ui.get_text_size()),
+                Some(ui.global::<State>().get_text_size()),
             );
             if row.avatar_key == key
                 && let Some(image) = image
@@ -138,7 +144,7 @@ impl Presenter {
                 _ => None,
             };
             if avatar.is_some_and(|a| a.key() == key) {
-                ui.set_profile_avatar(image.clone());
+                ui.global::<State>().set_profile_avatar(image.clone());
             }
         }
         let mut quote = ui.global::<State>().get_composer_reply();

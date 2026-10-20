@@ -49,7 +49,7 @@ def call(name, **arguments):
     result = rpc("tools/call", {"name": name, "arguments": arguments})
     if result.get("isError"):
         message = str(result.get("content"))
-        if "Invalid element handle" in message or "refers to element that was destroyed" in message:
+        if "Invalid element handle" in message or "refers to element that was destroyed" in message or "Attempting to access deleted window" in message:
             raise LookupError(message)
         raise RuntimeError(f"MCP tool failed: {name}: {message}")
     parsed = json.loads(result["content"][0]["text"])
@@ -61,6 +61,20 @@ def tree(handle=None):
     result = call("get_element_tree", elementHandle=root if handle is None else handle, maxElements=2500)
     assert not result.get("truncated"), "UI tree exceeded test bound"
     return result["elements"]
+
+def focused_control():
+    marker = bounds_by_id("DemoExtension::focus-marker")
+    call("invoke_accessibility_action", elementHandle=marker["handle"], action="Default_")
+    return json.loads(call("get_element_properties", elementHandle=marker["handle"])["accessibleValue"])
+
+
+def is_focused(item, focus=None):
+    focus = focused_control() if focus is None else focus
+    return (item.get("accessibleLabel") == focus.get("label")
+            and item.get("accessibleRole") == focus.get("role")
+            and all(abs(item["absolutePosition"].get(axis, 0) - focus[axis]) < .01 for axis in ("x", "y"))
+            and all(abs(item["size"][extent] - focus[extent]) < .01 for extent in ("width", "height")))
+
 
 def element(label, role, read_tree=tree):
     item = next((item for item in read_tree() if (item.get("accessibleLabel") == label or item.get("accessibleLabel", "").startswith(label + ", ")) and item.get("accessibleRole") == role), None)
@@ -183,7 +197,7 @@ def smoke_chat(label):
 
 def check_detail_stack():
     def focused(label, role="Button"):
-        assert "Focused" in element(label, role).get("accessibleDescription", ""), f"focus not restored to {label}: {[item.get('accessibleLabel') for item in tree() if 'Focused' in item.get('accessibleDescription','')]}"
+        assert is_focused(element(label, role)), f"focus not restored to {label}: {[item.get('accessibleLabel') for item in tree() if is_focused(item)]}"
     click("Friends")
     search=element("Search friends and groups", "TextInput")
     call("set_element_value",elementHandle=search["handle"],value="")
@@ -273,7 +287,7 @@ def check_idle():
 
 
 def check_smoke():
-    global draft, before_shortcut
+    global draft, before_shortcut, window, root, properties
     show_chats()
     wait_for(lambda: "葵 changed the group photo" in element("Weekend plans", "Button")["accessibleLabel"], "demo system preview did not resolve its known actor")
     draft = "日本語の下書き\nDraft with emoji 🐈"
@@ -366,7 +380,8 @@ def check_missing_module():
 
 def check_focus():
     def focus_label():
-        focused = [item for item in tree() if item.get("accessibleDescription", "").startswith("Focused")]
+        current = focused_control()
+        focused = [item for item in tree() if is_focused(item, current)]
         assert len(focused) == 1, f"unlabelled or ambiguous Tab stop: {focused}"
         label = focused[0].get("accessibleLabel", "")
         assert label, "focused control has no label"
@@ -530,18 +545,16 @@ def check_focus():
     check_focus_shell(True)
 
 
-def assert_reactor_popup_inside_window(chip):
+def assert_reactor_popup_visible():
     popup = wait_element("Who reacted", "List")
-    # Slint's MCP absolutePosition excludes enclosing popup offsets. The demo
-    # marker binds to the popup's x/y/width/height in its chip's window tree.
-    bounds = next(item for item in tree(chip["handle"]) if any(
-        base.get("id") == "ReactionChip::popup-bounds" for base in item.get("typeNamesAndIds", [])))
-    assert bounds["size"] == popup["size"], "popup bounds marker disagrees with visible surface"
-    scale = properties.get("scaleFactor", 1)
+    assert popup["size"]["width"] > 0 and popup["size"]["height"] > 0, "reactor list is hidden"
+    geometry = focused_control()["popup"]
+    assert geometry is not None, "reactor popup is not inside the window"
+    bounds = call("get_window_properties", windowHandle=window)
+    scale = bounds.get("scaleFactor", 1)
     for axis, extent in (("x", "width"), ("y", "height")):
-        start = bounds["absolutePosition"].get(axis, 0)
-        end = start + bounds["size"][extent]
-        assert start >= -0.5 and end <= properties["size"][extent] / scale + 0.5, f"reactor popup outside window: {bounds}"
+        start = geometry[axis] + popup["absolutePosition"].get(axis, 0)
+        assert 0 <= start and start + popup["size"][extent] <= bounds["size"][extent] / scale, "reactor popup is outside the window"
 
 
 def check_reactor_popup(label):
@@ -549,17 +562,17 @@ def check_reactor_popup(label):
     assert chip.get("accessibleItemSelected"), "own chip is not highlighted"
     click(label)
     wait_element("You", "Text")
-    assert_reactor_popup_inside_window(chip)
+    assert_reactor_popup_visible()
     screenshot("reactors")
     key("\x1b")
     assert not any(r.get("accessibleLabel") == "You" and r.get("accessibleRole") == "Text" for r in tree()), "Escape left reactor popup open"
-    assert element(label, "Button").get("accessibleDescription") == "Focused reaction", "Escape did not return focus to chip"
+    assert is_focused(element(label, "Button")), "Escape did not return focus to chip"
     for activation in ("\n", " "):
         key(activation)
         wait_element("You", "Text")
         key("\x1b")
         assert not any(r.get("accessibleLabel") == "You" and r.get("accessibleRole") == "Text" for r in tree()), "reactor popup did not close between activations"
-        assert element(label, "Button").get("accessibleDescription") == "Focused reaction"
+        assert is_focused(element(label, "Button"))
     assert element(label, "Button").get("accessibleItemSelected"), "opening reactors toggled own reaction"
 
 
@@ -633,9 +646,9 @@ def check_compose():
     call("click_element", elementHandle=body["handle"])
     for label in ("React", "Reply"):
         key("\t")
-        assert any(item.get("accessibleLabel") == label and item.get("accessibleDescription") == "Focused" for item in tree()), f"body → React → Reply lost focus at {label}"
+        assert any(item.get("accessibleLabel") == label and is_focused(item) for item in tree()), f"body → React → Reply lost focus at {label}"
     key("\t")
-    assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft", "Reply did not tab to composer"
+    assert is_focused(element("Message draft", "TextInput")), "Reply did not tab to composer"
     def reply_via_menu():
         body = next(item for item in reversed(tree()) if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut and item.get("accessibleLabel", "").startswith("Outgoing,"))
         call("click_element", elementHandle=body["handle"], button="Right")
@@ -646,7 +659,7 @@ def check_compose():
     screenshot("composer-reply")
     click("Cancel reply")
     wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "close did not cancel reply")
-    assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft"
+    assert is_focused(element("Message draft", "TextInput"))
     reply_via_menu()
     key("\x1b")
     wait_for(lambda: not any(item.get("accessibleLabel") == "Cancel reply" for item in tree()), "Escape did not cancel reply")
@@ -755,10 +768,10 @@ def check_scenario_keys():
     click("Message draft", "TextInput")
     for dismiss in ("escape", "close"):
         key("\uf70f")
-        assert scenario_element("Close demo scenarios").get("accessibleDescription") == "Focused"
+        assert is_focused(scenario_element("Close demo scenarios"))
         if dismiss == "escape": key("\x1b")
         else: click("Close demo scenarios")
-        assert element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft", "scenarios did not restore the composer focus"
+        assert is_focused(element("Message draft", "TextInput")), "scenarios did not restore the composer focus"
     def reverse_tab():
         key("\x10", "Press")
         key("\t")
@@ -766,26 +779,26 @@ def check_scenario_keys():
     for closing_key in ("\x1b", " "):
         key("\uf70f")
         key("\t")
-        assert scenario_element("Long history").get("accessibleDescription") == "Focused", "Tab from Close did not focus History"
+        assert is_focused(scenario_element("Long history")), "Tab from Close did not focus History"
         reverse_tab()
-        assert scenario_element("Close demo scenarios").get("accessibleDescription") == "Focused"
+        assert is_focused(scenario_element("Close demo scenarios"))
         reverse_tab()
-        assert scenario_element("Offline").get("accessibleDescription") == "Focused", "reverse Tab focused the wrong scenario"
+        assert is_focused(scenario_element("Offline")), "reverse Tab focused the wrong scenario"
         key(closing_key)
         assert not call("find_elements_by_id", windowHandle=window, elementsId="DemoScenarios::scenario-panel").get("elementHandles", []), "keyboard activation did not dismiss scenarios"
         key("\uf70f")
-        assert scenario_element("Close demo scenarios").get("accessibleDescription") == "Focused"
+        assert is_focused(scenario_element("Close demo scenarios"))
         key("\t")
-        assert scenario_element("Long history").get("accessibleDescription") == "Focused", "stale last-scenario focus trapped Tab after reopening"
+        assert is_focused(scenario_element("Long history")), "stale last-scenario focus trapped Tab after reopening"
         key("\x1b")
     key("\uf70f")
     call("click_element", elementHandle=scenario_action("Media failures")["handle"])
     reverse_tab()
-    assert scenario_element("Media cancelled").get("accessibleDescription") == "Focused", "reverse Tab did not focus the final media scenario"
+    assert is_focused(scenario_element("Media cancelled")), "reverse Tab did not focus the final media scenario"
     key(" ")
     key("\uf70f")
     key("\t")
-    assert scenario_element("Long history").get("accessibleDescription") == "Focused", "stale media focus trapped Tab after reopening"
+    assert is_focused(scenario_element("Long history")), "stale media focus trapped Tab after reopening"
     key("\x1b")
 
 
@@ -965,20 +978,20 @@ def check_auth_recovery():
     wait_element("Connection needs attention", "Banner")
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     key("\uf709")  # F6 enters sign-in recovery.
-    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
+    assert is_focused(element("Sign in again", "Button"))
     key("\n")
     assert any("Signing in here signs LINE out in Chrome." in item.get("accessibleLabel", "") for item in tree())
-    assert element("Start", "Button").get("accessibleDescription") == "Focused"
+    assert is_focused(element("Start", "Button"))
     key("\x1b")
-    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
+    assert is_focused(element("Sign in again", "Button"))
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == before, "sign-in dismissal changed the draft"
     key("\t")
-    assert element("Message history", "List").get("accessibleDescription") == "Focused history"
+    assert is_focused(element("Message history", "List"))
     click("Sign in again", "Button")
     click("Start", "Button")
     wait_for(lambda: any("LINE refused sign-in" in item.get("accessibleLabel", "") for item in tree()), "synthetic sign-in did not report its failure", timeout=3)
     key("\x1b")
-    assert element("Sign in again", "Button").get("accessibleDescription") == "Focused"
+    assert is_focused(element("Sign in again", "Button"))
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == before, "failed sign-in changed the draft"
 
 
@@ -1001,10 +1014,10 @@ def check_layers():
     wait_element("Unknown member", "Text")
     wait_element("葵", "Text")
     wait_element("You", "Text")
-    assert_reactor_popup_inside_window(chip)
+    assert_reactor_popup_visible()
     screenshot("grouped-reactors")
     key("\x1b")
-    assert element("Emoji, 2 reactions", "Button").get("accessibleDescription") == "Focused reaction"
+    assert is_focused(element("Emoji, 2 reactions", "Button"))
 
     def unsend_menu(body):
         message = next(item for item in tree() if body in item.get("accessibleLabel", "") and item.get("accessibleRole") in ("Text", "TextInput"))
@@ -1012,7 +1025,6 @@ def check_layers():
         click("Unsend", "Text")
         wait_element("Unsend message?", "Text")
         wait_element("It will be removed for everyone.", "Text")
-        assert element("Cancel", "Button").get("accessibleDescription", "") in ("", "Focused")
         draft_before = wait_element("Message draft", "TextInput").get("accessibleValue")
         key("x")
         assert wait_element("Message draft", "TextInput").get("accessibleValue") == draft_before, "Unsend let typing reach the draft"
@@ -1036,21 +1048,21 @@ def check_layers():
         scale = properties.get("scaleFactor", 1)
         assert all(dialog["absolutePosition"][axis] > 0 and abs(dialog["absolutePosition"][axis] * 2 + dialog["size"][extent] - properties["size"][extent] / scale) <= 1 for axis, extent in (("x", "width"), ("y", "height"))), "wide Settings did not form a centered dialog"
     wait_element("Enter sends", "Checkbox")
-    assert call("get_element_properties", elementHandle=close_settings["handle"]).get("accessibleDescription") == "Focused", "Settings did not focus its close control"
+    assert is_focused(call("get_element_properties", elementHandle=close_settings["handle"])), "Settings did not focus its close control"
     key("\t")
-    assert element("Settings section", "TabList").get("accessibleDescription") == "Focused", "Settings navigation did not describe focus"
+    assert is_focused(element("Settings section", "TabList")), "Settings navigation did not describe focus"
     for _ in range(12):
         key("\t")
-    assert wait_element("Message draft", "TextInput").get("accessibleDescription") != "Focused message draft", "Settings let Tab escape to the draft"
+    assert not is_focused(wait_element("Message draft", "TextInput")), "Settings let Tab escape to the draft"
     key("\x1b")
-    assert element("Navigation", "Button").get("accessibleDescription") == "Focused navigation", "Settings did not restore rail focus"
+    assert is_focused(element("Navigation", "Button")), "Settings did not restore rail focus"
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == before
     click("Friends", "Button")
     call("set_element_value", elementHandle=handle("Search friends and groups", "TextInput"), value="葵")
     click("Open profile: 葵", "Button")
     assert any(item.get("accessibleLabel") == "Message draft" for item in tree()) == args.wide, "profile conversation visibility disagrees with layout"
     key("\x1b")
-    assert element("Friends and groups", "List").get("accessibleDescription") == "Focused friends and groups", "profile did not restore its list opener"
+    assert is_focused(element("Friends and groups", "List")), "profile did not restore its list opener"
     click("Chats", "Button")
     demo_scenario("Photo preview")
     click("Open photo", "Button")
@@ -1087,7 +1099,7 @@ def check_layers():
     assert exported.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
     exported.unlink()
     key("\x1b")
-    assert any(item.get("accessibleLabel") == "Open photo" and item.get("accessibleDescription") == "Focused" for item in tree()), "viewer did not restore the photo opener"
+    assert any(item.get("accessibleLabel") == "Open photo" and is_focused(item) for item in tree()), "viewer did not restore the photo opener"
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == before, "layers changed the draft"
     # Cache the members while connected, then exercise the same layer signed out.
     click("Weekend plans")
@@ -1160,9 +1172,9 @@ def check_reading():
         key("\t")
         key("\x10", "Release")
         history = element("Message history", "List")
-        if history.get("accessibleDescription") == "Focused history":
+        if is_focused(history):
             break
-    assert history.get("accessibleDescription") == "Focused history", "reverse Tab entered a message"
+    assert is_focused(history), "reverse Tab entered a message"
     key("\uf72b")  # End
     bottom = call("get_element_properties", elementHandle=first["handle"])["absolutePosition"]["y"]
     key("\uf729")  # Home
@@ -1255,12 +1267,12 @@ def check_rich():
             key("\x10", "Press")
             key("\t")
             key("\x10", "Release")
-            assert element(label, role).get("accessibleDescription", "").startswith("Focused"), f"reverse Tab skipped {label}"
-        assert element("Message history", "List").get("accessibleDescription") == "Focused history", "reverse Tab skipped a history pill"
+            assert is_focused(element(label, role)), f"reverse Tab skipped {label}"
+        assert is_focused(element("Message history", "List")), "reverse Tab skipped a history pill"
         for label, role in [(latest["accessibleLabel"], "Button"), ("Return to message", "Button"), ("Message draft", "TextInput")]:
             key("\t")
-            assert element(label, role).get("accessibleDescription", "").startswith("Focused"), f"forward Tab skipped {label}"
-        assert wait_element("Message draft", "TextInput").get("accessibleDescription") == "Focused message draft", "history/Latest/Return/composer Tab order changed"
+            assert is_focused(element(label, role)), f"forward Tab skipped {label}"
+        assert is_focused(wait_element("Message draft", "TextInput")), "history/Latest/Return/composer Tab order changed"
         click("Return to message", "Button")
         wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return did not restore its origin")
         restored_y = emoji_body()["absolutePosition"]["y"]
@@ -1452,7 +1464,7 @@ def connect(process):
     if args.wide:
         scale = properties.get('scaleFactor', 1)
         assert (properties['size']['width'] / scale, properties['size']['height'] / scale) == (1280, 900), '--wide requires a 1280×900 window'
-    markers = call('find_elements_by_id', windowHandle=window, elementsId='AppWindow::demo-reset-marker').get('elementHandles', [])
+    markers = call('find_elements_by_id', windowHandle=window, elementsId='DemoExtension::demo-reset-marker').get('elementHandles', [])
     if len(markers) != 1:
         raise WrongInstanceError('connected instance is not an automation demo')
     marker = call('get_element_properties', elementHandle=markers[0])
@@ -1464,13 +1476,31 @@ def connect(process):
 
 
 def reset_demo():
-    global draft, before_shortcut
+    global draft, before_shortcut, window, root, properties
     for _ in range(4):
         key('\x1b')
     key("\uf70f")
-    generation = bounds_by_id('AppWindow::demo-reset-marker')['accessibleValue']
+    generation = bounds_by_id('DemoExtension::demo-reset-marker')['accessibleValue']
+    token, number = generation.rsplit(':', 1)
+    expected = f'{token}:{int(number) + 1}'
     click('Reset demo')
-    wait_for(lambda: bounds_by_id('AppWindow::demo-reset-marker')['accessibleValue'] != generation, 'demo reset did not complete')
+    def reset_window():
+        global window, root, properties
+        for candidate in call('list_windows')['windowHandles']:
+            try:
+                markers = call('find_elements_by_id', windowHandle=candidate, elementsId='DemoExtension::demo-reset-marker')['elementHandles']
+            except LookupError:
+                continue
+            if len(markers) != 1:
+                continue
+            marker = call('get_element_properties', elementHandle=markers[0])
+            if marker.get('accessibleLabel') == token and marker.get('accessibleValue') == expected:
+                window = candidate
+                properties = call('get_window_properties', windowHandle=window)
+                root = properties['rootElementHandle']
+                return True
+        return False
+    wait_for(reset_window, 'demo reset did not complete')
     wait_element('葵')
     smoke_chat('葵')
     draft = '日本語の下書き\nDraft with emoji 🐈'

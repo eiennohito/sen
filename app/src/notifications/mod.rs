@@ -91,7 +91,7 @@ pub(crate) fn handle(event: notifications::worker::Event, ui: &AppWindow, deskto
         notifications::worker::Event::OpenChat { chat } => {
             desktop.open_chat(ui, ChatId(chat));
             let _ = ui.show();
-            ui.set_show_conversation(true);
+            ui.global::<State>().set_show_conversation(true);
         }
         notifications::worker::Event::MarkRead { chat, message } => {
             if let Ok(id) = ServerId::new(message) {
@@ -208,9 +208,9 @@ mod tests {
                     .apply(receive("waiting for B's draft to be persisted"));
             }
             desktop.render(&ui);
-            ui.set_draft("unsent draft in A".into());
-            ui.set_editor_caret(8);
-            ui.set_editor_anchor(3);
+            ui.global::<State>().set_draft("unsent draft in A".into());
+            ui.global::<State>().set_editor_caret(8);
+            ui.global::<State>().set_editor_anchor(3);
             let (events, receiver) = std::sync::mpsc::channel();
             desktop.notifications = Some(Notifications {
                 service: notifications::worker::Attention::disconnected(),
@@ -234,7 +234,7 @@ mod tests {
                 "the second queued OpenChat did not select C"
             );
             assert_eq!(
-                ui.get_draft().as_str(),
+                ui.global::<State>().get_draft().as_str(),
                 "unsent draft in A",
                 "the composer did not follow the second selection"
             );

@@ -32,7 +32,7 @@ export component SearchField inherits Rectangle {
         enabled: root.enabled; single-line: true; vertical-alignment: center;
         text <=> root.text; font-size: Tokens.base; color: Tokens.text;
         accessible-placeholder-text: root.placeholder-text; accessible-label: root.label;
-        accessible-description: self.has-focus ? "Focused search" : "";
+
         edited => { root.edited(self.text); }
         key-pressed(event) => {
             if !State.ime-active && event.text == Key.Tab && !event.modifiers.shift && root.text != "" { clear-button.focus-button(); return accept; }
@@ -46,7 +46,7 @@ export component SearchField inherits Rectangle {
         x: root.width - 36px; y: (root.height - self.height) / 2;
         visible: root.text != ""; enabled: root.enabled && self.visible;
         width: 32px; height: 32px;
-        label: "Clear search"; focus-description: "Focused"; icon: @image-url("../assets/icons/close.svg");
+        label: "Clear search"; icon: @image-url("../assets/icons/close.svg");
         activated => { input.focus(); root.clear(); }
         key-pressed(event) => {
             if !State.ime-active && event.text == Key.Tab {

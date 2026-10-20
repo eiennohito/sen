@@ -33,8 +33,8 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         if global.get_new_chat_uncertain() {
             global.set_new_chat_open(false);
             d.state.panel = Panel::Chats;
-            ui.set_section(0);
-            ui.set_show_conversation(false);
+            ui.global::<State>().set_section(0);
+            ui.global::<State>().set_show_conversation(false);
             d.render(&ui);
             ui.invoke_focus_search();
             return;
@@ -49,8 +49,8 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             d.reveal = Some(id.clone());
             d.open_chat(&ui, id);
             d.state.panel = Panel::Chats;
-            ui.set_section(0);
-            ui.set_show_conversation(true);
+            ui.global::<State>().set_section(0);
+            ui.global::<State>().set_show_conversation(true);
             global.set_new_chat_open(false);
             d.render(&ui);
             ui.invoke_focus_composer();
@@ -63,40 +63,40 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             });
         }
     });
-    callback!(ui, actions, on_select_chat, |ui, d, index| {
+    global_callback!(ui, actions, on_select_chat, |ui, d, index| {
         d.select(&ui, index as usize);
     });
-    callback!(ui, actions, on_switch_chat, |ui, d, delta| {
-        let i = ui.get_selected_chat() + delta;
+    global_callback!(ui, actions, on_switch_chat, |ui, d, delta| {
+        let i = ui.global::<State>().get_selected_chat() + delta;
         if i >= 0 && (i as usize) < d.state.chat_order.len() {
             d.select(&ui, i as usize);
         }
     });
-    callback!(ui, actions, on_search_changed, |ui, d, query| {
+    global_callback!(ui, actions, on_search_changed, |ui, d, query| {
         d.query = query.to_lowercase();
         d.render(&ui);
     });
-    callback!(ui, actions, on_filter_category, |ui, d| {
-        d.category = ui.get_category();
+    global_callback!(ui, actions, on_filter_category, |ui, d| {
+        d.category = ui.global::<State>().get_category();
         d.render(&ui);
     });
-    callback!(ui, actions, on_browse, |ui, d, section| {
+    global_callback!(ui, actions, on_browse, |ui, d, section| {
         d.state.panel = if section == 1 {
             Panel::Friends
         } else {
             Panel::Chats
         };
         d.state.detail.clear();
-        ui.set_section(section);
+        ui.global::<State>().set_section(section);
         if section == 1 {
             d.sender.send(Intent::Friends);
         }
         d.render(&ui);
     });
-    callback!(ui, actions, on_refresh_friends, |_ui, d| {
+    global_callback!(ui, actions, on_refresh_friends, |_ui, d| {
         d.sender.send(Intent::Friends);
     });
-    callback!(ui, actions, on_filter_friends, |ui, d| {
+    global_callback!(ui, actions, on_filter_friends, |ui, d| {
         d.render(&ui);
     });
 }

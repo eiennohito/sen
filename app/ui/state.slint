@@ -1,11 +1,10 @@
-import { RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, ReactionRow, DemoAutomation, AttachmentItem, StickerTab, StickerItem, ComposeFriend, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
-// Shared presentation state. AppWindow preserves the public Rust binding API.
+import { ExtensionState } from "@demo/demo-state.slint";
+import { RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 export global State {
     in-out property <[ReactionRow]> reaction-kinds;
     in-out property <MessageRow> composer-reply;
     callback reply(string);
     callback cancel-reply();
-    in-out property <string> attachment-injection-paths;
     in-out property <bool> attachments-open;
     in-out property <string> attachments-chat;
     in-out property <string> attachments-error;
@@ -15,7 +14,6 @@ export global State {
     callback paste-text();
     in-out property <int> paste-text-serial;
     callback paste-attachment() -> bool;
-    callback inject-attachments(string);
     callback drop-attachment(string);
     callback remove-attachment(int);
     callback cancel-attachments();
@@ -170,7 +168,7 @@ export global State {
         let browser-hidden = self.covered-content == 3 && self.previous-covered-content == 0 && self.browser-focus-hidden;
         self.browser-focus-hidden = false;
         self.previous-covered-content = self.covered-content;
-        if self.recovery-kind != RecoveryKind.none || self.demo-scenarios-open || self.detail-dialog != DetailAction.none { return; }
+        if ExtensionState.modal-open || self.recovery-kind != RecoveryKind.none || self.detail-dialog != DetailAction.none { return; }
         // Closing a modal back to the stack restores its recorded opener.
         if previous == 2 && self.detail-open && !self.window-modal-open { return; }
         if self.auth-open { self.focus-auth-start(); }
@@ -247,11 +245,11 @@ export global State {
     in-out property <bool> viewer-saving;
     in-out property <string> viewer-return-key;
     in-out property <int> viewer-return-serial;
-    out property <bool> window-modal-open: self.attachments-open || self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.demo-scenarios-open || self.recovery-kind != RecoveryKind.none || self.detail-dialog != DetailAction.none;
+    out property <bool> window-modal-open: ExtensionState.modal-open || self.attachments-open || self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.recovery-kind != RecoveryKind.none || self.detail-dialog != DetailAction.none;
     in-out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
     callback viewer-step(int);
     callback save-photo();
-    callback close-settings();
+    public function close-settings() { self.request-panel(PanelState.none); self.focus-settings-opener(); }
     in-out property <ConnectionState> connection: local;
     out property <bool> connected: self.connection == ConnectionState.online;
     out property <bool> connection-failed: self.connection == ConnectionState.offline || self.signed-out || self.fatal;
@@ -277,17 +275,7 @@ export global State {
     in-out property <string> auth-error;
     in-out property <string> session-cause;
     in-out property <bool> auth-prerequisite-missing;
-    in-out property <bool> demo;
-    in-out property <string> demo-instance;
-    in-out property <int> demo-reset-generation;
-    in-out property <bool> demo-reset-enabled;
-    callback demo-automation(DemoAutomation);
-    in-out property <string> title-override;
     in-out property <string> link-feedback;
-    in-out property <bool> demo-scenarios-open: false;
-    callback remember-demo-focus();
-    callback restore-demo-focus();
-    in-out property <bool> automation-background;
     in-out property <bool> more-chats;
     in-out property <bool> has-chat;
     in-out property <string> storage-error;
@@ -326,7 +314,6 @@ export global State {
     in-out property <string> file-save-id;
     in-out property <string> file-save-status;
     in-out property <bool> file-saving;
-    in-out property <string> last-opened-link;
     callback photo-closed();
     callback start-sign-in();
     callback cancel-sign-in();
@@ -338,9 +325,8 @@ export global State {
     callback send();
     callback settings-changed();
     callback recover-message(string);
-    callback demo-event(int);
 
-    callback close-profile();
+    public function close-profile() { self.pop-detail(true); }
     callback focus-composer();
     callback focus-cycle-end();
     callback focus-after-browser();
@@ -348,13 +334,22 @@ export global State {
     callback focus-before-layer();
     callback focus-after-layer();
     callback focus-reading-before-editor();
-    callback show-viewer(string);
-    callback close-viewer();
-    callback account-ready();
-    callback close-sign-in();
-    callback open-sign-in();
-    callback show-history(length, bool);
-    callback latest();
+    public function show-viewer(key: string) { self.request-panel(PanelState.viewer); self.viewer-key = key; self.viewer-zoom = 1; self.reset-viewer(); self.focus-viewer-close(); }
+    public function close-viewer() { let from-detail = self.viewer-from-detail; self.request-panel(PanelState.none); if !from-detail { self.focus-history(); } self.viewer-return-key = self.viewer-key; self.viewer-return-serial += 1; self.viewer-key = ""; self.photo-closed(); }
+    public function account-ready() { self.request-panel(PanelState.none); self.show-conversation = false; self.focus-search(); }
+    public function close-sign-in() { self.request-panel(PanelState.none); self.focus-sign-in-opener(); }
+    public function open-sign-in() { if self.sign-in-available { self.request-panel(PanelState.sign-in); self.focus-auth-start(); } }
+    public function show-history(y: length, latest: bool) {
+        self.following = latest;
+        self.history-y = y;
+        if latest { self.history-jump(-self.history-extent); }
+    }
+    public function latest() {
+        self.latest-request();
+        self.following = true;
+        self.new-count = 0;
+        self.history-jump(-self.history-extent);
+    }
     callback focus-search();
     callback focus-friend-search();
     callback focus-settings-opener();

@@ -46,7 +46,7 @@ impl Desktop {
         dev::rendered();
         // Text typed or set without an edit event stays; only engine changes replace it.
         if self.state.composer == self.shown_composer {
-            self.state.composer = ui.get_draft().to_string();
+            self.state.composer = ui.global::<State>().get_draft().to_string();
         }
         self.shown_composer = self.state.composer.clone();
         self.assets.visible(
@@ -89,11 +89,11 @@ impl Desktop {
             .as_ref()
             .and_then(|id| self.state.chat_order.iter().position(|c| c == id))
         {
-            let chats = ui.get_chats();
+            let chats = ui.global::<State>().get_chats();
             if let Some(position) =
                 (0..chats.row_count()).find(|&i| chats.row_data(i).unwrap().index == index as i32)
             {
-                ui.set_result_focus(position as i32);
+                ui.global::<State>().set_result_focus(position as i32);
                 ui.invoke_reveal_chat(position as i32);
                 self.reveal = None;
             }
@@ -108,8 +108,8 @@ impl Desktop {
             self.history.reset_for_chat();
             ui.global::<State>().set_return_visible(false);
             ui.global::<State>().set_highlight_message("".into());
-            ui.set_show_conversation(true);
-            ui.invoke_show_history(0., false);
+            ui.global::<State>().set_show_conversation(true);
+            ui.global::<State>().invoke_show_history(0., false);
             self.render(ui);
         }
     }
@@ -121,17 +121,17 @@ impl Desktop {
     pub(crate) fn capture_draft(&mut self, ui: &AppWindow) {
         // A selection can change before the next render updates the editor.
         if self.state.composer != self.shown_composer
-            && ui.get_draft().as_str() == self.shown_composer
+            && ui.global::<State>().get_draft().as_str() == self.shown_composer
         {
             return;
         }
-        self.state.composer = ui.get_draft().to_string();
+        self.state.composer = ui.global::<State>().get_draft().to_string();
         if let Some(chat) = &self.state.selected {
             let draft = Draft {
                 reply: self.state.composer_reply.clone(),
                 text: self.state.composer.clone(),
-                cursor: ui.get_editor_caret() as usize,
-                anchor: ui.get_editor_anchor() as usize,
+                cursor: ui.global::<State>().get_editor_caret() as usize,
+                anchor: ui.global::<State>().get_editor_anchor() as usize,
                 updated: line::engine::now_ms(),
             };
             self.sender.send(Intent::Draft {
@@ -243,22 +243,26 @@ mod tests {
                 picture_path: Some("/own-photo".into()),
                 ..Default::default()
             }));
-            ui.set_profile_id("self".into());
-            ui.set_profile_name("Me".into());
-            ui.set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
-                slint::Rgba8Pixel,
-            >::new(2, 3)));
+            ui.global::<State>().set_profile_id("self".into());
+            ui.global::<State>().set_profile_name("Me".into());
+            ui.global::<State>()
+                .set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
+                    slint::Rgba8Pixel,
+                >::new(2, 3)));
             desktop.open_profile_photo(&ui);
             assert_eq!(desktop.viewer_asset, Some(avatar.original().unwrap().key()));
-            assert!(ui.get_viewer_loading());
+            assert!(ui.global::<State>().get_viewer_loading());
             assert_eq!(
                 (
-                    ui.get_viewer_image().size().width,
-                    ui.get_viewer_image().size().height
+                    ui.global::<State>().get_viewer_image().size().width,
+                    ui.global::<State>().get_viewer_image().size().height
                 ),
                 (2, 3)
             );
-            assert_eq!(ui.get_viewer_status(), "Loading original…");
+            assert_eq!(
+                ui.global::<State>().get_viewer_status(),
+                "Loading original…"
+            );
             let source = std::sync::Arc::new(vec![1, 2, 3]);
             desktop.apply(
                 &ui,
@@ -272,11 +276,11 @@ mod tests {
                     bytes: source.clone(),
                 },
             );
-            assert!(!ui.get_viewer_loading());
+            assert!(!ui.global::<State>().get_viewer_loading());
             assert_eq!(
                 (
-                    ui.get_viewer_image().size().width,
-                    ui.get_viewer_image().size().height
+                    ui.global::<State>().get_viewer_image().size().width,
+                    ui.global::<State>().get_viewer_image().size().height
                 ),
                 (4, 6)
             );
@@ -296,20 +300,21 @@ mod tests {
             let _window = crate::snapshot::install().unwrap();
             let ui = crate::window::create_app_window().unwrap();
             let mut desktop = desktop(&worker);
-            ui.set_profile_id("missing".into());
-            ui.set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
-                slint::Rgba8Pixel,
-            >::new(2, 3)));
+            ui.global::<State>().set_profile_id("missing".into());
+            ui.global::<State>()
+                .set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
+                    slint::Rgba8Pixel,
+                >::new(2, 3)));
             desktop.open_profile_photo(&ui);
             assert_eq!(desktop.state.panel, Panel::Viewer);
             assert_eq!(
                 (
-                    ui.get_viewer_image().size().width,
-                    ui.get_viewer_image().size().height
+                    ui.global::<State>().get_viewer_image().size().width,
+                    ui.global::<State>().get_viewer_image().size().height
                 ),
                 (2, 3)
             );
-            assert!(!ui.get_viewer_loading());
+            assert!(!ui.global::<State>().get_viewer_loading());
             assert!(desktop.viewer_asset.is_none());
         })
         .join()

@@ -165,7 +165,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             let intent = d.state.subscribe_window(Anchor::Latest, 80, 0);
             d.sender.send(intent);
             d.history.opening_history = false;
-            ui.invoke_show_history(0., true);
+            ui.global::<State>().invoke_show_history(0., true);
         }
         8 => fixture(
             ui,
@@ -288,7 +288,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 chat,
                 kind: PageKind::Recent,
             });
-            ui.set_following(true);
+            ui.global::<State>().set_following(true);
         }
         19 => fake.auth_expired(),
         3 => {
@@ -450,10 +450,9 @@ pub fn install(
     ui: &AppWindow,
     actions: Runtime,
     fake: FakeBackend,
-    #[cfg(feature = "ui-debug")] workers: Rc<RefCell<Worker>>,
-    #[cfg(feature = "ui-debug")] text_size: i32,
+    workers: Rc<RefCell<Worker>>,
+    options: &window::Options,
 ) {
-    let fake = Rc::new(RefCell::new(fake));
     let weak = ui.as_weak();
     let links = actions.clone();
     ui.global::<State>().on_open_link(move |url| {
@@ -462,19 +461,21 @@ pub fn install(
             if let Some(ui) = weak.upgrade() {
                 ui.global::<State>()
                     .set_link_feedback(format!("Preview opened: {url}").into());
-                ui.global::<State>().set_last_opened_link(url);
+                ui.global::<ExtensionState>().set_last_opened_link(url);
             }
         });
     });
     #[cfg(feature = "ui-debug")]
-    automation::install_reset(ui, &actions, fake.clone(), workers, text_size);
+    automation::install_reset(ui, &actions, workers, options);
+    #[cfg(not(feature = "ui-debug"))]
+    let _ = (workers, options);
     let weak = ui.as_weak();
-    ui.on_demo_event(move |kind| {
+    ui.global::<ExtensionState>().on_demo_event(move |kind| {
         let weak = weak.clone();
         let fake = fake.clone();
         actions.push(move |d| {
             if let Some(ui) = weak.upgrade() {
-                scenario(&ui, d, &fake.borrow(), kind);
+                scenario(&ui, d, &fake, kind);
             }
         });
     });
@@ -527,8 +528,8 @@ fn fixture(
         draft: Draft {
             reply: None,
             text: d.state.composer.clone(),
-            cursor: ui.get_editor_caret() as usize,
-            anchor: ui.get_editor_anchor() as usize,
+            cursor: ui.global::<State>().get_editor_caret() as usize,
+            anchor: ui.global::<State>().get_editor_anchor() as usize,
             updated: line::engine::now_ms(),
         },
     });
@@ -543,7 +544,7 @@ fn fixture(
         kind: PageKind::Recent,
     });
     d.render(ui);
-    ui.invoke_show_history(0., false);
+    ui.global::<State>().invoke_show_history(0., false);
 }
 
 pub(crate) fn stage(
@@ -553,7 +554,7 @@ pub(crate) fn stage(
     scene: &str,
     snapshot_profile: bool,
 ) {
-    ui.set_show_conversation(
+    ui.global::<State>().set_show_conversation(
         scene != "chats" && scene != "signed-out" && !scene.starts_with("friends"),
     );
     if scene == "settings" {
@@ -568,7 +569,7 @@ pub(crate) fn stage(
         ui.global::<State>().invoke_reply(id.into());
     }
     if scene == "friends" {
-        ui.invoke_browse(1);
+        ui.global::<State>().invoke_browse(1);
     }
     if matches!(
         scene,
@@ -584,10 +585,10 @@ pub(crate) fn stage(
         });
     }
     if scene.starts_with("members") || scene.starts_with("member-profile") {
-        ui.invoke_open_members();
+        ui.global::<State>().invoke_open_members();
     }
     if snapshot_profile || scene == "member-profile" {
-        ui.invoke_browse(1);
+        ui.global::<State>().invoke_browse(1);
     }
     if scene.starts_with("message-selected")
         && let Some(key) = desktop.update(|d| d.state.rows().first().map(|m| m.key))
@@ -618,8 +619,8 @@ pub(crate) fn stage(
                 );
             }
         });
-        ui.set_draft("See you soon! 🐈".into());
-        ui.invoke_send();
+        ui.global::<State>().set_draft("See you soon! 🐈".into());
+        ui.global::<State>().invoke_send();
     }
 }
 
@@ -668,17 +669,14 @@ pub(crate) fn worker(fake: FakeBackend, text_size: i32) -> Worker {
     worker
 }
 
-pub(crate) fn prepare(ui: &AppWindow, dark: bool) {
-    ui.set_demo(true);
-    ui.global::<State>()
+pub(crate) fn prepare(ui: &AppWindow) {
+    ui.global::<ExtensionState>().set_demo(true);
+    ui.global::<ExtensionState>()
         .set_title_override("LINE (preview · F12: scenarios)".into());
-    if dark {
-        ui.invoke_preview_dark(true);
-    }
 }
 pub(crate) fn profile(ui: &AppWindow, scene: &str, snapshot_profile: bool) {
     if snapshot_profile || scene == "member-profile" {
-        ui.invoke_open_profile("alice".into());
+        ui.global::<State>().invoke_open_profile("alice".into());
     }
 }
 

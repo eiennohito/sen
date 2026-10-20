@@ -43,7 +43,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
     d.state.gaps.clear();
     d.render(ui);
     ui.show().unwrap();
-    ui.set_show_conversation(true);
+    ui.global::<State>().set_show_conversation(true);
     let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(980, 720);
     let mut draw = || {
         window.request_redraw();
@@ -143,7 +143,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
         d.state.members.clear();
         if kind == "friends" {
             d.state.friends = contacts.clone();
-            ui.set_section(1);
+            ui.global::<State>().set_section(1);
             d.state.panel = Panel::Friends;
         } else {
             d.state.members = contacts

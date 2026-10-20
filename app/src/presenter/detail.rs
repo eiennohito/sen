@@ -79,15 +79,16 @@ impl Presenter {
             };
             let status = f.map(|f| f.status.as_str()).unwrap_or("");
             let friend = kind == 0 && state.profile_friend(id);
-            ui.set_profile_id(id.into());
-            ui.set_profile_name(name.into());
-            ui.set_profile_status(status.into());
+            ui.global::<State>().set_profile_id(id.into());
+            ui.global::<State>().set_profile_name(name.into());
+            ui.global::<State>().set_profile_status(status.into());
             g.set_profile_initial(name_initial(name));
             g.set_profile_own(own);
             g.set_profile_friend(friend);
             g.set_profile_addable(kind == 0 && state.profile_addable(id));
-            ui.set_profile_available(kind == 0 && state.profile_available(id));
-            ui.set_profile_group(kind != 0);
+            ui.global::<State>()
+                .set_profile_available(kind == 0 && state.profile_available(id));
+            ui.global::<State>().set_profile_group(kind != 0);
             g.set_profile_original(
                 f.and_then(|f| {
                     let original = f.profile.original_name.as_deref()?;
@@ -113,7 +114,7 @@ impl Presenter {
             g.set_profile_name_runs(rich_content::runs(name, &[]));
             g.set_profile_status_runs(rich_content::runs(status, &[]));
             let avatar = profile_avatar(state, id);
-            ui.set_profile_avatar(
+            ui.global::<State>().set_profile_avatar(
                 avatar
                     .as_ref()
                     .and_then(|a| self.images.get(&a.key()))

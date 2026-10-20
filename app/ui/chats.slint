@@ -11,8 +11,6 @@ import { SearchField } from "search-field.slint";
 
 export component Chats inherits Rectangle {
     property <[{kind: ChatCategory, label: string}]> categories: [{kind: ChatCategory.all, label: "All"}, {kind: ChatCategory.friends, label: "Friends"}, {kind: ChatCategory.groups, label: "Groups"}];
-    property <int> demo-reset: State.demo-reset-generation;
-    changed demo-reset => { reveal-settle.stop(); root.reveal-y = 0px; chips-focus.cursor = 0; chat-list.jump(0px); }
     visible: State.section == 0;
     out property <bool> has-focus: search.contains-focus || chips-focus.has-focus || list-focus.has-focus;
     out property <length> viewport-height: chat-list.visible-height;
@@ -48,7 +46,7 @@ export component Chats inherits Rectangle {
                     height: 42px;
                     Text { text: "Chats"; color: Tokens.text; font-size: Tokens.heading; font-weight: 800; vertical-alignment: center; }
                     Text { width: State.narrow ? Tokens.small * 6.5 : 0px; horizontal-stretch: 0; text: State.narrow && State.retrying-connection && !State.connection-failed ? "Connecting…" : ""; color: Tokens.secondary; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
-                    new-chat-button := IconButton { label: "New chat"; focus-description: "Focused"; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { chips-focus.focus(); } else if State.narrow && State.connection-actions-enabled { State.focus-connection-first(); } else { list-focus.focus(); } return accept; } reject } icon: @image-url("../assets/icons/new-chat.svg"); activated => { State.open-new-chat(); } }
+                    new-chat-button := IconButton { label: "New chat"; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { chips-focus.focus(); } else if State.narrow && State.connection-actions-enabled { State.focus-connection-first(); } else { list-focus.focus(); } return accept; } reject } icon: @image-url("../assets/icons/new-chat.svg"); activated => { State.open-new-chat(); } }
                 }
                 HorizontalLayout {
                     search := SearchField {
@@ -78,7 +76,7 @@ export component Chats inherits Rectangle {
                 chips-focus := FocusScope {
                     property <int> cursor: State.category == ChatCategory.all ? 0 : State.category == ChatCategory.friends ? 1 : 2;
                     accessible-role: button; accessible-label: root.categories[self.cursor].label;
-                    accessible-description: self.has-focus ? "Focused filter" : "";
+
                     key-pressed(event) => {
                         if State.ime-active { return reject; }
                         if event.text == Key.Tab { if event.modifiers.shift { search.focus-last(); } else { new-chat-button.focus-button(); } return accept; }
@@ -103,7 +101,7 @@ export component Chats inherits Rectangle {
                 if State.chat-list-error != "": Text { text: State.chat-list-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
                 list-focus := FocusScope {
                     accessible-role: list; accessible-label: "Conversations";
-                    accessible-description: self.has-focus ? "Focused conversations" : "";
+
                     key-pressed(event) => {
                         if State.browser-key(event) == accept { return accept; }
                         if State.ime-active { return reject; }

@@ -1,5 +1,49 @@
 use crate::*;
 
+#[derive(Clone)]
+pub(crate) struct Options {
+    pub launch: startup::Launch,
+    pub warning: slint::SharedString,
+    pub color_scheme: slint::language::ColorScheme,
+    #[cfg(feature = "demo")]
+    pub fake: Option<FakeBackend>,
+}
+
+pub(crate) fn install_window(
+    d: &mut Desktop,
+    runtime: Runtime,
+    workers: &Rc<RefCell<Worker>>,
+    options: &Options,
+) -> Result<AppWindow, slint::PlatformError> {
+    let ui = create_app_window()?;
+    let launch = &options.launch;
+    ui.window().set_size(slint::LogicalSize::new(
+        launch.size.0 as f32,
+        launch.size.1 as f32,
+    ));
+    install_events(&ui, !launch.headless && !launch.automation);
+    ui.global::<State>().set_text_size(launch.text_size);
+    ui.global::<State>()
+        .set_desktop_warning(options.warning.clone());
+    ui.global::<Palette>()
+        .set_color_scheme(options.color_scheme);
+    d.presenter.install(&ui);
+    callbacks::install(&ui, runtime.clone());
+    #[cfg(feature = "demo")]
+    {
+        ui.global::<ExtensionState>()
+            .set_automation_background(launch.automation);
+        if let Some(fake) = &options.fake {
+            d.destination = dev::demo::destination();
+            dev::demo::prepare(&ui);
+            dev::demo::install(&ui, runtime, fake.clone(), workers.clone(), options);
+        }
+    }
+    #[cfg(not(feature = "demo"))]
+    let _ = workers;
+    Ok(ui)
+}
+
 pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
     ui.global::<State>()
@@ -46,57 +90,107 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         .on_has_text(|text| !text.trim().is_empty());
     focus::install(&ui);
     #[cfg(feature = "demo")]
-    dev::install_window(&ui);
-    macro_rules! bridge {
-        ($on:ident, $invoke:ident $(, $arg:ident)*) => {{
-            let weak = ui.as_weak();
-            ui.global::<State>().$on(move |$($arg),*| {
-                if let Some(ui) = weak.upgrade() { ui.$invoke($($arg),*); }
-            });
-        }};
-    }
-    bridge!(on_open_members, invoke_open_members);
-    bridge!(on_filter_members, invoke_filter_members);
-    bridge!(on_back_to_members, invoke_back_to_members);
-    bridge!(on_open_member, invoke_open_member, id);
-    ui.on_quit(|| {
+    dev::install_focus(&ui);
+    let weak = ui.as_weak();
+    ui.global::<State>().on_back_to_members(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_back_to_members();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_history_jump(move |y| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_history_jump(y);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_history_scroll(move |delta| {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_history_scroll(delta);
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>().on_reset_viewer(move || {
+        if let Some(ui) = weak.upgrade() {
+            ui.invoke_reset_viewer();
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<State>()
+        .on_restore_editor(move |anchor, caret| {
+            if let Some(ui) = weak.upgrade() {
+                ui.invoke_restore_editor(anchor, caret);
+            }
+        });
+    ui.global::<State>().on_quit(|| {
         let _ = slint::quit_event_loop();
     });
-    bridge!(on_close_settings, invoke_close_settings);
-    bridge!(on_quit, invoke_quit);
-    bridge!(on_restore_editor, invoke_restore_editor, anchor, caret);
-    bridge!(on_retry_message, invoke_retry_message, id);
-    bridge!(on_resolve_recovery, invoke_resolve_recovery, action);
-
-    bridge!(on_filter_category, invoke_filter_category);
-    bridge!(on_switch_chat, invoke_switch_chat, delta);
-    bridge!(on_close_profile, invoke_close_profile);
-    bridge!(on_show_viewer, invoke_show_viewer, key);
-    bridge!(on_close_viewer, invoke_close_viewer);
-    bridge!(on_account_ready, invoke_account_ready);
-    bridge!(on_close_sign_in, invoke_close_sign_in);
-    bridge!(on_open_sign_in, invoke_open_sign_in);
-    bridge!(on_show_history, invoke_show_history, y, latest);
-    bridge!(on_latest, invoke_latest);
-    bridge!(on_reset_viewer, invoke_reset_viewer);
-    bridge!(on_history_scroll, invoke_history_scroll, delta);
-    bridge!(on_history_jump, invoke_history_jump, y);
-    bridge!(on_recover_message, invoke_recover_message, arg0);
-    bridge!(on_settings_changed, invoke_settings_changed);
-    bridge!(on_send, invoke_send);
-    bridge!(on_more, invoke_more);
-    bridge!(on_retry_image, invoke_retry_image, key);
-    bridge!(on_draft_edited, invoke_draft_edited);
-    bridge!(on_search_changed, invoke_search_changed, arg0);
-    bridge!(on_select_chat, invoke_select_chat, arg0);
-    bridge!(on_cancel_sign_in, invoke_cancel_sign_in);
-    bridge!(on_start_sign_in, invoke_start_sign_in);
-    bridge!(on_photo_closed, invoke_photo_closed);
-    bridge!(on_open_photo, invoke_open_photo, arg0);
-    bridge!(on_start_friend_chat, invoke_start_friend_chat);
-    bridge!(on_open_profile, invoke_open_profile, arg0);
-    bridge!(on_filter_friends, invoke_filter_friends);
-    bridge!(on_refresh_friends, invoke_refresh_friends);
-    bridge!(on_browse, invoke_browse, arg0);
     Ok(ui)
+}
+
+pub(crate) fn install_events(ui: &AppWindow, native_events: bool) {
+    if native_events {
+        use slint::winit_030::{
+            EventResult, WinitWindowAccessor,
+            winit::event::{Ime, WindowEvent},
+        };
+        let weak = ui.as_weak();
+        let drops = Rc::new(RefCell::new(Vec::<std::path::PathBuf>::new()));
+        let drop_timer = slint::Timer::default();
+        ui.window().on_winit_window_event(move |_, event| {
+            if let Some(ui) = weak.upgrade() {
+                match event {
+                    WindowEvent::DroppedFile(path) => {
+                        if ui.global::<State>().get_show_conversation()
+                            && !ui.global::<State>().get_modal_open()
+                        {
+                            drops.borrow_mut().push(path.clone());
+                            let drops = drops.clone();
+                            let weak = ui.as_weak();
+                            drop_timer.start(
+                                slint::TimerMode::SingleShot,
+                                std::time::Duration::from_millis(80),
+                                move || {
+                                    let uris = std::mem::take(&mut *drops.borrow_mut())
+                                        .iter()
+                                        .filter_map(|path| url::Url::from_file_path(path).ok())
+                                        .map(|uri| uri.to_string())
+                                        .collect::<Vec<_>>()
+                                        .join("\n");
+                                    if let Some(ui) = weak.upgrade() {
+                                        ui.global::<State>().invoke_drop_attachment(uris.into());
+                                    }
+                                },
+                            );
+                        }
+                    }
+                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
+                        ui.global::<State>().set_device_scale(*scale_factor as f32);
+                    }
+                    WindowEvent::Focused(active) => ui.global::<State>().set_window_active(*active),
+                    WindowEvent::Ime(Ime::Preedit(text, _)) => {
+                        ui.global::<State>().set_ime_active(!text.is_empty())
+                    }
+                    WindowEvent::Ime(Ime::Commit(_)) | WindowEvent::Ime(Ime::Disabled) => {
+                        ui.global::<State>().set_ime_active(false)
+                    }
+                    _ => {}
+                }
+            }
+            EventResult::Propagate
+        });
+    }
+    let weak = ui.as_weak();
+    ui.window().on_close_requested(move || {
+        if let Some(ui) = weak.upgrade()
+            && ui.global::<State>().get_background_mode()
+            && ui.global::<State>().get_tray_available()
+        {
+            let _ = ui.hide();
+            slint::CloseRequestResponse::KeepWindowShown
+        } else {
+            let _ = slint::quit_event_loop();
+            slint::CloseRequestResponse::HideWindow
+        }
+    });
 }

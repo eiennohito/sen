@@ -11,11 +11,12 @@ test = false
 doctest = false
 
 [features]
+demo = []
 testing = []
 ui-debug = ["slint/mcp"]
 
 [dependencies]
-slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18"] }
+slint = { version = "=1.18.1", default-features = false, features = ["std", "compat-1-18", "backend-winit", "renderer-software"] }
 
 [build-dependencies]
 slint-build = "=1.18.1"

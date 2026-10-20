@@ -13,6 +13,12 @@ The UI build script tracks that directory and `app/assets/`, including additions
 slint-build also tracks imported files and embedded resources. Keep the small
 Slint test in `app/src/tests/rich_flow.rs` with its Rust tests.
 
+Both builds compile `app/ui/app.slint`. The `@demo` library selects the empty
+extension in `app/ui/product` or the demo extension in `app/ui/dev`; no source
+is generated or rewritten before Slint compilation. The workspace Slint LSP
+configuration selects `app/ui/dev` for diagnostics and preview. Other editors
+should map the `demo` library to that directory too.
+
 For MCP iteration, build once and pass that binary explicitly:
 
 ```sh

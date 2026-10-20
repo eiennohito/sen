@@ -27,7 +27,7 @@ component HistoryPill inherits Rectangle {
     if root.latest && State.new-count > 0: Rectangle { x: 20px; y: -4px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: "" + State.new-count; font-size: Tokens.small; font-weight: 600; color: Tokens.on-accent; horizontal-alignment: center; vertical-alignment: center; } }
     focus := FocusScope {
         enabled: root.enabled; accessible-role: button; accessible-label: root.label;
-        accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
+
         accessible-action-default => { root.activated(); }
         key-pressed(event) => {
             if State.ime-active { return reject; }
@@ -45,8 +45,6 @@ export component Conversation inherits Rectangle {
     property <int> window-sub: State.window-sub;
     changed window-sub => { root.loading-delayed = false; loading-timer.restart(); }
     loading-timer := Timer { interval: 300ms; running: State.window-loading && !root.loading-delayed; triggered => { root.loading-delayed = true; } }
-    property <int> demo-reset: State.demo-reset-generation;
-    changed demo-reset => { more-menu.close(); }
     property <bool> latest-visible: !State.following && State.has-chat;
     property <string> latest-label: State.history-needs-refresh ? "Latest · updates available" : State.new-count > 0 ? "Latest · " + State.new-count + " new" : "Latest";
 
@@ -78,7 +76,7 @@ export component Conversation inherits Rectangle {
                     }
                     HorizontalLayout {
                         y: 12px; height: 32px; padding-left: 16px; padding-right: 16px; spacing: 8px;
-                        back-button := IconButton { visible: State.narrow; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Back"; focus-description: "Focused"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } }
+                        back-button := IconButton { visible: State.narrow; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } }
                             if State.unread-conversations > 0: Rectangle { x: 20px; y: -4px; width: State.unread-stale ? 8px : 20px; height: State.unread-stale ? 8px : 20px; border-radius: self.height / 2; background: Tokens.accent;
                                 if !State.unread-stale: Text { text: State.unread-conversations > 999 ? "999+" : "" + State.unread-conversations; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                             }
@@ -95,15 +93,15 @@ export component Conversation inherits Rectangle {
                                 }
                             }
                             title-focus := FocusScope {
-                                accessible-role: button; accessible-label: State.chat-title; accessible-description: self.has-focus ? "Focused" : "";
+                                accessible-role: button; accessible-label: State.chat-title;
                                 accessible-action-default => { State.open-profile(State.chat-id); }
                                 key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-profile(State.chat-id); return accept; } reject }
                                 Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; background: transparent; border-radius: 12px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
                             }
                             title-touch := TouchArea { clicked => { title-focus.focus(); State.open-profile(State.chat-id); } }
                         }
-                        members-button := IconButton { visible: State.chat-group; enabled: self.visible; width: self.visible ? 32px : 0px; label: State.member-count >= 0 ? "Members, " + State.member-count : "Members"; focus-description: "Focused"; icon: @image-url("../assets/icons/members.svg"); activated => { State.open-members(); } }
-                        more-button := IconButton { label: "More"; focus-description: "Focused"; icon: @image-url("../assets/icons/more.svg"); activated => { more-menu.show(); } }
+                        members-button := IconButton { visible: State.chat-group; enabled: self.visible; width: self.visible ? 32px : 0px; label: State.member-count >= 0 ? "Members, " + State.member-count : "Members"; icon: @image-url("../assets/icons/members.svg"); activated => { State.open-members(); } }
+                        more-button := IconButton { label: "More"; icon: @image-url("../assets/icons/more.svg"); activated => { more-menu.show(); } }
                     }
                 }
                 more-menu := PopupWindow {
@@ -118,7 +116,7 @@ export component Conversation inherits Rectangle {
               vertical-stretch: 1;
               history-focus := FocusScope {
                 accessible-role: list; accessible-label: "Message history";
-                accessible-description: self.has-focus ? "Focused history" : "Scrollable message history";
+                accessible-description: "Scrollable message history";
                 key-pressed(event) => {
                     if State.ime-active { return reject; }
                     if State.browser-key(event) == accept { return accept; }
@@ -211,7 +209,6 @@ export component Conversation inherits Rectangle {
               }
               if State.link-feedback != "": Text {
                 y: parent.height - self.preferred-height; text: State.link-feedback;
-                accessible-label: "Recorded link activation"; accessible-value: State.last-opened-link;
                 font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap;
               }
             }
@@ -222,7 +219,7 @@ composer-surface := Composer { }
                 Text { text: State.storage-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
             }
         }
-    
+
     public function focus-after-header() { if State.connection-actions-enabled { State.focus-connection-first(); } else { history-focus.focus(); } }
     public function focus-first() { if State.narrow { back-button.focus-button(); } else { title-focus.focus(); } }
     public function focus-last() { if State.has-chat { composer-surface.focus-last(); } else { history-focus.focus(); } }

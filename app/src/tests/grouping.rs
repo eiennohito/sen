@@ -100,7 +100,7 @@ fn own_member_uses_account_profile_and_keeps_you_note() {
             is_self: true,
         });
         presenter.present(&ui, &state, "", ChatCategory::All);
-        let member = ui.get_members().row_data(0).unwrap();
+        let member = ui.global::<State>().get_members().row_data(0).unwrap();
         assert_eq!(member.name, "Account name");
         assert_eq!(member.status, "Account status");
         assert!(member.is_self, "member row must keep its You note");

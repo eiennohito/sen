@@ -17,17 +17,17 @@ pub(crate) fn save_photo(
     source: Option<std::sync::Arc<Vec<u8>>>,
 ) {
     if ui.global::<State>().get_viewer_saving()
-        || ui.get_viewer_loading()
-        || !ui.get_viewer_error().is_empty()
+        || ui.global::<State>().get_viewer_loading()
+        || !ui.global::<State>().get_viewer_error().is_empty()
     {
         return;
     }
-    let Some(pixels) = ui.get_viewer_image().to_rgba8() else {
+    let Some(pixels) = ui.global::<State>().get_viewer_image().to_rgba8() else {
         return;
     };
     ui.global::<State>().set_viewer_saving(true);
     ui.global::<State>().set_viewer_save_status("".into());
-    let key = ui.get_viewer_key();
+    let key = ui.global::<State>().get_viewer_key();
     let weak = ui.as_weak();
     std::thread::spawn(move || {
         let result = export_photo(
@@ -37,7 +37,9 @@ pub(crate) fn save_photo(
         );
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ui.global::<State>().set_viewer_saving(false);
-            if !ui.get_viewer_open() || ui.get_viewer_key() != key {
+            if !ui.global::<State>().get_viewer_open()
+                || ui.global::<State>().get_viewer_key() != key
+            {
                 return;
             }
             ui.global::<State>().set_viewer_save_status(
@@ -206,14 +208,16 @@ mod tests {
         std::thread::spawn(|| {
             let _platform = crate::snapshot::install().unwrap();
             let ui = crate::create_app_window().unwrap();
-            ui.set_viewer_image(slint::Image::from_rgba8(
-                SharedPixelBuffer::<Rgba8Pixel>::new(1, 1),
-            ));
-            ui.set_viewer_loading(true);
+            ui.global::<State>()
+                .set_viewer_image(slint::Image::from_rgba8(
+                    SharedPixelBuffer::<Rgba8Pixel>::new(1, 1),
+                ));
+            ui.global::<State>().set_viewer_loading(true);
             save_photo(&ui, crate::dev::demo::destination(), None);
             assert!(!ui.global::<State>().get_viewer_saving());
-            ui.set_viewer_loading(false);
-            ui.set_viewer_error("Original unavailable".into());
+            ui.global::<State>().set_viewer_loading(false);
+            ui.global::<State>()
+                .set_viewer_error("Original unavailable".into());
             save_photo(&ui, crate::dev::demo::destination(), None);
             assert!(!ui.global::<State>().get_viewer_saving());
         })

@@ -1,4 +1,4 @@
-import { FeedbackRect, ReactionRow } from "types.slint";
+import { ReactionRow } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Avatar } from "avatar.slint";
@@ -14,7 +14,6 @@ component ReactionMark inherits Rectangle {
 export component ReactionChip inherits Rectangle {
     in property <ReactionRow> reaction;
     in property <[ReactionRow]> groups;
-    property <FeedbackRect> popup-rect;
     height: 28px; width: content.preferred-width; horizontal-stretch: 0;
     border-radius: 14px; background: root.reaction.own ? Tokens.selection : Tokens.bg;
     border-width: 1px; border-color: root.reaction.own ? Tokens.accent : Tokens.divider;
@@ -26,13 +25,7 @@ export component ReactionChip inherits Rectangle {
     chip-focus := FocusScope {
         accessible-role: button; accessible-label: root.reaction.label + ", " + root.reaction.count + " reactions";
         accessible-item-selected: root.reaction.own;
-        accessible-description: self.has-focus ? "Focused reaction" : "";
-        // MCP reports popup contents in popup-local coordinates. Expose the
-        // popup's actual placement in window coordinates for offline checks.
-        if State.demo-reset-enabled: popup-bounds := Rectangle {
-            x: root.popup-rect.x; y: root.popup-rect.y; width: root.popup-rect.width; height: root.popup-rect.height;
-            background: transparent;
-        }
+
         accessible-action-default => { self.focus(); reactors.show(); }
         key-pressed(event) => { if event.text == Key.Return || event.text == " " { reactors.show(); return accept; } reject }
         Rectangle { background: transparent; border-radius: 14px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent; }
@@ -40,9 +33,6 @@ export component ReactionChip inherits Rectangle {
     TouchArea { mouse-cursor: pointer; clicked => { chip-focus.focus(); reactors.show(); } }
     reactors := PopupWindow {
         close-policy: close-on-click-outside;
-        property <FeedbackRect> bounds: { x: self.x, y: self.y, width: self.width, height: self.height };
-        changed bounds => { root.popup-rect = self.bounds; }
-        init => { root.popup-rect = self.bounds; }
         x: max(-root.absolute-position.x, min(0px, State.window-width - root.absolute-position.x - self.width));
         y: max(-root.absolute-position.y, min(root.height, State.window-height - root.absolute-position.y - self.height));
         width: min(State.window-width, max(120px, actors.preferred-width + 12px));

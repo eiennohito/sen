@@ -38,7 +38,7 @@ pub(crate) fn install(ui: &AppWindow) {
                     true,
                     FocusReason::PopupActivation,
                 );
-            } else if ui.get_detail_open() {
+            } else if ui.global::<State>().get_detail_open() {
                 ui.invoke_focus_profile_close();
             } else {
                 ui.invoke_focus_composer();
@@ -52,26 +52,28 @@ pub(crate) fn install_demo(ui: &AppWindow) {
     let saved = Rc::new(RefCell::new(None));
     let record = saved.clone();
     let weak = ui.as_weak();
-    ui.global::<State>().on_remember_demo_focus(move || {
-        if let Some(ui) = weak.upgrade() {
-            *record.borrow_mut() = Some(
-                WindowInner::from_pub(ui.window())
-                    .focus_item
-                    .borrow()
-                    .clone(),
-            );
-        }
-    });
+    ui.global::<ExtensionState>()
+        .on_remember_demo_focus(move || {
+            if let Some(ui) = weak.upgrade() {
+                *record.borrow_mut() = Some(
+                    WindowInner::from_pub(ui.window())
+                        .focus_item
+                        .borrow()
+                        .clone(),
+                );
+            }
+        });
     let weak = ui.as_weak();
-    ui.global::<State>().on_restore_demo_focus(move || {
-        if let Some(ui) = weak.upgrade()
-            && let Some(item) = saved.borrow_mut().take().and_then(|weak| weak.upgrade())
-        {
-            WindowInner::from_pub(ui.window()).set_focus_item(
-                &item,
-                true,
-                FocusReason::PopupActivation,
-            );
-        }
-    });
+    ui.global::<ExtensionState>()
+        .on_restore_demo_focus(move || {
+            if let Some(ui) = weak.upgrade()
+                && let Some(item) = saved.borrow_mut().take().and_then(|weak| weak.upgrade())
+            {
+                WindowInner::from_pub(ui.window()).set_focus_item(
+                    &item,
+                    true,
+                    FocusReason::PopupActivation,
+                );
+            }
+        });
 }

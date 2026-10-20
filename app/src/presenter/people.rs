@@ -8,12 +8,12 @@ impl Presenter {
             .filter(|f| {
                 text::friend_name(f)
                     .to_lowercase()
-                    .contains(&ui.get_friend_query().to_lowercase())
+                    .contains(&ui.global::<State>().get_friend_query().to_lowercase())
             })
             .map(|f| {
                 if let Some(cached) = self.rendered_friends.get(&f.id)
                     && cached.friend == *f
-                    && cached.size == ui.get_text_size()
+                    && cached.size == ui.global::<State>().get_text_size()
                 {
                     return cached.row.clone();
                 }
@@ -33,7 +33,7 @@ impl Presenter {
                         &f.status,
                         &metadata,
                         &self.images,
-                        ui.get_text_size(),
+                        ui.global::<State>().get_text_size(),
                     ),
                     group: f.group,
                     avatar_key: f
@@ -54,7 +54,7 @@ impl Presenter {
                     f.id.clone(),
                     CachedFriend {
                         friend: f.clone(),
-                        size: ui.get_text_size(),
+                        size: ui.global::<State>().get_text_size(),
                         row: row.clone(),
                         assets,
                     },
@@ -64,15 +64,21 @@ impl Presenter {
             .collect::<Vec<_>>();
         let mut grouped = Vec::new();
         for (group, label, expanded) in [
-            (true, "Groups", ui.get_groups_expanded()),
-            (false, "Friends", ui.get_friends_expanded()),
+            (true, "Groups", ui.global::<State>().get_groups_expanded()),
+            (
+                false,
+                "Friends",
+                ui.global::<State>().get_friends_expanded(),
+            ),
         ] {
             let rows = friends
                 .iter()
                 .filter(|row| row.group == group)
                 .cloned()
                 .collect::<Vec<_>>();
-            if state.friends.is_empty() || (!ui.get_friend_query().is_empty() && rows.is_empty()) {
+            if state.friends.is_empty()
+                || (!ui.global::<State>().get_friend_query().is_empty() && rows.is_empty())
+            {
                 continue;
             }
             grouped.push(FriendRow {
@@ -105,7 +111,7 @@ impl Presenter {
                 (m, contact)
             })
             .filter(|(m, contact)| {
-                let query = ui.get_member_query().to_lowercase();
+                let query = ui.global::<State>().get_member_query().to_lowercase();
                 text::member_name(contact.name.as_deref())
                     .to_lowercase()
                     .contains(&query)

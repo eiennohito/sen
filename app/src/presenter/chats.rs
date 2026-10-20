@@ -35,7 +35,7 @@ impl Presenter {
                 draft: item.draft.clone(),
                 offline: state.connection != Connection::Online,
                 index,
-                text_size: ui.get_text_size(),
+                text_size: ui.global::<State>().get_text_size(),
             };
             if let Some((old, row)) = self.rendered_chats.get(id)
                 && *old == inputs
@@ -71,7 +71,7 @@ impl Presenter {
                     m.outgoing,
                     inputs.system_text.as_deref(),
                     &self.images,
-                    ui.get_text_size(),
+                    ui.global::<State>().get_text_size(),
                 );
             } else if item.activity_ms == 0 {
                 row.time = "New".into();
@@ -92,7 +92,7 @@ impl Presenter {
             .retain(|id, _| state.chats.contains_key(id));
     }
     pub(super) fn present_header(&mut self, ui: &AppWindow, state: &AppState) {
-        ui.set_selected_chat(
+        ui.global::<State>().set_selected_chat(
             state
                 .selected
                 .as_ref()
@@ -108,7 +108,8 @@ impl Presenter {
                 .unwrap_or_else(|| contact.map(text::friend_name).unwrap_or("Conversation"));
             let group = chat.is_some_and(|c| c.is_group);
             let avatar = chat_avatar(state, id);
-            ui.set_chat_title(single_line(title).into());
+            ui.global::<State>()
+                .set_chat_title(single_line(title).into());
             ui.global::<State>().set_chat_id(id.0.clone().into());
             ui.global::<State>().set_chat_initial(name_initial(title));
             ui.global::<State>().set_chat_avatar(
@@ -117,10 +118,10 @@ impl Presenter {
                     .cloned()
                     .unwrap_or_default(),
             );
-            ui.set_chat_group(group);
+            ui.global::<State>().set_chat_group(group);
             let count = chat.and_then(|c| c.member_count).unwrap_or(0);
-            ui.set_member_count(count as i32);
-            ui.set_chat_subtitle(
+            ui.global::<State>().set_member_count(count as i32);
+            ui.global::<State>().set_chat_subtitle(
                 if group {
                     format!("{count} members")
                 } else {

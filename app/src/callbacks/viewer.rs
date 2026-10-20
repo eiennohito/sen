@@ -1,26 +1,26 @@
 use crate::*;
 
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
-    callback!(ui, actions, on_photo_closed, |_ui, d| {
+    global_callback!(ui, actions, on_photo_closed, |_ui, d| {
         d.viewer_asset = None;
         d.viewer_source = None;
     });
     global_callback!(ui, actions, on_profile_photo, |ui, d| {
         d.open_profile_photo(&ui);
     });
-    callback!(ui, actions, on_open_photo, |ui, d, key| {
+    global_callback!(ui, actions, on_open_photo, |ui, d, key| {
         d.open_photo(&ui, key.as_str());
     });
     global_callback!(ui, actions, on_viewer_step, |ui, d, direction| {
         let photos = d.photos();
         if let Some(i) = photos
             .iter()
-            .position(|k| k == ui.get_viewer_key().as_str())
+            .position(|k| k == ui.global::<State>().get_viewer_key().as_str())
         {
             let next = i as i32 + direction.signum();
             if next >= 0 && (next as usize) < photos.len() {
                 let key = &photos[next as usize];
-                ui.set_viewer_key(key.into());
+                ui.global::<State>().set_viewer_key(key.into());
                 d.open_photo(&ui, key);
             }
         }
