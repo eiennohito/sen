@@ -72,7 +72,11 @@ broken; break it once and see.
 When a check fails, decide which side is wrong against the spec (the
 issue, docs/visual-design.md), not against the check. A UI layout moved
 until a tightened geometry check passed put the message buttons over the
-previous bubble; screenshots, not the check, showed it.
+previous bubble; screenshots, not the check, showed it. Never loosen an
+existing assertion (an `assert` turned into a wait, a widened
+tolerance) without the behaviour change that justifies it; the same
+draft check was loosened twice by unrelated batches and passed 10/10
+strict both times.
 
 A whole-suite audit runs with the next deslop pass. Suite runtime is part
 of the budget: slow tests cost development speed.
