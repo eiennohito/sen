@@ -71,6 +71,7 @@ fn text_runs(text: &str, rows: &mut Vec<RichRun>) {
 pub(crate) mod flow;
 pub(crate) mod links;
 pub(crate) mod preview;
+pub(crate) mod selection;
 pub(crate) fn install(ui: &AppWindow) {
     ui.global::<ContentState>().on_rich_source(|rows| {
         rows.model_tracker().track_row_count_changes();
@@ -81,6 +82,26 @@ pub(crate) fn install(ui: &AppWindow) {
         ModelRc::new(rows)
     });
     let metrics = Rc::new(RefCell::new(flow::Measurements::default()));
+    let hit_metrics = metrics.clone();
+    let hit_ui = ui.as_weak();
+    ui.global::<ContentState>()
+        .on_rich_hit(move |rows, size, x, y, centered, width| {
+            selection::hit(&rows, x, y, centered, width, |text| {
+                measure(&hit_ui.unwrap(), &hit_metrics, text, size).0
+            })
+        });
+    let offset_metrics = metrics.clone();
+    let offset_ui = ui.as_weak();
+    ui.global::<ContentState>()
+        .on_rich_offset(move |text, size, chars| {
+            selection::offset(&text, chars, |prefix| {
+                measure(&offset_ui.unwrap(), &offset_metrics, prefix, size).0
+            })
+        });
+    ui.global::<ContentState>()
+        .on_rich_word(|source, rows, point| selection::word(&source, &rows, point));
+    ui.global::<ContentState>()
+        .on_rich_copy(|source, rows, selection| selection::copy(&source, &rows, selection));
     let preview_metrics = metrics.clone();
     let preview_weak = ui.as_weak();
     ui.global::<ContentState>()

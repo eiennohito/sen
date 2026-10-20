@@ -88,3 +88,4 @@ merge. "Branch" means the work exists but is not merged yet.
 - #34 HTTP 400 every 2–4 s: reconnects resync only on a revision gap, invalid per-chat refreshes are not re-enqueued, clean closes back off, and the log names the RPC method. Confirmed in the real app (log quiet).
 - #35 Sticker picker showed "No stickers": request and paging exactly as the extension; failures show in the picker. Confirmed in the real app.
 - #18 UI check `focus` 46 s → 11 s (95 → 14 s wide); all 16 groups ~80 s.
+- #69 Rich messages select dragged ranges across links, text, lines and LINE emoji without changing views. Double-click selects words; Ctrl+A/C, Escape and Copy selection work; copying preserves source newlines and emoji fallback text. Plain text and layout failure retain native selection.

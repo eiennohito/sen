@@ -1,5 +1,5 @@
 import { RecoveryKind, ComposerState, ContentState, ConversationState, DetailState, ShellState, ViewerState } from "globals.slint";
-import { Pressable, FocusRing, Button } from "button.slint";
+import { Pressable, FocusRing } from "button.slint";
 import { DeliveryState, HistoryRowKind, MessageRow, MessageKind, RunPosition } from "types.slint";
 import { ReactionChip, ReactionMark } from "reaction-chip.slint";
 import { ReplyQuote } from "reply-quote.slint";
@@ -8,7 +8,7 @@ import { Avatar } from "avatar.slint";
 import { DatePill } from "history-pill.slint";
 import { Tokens } from "tokens.slint";
 import { RichFlow } from "rich-flow.slint";
-enum MessageAction { react, select-text, copy-selection, copy-message }
+enum MessageAction { react, copy-selection, copy-message }
 component MessageMenu inherits FocusScope {
     focus-on-tab-navigation: false;
     callback history-key(KeyEvent) -> EventResult;
@@ -16,6 +16,9 @@ component MessageMenu inherits FocusScope {
     in property <MessageRow> message;
     in property <bool> text-actions;
     in property <bool> rich;
+    in property <bool> has-selection;
+    in-out property <string> context-url;
+    in-out property <string> selection-text;
     callback action(MessageAction);
     public function show(position: {x: length, y: length}) { menu.show(position); }
     menu := ContextMenuArea {
@@ -23,8 +26,9 @@ component MessageMenu inherits FocusScope {
         Menu {
             if root.message.can-react: MenuItem { title: "Reply"; activated => { ComposerState.reply(root.message.id); } }
             if root.message.can-react: MenuItem { title: "React"; activated => { root.action(MessageAction.react); } }
-            if root.text-actions && root.rich: MenuItem { title: "Select text"; activated => { root.action(MessageAction.select-text); } }
-            if root.text-actions && !root.rich: MenuItem { title: "Copy selection"; activated => { root.action(MessageAction.copy-selection); } }
+            if root.text-actions && (!root.rich || root.has-selection): MenuItem { title: "Copy selection"; activated => { if root.rich { ContentState.copy-text(root.selection-text); } else { root.action(MessageAction.copy-selection); } } }
+            if root.context-url != "": MenuItem { title: "Open link"; activated => { ContentState.open-link(root.context-url); } }
+            if root.context-url != "": MenuItem { title: "Copy link"; activated => { ContentState.copy-text(root.context-url); } }
             if root.text-actions: MenuItem { title: "Copy message"; activated => { root.action(MessageAction.copy-message); } }
             if root.text-actions && root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { ConversationState.recover-message(root.message.id); } }
             if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { ConversationState.recovery-id = root.message.id; ConversationState.recovery-kind = RecoveryKind.unsend; } }
@@ -71,12 +75,11 @@ export component Message inherits TouchArea {
     property <bool> shows-time: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last;
     property <length> bubble-x: message-content.x + message-column.x + message-bubble.x;
     property <length> bubble-bottom: message-content.y + message-column.y + message-bubble.y + message-bubble.height;
-    property <bool> selecting-rich: false;
     property <int> focused-chips;
     property <bool> photo-focused;
     property <bool> card-focused: false; property <bool> rich-fallback: false;
     property <float> rich-width;
-    property <bool> showing-rich: root.message.rich-runs.length > 0 && !root.selecting-rich && !root.rich-fallback;
+    property <bool> showing-rich: root.message.rich-runs.length > 0 && !root.rich-fallback;
     property <bool> system-item: root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn;
     property <length> anchor-top: root.origin-y + root.y + (root.system-item ? (root.message.day-label != "" ? 27px : 0px) + (root.message.id == ConversationState.unread-divider ? 31px : 0px) : message-content.y + message-column.y + message-bubble.y);
     property <length> anchor-height: max(1px, root.height - (root.anchor-top - root.origin-y - root.y));
@@ -142,7 +145,6 @@ export component Message inherits TouchArea {
                                 text-actions: false; rich: false;
                                 action(kind) => {
                                     if kind == MessageAction.react { reactions.show(); }
-                                    else if kind == MessageAction.select-text { root.selecting-rich = true; body.focus(); }
                                     else if kind == MessageAction.copy-selection { body.copy(); }
                                     else { ContentState.copy-text(root.message.body); }
                                 }
@@ -174,7 +176,7 @@ export component Message inherits TouchArea {
                                         }
                                     }
                                     text-body := MessageMenu {
-                                        message: root.message; text-actions: true; rich: false;
+                                        message: root.message; text-actions: true; rich: false; has-selection: rich-flow.selecting;
                                         action(kind) => { message-bubble.action(kind); }
                                         visible: root.message.kind != MessageKind.photo && !root.card && root.message.body != "" && (root.message.kind != MessageKind.sticker || root.message.image-key == "");
                                         height: self.visible ? body.preferred-height : 0px; preferred-width: body.preferred-width;
@@ -189,18 +191,18 @@ export component Message inherits TouchArea {
                                                 accessible-action-default => { self.focus(); }
                                                 key-pressed(event) => {
                                                     if ShellState.ime-active { return reject; }
+                                                    if rich-flow.key(event) == accept { return accept; }
                                                     return ConversationState.reading-key(event);
                                                 }
-                                            }
-                                            TouchArea {
-                                                clicked => { rich-focus.focus(); }
-                                                pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { text-body.show({ x: self.mouse-x, y: self.mouse-y }); } }
                                             }
                                             rich-flow := RichFlow {
                                                 text-color: root.body-color; runs: root.message.rich-runs; width: parent.width;
                                                 natural-width(width) => { root.rich-width = width; }
                                                 fallback(failed) => { root.rich-fallback = failed; }
-                                                select-text => { if !root.message.has-inline-emoji { root.selecting-rich = true; body.focus(); body.select-all(); } }
+                                                selectable: true; focused: rich-focus.has-focus;
+                                                focus-request => { rich-focus.focus(); }
+                                                context-request(x, y, url) => { text-body.context-url = url; text-body.selection-text = rich-flow.selected-text(); text-body.show({x: x, y: y}); }
+                                                changed selecting => { ConversationState.history-interacting = self.selecting; if self.selecting { ConversationState.following = false; ConversationState.history-scrolled(); } }
                                             }
                                         }
                                         body := TextInput {
@@ -219,7 +221,6 @@ export component Message inherits TouchArea {
                                             changed selecting => { ConversationState.history-interacting = self.selecting; if self.selecting { ConversationState.following = false; ConversationState.history-scrolled(); } }
                                         }
                                     }
-                                    if root.selecting-rich: Button { focus-on-tab-navigation: false; text: root.message.has-inline-emoji ? "Show emoji" : "Show message"; clicked => { root.selecting-rich = false; } }
                                     if root.card: HorizontalLayout {
                                         spacing: 12px; height: max(48px, card-title.preferred-height + card-meta.preferred-height + 4px);
                                         Rectangle { width: 40px; height: 40px; border-radius: 8px; background: Tokens.bg.with-alpha(0.6);

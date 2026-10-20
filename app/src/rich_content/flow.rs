@@ -62,6 +62,7 @@ fn slice(runs: &[RichRun], start: usize, end: usize) -> Vec<RichRun> {
         let next = offset + run.text.len();
         if start < next && offset < end {
             let mut part = run.clone();
+            part.source_start += start.saturating_sub(offset) as i32;
             part.text =
                 run.text[start.saturating_sub(offset)..(end - offset).min(run.text.len())].into();
             result.push(part);
@@ -125,7 +126,15 @@ pub(crate) fn layout(
         }
         candidate
     };
-    let source: Vec<_> = rows.iter().collect();
+    let mut offset = 0;
+    let source: Vec<_> = rows
+        .iter()
+        .map(|mut run| {
+            run.source_start = offset;
+            offset += run.text.len() as i32;
+            run
+        })
+        .collect();
     let mut groups: Vec<Vec<RichRun>> = Vec::new();
     let (mut natural_width, mut unwrapped) = (0.0_f32, 0.0_f32);
     for mut run in source {
@@ -151,6 +160,7 @@ pub(crate) fn layout(
     let mut y = 0.;
     let mut first_links = std::collections::HashSet::new();
     let mut finish = |line: &mut Vec<RichRun>| {
+        let empty_start = line.first().map_or(offset, |run| run.source_start);
         while let Some(first) = line.first_mut() {
             if first.emoji {
                 break;
@@ -159,6 +169,7 @@ pub(crate) fn layout(
             first.measured_width = (first.measured_width
                 - whitespace(&first.text[..first.text.len() - trimmed.len()]))
             .max(0.);
+            first.source_start += (first.text.len() - trimmed.len()) as i32;
             first.text = trimmed.into();
             if !first.text.is_empty() {
                 break;
@@ -180,6 +191,7 @@ pub(crate) fn layout(
         }
         if line.is_empty() {
             line.push(RichRun {
+                source_start: empty_start,
                 newline: true,
                 ..Default::default()
             });
@@ -214,6 +226,9 @@ pub(crate) fn layout(
     };
     for group in groups {
         if group[0].newline {
+            if line.is_empty() {
+                line.extend(group);
+            }
             if !finish(&mut line) {
                 return ModelRc::default();
             }
@@ -233,11 +248,24 @@ pub(crate) fn layout(
         let body: String = group.iter().map(|r| r.text.as_str()).collect();
         use unicode_segmentation::UnicodeSegmentation;
         let mut boundaries = Vec::new();
+        let mut offset = 0;
+        let emoji_spans: Vec<_> = group
+            .iter()
+            .filter_map(|run| {
+                let start = offset;
+                offset += run.text.len();
+                run.emoji.then_some(start..offset)
+            })
+            .collect();
         for (i, _) in body.grapheme_indices(true).skip(1) {
-            if fallback_break(
-                body[..i].chars().next_back().unwrap(),
-                body[i..].chars().next().unwrap(),
-            ) {
+            if !emoji_spans
+                .iter()
+                .any(|span| span.start < i && i < span.end)
+                && fallback_break(
+                    body[..i].chars().next_back().unwrap(),
+                    body[i..].chars().next().unwrap(),
+                )
+            {
                 boundaries.push(i);
             }
         }

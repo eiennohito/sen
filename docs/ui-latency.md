@@ -14,6 +14,7 @@ the trade. Numbers on Oct 20 in brackets.
 | 100 avatars arriving at once | ≤ 100 ms (51 ms) |
 | Steady-state frame, median | ≤ 4 ms (~2 ms) |
 | First frame of a scene (chats, photos, rich) | ≤ 16 ms (9–12 ms) |
+| Rich message drag, update + draw (10 lines) | ≤ 4 ms |
 | Cached image | visible on the first frame its row is shown |
 | Opening a 12 MP photo in the viewer | ≤ 150 ms (80 ms) |
 | Idle main-thread wakeups | ≤ 10 /s (5.5 chat list, 2.0 open chat) |
@@ -34,6 +35,11 @@ chat avatars. Startup means one initial presentation followed by a queued batch
 of 100 asset deltas; it excludes worker scheduling and network time. Individual
 asset and switch timings are medians of nine iterations. Switches populate a new
 500-row window. These are local measurements, not hardware-independent budgets.
+
+The rich-selection fixture reports cold, median and maximum pointer-move update
+plus drawing for 31 drag updates over ten lines, using a reused pixel buffer
+after the initial pointer-down frame. Prefix widths share the bounded layout
+measurement cache.
 
 | Measurement | Before | After |
 | --- | ---: | ---: |
