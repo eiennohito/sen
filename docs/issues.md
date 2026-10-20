@@ -12,7 +12,6 @@ merge. "Branch" means the work exists but is not merged yet.
 | 56 | Chat/friend/member/new-chat search should match across hiragana, katakana and romaji | user | feature: after the #17 global deslop pass (user: no new features before it). The deslop part comes first: four separate lowercase-`contains` matchers (callbacks/browser.rs, presenter/chats.rs, people.rs ×2, compose.rs) become one matcher, which then gets the Japanese normalisation. User: lowercase is not enough — search is unusable without it. Fold both sides: NFKC (full-width ↔ half-width ASCII and half-width katakana), katakana → hiragana, case fold, long-vowel/small-kana variants as needed; romaji ↔ kana as the last step |
 | 16 | Generated Slint Rust is large | user | product generated Rust 13.4 MB (measured from the ui crate's OUT_DIR after R4 part B; earlier 10.5 MB figure was a different measurement). Live-preview for dev is the user's call (#52) |
 | 64 | Memory usage (real account: RSS 218 MB = heap 111 MB + anon mmaps 48 MB + binary 31 MB + softbuffer 12 MB, 18 threads) | user | diagnosing with the offline demo and a counting allocator; suspects: every image resampled into 13 sizes and never freed (audit17-app H1), wasmi memory, malloc arenas |
-| 61 | Own avatar missing in the rail | user live test | the rail Avatar never got a picture; fix in progress |
 | 62 | Can't edit own profile (display name, status message) | user live test | feature, after #17 with #60. Read the extension's public main.js for the profile update calls; live edits change the user's real profile — needs the user's go |
 | 63 | Initial release | user | once this list is clean: the app leaves initial-development mode — from then on local data and settings need migrations/compatibility instead of "can be deleted" |
 | 60 | No way to log out | user | never implemented (docs/ux-acceptance.md WIN5/ATT4/OS12: "logout unavailable"). Needs: a Settings/account action with a confirmation dialog explaining drafts and cache (docs/ux-model.md), the server-side logout the Chrome extension performs (read its public main.js), deletion of the saved session and local encrypted state for that account, notification/badge withdrawal, back to the signed-out screen. Live testing logs out the user's real device slot — needs the user's go. Basic flow: first feature after #17 |
@@ -28,6 +27,8 @@ merge. "Branch" means the work exists but is not merged yet.
 | 33 | Restart restores the unread anchor and drafts, but not an arbitrary scroll position; docs/core-model.md promises the scroll anchor | test cleanup | decide: persist the reading anchor per chat, or correct the doc |
 
 ## Done (merged to main)
+
+- #61 Own avatar in the rail (picture with initial fallback, updated when the asset arrives).
 
 - #4 Unread count with no visible messages: confirmed correct in the real app.
 - #51 100% CPU: confirmed fine in the real app.
