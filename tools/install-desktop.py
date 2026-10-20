@@ -70,7 +70,8 @@ icon_value = str(icon.resolve()).replace("\\", "\\\\")
 launcher.write_text(f"""[Desktop Entry]
 Type=Application
 Name=閃
-Comment=Native messaging client
+GenericName=LINE Messenger
+Comment=Unofficial desktop client for LINE
 Exec={command}
 Icon={icon_value}
 Terminal=false
@@ -79,7 +80,7 @@ StartupWMClass={APP_ID}
 SingleMainWindow=true
 StartupNotify=true
 DBusActivatable=true
-Keywords=chat;messaging;
+Keywords=LINE;Sen;ライン;せん;chat;messenger;messaging;
 X-Sen-Managed=true
 """)
 launcher.chmod(0o644)
