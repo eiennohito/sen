@@ -1250,7 +1250,15 @@ def check_layers():
     assert is_focused(element("Friends and groups", "List")), "profile did not restore its list opener"
     click("Chats", "Button")
     demo_scenario("Photo preview")
-    click("Open photo", "Button")
+    # Thumbnails finish independently; open the first message, not the first loaded image.
+    def open_first_photo():
+        message = next((item for item in tree() if any(base.get("typeName") == "Message" for base in item.get("typeNamesAndIds", []))), None)
+        if message is None:
+            return None
+        photo = element("Open photo", "Button", lambda: tree(message["handle"]))
+        call("click_element", elementHandle=photo["handle"])
+        return True
+    wait_for(open_first_photo, "first photo preview did not load")
     wait_element("Retry", "Button")
     assert is_focused(element("Retry", "Button")), "failed original did not focus Retry"
     key("\n")

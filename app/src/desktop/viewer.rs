@@ -115,12 +115,6 @@ impl crate::Desktop {
             asset.original()
         });
         if let Some(asset) = asset {
-            let photos = Self::photo_keys(&rows);
-            let index = photos.iter().position(|k| k == key);
-            ui.global::<ViewerState>()
-                .set_viewer_has_previous(index.is_some_and(|i| i > 0));
-            ui.global::<ViewerState>()
-                .set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
             ui.global::<ViewerState>().set_viewer_retryable(false);
             self.viewer_name = asset.display_name().to_owned();
             self.viewer_source = None;
@@ -135,10 +129,23 @@ impl crate::Desktop {
             if !ui.global::<ViewerState>().get_viewer_open() {
                 ui.invoke_show_viewer(key.into());
             }
+            self.refresh_photo_navigation(ui);
             self.sender.send(Intent::Original {
                 asset,
                 retry: false,
             });
+        }
+    }
+
+    pub(crate) fn refresh_photo_navigation(&self, ui: &AppWindow) {
+        let viewer = ui.global::<ViewerState>();
+        if viewer.get_viewer_open() {
+            let photos = self.photos();
+            let index = photos
+                .iter()
+                .position(|key| key == viewer.get_viewer_key().as_str());
+            viewer.set_viewer_has_previous(index.is_some_and(|i| i > 0));
+            viewer.set_viewer_has_next(index.is_some_and(|i| i + 1 < photos.len()));
         }
     }
 }
@@ -146,6 +153,63 @@ impl crate::Desktop {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn viewer_navigation_tracks_photos_arriving_after_open() {
+        std::thread::spawn(|| {
+            i_slint_backend_testing::init_no_event_loop();
+            let photo = |id| {
+                let mut row = crate::tests::message("");
+                row.key = Key(id);
+                row.sort.sort_ts = id;
+                row.body = Content::Photo {
+                    asset: sen::client::desktop::assets::Asset::avatar(&format!("/photo-{id}")),
+                    size: None,
+                    album_count: None,
+                    caption: None,
+                };
+                row
+            };
+            let first = photo(1);
+            let key = first.body.image().unwrap().key();
+            let (ui, runtime, _worker) =
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |d, _, _| {
+                    d.state.selected = Some(first.chat_id.clone());
+                    d.state.messages.insert(first.key, first);
+                });
+            ui.global::<ViewerState>().invoke_open_photo(key.into());
+            let viewer = ui.global::<ViewerState>();
+            assert!(viewer.get_viewer_open());
+            assert!(!viewer.get_viewer_has_next());
+            let second = photo(2);
+            let second_key = second.body.image().unwrap().key();
+            runtime.update(|d| {
+                d.apply_batch(
+                    &ui,
+                    [Delta::Window {
+                        sub: d.state.window_sub,
+                        upsert: vec![second],
+                        remove: vec![],
+                        gaps: vec![],
+                        reaches_start: true,
+                        reaches_end: true,
+                        replies: vec![],
+                        unread_anchor: None,
+                    }],
+                );
+            });
+            assert!(
+                viewer.get_viewer_has_next(),
+                "arriving photo must become reachable"
+            );
+            viewer.invoke_viewer_step(1);
+            assert_eq!(viewer.get_viewer_key(), second_key);
+            assert!(viewer.get_viewer_has_previous());
+            assert!(!viewer.get_viewer_has_next());
+        })
+        .join()
+        .unwrap();
+    }
+
     #[test]
     fn viewer_retry_returns_to_the_same_original_and_preserves_outside_focus() {
         std::thread::spawn(|| {
