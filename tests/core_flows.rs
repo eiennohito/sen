@@ -817,6 +817,26 @@ fn compose_reaction_set_cancel_and_failure_revert() {
     assert_eq!(app.state.messages[&key].reactions[0].actor, "self");
     app.send(Intent::React { key, kind: 3 });
     app.until(|s| s.messages[&key].reactions.is_empty() && s.messages[&key].reactions_rev > 1001);
+    let revision = app.state.messages[&key].reactions_rev;
+    app.send(Intent::React { key, kind: 3 });
+    app.until(|s| {
+        s.messages[&key].reactions.len() == 1 && s.messages[&key].reactions_rev > revision
+    });
+    fake.fail_rpc(
+        FakeRpc::React(app.state.messages[&key].server_id.clone().unwrap(), None),
+        Failure::Refused(Refusal::Internal),
+    );
+    app.send(Intent::React { key, kind: 3 });
+    app.until_delta(
+        |d| matches!(d, Delta::ReactionFailed(k) if *k == key),
+        Duration::from_secs(5),
+    );
+    assert_eq!(
+        app.state.messages[&key].reactions[0].kind,
+        ReactionKind::Predefined(3)
+    );
+    app.send(Intent::CancelReaction(key));
+    app.until(|s| s.messages[&key].reactions.is_empty());
     fake.fail_rpc(
         FakeRpc::React(app.state.messages[&key].server_id.clone().unwrap(), Some(2)),
         Failure::Refused(Refusal::Internal),
@@ -827,6 +847,24 @@ fn compose_reaction_set_cancel_and_failure_revert() {
         Duration::from_secs(5),
     );
     assert!(app.state.messages[&key].reactions.is_empty());
+    let id = app.state.messages[&key]
+        .server_id
+        .as_ref()
+        .unwrap()
+        .as_str();
+    fake.inject_raw(
+        serde_json::json!({"type":139,"param1":id,"param2":serde_json::json!({
+        "chatMid":"alice", "curr":{"paidReactionType":{"productId":"synthetic", "emojiId":"001"}}
+    }).to_string()}),
+    );
+    app.until(|s| {
+        matches!(
+            s.messages[&key].reactions.first().map(|r| &r.kind),
+            Some(ReactionKind::Paid(_))
+        )
+    });
+    app.send(Intent::CancelReaction(key));
+    app.until(|s| s.messages[&key].reactions.is_empty());
 }
 
 #[test]

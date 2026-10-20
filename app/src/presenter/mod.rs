@@ -137,14 +137,24 @@ impl Presenter {
         let detail = ui.global::<DetailState>();
         let new_chat = ui.global::<NewChatState>();
         let composer = ui.global::<ComposerState>();
+        #[cfg(not(test))]
+        if let Ok(module) = sen::crypto_module::resolve(None, None)
+            && let Some(root) = module.wasm.ancestors().nth(3)
+        {
+            self.images.load_reactions(root);
+        }
         content.set_reaction_kinds(ModelRc::new(VecModel::from(
             PREDEFINED_REACTIONS
                 .iter()
-                .map(|(id, label, glyph)| ReactionRow {
-                    id: *id as i32,
-                    label: (*label).into(),
-                    glyph: (*glyph).into(),
-                    ..Default::default()
+                .map(|(id, label, glyph)| {
+                    let mut row = ReactionRow {
+                        id: *id as i32,
+                        label: (*label).into(),
+                        glyph: (*glyph).into(),
+                        ..Default::default()
+                    };
+                    self.images.reaction(&mut row);
+                    row
                 })
                 .collect::<Vec<_>>(),
         )));

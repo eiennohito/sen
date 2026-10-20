@@ -9,6 +9,45 @@ pub(crate) struct Images {
     failures: Rc<RefCell<HashMap<String, Failure>>>,
 }
 impl Images {
+    pub fn load_reactions(&self, root: &std::path::Path) {
+        let Ok(entries) = std::fs::read_dir(root.join("static/media")) else {
+            return;
+        };
+        let paths: Vec<_> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|e| e.path())
+            .collect();
+        // The extension's LX table maps protocol types to these artwork numbers.
+        for (id, artwork) in [
+            (2, 1003),
+            (3, 1001),
+            (4, 1002),
+            (5, 1004),
+            (6, 1006),
+            (7, 1005),
+        ] {
+            let prefix = format!("icon_{artwork}_32x32.");
+            if let Some(path) = paths.iter().find(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().starts_with(&prefix))
+                    && path.extension().is_some_and(|ext| ext == "svg")
+            }) {
+                self.insert(format!("reaction:{id}"), path.clone());
+            }
+        }
+    }
+    pub fn reaction(&self, reaction: &mut ReactionRow) {
+        reaction.picture = if reaction.id > 0 {
+            self.paths
+                .borrow()
+                .get(&format!("reaction:{}", reaction.id))
+                .and_then(|path| slint::Image::load_from_path(path).ok())
+        } else {
+            self.get(reaction.image_key.as_str())
+        }
+        .unwrap_or_default();
+        reaction.has_picture = reaction.picture.size().width > 0;
+    }
     pub fn on_missing(&self, reload: impl Fn(&str) + 'static) {
         *self.requests.borrow_mut() = Some(Rc::new(reload));
     }

@@ -5,11 +5,11 @@ import { Tokens } from "tokens.slint";
 import { Avatar } from "avatar.slint";
 import { Pane } from "scrollpane.slint";
 
-component ReactionMark inherits Rectangle {
+export component ReactionMark inherits Rectangle {
     in property <ReactionRow> reaction;
     width: 20px; height: 20px;
-    Image { visible: root.reaction.image-key != ""; width: parent.width; height: parent.height; source: root.reaction.picture; image-fit: contain; accessible-role: image; accessible-label: root.reaction.label + " reaction"; accessible-description: root.reaction.has-picture ? "Loaded" : "Loading"; }
-    Text { visible: root.reaction.image-key == ""; width: parent.width; height: parent.height; text: root.reaction.glyph; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+    Image { visible: root.reaction.has-picture; width: parent.width; height: parent.height; source: root.reaction.picture; image-fit: contain; accessible-role: image; accessible-label: root.reaction.label + " reaction"; accessible-description: "Loaded"; }
+    Text { visible: !root.reaction.has-picture; width: parent.width; height: parent.height; text: root.reaction.glyph; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
 }
 
 export component ReactionChip inherits Rectangle {
@@ -17,6 +17,7 @@ export component ReactionChip inherits Rectangle {
     in property <[ReactionRow]> groups;
     out property <bool> has-focus: chip-focus.has-focus;
     callback history-key(KeyEvent) -> EventResult;
+    callback remove();
     height: 28px; width: content.preferred-width; horizontal-stretch: 0;
     border-radius: 14px; background: root.reaction.own ? Tokens.selection : Tokens.bg;
     border-width: 1px; border-color: root.reaction.own ? Tokens.accent : Tokens.divider;
@@ -30,7 +31,7 @@ export component ReactionChip inherits Rectangle {
         accessible-label: root.reaction.label + ", " + root.reaction.count + " reactions";
         accessible-item-selected: root.reaction.own;
 
-        activated => { self.focus(); reactors.show(); }
+        activated => { self.focus(); if root.reaction.own { root.remove(); } else { reactors.show(); } }
         FocusRing { focused: parent.has-focus; border-radius: 14px; border-color: Tokens.accent; }
     }
     reactors := PopupWindow {

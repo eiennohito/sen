@@ -323,3 +323,87 @@ fn unread_flex_and_unsupported_messages_have_history_rows() {
         }
     }).join().unwrap();
 }
+
+#[test]
+fn reaction_artwork_is_shared_by_picker_and_chips_with_emoji_fallback() {
+    std::thread::spawn(|| {
+        let _platform = crate::snapshot::install().unwrap();
+        let directory = sen::test_support::TempDir::new("reaction-artwork");
+        let media = directory.0.join("static/media");
+        std::fs::create_dir_all(&media).unwrap();
+        // Distinct generated rectangles pin the protocol-to-artwork mapping.
+        for number in 1001..=1006 {
+            let width = number - 990;
+            let svg = format!(
+                r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="16">
+                    <path fill="#0050e6" d="M0 0h{width}v16H0z"/>
+                </svg>"##
+            );
+            std::fs::write(
+                media.join(format!("icon_{number}_32x32.synthetic.svg")),
+                svg,
+            )
+            .unwrap();
+        }
+        let ui = crate::window::create_app_window().unwrap();
+        let mut presenter = Presenter::default();
+        presenter.images.load_reactions(&directory.0);
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        state.select(ChatId("chat".into()));
+        let mut message = crate::tests::message("Reactions");
+        for (id, width) in [(2, 13), (3, 11), (4, 12), (5, 14), (6, 16), (7, 15)] {
+            message.reactions = vec![Reaction {
+                actor: "self".into(),
+                kind: ReactionKind::Predefined(id),
+            }];
+            let chip = present(&ui, &mut presenter, &mut state, &message)
+                .reactions
+                .row_data(0)
+                .unwrap();
+            let picker = ui
+                .global::<ContentState>()
+                .get_reaction_kinds()
+                .iter()
+                .find(|r| r.id == id as i32)
+                .unwrap();
+            for row in [chip, picker] {
+                assert!(row.has_picture, "reaction {id} did not resolve artwork");
+                assert_eq!(
+                    (row.picture.size().width, row.picture.size().height),
+                    (width, 16)
+                );
+            }
+        }
+        for contents in [None, Some("invalid svg")] {
+            let unavailable = sen::test_support::TempDir::new("reaction-fallback");
+            if let Some(contents) = contents {
+                let media = unavailable.0.join("static/media");
+                std::fs::create_dir_all(&media).unwrap();
+                std::fs::write(media.join("icon_1003_32x32.synthetic.svg"), contents).unwrap();
+            }
+            let mut presenter = Presenter::default();
+            presenter.images.load_reactions(&unavailable.0);
+            presenter.install(&ui);
+            message.reactions = vec![Reaction {
+                actor: "self".into(),
+                kind: ReactionKind::Predefined(2),
+            }];
+            let chip = present(&ui, &mut presenter, &mut state, &message)
+                .reactions
+                .row_data(0)
+                .unwrap();
+            let picker = ui
+                .global::<ContentState>()
+                .get_reaction_kinds()
+                .row_data(0)
+                .unwrap();
+            for row in [chip, picker] {
+                assert!(!row.has_picture);
+                assert_eq!(row.glyph, "👍");
+            }
+        }
+    })
+    .join()
+    .unwrap();
+}

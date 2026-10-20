@@ -677,23 +677,25 @@ def assert_reactor_popup_visible():
         assert 0 <= start and start + popup["size"][extent] <= bounds["size"][extent] / scale, "reactor popup is outside the window"
 
 
-def check_reactor_popup(label):
-    chip = wait_element(label, "Button")
-    assert chip.get("accessibleItemSelected"), "own chip is not highlighted"
-    click(label)
-    wait_element("You", "Text")
-    assert_reactor_popup_visible()
-    screenshot("reactors")
-    key("\x1b")
-    assert not any(r.get("accessibleLabel") == "You" and r.get("accessibleRole") == "Text" for r in tree()), "Escape left reactor popup open"
-    assert is_focused(element(label, "Button")), "Escape did not return focus to chip"
-    for activation in ("\n", " "):
-        key(activation)
-        wait_element("You", "Text")
-        key("\x1b")
-        assert not any(r.get("accessibleLabel") == "You" and r.get("accessibleRole") == "Text" for r in tree()), "reactor popup did not close between activations"
-        assert is_focused(element(label, "Button"))
-    assert element(label, "Button").get("accessibleItemSelected"), "opening reactors toggled own reaction"
+def check_own_chip_removal(open_reactions):
+    label = "LOVE, 1 reactions"
+    for activation in (None, "\n", " "):
+        chip = wait_element(label, "Button")
+        assert chip.get("accessibleItemSelected"), "own chip is not highlighted"
+        if activation is None:
+            click(label)
+        else:
+            body = next(item for item in tree() if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut)
+            call("click_element", elementHandle=body["handle"])
+            focus_tab()
+            assert is_focused(element(label, "Button")), "Tab did not reach own chip"
+            key(activation)
+        wait_for(lambda: not any(item.get("accessibleLabel") == label for item in tree()), "own chip activation did not remove reaction")
+        assert is_focused(element("React", "Button")), "removing own chip lost focus"
+        open_reactions()
+        assert not element("LOVE", "Button").get("accessibleItemSelected"), "cancelled reaction remains selected"
+        click("LOVE")
+        wait_element(label, "Button")
 
 
 def check_pack_switch():
@@ -773,7 +775,7 @@ def check_compose():
     open_reactions()
     wait_element("LOVE", "Button")
     click("LOVE")
-    check_reactor_popup("LOVE, 1 reactions")
+    check_own_chip_removal(open_reactions)
     open_reactions()
     wait_for(lambda: element("LOVE", "Button").get("accessibleItemSelected"), "own reaction was not highlighted")
     screenshot("reactions")

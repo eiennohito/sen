@@ -196,10 +196,7 @@ fn build_row(inputs: &MessageInputs, images: &Images) -> MessageRow {
             &inputs.own_mid,
         );
         for reaction in &mut reactions {
-            if let Some(image) = images.get(reaction.image_key.as_str()) {
-                reaction.picture = image;
-                reaction.has_picture = true;
-            }
+            images.reaction(reaction);
         }
         row.reactions = ModelRc::new(VecModel::from(reactions));
     }

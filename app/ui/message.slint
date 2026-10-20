@@ -1,7 +1,7 @@
 import { RecoveryKind, ComposerState, ContentState, ConversationState, DetailState, ShellState, ViewerState } from "globals.slint";
 import { Pressable, FocusRing, Button } from "button.slint";
 import { DeliveryState, HistoryRowKind, MessageRow, MessageKind, RunPosition } from "types.slint";
-import { ReactionChip } from "reaction-chip.slint";
+import { ReactionChip, ReactionMark } from "reaction-chip.slint";
 import { ReplyQuote } from "reply-quote.slint";
 import { IconButton } from "icon-button.slint";
 import { Avatar } from "avatar.slint";
@@ -126,7 +126,7 @@ export component Message inherits TouchArea {
                                                 for kind in ContentState.reaction-kinds: Rectangle {
                                                     width: 32px; height: 32px; border-radius: 16px;
                                                     background: root.message.own-reaction == kind.id ? Tokens.surface-selected : reaction-touch.has-hover ? Tokens.surface-hover : transparent;
-                                                    Text { text: kind.glyph; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+                                                    ReactionMark { x: 6px; y: 6px; reaction: kind; }
                                                     reaction-touch := Pressable {
                                                         FocusRing { focused: parent.has-focus; border-radius: 16px; }
                                                         accessible-label: kind.label; accessible-item-selected: root.message.own-reaction == kind.id;
@@ -304,6 +304,7 @@ export component Message inherits TouchArea {
                             if root.message.reaction-count > 0: HorizontalLayout {
                                 alignment: start; spacing: 4px;
                                 for reaction in root.message.reactions: ReactionChip { reaction: reaction; groups: root.message.reactions;
+                                    remove => { react-button.focus(); ConversationState.cancel-reaction(root.message.id); }
                                     changed has-focus => { root.focused-chips += self.has-focus ? 1 : -1; }
                                     history-key(event) => { root.history-key(event, true) }
                                 }

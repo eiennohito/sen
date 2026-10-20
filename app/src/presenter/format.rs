@@ -308,6 +308,10 @@ pub(crate) fn reaction_views(
         } else {
             groups.push((
                 ReactionRow {
+                    id: match reaction.kind {
+                        ReactionKind::Predefined(id) => id as i32,
+                        ReactionKind::Paid(_) => 0,
+                    },
                     glyph: glyph.into(),
                     label: label.into(),
                     image_key: key.into(),
