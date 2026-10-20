@@ -988,3 +988,35 @@ fn metadata_labels_are_explicit() {
     assert_eq!(file_size(1024), "1.0 KB");
     assert_eq!(file_size(12), "12 B");
 }
+
+#[test]
+fn preview_and_history_measurements_are_independent_of_visit_order() {
+    std::thread::spawn(|| {
+        let _platform = crate::snapshot::install().unwrap();
+        let ui = crate::window::create_app_window().unwrap();
+        let rows = runs("hello world", &[]);
+        let metrics = RefCell::new(Measurements::default());
+        let cold = crate::rich_content::flow::layout(&ui, &rows, 500., 24., &metrics);
+        let raw = ui.invoke_measure_rich("hello ".into(), 24.);
+        let cached = metrics
+            .borrow_mut()
+            .get(&("hello ".into(), 24f32.to_bits()))
+            .unwrap();
+        assert_eq!(cached, (raw.width, raw.height));
+        let warmed = RefCell::new(Measurements::default());
+        crate::rich_content::preview::layout(&rows, "", 500., 24., |text| {
+            crate::rich_content::measure(&ui, &warmed, text, 24.).0
+        });
+        let warm = crate::rich_content::flow::layout(&ui, &rows, 500., 24., &warmed);
+        assert_eq!(
+            cold.iter()
+                .map(|r| (r.y, r.measured_height))
+                .collect::<Vec<_>>(),
+            warm.iter()
+                .map(|r| (r.y, r.measured_height))
+                .collect::<Vec<_>>()
+        );
+    })
+    .join()
+    .unwrap();
+}

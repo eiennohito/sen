@@ -132,7 +132,9 @@ fn own_reactor_avatar_follows_profile_contact_and_profile_changes() {
             let key = contact.avatar.as_ref().map(|a| a.key()).unwrap_or_default();
             let image = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(2, 2));
             if picture.is_some() {
-                presenter.images.insert(key.clone(), image.clone());
+                presenter
+                    .images
+                    .insert(key.clone(), crate::tests::image_file(&image));
             }
             let row = present(&ui, &mut presenter, &mut state, &message);
             let actor = row

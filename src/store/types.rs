@@ -225,7 +225,7 @@ impl Default for DesktopPrefs {
     }
 }
 /// Stable chat identity, independent of client transport types.
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct ChatId(pub String);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MidKind {
@@ -249,7 +249,7 @@ impl ChatId {
 }
 
 /// Permanent row identity, including across send confirmation and retries.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Key(pub i64);
 /// Canonical decimal server identity: 1–20 digits, no leading zeros except zero.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

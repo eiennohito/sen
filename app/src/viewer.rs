@@ -1,8 +1,7 @@
 //! Photo navigation and deliberate local exports. No network operations here.
 use crate::AppWindow;
 use crate::ViewerState;
-use image::ImageEncoder;
-use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer};
+use slint::ComponentHandle;
 use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
@@ -11,14 +10,16 @@ use std::{
 };
 use zbus::zvariant::Str;
 
-pub(crate) fn save_photo(ui: &AppWindow, source: Option<std::sync::Arc<Vec<u8>>>) {
+pub(crate) fn save_photo(ui: &AppWindow, source: Option<PathBuf>) {
     if ui.global::<ViewerState>().get_viewer_saving()
         || ui.global::<ViewerState>().get_viewer_loading()
         || !ui.global::<ViewerState>().get_viewer_error().is_empty()
     {
         return;
     }
-    let Some(pixels) = ui.global::<ViewerState>().get_viewer_image().to_rgba8() else {
+    let Some(source) = source else {
+        ui.global::<ViewerState>()
+            .set_viewer_save_status("Original unavailable".into());
         return;
     };
     ui.global::<ViewerState>().set_viewer_saving(true);
@@ -26,7 +27,12 @@ pub(crate) fn save_photo(ui: &AppWindow, source: Option<std::sync::Arc<Vec<u8>>>
     let key = ui.global::<ViewerState>().get_viewer_key();
     let weak = ui.as_weak();
     std::thread::spawn(move || {
-        let result = export_photo(&pixels, source.as_deref().map(|b| b.as_slice()));
+        let result = fs::read(&source)
+            .map_err(|_| "Could not read this photo.".to_string())
+            .and_then(|bytes| {
+                let extension = source.extension().and_then(|s| s.to_str()).unwrap_or("img");
+                save_bytes(&bytes, &format!("LINE photo.{extension}"))
+            });
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ui.global::<ViewerState>().set_viewer_saving(false);
             if !ui.global::<ViewerState>().get_viewer_open()
@@ -45,33 +51,6 @@ pub(crate) fn save_photo(ui: &AppWindow, source: Option<std::sync::Arc<Vec<u8>>>
         });
     });
 }
-fn export_photo(
-    pixels: &SharedPixelBuffer<Rgba8Pixel>,
-    source: Option<&[u8]>,
-) -> Result<Option<PathBuf>, String> {
-    if let Some(bytes) = source {
-        let extension = image::guess_format(bytes)
-            .ok()
-            .and_then(|f| f.extensions_str().first().copied())
-            .unwrap_or("img");
-        save_bytes(bytes, &format!("LINE photo.{extension}"))
-    } else {
-        encode_png(pixels).and_then(|bytes| save_bytes(&bytes, "LINE photo.png"))
-    }
-}
-fn encode_png(pixels: &SharedPixelBuffer<Rgba8Pixel>) -> Result<Vec<u8>, String> {
-    let mut bytes = Vec::new();
-    image::codecs::png::PngEncoder::new(&mut bytes)
-        .write_image(
-            pixels.as_bytes(),
-            pixels.width(),
-            pixels.height(),
-            image::ExtendedColorType::Rgba8,
-        )
-        .map_err(|_| "Could not encode this photo.".to_string())?;
-    Ok(bytes)
-}
-
 /// Blocking: call from an export helper, never from the UI or account worker.
 /// A cancelled chooser writes nothing. The fallback always creates a new file.
 pub(crate) fn save_bytes(bytes: &[u8], suggested_name: &str) -> Result<Option<PathBuf>, String> {
@@ -198,45 +177,48 @@ mod tests {
     fn preview_cannot_be_exported_as_an_original() {
         std::thread::spawn(|| {
             let _platform = crate::snapshot::install().unwrap();
-            let ui = crate::create_app_window().unwrap();
+            let ui = crate::tests::test_window();
+            ui.invoke_show_viewer("fixture".into());
             ui.global::<ViewerState>()
-                .set_viewer_image(slint::Image::from_rgba8(
-                    SharedPixelBuffer::<Rgba8Pixel>::new(1, 1),
-                ));
+                .set_viewer_image(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
+                    slint::Rgba8Pixel,
+                >::new(1, 1)));
+            let source = crate::tests::image_file(&ui.global::<ViewerState>().get_viewer_image());
             ui.global::<ViewerState>().set_viewer_loading(true);
-            save_photo(&ui, None);
+            save_photo(&ui, Some(source.clone()));
             assert!(!ui.global::<ViewerState>().get_viewer_saving());
             ui.global::<ViewerState>().set_viewer_loading(false);
             ui.global::<ViewerState>()
                 .set_viewer_error("Original unavailable".into());
-            save_photo(&ui, None);
+            save_photo(&ui, Some(source));
             assert!(!ui.global::<ViewerState>().get_viewer_saving());
+            ui.global::<ViewerState>().set_viewer_error("".into());
+            save_photo(&ui, None);
+            assert_eq!(
+                ui.global::<ViewerState>().get_viewer_save_status(),
+                "Original unavailable"
+            );
+            ui.global::<ViewerState>().invoke_close_viewer();
+            assert_eq!(
+                ui.global::<ViewerState>().get_viewer_image().size().width,
+                0
+            );
         })
         .join()
         .unwrap();
     }
-    #[cfg(feature = "demo")]
     #[test]
-    fn writing_original_photo_preserves_bytes() {
-        let root = std::env::temp_dir().join(format!("line-source-export-{}", std::process::id()));
-        let mut jpeg = Vec::new();
-        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
-            .encode_image(&image::RgbImage::new(3, 2))
-            .unwrap();
-        let path = write_unique(&root, "LINE photo.jpg", &jpeg).unwrap();
-        assert_eq!(fs::read(path).unwrap(), jpeg);
-        fs::remove_dir_all(root).unwrap();
-    }
-    #[test]
-    fn png_export_and_unique_names() {
+    fn photo_exports_preserve_bytes_and_use_private_unique_names() {
         let root = std::env::temp_dir().join(format!("line-export-test-{}", std::process::id()));
-        let pixels = SharedPixelBuffer::<Rgba8Pixel>::clone_from_slice(&[255, 0, 0, 255], 1, 1);
-        let png = encode_png(&pixels).unwrap();
-        assert_eq!(image::load_from_memory(&png).unwrap().width(), 1);
-        let first = write_unique(&root, "photo.png", &png).unwrap();
-        let second = write_unique(&root, "photo.png", &png).unwrap();
+        let mut jpeg = std::io::Cursor::new(Vec::new());
+        image::RgbImage::new(3, 2)
+            .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+            .unwrap();
+        let jpeg = jpeg.into_inner();
+        let first = write_unique(&root, "LINE photo.jpg", &jpeg).unwrap();
+        let second = write_unique(&root, "LINE photo.jpg", &jpeg).unwrap();
         assert_ne!(first, second);
-        assert_eq!(fs::read(&first).unwrap(), png);
+        assert_eq!(fs::read(&first).unwrap(), jpeg);
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
             fs::metadata(first).unwrap().permissions().mode() & 0o777,

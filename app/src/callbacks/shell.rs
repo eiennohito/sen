@@ -45,6 +45,8 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             } else {
                 ui.invoke_focus_history();
             }
+            ui.global::<ViewerState>()
+                .set_viewer_image(slint::Image::default());
             d.viewer_asset = None;
             d.viewer_source = None;
         }

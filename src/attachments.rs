@@ -9,7 +9,7 @@ use std::{
 
 pub const FILE_LIMIT: u64 = 1_073_741_824;
 pub const PHOTO_LIMIT: u64 = 10_000_000;
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Photo {
     pub width: u32,
     pub height: u32,
@@ -18,7 +18,7 @@ pub struct Photo {
     pub preview_width: u32,
     pub preview_height: u32,
 }
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Attachment {
     pub path: PathBuf,
     pub name: String,

@@ -8,7 +8,7 @@ pub(crate) struct Desktop {
     pub(crate) viewer_name: String,
     pub(crate) attachments: std::sync::Arc<std::sync::Mutex<callbacks::attachments::Selection>>,
     pub(crate) viewer_asset: Option<String>,
-    pub(crate) viewer_source: Option<std::sync::Arc<Vec<u8>>>,
+    pub(crate) viewer_source: Option<std::path::PathBuf>,
     pub(crate) notifications: Option<notifications::Notifications>,
     pub(crate) background: desktop_env::background::Background,
     pub(crate) assets: assets::Assets,
@@ -328,7 +328,7 @@ mod tests {
         .unwrap();
     }
     #[test]
-    fn profile_viewer_requests_original_and_swaps_preview() {
+    fn profile_viewer_waits_for_original_without_showing_a_circle() {
         std::thread::spawn(|| {
             let worker = Worker::start(
                 StoreLocation::Memory,
@@ -359,23 +359,21 @@ mod tests {
                     ui.global::<ViewerState>().get_viewer_image().size().width,
                     ui.global::<ViewerState>().get_viewer_image().size().height
                 ),
-                (2, 3)
+                (0, 0)
             );
             assert_eq!(
                 ui.global::<ViewerState>().get_viewer_status(),
                 "Loading original…"
             );
-            let source = std::sync::Arc::new(vec![1, 2, 3]);
+            let source = crate::tests::image_file(&slint::Image::from_rgba8(
+                slint::SharedPixelBuffer::clone_from_slice(&[255u8; 4 * 6 * 4], 4, 6),
+            ));
             desktop.apply(
                 &ui,
                 Delta::Original {
                     key: desktop.viewer_asset.clone().unwrap(),
-                    pixels: std::sync::Arc::new(line::client::desktop::assets::Pixels {
-                        width: 4,
-                        height: 6,
-                        rgba: vec![255; 4 * 6 * 4],
-                    }),
-                    bytes: source.clone(),
+                    path: source.clone(),
+                    source: source.clone(),
                 },
             );
             assert!(!ui.global::<ViewerState>().get_viewer_loading());
@@ -392,7 +390,7 @@ mod tests {
         .unwrap();
     }
     #[test]
-    fn profile_viewer_opens_avatar_without_an_original() {
+    fn profile_viewer_without_original_keeps_an_empty_placeholder() {
         std::thread::spawn(|| {
             let worker = Worker::start(
                 StoreLocation::Memory,
@@ -414,7 +412,7 @@ mod tests {
                     ui.global::<ViewerState>().get_viewer_image().size().width,
                     ui.global::<ViewerState>().get_viewer_image().size().height
                 ),
-                (2, 3)
+                (0, 0)
             );
             assert!(!ui.global::<ViewerState>().get_viewer_loading());
             assert!(desktop.viewer_asset.is_none());

@@ -35,14 +35,13 @@ impl Desktop {
     }
     pub(crate) fn apply(&mut self, ui: &AppWindow, d: Delta) -> (bool, bool, Option<(i32, i32)>) {
         let g = ui.global::<ComposerState>();
-        let d = if let Delta::Original { key, pixels, bytes } = d {
-            if self.viewer_asset.as_ref() == Some(&key) {
-                self.viewer_source = Some(bytes);
+        if let Delta::Original { key, path, source } = &d {
+            if self.viewer_asset.as_ref() == Some(key) {
+                self.viewer_source = Some(source.clone());
+                self.show_original(ui, path);
             }
-            Delta::Asset { key, pixels }
-        } else {
-            d
-        };
+            return (false, false, None);
+        }
         // The engine may publish an unchanged window and a whole chat list on a
         // draft save. Keep that acknowledgement out of the conversation render.
         if let Delta::Window {
@@ -182,9 +181,7 @@ impl Desktop {
                     PairEvent::Qr(p) => {
                         g.set_auth_stage(text::WAITING_FOR_PHONE.into());
                         g.set_auth_prerequisite_missing(false);
-                        g.set_auth_qr(slint::Image::from_rgba8(
-                            slint::SharedPixelBuffer::clone_from_slice(&p.rgba, p.width, p.height),
-                        ));
+                        g.set_auth_qr(slint::Image::load_from_path(p).unwrap_or_default());
                     }
                     PairEvent::Pin(pin) => g.set_auth_pin(pin.into()),
                     PairEvent::Scanned => g.set_auth_stage(text::WAITING_FOR_PHONE.into()),
@@ -226,6 +223,7 @@ impl Desktop {
                 if self.viewer_asset.as_ref() == Some(key) {
                     viewer.set_viewer_loading(false);
                     viewer.set_viewer_error(text::image_text(*failure).into());
+                    viewer.set_viewer_status("Original unavailable".into());
                 }
             }
             Delta::File { name, bytes } => {
@@ -243,27 +241,9 @@ impl Desktop {
                     });
                 });
             }
-            Delta::Asset { key, pixels } => {
-                self.presenter.images.insert(
-                    key.clone(),
-                    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-                        &pixels.rgba,
-                        pixels.width,
-                        pixels.height,
-                    )),
-                );
+            Delta::Asset { key, path } => {
+                self.presenter.images.insert(key.clone(), path.clone());
                 self.presenter.patch_asset(ui, &self.state, key);
-                if self.viewer_asset.as_ref() == Some(key) {
-                    viewer.set_viewer_image(self.presenter.images.get(key).unwrap());
-                    viewer.set_viewer_loading(false);
-                    viewer.set_viewer_status(
-                        format!(
-                            "{} · {} × {}",
-                            self.viewer_name, pixels.width, pixels.height
-                        )
-                        .into(),
-                    );
-                }
             }
             _ => {}
         }

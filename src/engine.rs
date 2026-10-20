@@ -335,12 +335,12 @@ pub enum Delta {
     },
     Original {
         key: String,
-        pixels: Arc<crate::client::desktop::assets::Pixels>,
-        bytes: Arc<Vec<u8>>,
+        path: std::path::PathBuf,
+        source: std::path::PathBuf,
     },
     Asset {
         key: String,
-        pixels: std::sync::Arc<crate::client::desktop::assets::Pixels>,
+        path: std::path::PathBuf,
     },
     Chats {
         sub: u64,
@@ -629,6 +629,7 @@ impl Worker {
                                     )?;
                                     jobs
                                 },
+                                local_previews: None,
                                 uploads: upload_workers(),
                                 net_pending: 0,
                                 generation: Arc::new(AtomicU64::new(0)),
@@ -710,6 +711,10 @@ enum ReactionFlight {
     Set(u32),
 }
 struct Engine {
+    local_previews: Option<(
+        tempfile::TempDir,
+        crate::client::desktop::assets::ImageCache,
+    )>,
     timing: Timing,
     retry_attempts: std::collections::BTreeMap<Refresh, u32>,
     retry_after: std::collections::BTreeMap<Refresh, Instant>,
@@ -1894,21 +1899,48 @@ impl Engine {
                 if self.store.chat(&chat)?.is_some_and(|c| c.left) {
                     return Ok(());
                 }
-                for item in items.into_iter().filter(|item| !item.too_large()) {
-                    match crate::client::desktop::assets::Asset::local(item.clone()).local_pixels()
-                    {
-                        Ok(Some(pixels)) => {
-                            self.emit(Delta::Asset {
-                                key: crate::client::desktop::assets::Asset::local(item.clone())
-                                    .key(),
-                                pixels: Arc::new(pixels),
-                            });
-                        }
-                        Ok(None) => {} // Files without image previews use the attachment label.
-                        Err(error) => {
-                            crate::reporting::log("attachment-preview", "decode", error.as_ref())
+                for mut item in items.into_iter().filter(|item| !item.too_large()) {
+                    if !item.preview.is_empty() {
+                        let asset = crate::client::desktop::assets::Asset::local(item.clone());
+                        let result = (|| -> anyhow::Result<_> {
+                            if self.local_previews.is_none() {
+                                let root = self
+                                    .account_root
+                                    .as_ref()
+                                    .map(|root| root.join("images"))
+                                    .unwrap_or_else(|| {
+                                        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                                            .join("target/tmp")
+                                    });
+                                std::fs::create_dir_all(&root)?;
+                                let directory = tempfile::Builder::new()
+                                    .prefix("local-previews-")
+                                    .tempdir_in(root)?;
+                                let cache = crate::client::desktop::assets::ImageCache::new(
+                                    directory.path(),
+                                    &self.store.account()?.own_mid,
+                                )?;
+                                self.local_previews = Some((directory, cache));
+                            }
+                            self.local_previews
+                                .as_mut()
+                                .unwrap()
+                                .1
+                                .store(&asset, &item.preview)
+                        })();
+                        match result {
+                            Ok(path) => self.emit(Delta::Asset {
+                                key: asset.key(),
+                                path,
+                            }),
+                            Err(error) => crate::reporting::log(
+                                "attachment-preview",
+                                "decode",
+                                error.as_ref(),
+                            ),
                         }
                     }
+                    item.preview.clear();
                     let key = self.enqueue(&chat, || item.content(), None)?;
                     self.inbox.refresh(Refresh::Send(key));
                 }
@@ -3031,11 +3063,11 @@ fn asset_delta(c: crate::client::desktop::assets::Completion) -> Delta {
     use crate::client::desktop::assets::{Payload, Purpose};
     match c.result {
         Ok(Payload::Evicted) => Delta::AssetEvicted { key: c.key },
-        Ok(Payload::Image(pixels)) => Delta::Asset { key: c.key, pixels },
-        Ok(Payload::Original { pixels, bytes }) => Delta::Original {
+        Ok(Payload::Image(path)) => Delta::Asset { key: c.key, path },
+        Ok(Payload::Original { path, source }) => Delta::Original {
             key: c.key,
-            pixels,
-            bytes,
+            path,
+            source,
         },
         Ok(Payload::File(bytes)) => Delta::File {
             name: match c.purpose {

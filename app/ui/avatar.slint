@@ -1,4 +1,4 @@
-import { ContentState, ShellState } from "globals.slint";
+import { ContentState } from "globals.slint";
 import { Tokens } from "tokens.slint";
 export component Avatar inherits Rectangle {
     in property <string> identity;
@@ -8,5 +8,5 @@ export component Avatar inherits Rectangle {
     width: 44px; height: 44px; border-radius: self.width / 2;
     background: root.picture.width > 0 ? transparent : ContentState.avatar-tint(root.identity);
     Text { text: root.initial; color: #202124; font-size: Tokens.base; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; visible: root.picture.width == 0; }
-    Image { accessible-role: image; accessible-label: root.label; width: 100%; height: 100%; source: ContentState.avatar-picture(root.picture, root.width / 1px, ShellState.device-scale); image-fit: cover; visible: root.picture.width > 0; }
+    Image { accessible-role: image; accessible-label: root.label; width: 100%; height: 100%; source: root.picture; image-fit: cover; visible: root.picture.width > 0; }
 }

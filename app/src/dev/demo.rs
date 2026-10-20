@@ -127,7 +127,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                     line::client::desktop::reaction_kind(&curr)
                 {
                     let pixels = demo_data::avatar(1).to_rgba8().unwrap();
-                    fake.set_pixels(
+                    fake.set_image(
                         &asset,
                         line::client::desktop::assets::Pixels {
                             width: pixels.width(),

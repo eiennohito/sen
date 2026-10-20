@@ -36,7 +36,7 @@ pub use crate::store::{LiveOperation as LiveOp, Operation as Op};
 #[derive(Clone)]
 pub enum PairEvent {
     Stage(crate::client::pairing::Stage),
-    Qr(Arc<crate::client::desktop::assets::Pixels>),
+    Qr(std::path::PathBuf),
     Pin(String),
     Scanned,
 }
@@ -222,6 +222,20 @@ fn rpc(error: anyhow::Error) -> Failure {
     }
     failure
 }
+fn pairing_images(
+    root: &std::path::Path,
+) -> anyhow::Result<(
+    tempfile::TempDir,
+    std::sync::Mutex<crate::client::desktop::assets::ImageCache>,
+)> {
+    crate::client::private_directory(root)?;
+    let directory = tempfile::Builder::new()
+        .prefix("pairing-")
+        .tempdir_in(root)?;
+    let cache = crate::client::desktop::assets::ImageCache::new(directory.path(), "pairing")?;
+    Ok((directory, std::sync::Mutex::new(cache)))
+}
+
 fn asset_authorization(
     renew: bool,
     cancel: &CancelToken,
@@ -287,23 +301,33 @@ impl Backend for LineBackend {
             SessionClient::Absent(activity) => activity.clone(),
         };
         self.client = SessionClient::Absent(activity.clone());
+        let (_qr_directory, qr_cache) = pairing_images(&self.cache).map_err(rpc)?;
         let mut client = pairing::sign_in_validated(
             &self.state,
             module,
             activity,
             &cancel,
-            move |event| {
+            |event| {
                 deliver(match event {
                     pairing::Event::Stage(stage) => PairEvent::Stage(stage),
                     pairing::Event::Qr {
                         width,
                         height,
                         rgba,
-                    } => PairEvent::Qr(Arc::new(Pixels {
-                        width,
-                        height,
-                        rgba,
-                    })),
+                    } => match qr_cache.lock().unwrap().store_pixels(
+                        "qr",
+                        Pixels {
+                            width,
+                            height,
+                            rgba,
+                        },
+                    ) {
+                        Ok(path) => PairEvent::Qr(path),
+                        Err(error) => {
+                            crate::reporting::log("pairing", "qr-file", error.as_ref());
+                            return;
+                        }
+                    },
                     pairing::Event::Pin(pin) => PairEvent::Pin(pin),
                     pairing::Event::Scanned => PairEvent::Scanned,
                 })
@@ -378,19 +402,17 @@ impl Backend for LineBackend {
         if mid.is_empty() {
             return Ok(None);
         }
-        let asset = match purpose {
-            Purpose::Thumbnail => asset.clone(),
-            Purpose::Original => match asset.original() {
-                Some(asset) => asset,
-                None => return Ok(None),
-            },
-            Purpose::File { .. } => return Ok(None),
-        };
-        ImageCache::new(&self.cache, mid)
-            .and_then(|mut cache| cache.read(&asset))
-            .map(|pixels| pixels.map(Payload::Image))
-            .map_err(rpc)
+        let mut cache = ImageCache::new(&self.cache, mid).map_err(rpc)?;
+        match purpose {
+            Purpose::Thumbnail => cache.read(asset).map(|path| path.map(Payload::Image)),
+            Purpose::Original => cache
+                .read_original(asset)
+                .map(|paths| paths.map(|(path, source)| Payload::Original { path, source })),
+            Purpose::File { .. } => Ok(None),
+        }
+        .map_err(rpc)
     }
+
     fn contact(&mut self, mid: &str) -> Result<Option<crate::store::Friend>> {
         self.client()?.contact(mid).map_err(rpc)
     }
@@ -879,5 +901,36 @@ mod tests {
                 .is_err()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod pairing_image_tests {
+    #[test]
+    fn pairing_qr_file_is_deleted_when_sign_in_finishes() {
+        let root = tempfile::Builder::new()
+            .prefix("pairing-test-")
+            .tempdir_in(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/tmp"))
+            .unwrap();
+        let fresh_cache = root.path().join("fresh-cache");
+        assert!(!fresh_cache.exists());
+        let path = {
+            let (_directory, cache) = super::pairing_images(&fresh_cache).unwrap();
+            let path = cache
+                .lock()
+                .unwrap()
+                .store_pixels(
+                    "qr",
+                    crate::client::desktop::assets::Pixels {
+                        width: 1,
+                        height: 1,
+                        rgba: vec![0, 0, 0, 255],
+                    },
+                )
+                .unwrap();
+            assert!(path.exists());
+            path
+        };
+        assert!(!path.exists());
     }
 }

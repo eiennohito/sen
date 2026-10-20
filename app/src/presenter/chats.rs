@@ -7,7 +7,6 @@ impl Presenter {
         ui: &AppWindow,
         state: &AppState,
         category: ChatCategory,
-        text_size: i32,
     ) {
         let g = ui.global::<ChatsState>();
         let query = Query::new(&g.get_chat_query());
@@ -41,7 +40,6 @@ impl Presenter {
                     .and_then(|m| system_events::text(&m.body, state, &m.sender_id)),
                 offline: state.connection != Connection::Online,
                 index,
-                text_size,
             };
             let assets = inputs
                 .avatar
@@ -61,8 +59,9 @@ impl Presenter {
     }
 
     pub fn patch_draft(&mut self, chat: &ChatId, draft: &Option<Draft>) {
-        self.chats
-            .update(chat, |inputs| inputs.item.draft = draft.clone());
+        self.chats.update(chat, |inputs| {
+            std::mem::replace(&mut inputs.item.draft, draft.clone()) != *draft
+        });
     }
 }
 
@@ -82,13 +81,7 @@ pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         ..Default::default()
     };
     if let Some(m) = &inputs.item.preview {
-        rich_content::preview::set(
-            &mut row,
-            &m.body,
-            inputs.system_text.as_deref(),
-            images,
-            inputs.text_size,
-        );
+        rich_content::preview::set(&mut row, &m.body, inputs.system_text.as_deref(), images);
     } else if inputs.item.activity_ms == 0 {
         row.time = "New".into();
         row.preview = "No messages yet".into();

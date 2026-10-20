@@ -295,7 +295,6 @@ export global AuthState {
 }
 export global ContentState {
     in-out property <[ReactionRow]> reaction-kinds;
-    pure callback avatar-picture(image, float, float) -> image;
     pure callback name-tint(string, color, bool) -> color;
     pure callback avatar-tint(string) -> color;
     in-out property <string> link-feedback;

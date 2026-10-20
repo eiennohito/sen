@@ -1,73 +1,36 @@
-//! Avatar rasterization and visible asset requests.
-use line::{
-    client::desktop::assets::{Asset, Pixels},
-    engine::Intent,
+//! Visible asset requests.
+use line::{client::desktop::assets::Asset, engine::Intent};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, HashSet},
+    rc::Rc,
 };
-use std::collections::BTreeSet;
 
 #[derive(Clone, Default)]
 pub(crate) struct Assets {
-    requested: BTreeSet<String>,
+    requested: Rc<RefCell<HashSet<u64>>>,
+    reloads: Rc<RefCell<HashMap<String, Asset>>>,
 }
 impl Assets {
     pub(crate) fn evicted(&mut self, key: &str) {
-        self.requested.remove(key);
+        if let Some(asset) = self.reloads.borrow_mut().remove(key) {
+            self.requested.borrow_mut().remove(&identity(&asset));
+        }
     }
     pub(crate) fn request(&mut self, asset: &Asset) -> bool {
-        let key = asset.key();
-        self.requested.insert(key)
+        if !self.requested.borrow_mut().insert(identity(asset)) {
+            return false;
+        }
+        self.reloads
+            .borrow_mut()
+            .insert(asset.key(), asset.request());
+        true
     }
-}
-
-/// The software renderer doesn't round image clipping. Supply a masked square
-/// to render decoded avatar pixels as a circle.
-pub(crate) fn circular_avatar(pixels: &Pixels, size: u32) -> Pixels {
-    let Some(image) = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba.clone())
-    else {
-        return Pixels {
-            width: 0,
-            height: 0,
-            rgba: Vec::new(),
-        };
-    };
-    let edge = image.width().min(image.height());
-    let mut square = image::imageops::crop_imm(
-        &image,
-        (image.width() - edge) / 2,
-        (image.height() - edge) / 2,
-        edge,
-        edge,
-    )
-    .to_image();
-    for pixel in square.pixels_mut() {
-        let alpha = u16::from(pixel.0[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = (u16::from(*channel) * alpha / 255) as u8;
+    pub(crate) fn reload(&self, key: &str, sender: &line::engine::Sender) {
+        if let Some(asset) = self.reloads.borrow().get(key) {
+            sender.send(Intent::Asset(asset.clone()));
         }
     }
-    let mut image =
-        image::imageops::resize(&square, size, size, image::imageops::FilterType::Triangle);
-    let radius = size as f32 / 2.;
-    for (x, y, pixel) in image.enumerate_pixels_mut() {
-        let distance =
-            ((x as f32 + 0.5 - radius).powi(2) + (y as f32 + 0.5 - radius).powi(2)).sqrt();
-        let alpha = u16::from(pixel.0[3]);
-        for channel in &mut pixel.0[..3] {
-            *channel = (u16::from(*channel) * 255)
-                .checked_div(alpha)
-                .unwrap_or(0)
-                .min(255) as u8;
-        }
-        pixel.0[3] = (alpha as f32 * (radius + 0.5 - distance).clamp(0., 1.)).round() as u8;
-    }
-    Pixels {
-        width: size,
-        height: size,
-        rgba: image.into_raw(),
-    }
-}
-
-impl Assets {
     pub(crate) fn stickers(
         &mut self,
         state: &line::controller::AppState,
@@ -145,23 +108,47 @@ impl Assets {
     }
 }
 
+fn identity(asset: &Asset) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut hash = std::collections::hash_map::DefaultHasher::new();
+    asset.hash(&mut hash);
+    hash.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     #[test]
-    fn avatar_is_a_centered_circle() {
-        let source = Pixels {
-            width: 1600,
-            height: 1000,
-            rgba: [25, 70, 200, 255].repeat(1600 * 1000),
-        };
-        let circle = circular_avatar(&source, 44);
-        assert_eq!((circle.width, circle.height), (44, 44));
-        assert_eq!(circle.rgba[3], 0);
-        assert_eq!(circle.rgba[(22 * 44 + 22) * 4 + 3], 255);
-        assert_eq!(
-            &circle.rgba[(22 * 44 + 22) * 4..(22 * 44 + 22) * 4 + 3],
-            &[25, 70, 200]
-        );
+    fn requests_distinguish_failures_for_the_same_url() {
+        use line::client::desktop::assets::Failure;
+        let mut value = serde_json::to_value(line::backend::FakeBackend::asset(true)).unwrap();
+        let mut assets = Assets::default();
+        for failure in [Failure::Timeout, Failure::Http(404)] {
+            value["failure"] = serde_json::to_value(failure).unwrap();
+            let asset: Asset = serde_json::from_value(value.clone()).unwrap();
+            assert!(assets.request(&asset));
+            assert!(!assets.request(&asset));
+        }
+    }
+    #[test]
+    fn local_requests_deduplicate_by_identity_without_retaining_preview_bytes() {
+        let asset = Asset::local(line::attachments::Attachment {
+            path: "synthetic.png".into(),
+            name: "synthetic.png".into(),
+            size: 4,
+            photo: None,
+            preview: vec![42; 1024],
+            clipboard: false,
+        });
+        let mut assets = Assets::default();
+        assert!(assets.request(&asset));
+        assert!(!assets.request(&asset.request()));
+        let reloads = assets.reloads.borrow();
+        let reload = &reloads[&asset.key()];
+        assert!(reload.local_attachment().is_none());
+        assert_eq!(reload.key(), asset.key());
+        drop(reloads);
+        assets.evicted(&asset.key());
+        assert!(assets.request(&asset));
     }
 }

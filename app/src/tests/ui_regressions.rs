@@ -251,7 +251,9 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
             1,
             1,
         ));
-        presenter.images.insert(asset.key(), image.clone());
+        let path = crate::tests::image_file(&image);
+        let image = slint::Image::load_from_path(&path).unwrap();
+        presenter.images.insert(asset.key(), path);
         presenter.patch_asset(&ui, &state, &asset.key());
         assert!(state.chats.is_empty());
         assert_eq!(ui.global::<ConversationState>().get_chat_title(), "Friend");

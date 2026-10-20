@@ -54,7 +54,7 @@ impl Presenter {
     }
     pub(super) fn quote(&self, m: &StoredMessage, state: &AppState) -> MessageRow {
         let image_key = m.body.image().map(|a| a.key()).unwrap_or_default();
-        let image = self.images.get(&image_key);
+        let image = self.images.small(&image_key);
         MessageRow {
             sender_name: if m.outgoing {
                 "You".into()

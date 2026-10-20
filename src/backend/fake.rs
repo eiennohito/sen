@@ -46,7 +46,8 @@ struct FakeState {
     send_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
     upload_gate: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
     receipts: std::collections::BTreeMap<ChatId, ServerId>,
-    pixels: std::collections::BTreeMap<String, Arc<crate::client::desktop::assets::Pixels>>,
+    fixture_directory: Option<tempfile::TempDir>,
+    cache: Option<crate::client::desktop::assets::ImageCache>,
     echo_first: bool,
     next_id: i64,
     pages: std::collections::BTreeMap<ChatId, Vec<MessageInput>>,
@@ -55,6 +56,26 @@ struct FakeState {
     failed_assets: std::collections::BTreeMap<String, crate::client::desktop::assets::Purpose>,
     asset_failures: std::collections::BTreeMap<String, crate::client::desktop::assets::Failure>,
     slow_assets: std::collections::BTreeMap<String, Duration>,
+}
+impl FakeState {
+    fn image_cache(&mut self) -> &mut crate::client::desktop::assets::ImageCache {
+        use crate::client::desktop::assets::ImageCache;
+        if self.cache.is_none() {
+            let root = std::env::var_os("LINE_DEMO_DIRECTORY")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|| {
+                    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("target/tmp")
+                });
+            std::fs::create_dir_all(&root).unwrap();
+            let directory = tempfile::Builder::new()
+                .prefix("fake-images-")
+                .tempdir_in(root)
+                .unwrap();
+            self.cache = Some(ImageCache::new(directory.path(), "synthetic").unwrap());
+            self.fixture_directory = Some(directory);
+        }
+        self.cache.as_mut().unwrap()
+    }
 }
 #[derive(Clone)]
 pub struct FakeBackend {
@@ -304,16 +325,27 @@ impl FakeBackend {
             .asset_failures
             .insert(asset.key(), failure);
     }
-    pub fn set_pixels(
+    pub fn set_image(
         &self,
         asset: &crate::client::desktop::assets::Asset,
         pixels: crate::client::desktop::assets::Pixels,
-    ) {
-        self.state
-            .lock()
-            .unwrap()
-            .pixels
-            .insert(asset.key(), Arc::new(pixels));
+    ) -> std::path::PathBuf {
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        let image = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba).unwrap();
+        image.write_to(&mut bytes, image::ImageFormat::Png).unwrap();
+        let mut state = self.state.lock().unwrap();
+        let cache = state.image_cache();
+        if asset.dimension() == 8192 {
+            cache.original(asset, bytes.get_ref()).unwrap().0
+        } else {
+            let path = cache.store(asset, bytes.get_ref()).unwrap();
+            if let Some(original) = asset.original().filter(|_| asset.kind() != "sticker") {
+                cache
+                    .original(&original, &oriented_original(&image))
+                    .unwrap();
+            }
+            path
+        }
     }
     pub fn delay_asset(&self, asset: &crate::client::desktop::assets::Asset, delay: Duration) {
         self.state
@@ -407,13 +439,16 @@ impl FakeBackend {
                 network: true,
                 key: key.into(),
                 purpose,
-                result: Ok(crate::client::desktop::assets::Payload::Image(Arc::new(
-                    crate::client::desktop::assets::Pixels {
-                        width: 384,
-                        height: 256,
-                        rgba: [80, 180, 130, 255].repeat(384 * 256),
-                    },
-                ))),
+                result: Ok(crate::client::desktop::assets::Payload::Image(
+                    self.set_image(
+                        &Self::asset(true),
+                        crate::client::desktop::assets::Pixels {
+                            width: 384,
+                            height: 256,
+                            rgba: [80, 180, 130, 255].repeat(384 * 256),
+                        },
+                    ),
+                )),
             },
         ));
     }
@@ -423,11 +458,22 @@ impl FakeBackend {
         purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>> {
         use crate::client::desktop::assets::{Payload, Pixels, Purpose};
-        if let Some(pixels) = asset
-            .local_pixels()
-            .map_err(|_| Failure::Bug("decode".into()))?
+        if let Some(item) = asset
+            .local_attachment()
+            .filter(|item| !item.preview.is_empty())
         {
-            return Ok(Some(Payload::Image(Arc::new(pixels))));
+            let decoded = image::load_from_memory(&item.preview)
+                .map_err(|_| Failure::Bug("decode".into()))?
+                .to_rgba8();
+            let path = self.set_image(
+                asset,
+                Pixels {
+                    width: decoded.width(),
+                    height: decoded.height(),
+                    rgba: decoded.into_raw(),
+                },
+            );
+            return Ok(Some(Payload::Image(path)));
         }
 
         if let Some(failure) = asset.failure().or_else(|| {
@@ -458,22 +504,31 @@ impl FakeBackend {
         if let Some(delay) = slow {
             std::thread::sleep(delay);
         }
-        if let Some(pixels) = self.state.lock().unwrap().pixels.get(&asset.key()).cloned() {
-            return Ok(Some(Payload::Image(pixels)));
+        if let Some(payload) = self.cached_media("synthetic", asset, purpose.clone())? {
+            return Ok(Some(payload));
         }
         self.activity.record();
         Ok(Some(match purpose {
             Purpose::File { .. } => Payload::File(Arc::new(b"Synthetic attachment\n".to_vec())),
-            Purpose::Original => Payload::Image(Arc::new(Pixels {
-                width: 1200,
-                height: 800,
-                rgba: [80, 180, 130, 255].repeat(1200 * 800),
-            })),
-            _ => Payload::Image(Arc::new(Pixels {
-                width: 384,
-                height: 256,
-                rgba: [80, 180, 130, 255].repeat(384 * 256),
-            })),
+            Purpose::Original => {
+                // EXIF fixture exercises both the original delta and display rotation.
+                let bytes = oriented_original(&image::RgbaImage::from_pixel(
+                    1200,
+                    800,
+                    image::Rgba([80, 180, 130, 255]),
+                ));
+                let mut state = self.state.lock().unwrap();
+                let (path, source) = state.image_cache().original(asset, &bytes).unwrap();
+                Payload::Original { path, source }
+            }
+            _ => Payload::Image(self.set_image(
+                asset,
+                Pixels {
+                    width: 384,
+                    height: 256,
+                    rgba: [80, 180, 130, 255].repeat(384 * 256),
+                },
+            )),
         }))
     }
     fn online(&self) -> Result<()> {
@@ -517,11 +572,14 @@ impl Backend for FakeBackend {
                     rgba.extend_from_slice(&[shade, shade, shade, 255]);
                 }
             }
-            deliver(PairEvent::Qr(Arc::new(Pixels {
-                width,
-                height: width,
-                rgba,
-            })));
+            deliver(PairEvent::Qr(self.set_image(
+                &Self::asset(true),
+                Pixels {
+                    width,
+                    height: width,
+                    rgba,
+                },
+            )));
             deliver(PairEvent::Stage(Stage::AwaitScan));
             async_io::block_on(cancel.cancelled());
             return Err(Failure::SignedOut(SignOutReason::Unavailable(
@@ -627,16 +685,21 @@ impl Backend for FakeBackend {
         &mut self,
         _mid: &str,
         asset: &crate::client::desktop::assets::Asset,
-        _purpose: crate::client::desktop::assets::Purpose,
+        purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>> {
-        Ok(self
-            .state
-            .lock()
-            .unwrap()
-            .pixels
-            .get(&asset.key())
-            .cloned()
-            .map(crate::client::desktop::assets::Payload::Image))
+        use crate::client::desktop::assets::{Payload, Purpose};
+        let mut state = self.state.lock().unwrap();
+        let Some(cache) = state.cache.as_mut() else {
+            return Ok(None);
+        };
+        match purpose {
+            Purpose::Original => cache
+                .read_original(asset)
+                .map(|result| result.map(|(path, source)| Payload::Original { path, source })),
+            Purpose::Thumbnail => cache.read(asset).map(|path| path.map(Payload::Image)),
+            Purpose::File { .. } => Ok(None),
+        }
+        .map_err(|error| Failure::Bug(error.to_string()))
     }
 
     fn contact(&mut self, mid: &str) -> Result<Option<crate::store::Friend>> {
@@ -937,7 +1000,7 @@ impl Backend for FakeBackend {
                         }
                     }
                 }
-                self.set_pixels(
+                self.set_image(
                     sticker.image().unwrap(),
                     crate::client::desktop::assets::Pixels {
                         width: 96,
@@ -1089,5 +1152,107 @@ mod tests {
         );
         assert!(!activity.touched());
         assert_eq!(fake.calls(), vec![FakeRpc::SignIn]);
+    }
+}
+
+fn oriented_original(image: &image::RgbaImage) -> Vec<u8> {
+    let mut jpeg = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::imageops::rotate270(image))
+        .to_rgb8()
+        .write_to(&mut jpeg, image::ImageFormat::Jpeg)
+        .unwrap();
+    let jpeg = jpeg.into_inner();
+    let exif = b"Exif\0\0II\x2a\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+    let mut bytes = jpeg[..2].to_vec();
+    bytes.extend_from_slice(&[0xff, 0xe1]);
+    bytes.extend_from_slice(&((exif.len() + 2) as u16).to_be_bytes());
+    bytes.extend_from_slice(exif);
+    bytes.extend_from_slice(&jpeg[2..]);
+    bytes
+}
+
+#[cfg(test)]
+mod image_tests {
+    use super::*;
+    use crate::client::desktop::assets::{Asset, Payload, Pixels, Purpose};
+    #[test]
+    fn fixture_files_live_until_the_last_backend_clone_is_dropped() {
+        let fake = FakeBackend::canned();
+        let clone = fake.clone();
+        let path = fake.set_image(
+            &FakeBackend::asset(true),
+            Pixels {
+                width: 1,
+                height: 1,
+                rgba: vec![1, 2, 3, 255],
+            },
+        );
+        drop(fake);
+        assert!(path.is_file());
+        let directory = path.parent().unwrap().parent().unwrap().to_owned();
+        drop(clone);
+        assert!(!path.exists());
+        assert!(!directory.exists());
+    }
+    #[test]
+    fn original_payload_preserves_source_and_regenerates_rotation_offline() {
+        let mut fake = FakeBackend::canned();
+        let original = FakeBackend::asset(true).original().unwrap();
+        let Some(Payload::Original { path, source }) =
+            fake.media(&original, Purpose::Original).unwrap()
+        else {
+            panic!("original payload required")
+        };
+        assert_ne!(path, source);
+        assert_eq!(image::open(&path).unwrap().width(), 1200);
+        std::fs::remove_file(&path).unwrap();
+        fake.offline(true);
+        let Some(Payload::Original {
+            path: restored,
+            source: same,
+        }) = fake
+            .cached_media("synthetic", &original, Purpose::Original)
+            .unwrap()
+        else {
+            panic!("cached original required")
+        };
+        assert_eq!(restored, path);
+        assert_eq!(same, source);
+        assert!(path.is_file());
+        let portrait = Asset::photo(&serde_json::json!({"id":"portrait"})).unwrap();
+        fake.set_image(
+            &portrait,
+            Pixels {
+                width: 800,
+                height: 1200,
+                rgba: [20, 30, 40, 255].repeat(800 * 1200),
+            },
+        );
+        let Some(Payload::Original { path, source }) = fake
+            .media(&portrait.original().unwrap(), Purpose::Original)
+            .unwrap()
+        else {
+            panic!("seeded original required")
+        };
+        assert_eq!(
+            image::open(path).unwrap().to_rgba8().dimensions(),
+            (800, 1200)
+        );
+        assert_eq!(
+            image::open(source).unwrap().to_rgba8().dimensions(),
+            (1200, 800)
+        );
+        let sticker = Asset::sticker(&serde_json::json!({"STKID":"42"})).unwrap();
+        let path = fake.set_image(
+            &sticker,
+            Pixels {
+                width: 1,
+                height: 1,
+                rgba: vec![1, 2, 3, 255],
+            },
+        );
+        assert!(
+            matches!(fake.media(&sticker.original().unwrap(), Purpose::Original).unwrap(), Some(Payload::Original {path: cached, ..}) if cached == path)
+        );
     }
 }

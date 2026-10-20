@@ -1,31 +1,9 @@
 use crate::*;
 
-pub(crate) fn small(image: &slint::Image, size: i32) -> slint::Image {
-    let edge = ((size.clamp(12, 24) - 1) * 3) as u32;
-    let dimensions = image.size();
-    if dimensions.width <= edge && dimensions.height <= edge {
-        return image.clone();
-    }
-    let Some(pixels) = image.to_rgba8() else {
-        return slint::Image::default();
-    };
-    let source =
-        image::RgbaImage::from_raw(pixels.width(), pixels.height(), pixels.as_bytes().to_vec())
-            .unwrap();
-    let source = image::DynamicImage::ImageRgba8(source);
-    let scaled = source.thumbnail(edge, edge).to_rgba8();
-    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-        scaled.as_raw(),
-        scaled.width(),
-        scaled.height(),
-    ))
-}
-
 pub(crate) fn preview_runs(
     text: &str,
     metadata: &[presenter::format::EmojiView],
     images: &presenter::Images,
-    size: i32,
 ) -> ModelRc<RichRun> {
     let source = rich_content::run_data(text, metadata);
     if !source.iter().any(|r| r.emoji) {
@@ -48,7 +26,7 @@ pub(crate) fn preview_runs(
             }
             space = false;
             started = true;
-            if let Some(image) = images.preview(run.image_key.as_str(), size) {
+            if let Some(image) = images.get(run.image_key.as_str()) {
                 run.picture = image;
                 run.has_picture = true;
             }
@@ -88,7 +66,6 @@ pub(crate) fn set(
 
     system_text: Option<&str>,
     images: &presenter::Images,
-    size: i32,
 ) {
     let (kind, label) = kind_label(content);
     row.preview = single_line(system_text.unwrap_or(&label)).into();
@@ -98,7 +75,7 @@ pub(crate) fn set(
             kind,
             MessageKind::Photo | MessageKind::Sticker | MessageKind::Video
         ) {
-        let image = images.preview(&image_key, size);
+        let image = images.small(&image_key);
         ModelRc::new(VecModel::from(vec![
             RichRun {
                 image_key: image_key.clone().into(),
@@ -116,7 +93,7 @@ pub(crate) fn set(
         ]))
     } else {
         let emoji = emoji_views(content);
-        preview_runs(content.as_text(), &emoji, images, size)
+        preview_runs(content.as_text(), &emoji, images)
     };
 }
 

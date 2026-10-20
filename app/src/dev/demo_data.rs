@@ -104,8 +104,14 @@ pub fn image_asset(fake: &FakeBackend, name: &str, image: slint::Image) -> Asset
     value["url"] = format!("https://obs.line-apps.com/r/talk/m/{name}/preview").into();
     value["name"] = name.into();
     let asset: Asset = serde_json::from_value(value).unwrap();
+    store_image(fake, asset, image)
+}
+pub fn avatar_asset(fake: &FakeBackend, name: &str, image: slint::Image) -> Asset {
+    store_image(fake, Asset::avatar(&format!("/{name}")).unwrap(), image)
+}
+fn store_image(fake: &FakeBackend, asset: Asset, image: slint::Image) -> Asset {
     let pixels = image.to_rgba8().unwrap();
-    fake.set_pixels(
+    fake.set_image(
         &asset,
         Pixels {
             width: pixels.width(),
@@ -113,16 +119,6 @@ pub fn image_asset(fake: &FakeBackend, name: &str, image: slint::Image) -> Asset
             rgba: pixels.as_bytes().to_vec(),
         },
     );
-    if let Some(original) = asset.original() {
-        fake.set_pixels(
-            &original,
-            Pixels {
-                width: pixels.width(),
-                height: pixels.height(),
-                rgba: pixels.as_bytes().to_vec(),
-            },
-        );
-    }
     asset
 }
 
@@ -145,7 +141,7 @@ fn message(
                 ..Default::default()
             },
             name: Some("葵".into()),
-            avatar: Some(image_asset(fake, "avatar-aoi", avatar(0))),
+            avatar: Some(avatar_asset(fake, "avatar-aoi", avatar(0))),
             ..Default::default()
         });
     }
@@ -236,7 +232,7 @@ pub fn group(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInput> {
             fake.set_contact(Friend {
                 id: sender.into(),
                 name: Some(name.into()),
-                avatar: Some(image_asset(
+                avatar: Some(avatar_asset(
                     fake,
                     &format!("avatar-{sender}"),
                     avatar(if sender == "aoi" { 0 } else { 1 }),
@@ -302,7 +298,7 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
     };
     let asset = Asset::inline_emoji(&span).unwrap();
     let pixels = avatar(0).to_rgba8().unwrap();
-    fake.set_pixels(
+    fake.set_image(
         &asset,
         Pixels {
             width: pixels.width(),
@@ -369,7 +365,7 @@ pub fn rich_fixture(fake: &FakeBackend, chat: &str, base: i64) -> Vec<MessageInp
 pub fn seed(fake: &FakeBackend) {
     let own_avatar = Asset::avatar("/self-photo").unwrap();
     let pixels = avatar(2).to_rgba8().unwrap();
-    fake.set_pixels(
+    fake.set_image(
         &own_avatar,
         Pixels {
             width: pixels.width(),
@@ -440,7 +436,7 @@ pub fn seed(fake: &FakeBackend) {
             title: (*title).into(),
             is_group: i == 1,
             member_count: (i == 1).then_some(25),
-            avatar: Some(image_asset(fake, &format!("chat-avatar-{i}"), avatar(i))),
+            avatar: Some(avatar_asset(fake, &format!("chat-avatar-{i}"), avatar(i))),
             last_message_id: Some(last.server_id.clone()),
             last_message_ms: Some(last.created_ms),
             ..Default::default()
@@ -471,7 +467,7 @@ pub fn seed(fake: &FakeBackend) {
         name: Some("新しい友だち 🌸".into()),
         status: "まだ会話のない友だち".into(),
         group: false,
-        avatar: Some(image_asset(fake, "new-friend-avatar", avatar(1))),
+        avatar: Some(avatar_asset(fake, "new-friend-avatar", avatar(1))),
         member_count: None,
     });
     fake.set_friends(friends);
@@ -499,7 +495,7 @@ pub fn seed(fake: &FakeBackend) {
                 status: String::new(),
                 group: false,
                 avatar: (i != 24)
-                    .then(|| image_asset(fake, &format!("member-avatar-{i}"), avatar(i % 3))),
+                    .then(|| avatar_asset(fake, &format!("member-avatar-{i}"), avatar(i % 3))),
                 member_count: None,
             },
         })
@@ -656,7 +652,7 @@ pub fn previews(fake: &FakeBackend) {
                 fake.set_asset_failure(&asset, line::client::desktop::assets::Failure::Http(404));
             } else {
                 let image = avatar(0).to_rgba8().unwrap();
-                fake.set_pixels(
+                fake.set_image(
                     &asset,
                     Pixels {
                         width: image.width(),
@@ -787,7 +783,7 @@ pub fn run_review(fake: &FakeBackend, chat: &str) -> Vec<MessageInput> {
     fake.set_contact(Friend {
         id: "aoi".into(),
         name: Some("葵".into()),
-        avatar: Some(image_asset(fake, "run-avatar", avatar(0))),
+        avatar: Some(avatar_asset(fake, "run-avatar", avatar(0))),
         ..Default::default()
     });
     [
