@@ -8,6 +8,7 @@ export component DemoExtension inherits FocusScope {
     focus-on-tab-navigation: false;
     @children
     property <string> focus-value;
+    fixture-labels := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: "Demo fixture labels"; accessible-value: DemoState.fixture-labels; }
     focus-marker := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: "Demo focused control"; accessible-value: root.focus-value; accessible-action-default => { root.focus-value = DemoState.focused-control(); } }
     if DemoState.demo-reset-enabled: demo-reset-marker := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: DemoState.demo-instance; accessible-value: DemoState.demo-instance + ":" + DemoState.demo-reset-generation; }
     Text { width: 1px; height: 1px; accessible-role: text; accessible-label: "Recorded link activation"; accessible-value: DemoState.last-opened-link; }

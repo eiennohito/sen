@@ -482,6 +482,22 @@ fn fixture(
     title: &str,
     rows: Vec<MessageInput>,
 ) {
+    // The runner consumes labels from these rows rather than reconstructing the demo clock.
+    if matches!(id, "stickers" | "groups") {
+        let time_rows: &[usize] = if id == "stickers" {
+            &[0]
+        } else {
+            &[1, 2, 5, 6]
+        };
+        let day_rows: &[usize] = if id == "stickers" { &[] } else { &[0, 6] };
+        let now = now_millis();
+        ui.global::<DemoState>().set_fixture_labels(
+            serde_json::json!({
+                "times": time_rows.iter().map(|&i| presenter::format::display_time(rows[i].created_ms)).collect::<Vec<_>>(),
+                "days": day_rows.iter().map(|&i| presenter::format::day_label(rows[i].created_ms, now)).collect::<Vec<_>>(),
+            }).to_string().into(),
+        );
+    }
     let chat = ChatId(id.into());
     let is_group = matches!(id, "groups" | "action-group");
     fake.add_chat(ChatInput {
