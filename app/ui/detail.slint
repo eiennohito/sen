@@ -37,6 +37,20 @@ component ProfileActionButton inherits Rectangle {
     button := IconButton { y: 0px; x: (parent.width - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: root.label; icon: root.icon; enabled: root.enabled; activated => { root.activated(); } }
     Text { y: 48px; width: parent.width; text: root.label; horizontal-alignment: center; font-size: Tokens.small; color: Tokens.text.transparentize(root.enabled ? 0 : 0.6); }
 }
+component ProfileEditButton inherits Rectangle {
+    in property <length> first-line-height;
+    in property <string> label;
+    in property <DetailAction> action;
+    width: 28px;
+    IconButton {
+        y: (root.first-line-height - self.height) / 2;
+        width: 28px; height: 28px; border-radius: 14px;
+        icon: @image-url("../assets/icons/rename.svg"); icon-size: 16px;
+        icon-color: Tokens.secondary; hover-color: Tokens.surface-2; pressed-color: Tokens.surface-2;
+        label: root.label; enabled: !DetailState.detail-busy;
+        activated => { DetailState.open-detail-dialog(root.action); }
+    }
+}
 export component Detail inherits FocusScope {
     public pure function focus-opener() -> FocusOpener {
         if avatar-focus.has-focus { return FocusOpener.profile-photo; }
@@ -51,6 +65,7 @@ export component Detail inherits FocusScope {
     }
     out property <bool> editing: members.visible && members.editing;
     property <length> name-width: 288px;
+    property <length> status-width: 288px;
     focus-on-tab-navigation: false;
     public function focus-first() {
         // Header controls are conditional; enter the first available stop.
@@ -91,16 +106,27 @@ export component Detail inherits FocusScope {
                     }
                 }
                 HorizontalLayout { alignment: center; spacing: 8px;
-                    RichFlow { width: min(root.name-width, root.width - 32px - (DetailState.profile-favourite ? 28px : 0px)); runs: DetailState.profile-name-runs; text-size: Tokens.heading; max-lines: 2; elide-overflow: true; accessible-role: text; accessible-label: DetailState.profile-name; natural-width(value) => { root.name-width = max(24px,value * 1px); } }
+                    if DetailState.profile-own: Rectangle { width: 28px; height: 0px; }
+                    name := RichFlow { width: min(root.name-width, root.width - 32px - (DetailState.profile-favourite ? 28px : 0px) - (DetailState.profile-own ? 72px : 0px)); runs: DetailState.profile-name-runs; centered: DetailState.profile-own; text-size: Tokens.heading; max-lines: 2; elide-overflow: true; accessible-role: text; accessible-label: DetailState.profile-name; natural-width(value) => { root.name-width = max(24px,value * 1px); } }
                     if DetailState.profile-favourite: Image { height: 20px; width: 20px; source: @image-url("../assets/icons/star.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Favourite"; }
+                    if DetailState.profile-own: ProfileEditButton { height: name.height; first-line-height: name.first-line-height; label: "Edit name"; action: DetailAction.edit-name; }
                 }
                 if DetailState.profile-original != "": Text { text: DetailState.profile-original; color: Tokens.secondary; wrap: word-wrap; horizontal-alignment: center; }
-                if DetailState.detail-page == DetailPageMode.profile && DetailState.profile-status != "": RichFlow { runs: DetailState.profile-status-runs; centered: true; text-color: Tokens.secondary; max-lines: 4; accessible-role: text; accessible-label: DetailState.profile-status; }
+                if DetailState.detail-page == DetailPageMode.profile && DetailState.profile-status != "": HorizontalLayout { alignment: center; spacing: 8px;
+                    if DetailState.profile-own: Rectangle { width: 28px; height: 0px; }
+                    status := RichFlow { width: DetailState.profile-own ? min(root.status-width, root.width - 104px) : root.width - 32px; runs: DetailState.profile-status-runs; centered: true; text-color: Tokens.secondary; max-lines: 4; accessible-role: text; accessible-label: DetailState.profile-status; natural-width(value) => { root.status-width = max(24px, value * 1px); } }
+                    if DetailState.profile-own: ProfileEditButton { height: status.height; first-line-height: status.first-line-height; label: "Edit status message"; action: DetailAction.edit-status; }
+                }
+                if DetailState.profile-own && DetailState.profile-status == "": HorizontalLayout { alignment: center; spacing: 8px;
+                    Rectangle { width: 28px; height: 0px; }
+                    placeholder := Text { height: self.preferred-height; text: "Add a status message"; font-size: Tokens.base; color: Tokens.secondary;
+                        TouchArea { enabled: !DetailState.detail-busy; mouse-cursor: pointer; clicked => { DetailState.open-detail-dialog(DetailAction.edit-status); } }
+                    }
+                    ProfileEditButton { height: placeholder.height; first-line-height: placeholder.height; label: "Edit status message"; action: DetailAction.edit-status; }
+                }
                 if DetailState.detail-page == DetailPageMode.profile && DetailState.profile-notice != "": Text { text: DetailState.profile-notice; color: Tokens.secondary; wrap: word-wrap; }
-                if DetailState.detail-page == DetailPageMode.profile && (DetailState.profile-own || DetailState.profile-available || DetailState.profile-friend || DetailState.profile-addable): profile-actions := HorizontalLayout { height: 72px; alignment: center; spacing: 8px;
+                if DetailState.detail-page == DetailPageMode.profile && !DetailState.profile-own && (DetailState.profile-available || DetailState.profile-friend || DetailState.profile-addable): profile-actions := HorizontalLayout { height: 72px; alignment: center; spacing: 8px;
                     if DetailState.profile-available: chat := ProfileActionButton { enabled: true; label: "Chat"; icon: @image-url("../assets/icons/chats.svg"); activated => { DetailState.start-friend-chat(); } }
-                    if DetailState.profile-own: ProfileActionButton { enabled: !DetailState.detail-busy; label: "Edit name"; icon: @image-url("../assets/icons/rename.svg"); activated => { DetailState.open-detail-dialog(DetailAction.edit-name); } }
-                    if DetailState.profile-own: ProfileActionButton { width: 136px; enabled: !DetailState.detail-busy; label: "Edit status message"; icon: @image-url("../assets/icons/rename.svg"); activated => { DetailState.open-detail-dialog(DetailAction.edit-status); } }
                     if DetailState.profile-friend: rename := ProfileActionButton { enabled: !DetailState.detail-busy; label: DetailState.action-text(DetailAction.rename, DetailState.detail-running); icon: @image-url("../assets/icons/rename.svg"); activated => { DetailState.open-detail-dialog(DetailAction.rename); } }
                     if DetailState.profile-addable: add := ProfileActionButton { enabled: !DetailState.detail-busy; label: DetailState.action-text(DetailAction.add, DetailState.detail-running); icon: @image-url("../assets/icons/add-friend.svg"); activated => { DetailState.detail-action(DetailAction.add, ""); } }
                 }
