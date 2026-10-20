@@ -46,7 +46,7 @@ export global ShellState {
     out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
     in-out property <bool> ime-active: false;
     callback quit();
-    out property <bool> window-modal-open: self.startup-notice != "" || SettingsState.logout-open || self.extension-modal-open || AttachmentState.attachments-open || NewChatState.new-chat-open || AuthState.auth-open || ViewerState.viewer-open || SettingsState.settings-open || ConversationState.recovery-kind != RecoveryKind.none || DetailState.detail-dialog != DetailAction.none;
+    out property <bool> window-modal-open: SettingsState.logout-open || self.extension-modal-open || AttachmentState.attachments-open || NewChatState.new-chat-open || AuthState.auth-open || ViewerState.viewer-open || SettingsState.settings-open || ConversationState.recovery-kind != RecoveryKind.none || DetailState.detail-dialog != DetailAction.none;
     out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && DetailState.detail-open);
     in-out property <ConnectionState> connection: local;
     out property <bool> connected: self.connection == ConnectionState.online;
@@ -59,7 +59,6 @@ export global ShellState {
     out property <length> connection-notice-height: 36px;
     out property <bool> retrying-connection: self.connection == ConnectionState.connecting;
     in-out property <string> storage-error;
-    in-out property <string> startup-notice;
     in-out property <string> account-mid;
     in-out property <string> account-name;
     in-out property <bool> show-conversation: false;

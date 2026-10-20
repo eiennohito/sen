@@ -214,39 +214,6 @@ fn saved_session_failure_kinds_stay_distinct() -> Result<()> {
 }
 
 #[test]
-fn old_key_copy_survives_a_failed_put_and_retries_later() -> Result<()> {
-    struct ReadOnly<'a>(&'a MapKeys);
-    impl Keys for ReadOnly<'_> {
-        fn delete(&self, _: &str) -> Result<()> {
-            bail!("read only")
-        }
-        fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>> {
-            self.0.get(application, id)
-        }
-        fn put(&self, _: &str, _: &str, _: &[u8; 32]) -> Result<()> {
-            bail!("collection locked")
-        }
-    }
-    let root = TempDir::new("key-put-retry");
-    let path = root.0.join("session.json");
-    let keys = MapKeys::default();
-    let id = "old-read-only";
-    let key = [42; 32];
-    keys.put("line-desktop", id, &key)?;
-    private_write(&path, &seal(id, &key, &serde_json::to_vec(&synthetic())?)?)?;
-    assert_eq!(
-        load_with(&path, Store::Keyring, &ReadOnly(&keys))?,
-        synthetic()
-    );
-    assert_eq!(keys.get("sen", id)?, None);
-    assert_eq!(load_with(&path, Store::Keyring, &keys)?, synthetic());
-    assert_eq!(keys.get("sen", id)?, Some(key));
-    assert_eq!(keys.get("line-desktop", id)?, Some(key));
-    assert_eq!(keys.0.lock().unwrap().len(), 2);
-    Ok(())
-}
-
-#[test]
 fn logout_removes_only_the_current_sen_key_and_session() -> anyhow::Result<()> {
     let temp = TempDir::new("logout-key");
     let locations = temp.locations();
@@ -256,7 +223,6 @@ fn logout_removes_only_the_current_sen_key_and_session() -> anyhow::Result<()> {
     let id = saved_key_id(&path)?.unwrap();
     let id = id.as_str();
     keys.put("sen", "other", &[2; 32])?;
-    keys.put("line-desktop", id, &[3; 32])?;
     let (_, clean) = crate::logout::Pending::begin(&locations, Some("self".into()), false);
     assert!(clean);
     assert!(!path.exists());
@@ -278,7 +244,6 @@ fn logout_removes_only_the_current_sen_key_and_session() -> anyhow::Result<()> {
     assert!(!path.exists());
     assert_eq!(keys.get("sen", id)?, None);
     assert_eq!(keys.get("sen", "other")?, Some([2; 32]));
-    assert_eq!(keys.get("line-desktop", id)?, Some([3; 32]));
     assert!(Keyring.delete(id).is_err());
     Ok(())
 }

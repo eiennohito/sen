@@ -1,5 +1,5 @@
 use super::*;
-use std::{fs, os::unix::fs::PermissionsExt};
+use std::fs;
 
 #[test]
 fn xdg_paths_and_account_names() {
@@ -39,47 +39,6 @@ fn xdg_paths_and_account_names() {
         .status()
         .unwrap();
     assert!(status.success());
-}
-
-#[test]
-fn first_start_copies_private_auth_and_keeps_both_existing_files() {
-    let root = crate::test_support::TempDir::new("first-start");
-    let old = root.0.join("line-desktop");
-    fs::create_dir_all(old.join("accounts")).unwrap();
-    let session = b"synthetic sealed session bytes";
-    fs::write(old.join("session.json"), session).unwrap();
-    fs::write(old.join("accounts/last-mid"), b"U123").unwrap();
-    let locations = root.locations();
-    locations.copy_first_start().unwrap();
-    assert_eq!(fs::read(&locations.session).unwrap(), session);
-    assert_eq!(
-        fs::metadata(&locations.session)
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
-    assert_eq!(
-        fs::read(locations.data.join("auth/last-account")).unwrap(),
-        b"U123"
-    );
-    fs::write(&locations.session, b"new session").unwrap();
-    fs::write(locations.data.join("auth/last-account"), b"U456").unwrap();
-    locations.copy_first_start().unwrap();
-    assert_eq!(fs::read(&locations.session).unwrap(), b"new session");
-    assert_eq!(
-        fs::read(locations.data.join("auth/last-account")).unwrap(),
-        b"U456"
-    );
-    assert_eq!(fs::read(old.join("session.json")).unwrap(), session);
-    assert_eq!(fs::read(old.join("accounts/last-mid")).unwrap(), b"U123");
-    crate::client::private_write(&locations.data.join("auth/logged-out"), b"").unwrap();
-    remove_file(&locations.session).unwrap();
-    remove_file(&locations.data.join("auth/last-account")).unwrap();
-    locations.copy_first_start().unwrap();
-    assert!(!locations.session.exists());
-    assert!(!locations.data.join("auth/last-account").exists());
 }
 
 #[test]

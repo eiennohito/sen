@@ -22,74 +22,7 @@ pub struct Store {
 impl Store {
     pub fn open_account(root: &Path, mid: &str) -> Result<Self> {
         let directory = crate::locations::account_directory(root, mid)?;
-        if let Err(error) = Self::copy_first_start(root, mid, &directory) {
-            crate::reporting::log("store-copy", "first-start", &error);
-            return Self::open_in_memory();
-        }
         Self::open(&directory)
-    }
-
-    // remove after the first release
-    pub(crate) fn copy_first_start(root: &Path, mid: &str, directory: &Path) -> Result<()> {
-        use sha2::{Digest, Sha256};
-        if crate::locations::account_directory(&root.join("auth/forgotten"), mid)?.try_exists()? {
-            return Ok(());
-        }
-        let destination = directory.join("store.sqlite3");
-        let old = root
-            .parent()
-            .unwrap()
-            .join("line-desktop/accounts")
-            .join(format!("{:x}", Sha256::digest(mid)))
-            .join("store.sqlite3");
-        if !destination.try_exists()? && old.try_exists()? {
-            crate::client::private_directory(directory)
-                .map_err(|error| StoreError::Io(std::io::Error::other(error)))?;
-            let connection =
-                Connection::open_with_flags(old, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
-            connection.busy_timeout(std::time::Duration::from_secs(2))?;
-            let temporary = tempfile::NamedTempFile::new_in(directory)?;
-            connection.execute(
-                "VACUUM INTO ?",
-                [temporary.path().to_string_lossy().as_ref()],
-            )?;
-            Self::publish_copy(temporary, &destination, std::fs::File::sync_all)?;
-        }
-        Ok(())
-    }
-
-    // Verify before publishing; a crash must never leave a partial winning copy.
-    fn publish_copy(
-        temporary: tempfile::NamedTempFile,
-        destination: &Path,
-        sync: impl Fn(&std::fs::File) -> std::io::Result<()>,
-    ) -> Result<()> {
-        let copy = Connection::open_with_flags(
-            temporary.path(),
-            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        )?;
-        let check: String = copy.pragma_query_value(None, "quick_check", |r| r.get(0))?;
-        if check != "ok" {
-            return Err(StoreError::Invalid(
-                "copied store failed quick_check".into(),
-            ));
-        }
-        let version: i64 = copy.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        drop(copy);
-        let directory = std::fs::File::open(destination.parent().unwrap())?;
-        sync(temporary.as_file())?;
-        temporary
-            .persist_noclobber(destination)
-            .map_err(|error| error.error)?;
-        if let Err(error) = sync(&directory) {
-            std::fs::remove_file(destination)?;
-            directory.sync_all()?;
-            return Err(error.into());
-        }
-        if version != SCHEMA_VERSION {
-            eprintln!("Old history could not be carried over (schema mismatch); old file kept.");
-        }
-        Ok(())
     }
 
     pub fn open(dir: &Path) -> Result<Self> {

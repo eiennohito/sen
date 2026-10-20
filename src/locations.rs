@@ -9,22 +9,6 @@ pub struct Locations {
     pub cache: PathBuf,
 }
 impl Locations {
-    // remove after the first release
-    pub fn copy_first_start(&self) -> anyhow::Result<()> {
-        let old = self.data.parent().unwrap().join("line-desktop");
-        if self.data.join("auth/logged-out").exists()
-            || self.data.join("auth/logout-pending").exists()
-        {
-            return Ok(());
-        }
-        copy_if_absent(&old.join("session.json"), &self.session)?;
-        copy_if_absent(
-            &old.join("accounts/last-mid"),
-            &self.data.join("auth/last-account"),
-        )?;
-        Ok(())
-    }
-
     pub(crate) fn account(data: PathBuf, cache: PathBuf) -> Self {
         Self {
             config_home: PathBuf::new(),
@@ -62,14 +46,6 @@ impl Locations {
             cache: base("XDG_CACHE_HOME", ".cache").join("sen"),
         })
     }
-}
-
-// remove after the first release
-fn copy_if_absent(old: &std::path::Path, new: &std::path::Path) -> anyhow::Result<()> {
-    if !new.exists() && old.exists() {
-        crate::client::private_write(new, &std::fs::read(old)?)?;
-    }
-    Ok(())
 }
 
 /// Account IDs are single path segments, using the same alphabet as service IDs.

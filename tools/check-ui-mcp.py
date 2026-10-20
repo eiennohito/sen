@@ -1709,6 +1709,48 @@ def check_logout():
     key("\x1b")
 
 
+def assert_profile_action_geometry(labels):
+    def centre(item, axis, extent):
+        return item["absolutePosition"][axis] + item["size"][extent] / 2
+
+    buttons = [element(label, "Button") for label in labels]
+    for button in buttons:
+        label = button["accessibleLabel"]
+        caption = element(label, "Text")
+        images = [item for item in tree(button["handle"])
+                  if any(base.get("typeName") == "Image" for base in item.get("typeNamesAndIds", []))]
+        assert len(images) == 1, f"{label}: missing action icon"
+        icon = images[0]
+        assert icon["size"] == {"width": 20, "height": 20}, f"{label}: icon size differs from profile actions"
+        for axis, extent in (("x", "width"), ("y", "height")):
+            assert abs(centre(icon, axis, extent) - centre(button, axis, extent)) <= .5, f"{label}: icon is not centred in its button"
+        assert abs(centre(buttons[0], "y", "height") - centre(button, "y", "height")) <= .5, f"{label}: icons are not aligned with sibling actions"
+        assert abs(centre(button, "x", "width") - centre(caption, "x", "width")) <= .5, f"{label}: icon is not centred above its label"
+        gap = caption["absolutePosition"]["y"] - button["absolutePosition"]["y"] - button["size"]["height"]
+        assert gap >= 8, f"{label}: action circle overlaps its label spacing ({gap}px)"
+
+
+def check_profile_action_geometry():
+    show_chats()
+    click("Friends")
+    click("Open profile: 葵")
+    wait_element("Rename")
+    screenshot("friend-profile")
+    assert_profile_action_geometry(("Chat", "Rename"))
+    click("Close details")
+    narrow = properties["size"]["width"] / properties.get("scaleFactor", 1) < 740
+    if narrow:
+        click("Settings")
+        click("About", "Tab")
+        click("Offline preview")
+    else:
+        click("Your profile")
+    wait_element("Edit name")
+    screenshot("own-profile")
+    assert_profile_action_geometry(("Edit name", "Edit status message"))
+    click("Close details")
+
+
 def check_own_profile():
     click("Your profile")
     click("Edit name")
@@ -1744,6 +1786,7 @@ def check_own_profile():
 
 
 GROUPS = {
+    'profile-action-geometry': check_profile_action_geometry,
     'own-profile': check_own_profile,
     'logout': check_logout,
     'latency': check_latency,
@@ -1852,7 +1895,7 @@ def main():
         selected = ['latency', *selected]
     if args.all:
         matrix = [(980, [g for g in GROUPS if g not in ('signed-out', 'missing-module', 'virtual-wheel')]),
-                  (1280, list(WIDE_GROUPS)), (420, ["focus"])]
+                  (1280, list(WIDE_GROUPS)), (420, ["focus"]), (360, ["profile-action-geometry"])]
         matrix += [(980, [g]) for g in ('signed-out', 'missing-module', 'virtual-wheel')]
     else:
         regular = [g for g in selected if g not in ('signed-out', 'missing-module', 'virtual-wheel')]

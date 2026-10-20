@@ -932,19 +932,6 @@ fn last_account_startup_and_logout_when_backend_cannot_open() -> anyhow::Result<
 }
 
 #[test]
-fn identified_account_survives_copy_failure_without_publishing_a_store() {
-    let temp = TempDir::new("identity-copy-failure");
-    let root = temp.0.join("sen");
-    let old = temp.old_account("self");
-    fs::create_dir_all(&old).unwrap();
-    fs::write(old.join("store.sqlite3"), b"corrupt").unwrap();
-    let mut app = App::account(&temp.locations());
-    assert_eq!(app.state.connection, Connection::Online);
-    assert!(!root.join("self/store.sqlite3").exists());
-    app.settle();
-}
-
-#[test]
 fn logout_keeps_history_and_isolates_the_next_account() {
     let temp = TempDir::new("logout-keep");
     let paths = temp.locations();
@@ -1057,12 +1044,6 @@ fn logout_deletes_only_the_requested_account_after_joining_writers() -> anyhow::
     let clipboard = root.join("clipboard-attachments");
     assert!(!clipboard.join("self.txt").exists());
     assert!(clipboard.join("other.txt").exists());
-    Store::open(&temp.old_account("self"))?;
-    Store::copy_first_start(root, "self", &root.join("self"))?;
-    assert!(
-        !root.join("self").exists(),
-        "deleted history was imported again"
-    );
     Ok(())
 }
 

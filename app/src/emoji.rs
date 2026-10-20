@@ -1,19 +1,15 @@
-use std::path::PathBuf;
-
-fn path(fonts: &std::path::Path) -> Option<PathBuf> {
+fn path(fonts: &std::path::Path) -> std::path::PathBuf {
     #[cfg(any(debug_assertions, feature = "ui-debug"))]
     if let Some(path) = std::env::var_os("SEN_EMOJI_FONT") {
-        return Some(path.into());
+        return path.into();
     }
-    Some(fonts.join("NotoColorEmoji.ttf"))
+    fonts.join("NotoColorEmoji.ttf")
 }
 
 pub(crate) fn load(fonts: &std::path::Path) {
-    let result = path(fonts)
-        .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::NotFound))
-        .and_then(std::fs::read);
-    match result {
+    match std::fs::read(path(fonts)) {
         Ok(data) => register(data),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => sen::reporting::log("emoji-font", "system-fallback", &error),
     }
 }
@@ -62,6 +58,39 @@ mod tests {
                 vertical-alignment: center;
             }
         }
+    }
+
+    #[test]
+    fn missing_private_font_is_quiet_but_unreadable_and_invalid_fonts_are_logged() {
+        const CHILD: &str = "SEN_TEST_EMOJI_FALLBACK";
+        if std::env::var_os(CHILD).is_some() {
+            let directory = sen::test_support::TempDir::new("emoji-fallback");
+            super::load(&directory.0);
+            let font = directory.0.join("NotoColorEmoji.ttf");
+            std::fs::create_dir(&font).unwrap();
+            super::load(&directory.0);
+            std::fs::remove_dir(&font).unwrap();
+            std::fs::write(&font, b"invalid font").unwrap();
+            super::load(&directory.0);
+            return;
+        }
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "emoji::tests::missing_private_font_is_quiet_but_unreadable_and_invalid_fonts_are_logged", "--nocapture"])
+            .env(CHILD, "1")
+            .env_remove("SEN_EMOJI_FONT")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(output.status.success(), "{stderr}");
+        assert_eq!(
+            stderr
+                .matches("operation=emoji-font kind=system-fallback")
+                .count(),
+            2,
+            "{stderr}"
+        );
+        assert!(!stderr.contains("io:NotFound"), "{stderr}");
+        assert!(stderr.contains("io:InvalidData"), "{stderr}");
     }
 
     #[test]

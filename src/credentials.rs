@@ -138,7 +138,8 @@ fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Resu
     );
     let sealed = match existing_id {
         Some(id) => {
-            let key = session_key(keys, &id)
+            let key = keys
+                .get("sen", &id)
                 .context(SignInFailure::Keyring)?
                 .context(SignInFailure::SessionKeyMissing)?;
             seal(&id, &key, &plain)?
@@ -149,20 +150,6 @@ fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Resu
         }
     };
     private_write(path, &sealed).context(SignInFailure::SessionIo)
-}
-
-fn session_key(keys: &impl Keys, id: &str) -> Result<Option<[u8; 32]>> {
-    if let Some(key) = keys.get("sen", id)? {
-        return Ok(Some(key));
-    }
-    // remove after the first release
-    if let Some(key) = keys.get("line-desktop", id)? {
-        if let Err(error) = keys.put("sen", id, &key) {
-            crate::reporting::log("key-copy", "first-start", error.as_ref());
-        }
-        return Ok(Some(key));
-    }
-    Ok(None)
 }
 
 fn new_key(keys: &impl Keys) -> Result<(String, [u8; 32])> {
@@ -216,7 +203,8 @@ fn open(envelope: &Value, keys: &impl Keys) -> Result<Value> {
             .as_str()
             .context("sealed session ciphertext")?,
     )?;
-    let key = session_key(keys, id)
+    let key = keys
+        .get("sen", id)
         .context(SignInFailure::Keyring)?
         .context(SignInFailure::SessionKeyMissing)?;
     let plain = Aes256Gcm::new((&key).into())

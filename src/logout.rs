@@ -51,13 +51,6 @@ impl Pending {
         (pending, clean)
     }
     fn detach(&self, locations: &Locations, clean: &mut bool) {
-        // Retained until first-release migration is removed: otherwise an old
-        // app's untouched session would be copied back on every subsequent start.
-        step(
-            clean,
-            "migration",
-            crate::client::private_write(&locations.data.join("auth/logged-out"), b""),
-        );
         step(clean, "session", remove_file(&locations.session));
         step(
             clean,
@@ -84,14 +77,7 @@ impl Pending {
             step(
                 &mut clean,
                 "data",
-                (|| {
-                    let marker = crate::locations::account_directory(
-                        &locations.data.join("auth/forgotten"),
-                        mid,
-                    )?;
-                    crate::client::private_write(&marker, b"")?;
-                    crate::locations::delete_account(&locations.data, mid)
-                })(),
+                crate::locations::delete_account(&locations.data, mid),
             );
             // Clipboard names have no account ID. Retain only retry sources still
             // referenced by the remaining stores, immediately after store deletion.

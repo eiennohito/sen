@@ -65,13 +65,6 @@ pub(crate) fn oriented_jpeg() -> Vec<u8> {
 pub struct TempDir(pub std::path::PathBuf);
 impl TempDir {
     #[cfg(test)]
-    pub(crate) fn old_account(&self, mid: &str) -> std::path::PathBuf {
-        use sha2::{Digest, Sha256};
-        self.0
-            .join("line-desktop/accounts")
-            .join(format!("{:x}", Sha256::digest(mid)))
-    }
-    #[cfg(test)]
     pub(crate) fn locations(&self) -> crate::locations::Locations {
         crate::locations::Locations::account(self.0.join("sen"), self.0.join("cache"))
     }
