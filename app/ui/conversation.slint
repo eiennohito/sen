@@ -10,7 +10,6 @@ import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 import { Message } from "message.slint";
 import { Composer } from "composer.slint";
-
 component HistoryPill inherits Rectangle {
     in property <string> text;
     in property <string> label: root.text;
@@ -27,7 +26,6 @@ component HistoryPill inherits Rectangle {
     if root.latest && State.new-count > 0: Rectangle { x: 20px; y: -4px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: "" + State.new-count; font-size: Tokens.small; font-weight: 600; color: Tokens.on-accent; horizontal-alignment: center; vertical-alignment: center; } }
     focus := FocusScope {
         enabled: root.enabled; accessible-role: button; accessible-label: root.label;
-
         accessible-action-default => { root.activated(); }
         key-pressed(event) => {
             if State.ime-active { return reject; }
@@ -39,7 +37,6 @@ component HistoryPill inherits Rectangle {
     }
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.activated(); } }
 }
-
 export component Conversation inherits Rectangle {
     property <bool> loading-delayed;
     property <int> window-sub: State.window-sub;
@@ -47,7 +44,6 @@ export component Conversation inherits Rectangle {
     loading-timer := Timer { interval: 300ms; running: State.window-loading && !root.loading-delayed; triggered => { root.loading-delayed = true; } }
     property <bool> latest-visible: !State.following && State.has-chat;
     property <string> latest-label: State.new-count > 0 ? "Latest · " + State.new-count + " new" : "Latest";
-
           visible: !State.narrow || State.show-conversation;
           VerticalLayout {
             spacing: 0px;
@@ -135,20 +131,16 @@ export component Conversation inherits Rectangle {
                 changed extent => { State.history-extent = self.extent; if State.following && !self.dragging { self.jump(-self.extent); } }
                 changed dragging => { State.history-dragging = self.dragging; }
                 offset <=> State.history-y;
-
                 vertical-stretch: 1;
                 scrolled => { State.following = State.history-can-follow && self.visible-top == self.inset && !State.history-dragging && State.history-extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } State.history-scrolled(); }
-                virtual: State.history-virtual;
-                full-height: State.plain-history-height;
+                virtual: State.history-virtual; full-height: State.plain-history-height;
                 virtual-height: State.virtual-history-height;
                 if State.history-virtual: history-view := ListView {
                     width: parent.width; height: parent.height;
                     changed content-height => { State.virtual-history-height = self.content-height; }
                     content-y <=> State.history-y;
-                    content-width: self.width;
-                    vertical-scrollbar-policy: always-off;
-                    horizontal-scrollbar-policy: always-off;
-                    accessible-role: none;
+                    content-width: self.width; vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: always-off; accessible-role: none;
                 for message[i] in State.messages: Rectangle {
                     property <length> prefix: i == 0 ? 16px + (State.has-chat ? max(32px, Tokens.small * 1.8) : 0px) : 0px;
                     height: self.prefix + item.preferred-height + (i == State.messages.length - 1 ? 16px + root.pill-height : 0px);
@@ -160,15 +152,13 @@ export component Conversation inherits Rectangle {
                     }
                     item := Message {
                         x: 16px; y: parent.prefix; width: parent.width - 32px;
-                        height: self.preferred-height;
-                        message: message;
+                        height: self.preferred-height; message: message;
                         origin-y: parent.y;
                     }
                 }
                 }
                 if !State.history-virtual: VerticalLayout {
-                    width: parent.width;
-                    height: self.preferred-height;
+                    width: parent.width; height: self.preferred-height;
                     changed preferred-height => { State.plain-history-height = self.preferred-height; }
                     init => { State.plain-history-height = self.preferred-height; }
                     padding: 16px; spacing: 0px;
@@ -182,25 +172,39 @@ export component Conversation inherits Rectangle {
                     for message in State.messages: Message { message: message; }
                 }
             }
-              if State.has-chat && State.window-loading && root.loading-delayed: Text { accessible-role: text; accessible-label: "Loading history…"; text: "Loading history…"; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
-              if !State.has-chat || (!State.window-loading && State.messages.length == 0): EmptyState { y: history.visible-top; height: parent.height - self.y; text: !State.has-chat ? "Choose a conversation" : "No messages yet"; name: State.has-chat ? State.chat-title : ""; identity: State.chat-id; initial: State.chat-initial; avatar: State.chat-avatar; icon: @image-url("../assets/icons/chats.svg"); }
+              loading := Text { visible: false; accessible-role: text; accessible-label: "Loading history…"; text: "Loading history…"; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+              empty := EmptyState { visible: false; y: history.visible-top; height: parent.height - self.y; text: "No messages yet"; name: State.chat-title; identity: State.chat-id; initial: State.chat-initial; avatar: State.chat-avatar; icon: @image-url("../assets/icons/chats.svg"); }
+              states [
+                no-chat when !State.has-chat: { empty.visible: true; empty.text: "Choose a conversation"; empty.name: ""; }
+                loading when State.window-loading: { loading.visible: root.loading-delayed; empty.visible: false; }
+                empty when State.messages.length == 0: { empty.visible: true; empty.text: "No messages yet"; }
+              ]
               history-pills := HorizontalLayout {
                 x: max(8px, parent.width - self.width - 16px); y: max(0px, parent.height - self.height - 16px);
-                width: min(parent.width - 16px, latest-button.preferred-width + return-button.preferred-width + (root.latest-visible && State.return-visible ? 8px : 0px));
-                height: max(latest-button.preferred-height, return-button.preferred-height); spacing: root.latest-visible && State.return-visible ? 8px : 0px;
+                width: min(parent.width - 16px, latest-button.preferred-width + return-button.preferred-width + self.spacing);
+                height: max(latest-button.preferred-height, return-button.preferred-height); spacing: 0px;
+                states [
+                    latest when root.latest-visible: {
+                        latest-button.visible: true;
+                        latest-button.width: min(latest-button.preferred-width, self.width - (State.return-visible ? return-button.width + 8px : 0px));
+                        latest-button.text: State.return-visible && State.new-count > 0 ? "Latest · " + State.new-count : root.latest-label;
+                        return-button.visible: State.return-visible;
+                        return-button.width: State.return-visible ? min(return-button.preferred-width, self.width - min(latest-button.preferred-width, self.width * 0.4) - 8px) : 0px;
+                        spacing: State.return-visible ? 8px : 0px;
+                    }
+                    return when State.return-visible: { return-button.visible: true; return-button.width: min(return-button.preferred-width, self.width); }
+                ]
                 latest-button := HistoryPill {
                     latest: true;
-                    visible: root.latest-visible; enabled: self.visible;
-                    width: self.visible ? min(self.preferred-width, parent.width - (State.return-visible ? return-button.width + 8px : 0px)) : 0px;
-                    label: root.latest-label;
-                    text: State.return-visible && State.new-count > 0 ? "Latest · " + State.new-count : root.latest-label;
+                    visible: false; enabled: self.visible;
+                    width: 0px; label: root.latest-label;
+                    text: root.latest-label;
                     activated => { State.latest(); State.focus-history(); }
                     traversed(back) => { if back { history-focus.focus(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } }
                 }
                 return-button := HistoryPill {
-                    visible: State.return-visible; enabled: self.visible;
-                    width: self.visible ? min(self.preferred-width, parent.width - (root.latest-visible ? min(latest-button.preferred-width, parent.width * 0.4) + 8px : 0px)) : 0px;
-                    text: "Return to message";
+                    visible: false; enabled: self.visible;
+                    width: 0px; text: "Return to message";
                     activated => { State.return-to-message(); State.focus-history(); }
                     traversed(back) => { if !back { State.focus-composer(); } else if root.latest-visible { latest-button.focus-pill(); } else { history-focus.focus(); } }
                 }
@@ -216,7 +220,6 @@ composer-surface := Composer { }
                 Text { text: State.storage-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
             }
         }
-
     public function focus-after-header() { if State.connection-actions-enabled { State.focus-connection-first(); } else { history-focus.focus(); } }
     public function focus-first() { if State.narrow { back-button.focus-button(); } else { title-focus.focus(); } }
     public function focus-last() { if State.has-chat { composer-surface.focus-last(); } else { history-focus.focus(); } }
@@ -234,5 +237,4 @@ composer-surface := Composer { }
     // Pills plus the 8 px gap below them remain outside read exposure.
     property <length> pill-height: root.latest-visible || State.return-visible ? history-surface.height - history-pills.y : 0px;
     changed pill-height => { State.history-pill-height = root.pill-height; }
-
 }

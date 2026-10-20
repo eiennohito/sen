@@ -20,8 +20,11 @@ fn resizing_layers_keeps_focus_on_visible_content() {
                     _ => PanelState::Detail,
                 });
                 ui.global::<State>().set_detail_depth(1);
-                ui.global::<State>()
-                    .set_detail_page(if layer == "members" { 2 } else { 0 });
+                ui.global::<State>().set_detail_page(if layer == "members" {
+                    DetailPageMode::Members
+                } else {
+                    DetailPageMode::Profile
+                });
                 ui.invoke_focus_profile_close();
             }
             snapshot::render(&window, (980, 720)).unwrap();
@@ -196,13 +199,31 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
                 ..Default::default()
             }]))));
         let draft = "日本語の下書き 🐈";
+        let mut presenter = presenter::Presenter::default();
+        let mut state = AppState {
+            selected: Some(ChatId("chat".into())),
+            connection: Connection::Online,
+            ..Default::default()
+        };
         ui.global::<State>().set_connection(ConnectionState::Online);
         ui.global::<State>().set_draft(draft.into());
-        assert!(ui.global::<State>().get_can_send());
+        state.composer = draft.into();
+        presenter.present_draft(&ui, &state);
+        assert_eq!(
+            ui.global::<State>().get_composer_mode(),
+            ComposerMode::Ready
+        );
         ui.global::<State>().set_draft("".into());
-        assert!(!ui.global::<State>().get_can_send());
+        state.composer.clear();
+        presenter.present_draft(&ui, &state);
+        assert_eq!(ui.global::<State>().get_composer_mode(), ComposerMode::Idle);
         ui.global::<State>().set_draft(draft.into()); // Programmatic restoration emits no typing event.
-        assert!(ui.global::<State>().get_can_send());
+        state.composer = draft.into();
+        presenter.present_draft(&ui, &state);
+        assert_eq!(
+            ui.global::<State>().get_composer_mode(),
+            ComposerMode::Ready
+        );
         ui.show().unwrap();
         slint::platform::update_timers_and_animations();
         let history = i_slint_backend_testing::ElementHandle::find_by_element_id(
@@ -230,7 +251,8 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
         ui.global::<State>().set_detail_depth(1);
         ui.global::<State>().set_panel(PanelState::Detail);
         ui.global::<State>().set_detail_depth(2);
-        ui.global::<State>().set_detail_page(0);
+        ui.global::<State>()
+            .set_detail_page(DetailPageMode::Profile);
         ui.invoke_focus_profile_close();
         assert!(ui.global::<State>().get_member_profile());
         use slint::private_unstable_api::re_exports::WindowInner;

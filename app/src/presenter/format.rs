@@ -286,8 +286,6 @@ pub(crate) fn message_row(
         delivered_time: order_key(m.sort.sort_ts).into(),
         id: m.key.0.to_string().into(),
         sender_id: m.sender_id.clone().into(),
-        sticker: kind == MessageKind::Sticker,
-        photo: kind == MessageKind::Photo,
         body: system_text.unwrap_or(&body).into(),
         time: display_time(m.sort.sort_ts).into(),
         outgoing: m.outgoing,

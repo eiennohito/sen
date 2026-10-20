@@ -86,8 +86,6 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
             avatars.push_back((source, edge, picture.clone()));
             picture
         });
-    ui.global::<State>()
-        .on_has_text(|text| !text.trim().is_empty());
     focus::install(&ui);
     #[cfg(feature = "demo")]
     dev::install_focus(&ui);

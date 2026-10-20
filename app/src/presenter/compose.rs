@@ -98,16 +98,31 @@ impl Presenter {
                 system_events::name(state, &m.sender_id).into()
             },
             sender_id: m.sender_id.clone().into(),
+            kind: kind_label(&m.body).0,
             body: single_line(&compact_text(&m.body, state, &m.sender_id)).into(),
             image_key: image_key.into(),
             picture: image.clone().unwrap_or_default(),
             has_picture: image.is_some(),
-            photo: matches!(m.body, Content::Photo { .. }),
-            sticker: matches!(m.body, Content::Sticker { .. }),
             ..Default::default()
         }
     }
-    pub(super) fn present_draft(&mut self, ui: &AppWindow, state: &AppState) {
+    pub(crate) fn present_draft(&mut self, ui: &AppWindow, state: &AppState) {
+        let global = ui.global::<State>();
+        global.set_composer_mode(if state.selected.is_none() {
+            ComposerMode::Unavailable
+        } else if state
+            .selected
+            .as_ref()
+            .is_some_and(|id| state.chats.get(id).is_some_and(|c| c.chat.left))
+        {
+            ComposerMode::Left
+        } else if !matches!(state.connection, Connection::Online) {
+            ComposerMode::Offline
+        } else if state.submitting.is_none() && !state.composer.trim().is_empty() {
+            ComposerMode::Ready
+        } else {
+            ComposerMode::Idle
+        });
         if ui.global::<State>().get_draft().as_str() != state.composer {
             ui.global::<State>()
                 .set_draft(state.composer.clone().into());

@@ -1389,6 +1389,8 @@ def check_action_geometry():
         wait_for(lambda: len([b for b in bodies() if b.get("accessibleValue", "").startswith(("Incoming ", "Outgoing "))]) == 6, "action fixture did not load")
         bubbles = call("find_elements_by_id", windowHandle=window, elementsId="Message::message-bubble")["elementHandles"]
         bubble_bounds = [call("get_element_properties", elementHandle=h) for h in bubbles]
+        contents = call("find_elements_by_id", windowHandle=window, elementsId="Message::message-content")["elementHandles"]
+        content_bounds = [call("get_element_properties", elementHandle=h) for h in contents]
         times = call("find_elements_by_id", windowHandle=window, elementsId="Message::time-slot")["elementHandles"]
         time_bounds = [call("get_element_properties", elementHandle=h) for h in times]
         for prefix in ("Incoming first", "Incoming middle", "Incoming last", "Outgoing first", "Outgoing middle", "Outgoing last"):
@@ -1400,6 +1402,15 @@ def check_action_geometry():
             rx, ry = react["absolutePosition"]["x"], react["absolutePosition"]["y"]
             bubble = min(bubble_bounds, key=lambda b: abs(b["absolutePosition"]["y"] - body["absolutePosition"]["y"]))
             outgoing = prefix.startswith("Outgoing")
+            content = min(content_bounds, key=lambda r: abs(r["absolutePosition"]["y"] - bubble["absolutePosition"]["y"]))
+            if outgoing:
+                assert abs(bubble["absolutePosition"]["x"] + bubble["size"]["width"] - content["absolutePosition"]["x"] - content["size"]["width"]) <= 1, f"{prefix}: bubble left the row's right edge"
+            else:
+                gutters = call("find_elements_by_id", windowHandle=window, elementsId="Message::sender-gutter").get("elementHandles", [])
+                gutters = [call("get_element_properties", elementHandle=h) for h in gutters]
+                gutter = next((g for g in gutters if abs(g["absolutePosition"]["y"] - content["absolutePosition"]["y"]) <= 1), None)
+                left = content["absolutePosition"]["x"] + (gutter["size"]["width"] + 5 if gutter else 0)
+                assert abs(bubble["absolutePosition"]["x"] - left) <= 1, f"{prefix}: bubble x={bubble['absolutePosition']['x']} left the row content edge {left}; content={content}"
             bottom = bubble["absolutePosition"]["y"] + bubble["size"]["height"]
             assert abs(ry + react["size"]["height"] - bottom) <= 1, f"{prefix}: actions left the bubble's bottom row"
             time_slot = min(time_bounds, key=lambda t: abs(t["absolutePosition"]["y"] + t["size"]["height"] - bottom))

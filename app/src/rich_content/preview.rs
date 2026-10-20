@@ -85,14 +85,13 @@ pub(crate) fn preview_runs(
 pub(crate) fn set(
     row: &mut ChatRow,
     content: &Content,
-    outgoing: bool,
+
     system_text: Option<&str>,
     images: &presenter::Images,
     size: i32,
 ) {
     let (kind, label) = kind_label(content);
     row.preview = single_line(system_text.unwrap_or(&label)).into();
-    row.outgoing_preview = outgoing;
     let image_key = content.image().map(|a| a.key()).unwrap_or_default();
     row.preview_runs = if !image_key.is_empty()
         && matches!(

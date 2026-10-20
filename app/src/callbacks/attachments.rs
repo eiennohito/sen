@@ -56,7 +56,7 @@ pub(crate) fn begin(
 ) {
     if desktop.state.selected.is_none()
         || ui.global::<State>().get_modal_open()
-        || ui.global::<State>().get_chat_left()
+        || ui.global::<State>().get_composer_mode() == ComposerMode::Left
     {
         return;
     }

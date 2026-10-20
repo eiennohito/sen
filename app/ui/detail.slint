@@ -1,4 +1,4 @@
-import { DetailAction } from "types.slint";
+import { DetailPageMode, DetailAction } from "types.slint";
 import { RowText } from "list-row.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -8,7 +8,6 @@ import { Button } from "button.slint";
 import { RichFlow } from "rich-flow.slint";
 import { Members } from "members.slint";
 import { ScrollView } from "std-widgets.slint";
-
 component NameField inherits Rectangle {
     in-out property <string> text;
     out property <bool> has-focus: input.has-focus;
@@ -27,18 +26,18 @@ component DetailRow inherits Rectangle {
     callback activated();
     public function focus-row() { focus.focus(); }
     height: 52px; border-radius: 8px;
-    background: touch.has-hover ? Tokens.surface-hover : transparent;
+    background: touch.has-hover ? Tokens.surface-hover : transparent; animate background { duration: 100ms; }
     opacity: root.enabled ? 1 : 0.4;
     accessible-role: button; accessible-label: root.label; accessible-enabled: root.enabled; accessible-checked: root.checked; accessible-value: root.toggle ? (root.checked ? "On" : "Off") : "";
     accessible-action-default => { if root.enabled { root.activated(); } }
     RowText { x: 12px; width: parent.width - 72px; height: parent.height; text: root.label; color: root.danger ? Tokens.danger : Tokens.text; vertical-alignment: center; }
     if !root.toggle && !root.danger: Image { x: parent.width - 28px; y: 16px; width: 20px; height: 20px; source: @image-url("../assets/icons/next.svg"); colorize: Tokens.secondary; }
-    if root.toggle: Rectangle { x: parent.width - 52px; y: 14px; width: 40px; height: 24px; border-radius: 12px; background: root.checked ? Tokens.accent : Tokens.surface-2;
-        Rectangle { x: root.checked ? 18px : 2px; y: 2px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.bg; }
+    if root.toggle: Rectangle { x: parent.width - 52px; y: 14px; width: 40px; height: 24px; border-radius: 12px; background: Tokens.surface-2;
+        states [ checked when root.checked: { background: Tokens.accent; knob.x: 18px; in-out { animate background, knob.x { duration: 120ms; } } } ]
+        knob := Rectangle { x: 2px; y: 2px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.bg; }
     }
     focus := FocusScope {
-        enabled: root.enabled;
-        accessible-role: none;
+        enabled: root.enabled; accessible-role: none;
         key-pressed(event) => { if event.text == Key.Return || event.text == " " { root.activated(); return accept; } reject }
         Rectangle { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px; border-radius: 8px; background: transparent; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
     }
@@ -59,10 +58,10 @@ export component Detail inherits FocusScope {
     property <length> name-width: 288px;
     focus-on-tab-navigation: false;
     public function focus-first() { if State.detail-depth > 1 { back.focus-button(); } else { root.focus-open(); } }
-    public function focus-open() { if State.detail-page == 0 { more.focus-button(); } else { close.focus-button(); } }
+    public function focus-open() { if State.detail-page == DetailPageMode.profile { more.focus-button(); } else { close.focus-button(); } }
     public function focus-last() {
-        if State.detail-page == 2 { members.focus-last(); }
-        else if State.detail-page == 1 { if !State.group-room && !State.group-left { leave.focus-row(); } else { member-row.focus-row(); } }
+        if State.detail-page == DetailPageMode.members { members.focus-last(); }
+        else if State.detail-page == DetailPageMode.group { if !State.group-room && !State.group-left { leave.focus-row(); } else { member-row.focus-row(); } }
         else if State.profile-friend { rename.focus-button(); }
         else if State.profile-addable { add.focus-button(); }
         else if State.profile-available { chat.focus-button(); }
@@ -75,9 +74,9 @@ export component Detail inherits FocusScope {
         if event.text == Key.Escape { State.pop-detail(false); return accept; }
         if State.browser-key(event) == accept { return accept; }
         if event.text == Key.Tab {
-            if event.modifiers.shift && (State.detail-depth > 1 ? back.has-focus : State.detail-page == 0 ? more.has-focus : close.has-focus) { State.focus-before-layer(); return accept; }
+            if event.modifiers.shift && (State.detail-depth > 1 ? back.has-focus : State.detail-page == DetailPageMode.profile ? more.has-focus : close.has-focus) { State.focus-before-layer(); return accept; }
             if !event.modifiers.shift {
-                if (State.detail-page == 0 && ((State.profile-friend && rename.has-focus) || (State.profile-addable && add.has-focus) || (!State.profile-friend && !State.profile-addable && State.profile-available && chat.has-focus) || (!State.profile-friend && !State.profile-addable && !State.profile-available && avatar-focus.has-focus))) || (State.detail-page == 1 && ((!State.group-room && !State.group-left && leave.has-focus) || ((State.group-room || State.group-left) && member-row.has-focus))) { State.focus-after-layer(); return accept; }
+                if (State.detail-page == DetailPageMode.profile && ((State.profile-friend && rename.has-focus) || (State.profile-addable && add.has-focus) || (!State.profile-friend && !State.profile-addable && State.profile-available && chat.has-focus) || (!State.profile-friend && !State.profile-addable && !State.profile-available && avatar-focus.has-focus))) || (State.detail-page == DetailPageMode.group && ((!State.group-room && !State.group-left && leave.has-focus) || ((State.group-room || State.group-left) && member-row.has-focus))) { State.focus-after-layer(); return accept; }
             }
         }
         reject
@@ -85,12 +84,12 @@ export component Detail inherits FocusScope {
     Rectangle {
         HorizontalLayout { y: 0px; width: parent.width; height: 56px; padding: 12px; spacing: 8px;
             back := IconButton { visible: State.detail-depth > 1; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { State.pop-detail(false); } }
-            Text { text: State.detail-page == 0 ? "Profile" : State.detail-page == 1 ? "Group info" : "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : ""); font-size: Tokens.heading; font-weight: 600; vertical-alignment: center; }
-            more := IconButton { visible: State.detail-page == 0; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Profile more"; icon: @image-url("../assets/icons/more.svg"); activated => { menu.show({x: root.width - 176px, y: 48px}); } }
+            heading := Text { text: "Profile"; font-size: Tokens.heading; font-weight: 600; vertical-alignment: center; }
+            more := IconButton { enabled: self.visible; width: self.visible ? 32px : 0px; label: "Profile more"; icon: @image-url("../assets/icons/more.svg"); activated => { menu.show({x: root.width - 176px, y: 48px}); } }
             close := IconButton { label: "Close details"; icon: @image-url("../assets/icons/close.svg"); activated => { State.pop-detail(true); } }
         }
-        if State.detail-page == 0: Rectangle { y: 56px; width: parent.width; height: 96px; background: Tokens.accent.with-alpha(0.25); }
-        ScrollView { y: State.detail-page == 0 ? 88px : 56px; width: parent.width; visible: State.detail-page != 2; height: self.visible ? parent.height - self.y : 0px; horizontal-scrollbar-policy: always-off; content-width: self.width;
+        cover := Rectangle { y: 56px; width: parent.width; height: 96px; background: Tokens.accent.with-alpha(0.25); }
+        info := ScrollView { y: 88px; width: parent.width; height: self.visible ? parent.height - self.y : 0px; horizontal-scrollbar-policy: always-off; content-width: self.width;
             VerticalLayout { padding: 16px; spacing: 12px; alignment: start;
                 HorizontalLayout { alignment: center;
                     Rectangle { width: 96px; height: 96px;
@@ -108,22 +107,32 @@ export component Detail inherits FocusScope {
                     if State.profile-favourite: Image { height: 20px; width: 20px; source: @image-url("../assets/icons/star.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Favourite"; }
                 }
                 if State.profile-original != "": Text { text: State.profile-original; color: Tokens.secondary; wrap: word-wrap; horizontal-alignment: center; }
-                if State.detail-page == 0 && State.profile-status != "": RichFlow { runs: State.profile-status-runs; centered: true; text-color: Tokens.secondary; max-lines: 4; accessible-role: text; accessible-label: State.profile-status; }
-                if State.detail-page == 0 && State.profile-notice != "": Text { text: State.profile-notice; color: Tokens.secondary; wrap: word-wrap; }
-                HorizontalLayout { visible: State.detail-page == 0; height: self.visible && (State.profile-available || State.profile-friend || State.profile-addable) ? 72px : 0px; alignment: center; spacing: 8px;
+                if State.detail-page == DetailPageMode.profile && State.profile-status != "": RichFlow { runs: State.profile-status-runs; centered: true; text-color: Tokens.secondary; max-lines: 4; accessible-role: text; accessible-label: State.profile-status; }
+                if State.detail-page == DetailPageMode.profile && State.profile-notice != "": Text { text: State.profile-notice; color: Tokens.secondary; wrap: word-wrap; }
+                profile-actions := HorizontalLayout { height: self.visible && (State.profile-available || State.profile-friend || State.profile-addable) ? 72px : 0px; alignment: center; spacing: 8px;
                     chat := ProfileActionButton { visible: State.profile-available; enabled: self.visible; width: self.visible ? 72px : 0px; label: "Chat"; icon: @image-url("../assets/icons/chats.svg"); activated => { State.start-friend-chat(); } }
                     rename := ProfileActionButton { visible: State.profile-friend; enabled: self.visible && !State.detail-busy; width: self.visible ? 72px : 0px; label: State.detail-running == DetailAction.rename ? "Renaming…" : "Rename"; icon: @image-url("../assets/icons/rename.svg"); activated => { root.open-dialog(DetailAction.rename); } }
                     add := ProfileActionButton { visible: State.profile-addable; enabled: self.visible && !State.detail-busy; width: self.visible ? 72px : 0px; label: State.detail-running == DetailAction.add ? "Adding…" : "Add friend"; icon: @image-url("../assets/icons/add-friend.svg"); activated => { State.detail-action(DetailAction.add, ""); } }
                 }
-                if State.detail-page == 1: Text { text: State.group-count >= 0 ? State.group-count + " members" : ""; color: Tokens.secondary; horizontal-alignment: center; }
-                member-row := DetailRow { visible: State.detail-page == 1; height: self.visible ? 52px : 0px; label: "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : ""); activated => { State.open-members(); } }
-                mute := DetailRow { accessible-role: checkbox; visible: State.detail-page == 1 && !State.group-room && !State.group-left; height: self.visible ? 52px : 0px; enabled: State.group-writable && !State.detail-busy; label: State.detail-running == DetailAction.mute ? "Updating…" : "Notifications"; toggle: true; checked: !State.group-muted; activated => { State.detail-action(DetailAction.mute, ""); } }
-                leave := DetailRow { visible: State.detail-page == 1 && !State.group-room && !State.group-left; height: self.visible ? 52px : 0px; enabled: !State.detail-busy; label: State.detail-running == DetailAction.leave ? "Leaving…" : "Leave group"; danger: true; activated => { root.open-dialog(DetailAction.leave); } }
+                if State.detail-page == DetailPageMode.group: Text { text: State.group-count >= 0 ? State.group-count + " members" : ""; color: Tokens.secondary; horizontal-alignment: center; }
+                member-row := DetailRow { visible: false; height: self.visible ? 52px : 0px; label: "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : ""); activated => { State.open-members(); } }
+                mute := DetailRow { accessible-role: checkbox; visible: false; height: self.visible ? 52px : 0px; enabled: State.group-writable && !State.detail-busy; label: State.detail-running == DetailAction.mute ? "Updating…" : "Notifications"; toggle: true; checked: !State.group-muted; activated => { State.detail-action(DetailAction.mute, ""); } }
+                leave := DetailRow { visible: false; height: self.visible ? 52px : 0px; enabled: !State.detail-busy; label: State.detail-running == DetailAction.leave ? "Leaving…" : "Leave group"; danger: true; activated => { root.open-dialog(DetailAction.leave); } }
                 if State.detail-error != "": Text { text: State.detail-error; color: Tokens.danger; wrap: word-wrap; }
             }
         }
-        members := Members { y: 56px; width: parent.width; visible: State.detail-page == 2; height: self.visible ? parent.height - 56px : 0px; }
+        members := Members { y: 56px; width: parent.width; visible: false; height: self.visible ? parent.height - 56px : 0px; }
     }
+    states [
+        group when State.detail-page == DetailPageMode.group: {
+            heading.text: "Group info"; more.visible: false; cover.visible: false; info.y: 56px; profile-actions.visible: false;
+            member-row.visible: true; mute.visible: !State.group-room && !State.group-left; leave.visible: !State.group-room && !State.group-left;
+        }
+        members when State.detail-page == DetailPageMode.members: {
+            heading.text: "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : "");
+            more.visible: false; cover.visible: false; info.visible: false; members.visible: true;
+        }
+    ]
     menu := ContextMenuArea {
         enabled: false;
         Menu { MenuItem { title: "Copy name"; activated => { State.copy-text(State.profile-name); } } }
@@ -145,7 +154,7 @@ export component Detail inherits FocusScope {
                     } return accept;
                 } reject }
                 dialog-content := VerticalLayout { padding: 24px; spacing: 16px;
-                    HorizontalLayout { Text { text: State.detail-dialog == DetailAction.rename ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
+                    HorizontalLayout { dialog-title := Text { text: State.detail-dialog == DetailAction.rename ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
                         dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.detail-dialog = DetailAction.none; root.focus-last(); } }
                     }
                     rename-value := NameField { visible: State.detail-dialog == DetailAction.rename; height: self.visible ? 36px : 0px; }
