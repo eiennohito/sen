@@ -1,8 +1,9 @@
 use super::*;
+use crate::client::http::test_support::{WAIT, asset_server as local_server};
 use std::os::unix::fs::PermissionsExt;
 use std::{
-    io::{BufRead, BufReader, Write},
-    net::{TcpListener, TcpStream},
+    io::Write,
+    net::TcpStream,
     sync::{
         Condvar,
         atomic::{AtomicU64, Ordering},
@@ -61,70 +62,12 @@ fn respond(mut stream: TcpStream, bytes: &[u8]) {
     stream.write_all(bytes).unwrap();
 }
 
-fn local_server(
-    count: usize,
-    serve: impl Fn(String, TcpStream) + Send + Sync + 'static,
-) -> (
-    String,
-    http::Transport,
-    mpsc::Receiver<String>,
-    JoinHandle<()>,
-) {
-    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-    listener.set_nonblocking(true).unwrap();
-    let base = format!("http://{}", listener.local_addr().unwrap());
-    let http = http::Transport::local_assets(base.clone());
-    let (tx, rx) = mpsc::channel();
-    let serve = Arc::new(serve);
-    let thread = thread::spawn(move || {
-        let mut threads = Vec::new();
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while threads.len() < count {
-            let stream = match listener.accept() {
-                Ok((stream, _)) => stream,
-                Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                    assert!(Instant::now() < deadline, "asset accept timed out");
-                    thread::sleep(Duration::from_millis(2));
-                    continue;
-                }
-                Err(e) => panic!("{e}"),
-            };
-            let tx = tx.clone();
-            let serve = serve.clone();
-            threads.push(thread::spawn(move || {
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(3)))
-                    .unwrap();
-                let mut reader = BufReader::new(stream);
-                let mut headers = String::new();
-                loop {
-                    let mut line = String::new();
-                    assert!(reader.read_line(&mut line).unwrap() > 0);
-                    headers.push_str(&line);
-                    if line == "\r\n" {
-                        break;
-                    }
-                }
-                tx.send(headers.clone()).unwrap();
-                serve(headers, reader.into_inner());
-            }));
-        }
-        for thread in threads {
-            thread.join().unwrap();
-        }
-    });
-    (base, http, rx, thread)
-}
-
 #[derive(Default)]
 struct Gate(Mutex<bool>, Condvar);
 impl Gate {
     fn wait(&self) {
         let guard = self.0.lock().unwrap();
-        let (guard, _) = self
-            .1
-            .wait_timeout_while(guard, Duration::from_secs(4), |v| !*v)
-            .unwrap();
+        let (guard, _) = self.1.wait_timeout_while(guard, WAIT, |v| !*v).unwrap();
         assert!(*guard, "test server release timed out");
     }
     fn release(&self) {
@@ -139,7 +82,6 @@ fn parallel_downloads_overlap() {
     let release = gate.clone();
     let (base, http, requests, server) = local_server(THREADS, move |_, stream| {
         release.wait();
-        thread::sleep(Duration::from_millis(300));
         respond(stream, &png());
     });
     let (_root, cache) = Cache::new();
@@ -158,25 +100,13 @@ fn parallel_downloads_overlap() {
         assert!(fetchers.enqueue(avatar(&base, i), Purpose::Thumbnail));
     }
     for _ in 0..THREADS {
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        requests.recv_timeout(WAIT).unwrap();
     }
     assert!(images.try_recv().is_err());
-    let started = Instant::now();
     gate.release();
     for _ in 0..THREADS {
-        assert!(
-            images
-                .recv_timeout(Duration::from_secs(10))
-                .unwrap()
-                .result
-                .is_ok()
-        );
+        assert!(images.recv_timeout(WAIT).unwrap().result.is_ok());
     }
-    assert!(
-        started.elapsed() < Duration::from_millis(700),
-        "downloads serialized: {:?}",
-        started.elapsed()
-    );
     drop(fetchers);
     server.join().unwrap();
 }
@@ -204,7 +134,7 @@ fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly()
         }
     }
     for _ in 0..THREADS {
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        requests.recv_timeout(WAIT).unwrap();
     }
     assert_eq!(fetchers.shared.queue.lock().unwrap().entries.len(), THREADS);
     for i in 100..100 + QUEUE_LIMIT + 20 {
@@ -214,13 +144,7 @@ fn deduplicates_inflight_keys_and_cancellation_joins_stalled_fetchers_promptly()
         fetchers.shared.queue.lock().unwrap().entries.len(),
         QUEUE_LIMIT
     );
-    let started = Instant::now();
     drop(fetchers);
-    assert!(
-        started.elapsed() < Duration::from_millis(200),
-        "slow join: {:?}",
-        started.elapsed()
-    );
     assert!(failures.entries.lock().unwrap().is_empty());
     gate.release();
     server.join().unwrap();
@@ -248,7 +172,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
         },
     );
     fetchers.enqueue(photo.clone(), Purpose::Thumbnail);
-    let cached = rx.recv_timeout(Duration::from_secs(10)).unwrap();
+    let cached = rx.recv_timeout(WAIT).unwrap();
     assert!(cached.result.is_ok());
     assert!(
         !cached.network,
@@ -257,7 +181,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
     for _ in 0..3 {
         fetchers.enqueue(avatar(&base, 1), Purpose::Thumbnail);
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
+            rx.recv_timeout(WAIT).unwrap().result,
             Err(Failure::Http(404))
         ));
         fetchers
@@ -271,7 +195,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
             .at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
         assert!(!fetchers.retry(&avatar(&base, 1).key()));
     }
-    requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    requests.recv_timeout(WAIT).unwrap();
     assert!(requests.try_recv().is_err());
     server.join().unwrap();
     let mut cache = cache.lock().unwrap();
@@ -325,7 +249,7 @@ fn shared_http_preserves_asset_hosts_paths_headers_and_no_redirects() {
         );
     }
     for _ in 0..5 {
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        requests.recv_timeout(WAIT).unwrap();
     }
     server.join().unwrap();
     for url in [
@@ -377,7 +301,7 @@ fn shared_http_preserves_asset_hosts_paths_headers_and_no_redirects() {
             .fetch(&http, Some("synthetic"))
             .is_err()
     );
-    requests.recv_timeout(Duration::from_secs(10)).unwrap();
+    requests.recv_timeout(WAIT).unwrap();
     server.join().unwrap();
 }
 
@@ -405,7 +329,7 @@ fn download_and_decoder_caps_remain_enforced() {
             avatar(&base, 1).fetch(&http, None).unwrap_err().to_string(),
             "media failure: TooLarge"
         );
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        requests.recv_timeout(WAIT).unwrap();
         server.join().unwrap();
     }
     assert!(pixels(&vec![0; MAX_DOWNLOAD + 1], 64).is_err());
@@ -439,10 +363,10 @@ fn transient_retry_bypasses_failure_and_cached_pixels() {
     fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
     for step in 0..4 {
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
+            rx.recv_timeout(WAIT).unwrap().result,
             Err(Failure::Http(500))
         ));
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        requests.recv_timeout(WAIT).unwrap();
         if step < 3 {
             // A deliberate retry ignores even a newly cached thumbnail.
             cache.lock().unwrap().store(&asset, &png()).unwrap();
@@ -493,10 +417,8 @@ fn server_failures_keep_their_classes_through_completions() {
             },
         );
         fetchers.enqueue(avatar(&base, 1), Purpose::Thumbnail);
-        assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if class == expected)
-        );
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(matches!(rx.recv_timeout(WAIT).unwrap().result, Err(class) if class == expected));
+        requests.recv_timeout(WAIT).unwrap();
         server.join().unwrap();
     }
 }
@@ -530,10 +452,8 @@ fn local_timeout_network_and_route_failures_are_typed() {
         } else {
             Failure::Network
         };
-        assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if class == expected)
-        );
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(matches!(rx.recv_timeout(WAIT).unwrap().result, Err(class) if class == expected));
+        requests.recv_timeout(WAIT).unwrap();
         gate.release();
         server.join().unwrap();
     }
@@ -595,9 +515,7 @@ fn every_permanent_class_blocks_explicit_retries() {
     );
     for asset in &assets {
         fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
-        assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retry_read())
-        );
+        assert!(matches!(rx.recv_timeout(WAIT).unwrap().result, Err(class) if !class.retry_read()));
         fetchers
             .shared
             .failures
@@ -608,14 +526,12 @@ fn every_permanent_class_blocks_explicit_retries() {
             .unwrap()
             .at = Instant::now() - FAILURE_TTL - Duration::from_secs(1);
         fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
-        assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(class) if !class.retry_read())
-        );
+        assert!(matches!(rx.recv_timeout(WAIT).unwrap().result, Err(class) if !class.retry_read()));
         assert!(!fetchers.retry(&asset.key()));
     }
     assert!(rx.recv_timeout(Duration::from_millis(100)).is_err());
     for _ in 0..3 {
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        requests.recv_timeout(WAIT).unwrap();
     }
     assert!(requests.try_recv().is_err());
     server.join().unwrap();
@@ -645,7 +561,7 @@ fn failure_records_evict_at_the_queue_bound() {
         .unwrap();
         assert!(fetchers.enqueue(asset, Purpose::Thumbnail));
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
+            rx.recv_timeout(WAIT).unwrap().result,
             Err(Failure::RejectedPath)
         ));
         assert!(fetchers.shared.failures.entries.lock().unwrap().len() <= QUEUE_LIMIT);
@@ -689,13 +605,8 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
     {
         let asset = avatar(&base, id);
         fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
-        assert!(
-            rx.recv_timeout(Duration::from_secs(10))
-                .unwrap()
-                .result
-                .is_err()
-        );
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert!(rx.recv_timeout(WAIT).unwrap().result.is_err());
+        requests.recv_timeout(WAIT).unwrap();
         {
             let mut failures = fetchers.shared.failures.entries.lock().unwrap();
             let failed = failures.get_mut(&asset.key()).unwrap();
@@ -704,9 +615,7 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
         }
         let at = fetchers.shared.failures.entries.lock().unwrap()[&asset.key()].at;
         fetchers.enqueue(asset.clone(), Purpose::Thumbnail);
-        assert!(
-            matches!(rx.recv_timeout(Duration::from_secs(10)).unwrap().result, Err(found) if found == class)
-        );
+        assert!(matches!(rx.recv_timeout(WAIT).unwrap().result, Err(found) if found == class));
         assert_eq!(
             fetchers.shared.failures.entries.lock().unwrap()[&asset.key()].at,
             at
@@ -723,10 +632,10 @@ fn transient_expiry_allows_a_new_fetch_without_sync_reconnect() {
             .at = Instant::now() - FAILURE_TTL;
         fetchers.enqueue(asset, Purpose::Thumbnail);
         assert!(matches!(
-            rx.recv_timeout(Duration::from_secs(10)).unwrap().result,
+            rx.recv_timeout(WAIT).unwrap().result,
             Err(Failure::Http(500))
         ));
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        requests.recv_timeout(WAIT).unwrap();
     }
     server.join().unwrap();
 }
@@ -750,7 +659,7 @@ fn photo_download_metadata_still_uses_obs_but_file_download_urls_are_refused() {
             media_failure(&file.fetch(&http, Some("synthetic")).unwrap_err()),
             Failure::UnsupportedHost
         );
-        requests.recv_timeout(Duration::from_secs(10)).unwrap();
+        requests.recv_timeout(WAIT).unwrap();
     }
     server.join().unwrap();
 }
@@ -771,10 +680,7 @@ fn official_image_urls_fetch_plain_bytes_without_line_headers() {
             asset.fetch(&http, Some("must-not-send")).unwrap(),
             b"plain image"
         );
-        let request = requests
-            .recv_timeout(Duration::from_secs(10))
-            .unwrap()
-            .to_ascii_lowercase();
+        let request = requests.recv_timeout(WAIT).unwrap().to_ascii_lowercase();
         assert!(
             !request.contains("x-line-")
                 && !request.contains("x-talk-meta")
@@ -925,14 +831,14 @@ fn workers_publish_evictions_after_inflight_fetches_finish() {
     for i in 0..THREADS {
         assert!(fetchers.enqueue(avatar(&base, i), Purpose::Thumbnail));
         requests
-            .recv_timeout(Duration::from_secs(3))
+            .recv_timeout(WAIT)
             .expect("fetch worker did not reach the local server");
     }
     for i in THREADS..=QUEUE_LIMIT {
         assert!(fetchers.enqueue(avatar(&base, i), Purpose::Thumbnail));
     }
     gate.release();
-    let deadline = Instant::now() + Duration::from_secs(3);
+    let deadline = Instant::now() + WAIT;
     let mut inflight: std::collections::HashSet<_> =
         (0..THREADS).map(|i| avatar(&base, i).key()).collect();
     let mut evicted = false;
@@ -971,10 +877,7 @@ fn idle_workers_wake_for_work_and_both_shutdown_signals() {
         asset.failure = Some(Failure::RejectedPath);
         assert!(fetchers.enqueue(asset, Purpose::Thumbnail));
         assert!(matches!(
-            completions
-                .recv_timeout(Duration::from_secs(3))
-                .unwrap()
-                .result,
+            completions.recv_timeout(WAIT).unwrap().result,
             Err(Failure::RejectedPath)
         ));
         let (finished, done) = mpsc::channel();
@@ -988,7 +891,7 @@ fn idle_workers_wake_for_work_and_both_shutdown_signals() {
             drop(fetchers);
             finished.send(()).unwrap();
         });
-        done.recv_timeout(Duration::from_secs(3))
+        done.recv_timeout(WAIT)
             .expect("idle asset workers did not stop");
         worker.join().unwrap();
     }

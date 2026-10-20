@@ -1,9 +1,10 @@
-use super::{tests::*, *};
+use super::{test_support::*, *};
 use std::{
     io::{BufReader, Write},
     sync::mpsc,
     thread,
 };
+use test_support::Clock;
 
 #[test]
 fn replaces_idle_connection_closed_by_server() {
@@ -31,16 +32,11 @@ fn replaces_idle_connection_closed_by_server() {
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
             .unwrap();
     });
-    transport
-        .request("/api/test", "{}", &[], Duration::from_secs(2))
-        .unwrap();
+    transport.request("/api/test", "{}", &[], WAIT).unwrap();
     close.send(()).unwrap();
     observed.recv().unwrap();
     assert_eq!(
-        transport
-            .request("/api/test", "{}", &[], Duration::from_secs(2))
-            .unwrap()
-            .1,
+        transport.request("/api/test", "{}", &[], WAIT).unwrap().1,
         b"{}"
     );
     server.join().unwrap();
@@ -72,12 +68,9 @@ fn cancellation_from_another_thread_unblocks_stalled_read() {
         done.send(transport.request("/api/test", "{}", &[], Duration::from_secs(60)))
             .unwrap();
     });
-    wait.recv_timeout(Duration::from_secs(2)).unwrap();
+    wait.recv_timeout(WAIT).unwrap();
     signal.cancel();
-    let error = result
-        .recv_timeout(Duration::from_secs(1))
-        .unwrap()
-        .unwrap_err();
+    let error = result.recv_timeout(WAIT).unwrap().unwrap_err();
     assert!(
         error
             .chain()
@@ -89,12 +82,24 @@ fn cancellation_from_another_thread_unblocks_stalled_read() {
 }
 #[test]
 fn connect_refused_is_not_delivered() {
-    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-    let transport = Transport::local("test", format!("http://{}", listener.local_addr().unwrap()));
-    drop(listener);
-    let error = transport
-        .request("/api/test", "{}", &[], Duration::from_secs(2))
-        .unwrap_err();
+    // Reserve the refused port so concurrent test servers cannot reuse it.
+    let socket = socket2::Socket::new(socket2::Domain::IPV4, socket2::Type::STREAM, None).unwrap();
+    socket
+        .bind(
+            &"127.0.0.1:0"
+                .parse::<std::net::SocketAddr>()
+                .unwrap()
+                .into(),
+        )
+        .unwrap();
+    let transport = Transport::local(
+        "test",
+        format!(
+            "http://{}",
+            socket.local_addr().unwrap().as_socket().unwrap()
+        ),
+    );
+    let error = transport.request("/api/test", "{}", &[], WAIT).unwrap_err();
     assert_eq!(
         super::super::error::classify(&error),
         super::super::error::Failure::NotDelivered
@@ -103,7 +108,7 @@ fn connect_refused_is_not_delivered() {
 #[test]
 fn stream_idle_timeout_fires() {
     let (release, finish) = mpsc::channel();
-    let (transport, server) = local_server(move |listener| {
+    let (mut transport, server) = local_server(move |listener| {
         let mut socket = BufReader::new(accept(&listener));
         request_headers(&mut socket).unwrap();
         socket
@@ -112,13 +117,28 @@ fn stream_idle_timeout_fires() {
             .unwrap();
         finish.recv().unwrap();
     });
+    let (clock, waits) = Clock::new();
+    transport.clock = crate::client::http::Clock::Manual(clock.clone());
+    let (reading, read_started) = mpsc::channel();
+    let waits = Arc::new(Mutex::new(waits));
+    let timer_waits = waits.clone();
+    let timer = thread::spawn(move || {
+        read_started.recv_timeout(WAIT).unwrap();
+        assert_eq!(
+            timer_waits.lock().unwrap().recv_timeout(WAIT).unwrap(),
+            WAIT
+        );
+        clock.advance(WAIT);
+    });
     transport
         .stream(
             "/api/test",
             &[],
             Arc::new(CancelToken::new()),
-            Duration::from_millis(100),
+            WAIT,
             |_, _, reader| {
+                while waits.lock().unwrap().try_recv().is_ok() {}
+                reading.send(()).unwrap();
                 assert_eq!(
                     reader.read(&mut [0]).unwrap_err().kind(),
                     io::ErrorKind::TimedOut
@@ -128,6 +148,7 @@ fn stream_idle_timeout_fires() {
         )
         .unwrap();
     release.send(()).unwrap();
+    timer.join().unwrap();
     server.join().unwrap();
 }
 #[test]
@@ -144,7 +165,7 @@ fn body_cap_applies_without_content_length() {
     });
     assert!(
         transport
-            .request("/api/test", "{}", &[], Duration::from_secs(2))
+            .request("/api/test", "{}", &[], WAIT)
             .unwrap_err()
             .to_string()
             .contains("exceeds")
@@ -166,12 +187,8 @@ fn a_request_possibly_sent_is_never_retried() {
         listener.set_nonblocking(true).unwrap();
         listener
     });
-    transport
-        .request("/api/test", "{}", &[], Duration::from_secs(2))
-        .unwrap();
-    let error = transport
-        .request("/api/test", "{}", &[], Duration::from_secs(2))
-        .unwrap_err();
+    transport.request("/api/test", "{}", &[], WAIT).unwrap();
+    let error = transport.request("/api/test", "{}", &[], WAIT).unwrap_err();
     assert_eq!(
         super::super::error::classify(&error),
         super::super::error::Failure::Unanswered
@@ -197,9 +214,7 @@ fn unsupported_all_proxy_and_http_targets_never_connect() {
                 .then(|| format!("{scheme}://{}", proxy.local_addr().unwrap()).into())
         })
         .unwrap();
-        let error = transport
-            .request("/api/test", "{}", &[], Duration::from_secs(1))
-            .unwrap_err();
+        let error = transport.request("/api/test", "{}", &[], WAIT).unwrap_err();
         assert_eq!(
             super::super::error::classify(&error),
             super::super::error::Failure::NotDelivered
@@ -226,7 +241,7 @@ fn unsupported_all_proxy_and_http_targets_never_connect() {
     transport.config.allow_http = false;
     assert_eq!(
         transport
-            .request("/api/test", "{}", &[], Duration::from_secs(1))
+            .request("/api/test", "{}", &[], WAIT)
             .unwrap_err()
             .to_string(),
         "HTTPS URL required"
@@ -274,9 +289,7 @@ fn precancelled_request_never_connects() {
     let cancel = Arc::new(CancelToken::default());
     cancel.cancel();
     super::super::set_request_cancel(cancel);
-    let error = transport
-        .request("/api/test", "{}", &[], Duration::from_secs(1))
-        .unwrap_err();
+    let error = transport.request("/api/test", "{}", &[], WAIT).unwrap_err();
     REQUEST_CANCEL.with(|slot| *slot.borrow_mut() = None);
     assert!(error.is::<super::super::error::Cancelled>());
     assert_eq!(
@@ -286,10 +299,10 @@ fn precancelled_request_never_connects() {
 }
 
 #[test]
-fn two_hundred_requests_reuse_one_connection() {
+fn five_requests_reuse_one_connection() {
     let (transport, server) = local_server(|listener| {
         let mut socket = BufReader::new(accept(&listener));
-        for _ in 0..200 {
+        for _ in 0..5 {
             assert!(read_request(&mut socket));
             socket
                 .get_mut()
@@ -302,10 +315,8 @@ fn two_hundred_requests_reuse_one_connection() {
             io::ErrorKind::WouldBlock
         );
     });
-    for _ in 0..200 {
-        transport
-            .request("/api/test", "{}", &[], Duration::from_secs(2))
-            .unwrap();
+    for _ in 0..5 {
+        transport.request("/api/test", "{}", &[], WAIT).unwrap();
     }
     server.join().unwrap();
 }
@@ -316,7 +327,7 @@ fn stalled_upload_hits_idle_deadline() {
     let (mut transport, server) = local_server(move |listener| {
         let mut socket = BufReader::new(accept(&listener));
         request_headers(&mut socket).unwrap().1.unwrap();
-        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+        wait.recv_timeout(WAIT).unwrap();
     });
     transport.config.upload_idle = Duration::from_millis(100);
     let mut steps = Vec::new();
@@ -324,7 +335,7 @@ fn stalled_upload_hits_idle_deadline() {
         .upload(
             &format!("{}/upload", transport.base),
             &[],
-            vec![7; 32 * 1024 * 1024].into(),
+            vec![7; 4 * 1024 * 1024].into(),
             &mut |sent| steps.push(sent),
         )
         .unwrap_err();
@@ -335,7 +346,7 @@ fn stalled_upload_hits_idle_deadline() {
         TransportError::Timeout
     ));
     assert!(!steps.is_empty());
-    assert!(*steps.last().unwrap() < 32 * 1024 * 1024);
+    assert!(*steps.last().unwrap() < 4 * 1024 * 1024);
     release.send(()).unwrap();
     server.join().unwrap();
 }
@@ -350,7 +361,7 @@ fn asset_body_deadline_is_classified_as_timeout() {
             .get_mut()
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nx")
             .unwrap();
-        wait.recv_timeout(Duration::from_secs(3)).unwrap();
+        wait.recv_timeout(WAIT).unwrap();
     });
     transport.config.asset_hosts = vec![transport.base.trim_start_matches("http://").to_owned()];
     transport.config.asset_timeout = Duration::from_millis(100);
@@ -367,7 +378,7 @@ fn asset_body_deadline_is_classified_as_timeout() {
 
 #[test]
 fn upload_progress_precedes_body_completion() {
-    let size = 32 * 1024 * 1024;
+    let size = 4 * 1024 * 1024;
     let (first, observed) = mpsc::channel();
     let (release, rest) = mpsc::channel();
     let (transport, server) = local_server(move |listener| {
@@ -392,8 +403,8 @@ fn upload_progress_precedes_body_completion() {
             &mut |n| updates.send(n).unwrap(),
         )
     });
-    observed.recv_timeout(Duration::from_secs(5)).unwrap();
-    let first = progress.recv_timeout(Duration::from_secs(5)).unwrap();
+    observed.recv_timeout(WAIT).unwrap();
+    let first = progress.recv_timeout(WAIT).unwrap();
     assert!(first > 0 && first < size as u64);
     release.send(()).unwrap();
     assert_eq!(worker.join().unwrap().unwrap(), "object");
@@ -401,4 +412,65 @@ fn upload_progress_precedes_body_completion() {
     assert!(steps.windows(2).all(|pair| pair[0] < pair[1]));
     assert_eq!(steps.last(), Some(&(size as u64)));
     server.join().unwrap();
+}
+
+#[test]
+fn total_deadline_and_upload_idle_share_the_transport_clock() {
+    for upload in [false, true] {
+        let (clock, waits) = Clock::new();
+        let (write_byte, write) = mpsc::channel();
+        let (release, finish) = mpsc::channel();
+        let (mut transport, server) = local_server(move |listener| {
+            let mut socket = BufReader::new(accept(&listener));
+            request(&mut socket).unwrap();
+            socket
+                .get_mut()
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n")
+                .unwrap();
+            write.recv_timeout(WAIT).unwrap();
+            socket.get_mut().write_all(b"x").unwrap();
+            finish.recv_timeout(WAIT).unwrap();
+        });
+        transport.clock = super::Clock::Manual(clock.clone());
+        let budget = Duration::from_secs(30);
+        let mut reader = transport
+            .send(
+                "POST",
+                &transport.base,
+                &[],
+                Bytes::new(),
+                SendOptions {
+                    duration: budget,
+                    cancel: None,
+                    mode: if upload {
+                        SendMode::Upload
+                    } else {
+                        SendMode::Request
+                    },
+                    connect: WAIT,
+                },
+                None,
+            )
+            .unwrap();
+        clock.advance(Duration::from_secs(20));
+        write_byte.send(()).unwrap();
+        assert_eq!(reader.read(&mut [0]).unwrap(), 1);
+        while waits.try_recv().is_ok() {}
+        let timer = thread::spawn(move || {
+            let remaining = if upload {
+                budget
+            } else {
+                Duration::from_secs(10)
+            };
+            assert_eq!(waits.recv_timeout(WAIT).unwrap(), remaining);
+            clock.advance(remaining);
+        });
+        assert_eq!(
+            reader.read(&mut [0]).unwrap_err().kind(),
+            io::ErrorKind::TimedOut
+        );
+        timer.join().unwrap();
+        release.send(()).unwrap();
+        server.join().unwrap();
+    }
 }

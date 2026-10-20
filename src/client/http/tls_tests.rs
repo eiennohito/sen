@@ -1,4 +1,4 @@
-use super::{tests::*, *};
+use super::{test_support::*, *};
 use rustls::{ServerConfig, ServerConnection, StreamOwned};
 use std::{
     io::{BufRead, BufReader, Write},
@@ -6,17 +6,22 @@ use std::{
     thread,
 };
 fn fixture() -> (Transport, TcpListener, Arc<ServerConfig>) {
-    let ca = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
-    let mut roots = rustls::RootCertStore::empty();
-    roots.add(ca.cert.der().clone()).unwrap();
-    let key = rustls::pki_types::PrivatePkcs8KeyDer::from(ca.signing_key.serialize_der()).into();
-    let config =
-        ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
-            .with_safe_default_protocol_versions()
-            .unwrap()
-            .with_no_client_auth()
-            .with_single_cert(vec![ca.cert.der().clone()], key)
-            .unwrap();
+    static TLS: OnceLock<(rustls::RootCertStore, Arc<ServerConfig>)> = OnceLock::new();
+    let (roots, config) = TLS.get_or_init(|| {
+        let ca = rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(ca.cert.der().clone()).unwrap();
+        let key =
+            rustls::pki_types::PrivatePkcs8KeyDer::from(ca.signing_key.serialize_der()).into();
+        let config =
+            ServerConfig::builder_with_provider(Arc::new(rustls::crypto::ring::default_provider()))
+                .with_safe_default_protocol_versions()
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(vec![ca.cert.der().clone()], key)
+                .unwrap();
+        (roots, Arc::new(config))
+    });
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let transport = Transport::configured(
         "test",
@@ -25,10 +30,10 @@ fn fixture() -> (Transport, TcpListener, Arc<ServerConfig>) {
             listener.local_addr().unwrap().port()
         ),
         None,
-        roots,
+        roots.clone(),
     )
     .unwrap();
-    (transport, listener, Arc::new(config))
+    (transport, listener, config.clone())
 }
 #[test]
 fn streaming_get_uses_verified_tls_directly_and_through_connect() {
@@ -53,25 +58,20 @@ fn streaming_get_uses_verified_tls_directly_and_through_connect() {
             let socket = accept(&listener);
             let socket = if proxied {
                 let mut reader = BufReader::new(socket);
-                let mut line = String::new();
-                reader.read_line(&mut line).unwrap();
+                let request = raw_request_headers(&mut reader).unwrap();
+                let mut lines = request.split_inclusive('\n');
                 assert_eq!(
-                    line,
+                    lines.next().unwrap(),
                     format!(
                         "CONNECT {} HTTP/1.1\r\n",
                         base.trim_start_matches("https://")
                     )
                 );
                 let mut authorized = false;
-                loop {
-                    line.clear();
-                    assert!(reader.read_line(&mut line).unwrap() > 0);
+                for line in lines {
                     assert!(!line.contains("origin-token"));
                     authorized |= line.trim()
                         == "Proxy-Authorization: Basic ZmFrZS11c2VyOmZha2UtcGFzc3dvcmQ=";
-                    if line == "\r\n" {
-                        break;
-                    }
                 }
                 assert!(authorized);
                 reader
@@ -91,27 +91,23 @@ fn streaming_get_uses_verified_tls_directly_and_through_connect() {
                 assert!(reader.read_line(&mut line).is_err());
                 return;
             }
-            reader.read_line(&mut line).unwrap();
-            assert_eq!(line, "GET /api/test HTTP/1.1\r\n");
+            let request = raw_request_headers(&mut reader).unwrap();
+            let mut lines = request.split_inclusive('\n');
+            assert_eq!(lines.next().unwrap(), "GET /api/test HTTP/1.1\r\n");
             assert_eq!(reader.get_ref().conn.server_name(), Some("localhost"));
             let mut cookie = false;
-            loop {
-                line.clear();
-                assert!(reader.read_line(&mut line).unwrap() > 0);
+            for line in lines {
                 assert!(
                     !line
                         .to_ascii_lowercase()
                         .starts_with("proxy-authorization:")
                 );
                 cookie |= line.trim().eq_ignore_ascii_case("cookie: lct=origin-token");
-                if line == "\r\n" {
-                    break;
-                }
             }
             assert!(cookie);
             reader.get_mut().write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: 18\r\n\r\ndata: 1\n\n").unwrap();
             reader.get_mut().flush().unwrap();
-            wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            wait.recv_timeout(WAIT).unwrap();
             reader.get_mut().write_all(b"data: 2\n\n").unwrap();
             reader.get_mut().flush().unwrap();
         });
@@ -119,7 +115,7 @@ fn streaming_get_uses_verified_tls_directly_and_through_connect() {
             "/api/test",
             &[("Cookie", "lct=origin-token")],
             Arc::new(CancelToken::new()),
-            Duration::from_secs(2),
+            WAIT,
             |status, headers, body| {
                 assert_eq!(status, 200);
                 assert_eq!(headers["content-type"], "text/event-stream");
@@ -164,23 +160,14 @@ fn no_proxy_bypasses_proxy() {
             ServerConnection::new(config).unwrap(),
             accept(&listener),
         ));
-        let mut line = String::new();
-        loop {
-            line.clear();
-            assert!(socket.read_line(&mut line).unwrap() > 0);
-            if line == "\r\n" {
-                break;
-            }
-        }
+        raw_request_headers(&mut socket).unwrap();
         socket
             .get_mut()
             .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\n{}")
             .unwrap();
         socket.get_mut().flush().unwrap();
     });
-    transport
-        .request("/api/test", "{}", &[], Duration::from_secs(2))
-        .unwrap();
+    transport.request("/api/test", "{}", &[], WAIT).unwrap();
     assert_eq!(
         proxy.accept().unwrap_err().kind(),
         io::ErrorKind::WouldBlock

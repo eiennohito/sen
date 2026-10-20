@@ -786,37 +786,16 @@ mod tests {
     #[test]
     fn account_switch_restarts_asset_requests_after_permanent_failure() {
         use crate::client::desktop::{assets, test_client::asset_client};
-        use std::{io::Write, net::TcpListener, sync::mpsc, thread, time::Duration};
+        use crate::client::http::test_support::{WAIT, asset_server};
+        use std::{io::Write, sync::mpsc};
 
         let root = tempfile::tempdir().unwrap();
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let base = format!("http://{}", listener.local_addr().unwrap());
-        let (requested, requests) = mpsc::channel();
-        let server = thread::spawn(move || {
-            use std::io::{BufRead, BufReader};
-            for _ in 0..2 {
-                let (stream, _) = listener.accept().unwrap();
-                stream
-                    .set_read_timeout(Some(Duration::from_secs(3)))
-                    .unwrap();
-                let mut stream = BufReader::new(stream);
-                let mut request = String::new();
-                loop {
-                    let mut line = String::new();
-                    assert!(stream.read_line(&mut line).unwrap() > 0);
-                    request.push_str(&line);
-                    if line == "\r\n" {
-                        break;
-                    }
-                }
-                requested.send(request).unwrap();
-                stream
-                    .get_mut()
-                    .write_all(
-                        b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                    )
-                    .unwrap();
-            }
+        let (base, _http, requests, server) = asset_server(2, |_, mut stream| {
+            stream
+                .write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .unwrap();
         });
         let mut backend = LineBackend {
             cache: root.path().into(),
@@ -844,21 +823,18 @@ mod tests {
                     Arc::new(move |event| events.send(event).is_ok()),
                 )
                 .unwrap();
-            let StreamEvent::AssetRequests(queue) =
-                pending.recv_timeout(Duration::from_secs(3)).unwrap()
-            else {
+            let StreamEvent::AssetRequests(queue) = pending.recv_timeout(WAIT).unwrap() else {
                 panic!("missing asset request queue");
             };
             (queue.request)(asset.clone(), assets::Purpose::Thumbnail);
-            let StreamEvent::Asset(done) = pending.recv_timeout(Duration::from_secs(3)).unwrap()
-            else {
+            let StreamEvent::Asset(done) = pending.recv_timeout(WAIT).unwrap() else {
                 panic!("missing asset completion");
             };
             assert!(done.network, "{account} reused another account's failure");
             assert!(matches!(done.result, Err(assets::Failure::Http(404))));
             assert!(
                 requests
-                    .recv_timeout(Duration::from_secs(3))
+                    .recv_timeout(WAIT)
                     .unwrap()
                     .starts_with("GET /same-asset HTTP/1.1")
             );

@@ -293,7 +293,7 @@ mod tests {
     fn qr_gateway_poll_timeout_keeps_waiting_until_the_scan_event() -> Result<()> {
         let module = crate::test_support::installed_module();
 
-        use crate::client::http::tests::{Reply, server_responses};
+        use crate::client::http::test_support::{Reply, server_responses};
         let (http, server) = server_responses([
             ("/api/talk/thrift/LoginQrCode/SecondaryQrCodeLoginService/createSession", json!({"code":0,"message":"OK","data":{"authSessionId":"synthetic"}})),
             ("/api/talk/thrift/LoginQrCode/SecondaryQrCodeLoginService/createQrCode", json!({"code":0,"message":"OK","data":{"callbackUrl":"line://au/q/test","longPollingMaxCount":2}})),
