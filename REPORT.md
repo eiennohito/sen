@@ -93,18 +93,18 @@ Every API request to `line-chrome-gw` includes:
 
 ```json
 {
-  "jti": "36567362-b63c-...",
+  "jti": "<uuid>",
   "aud": "LINE",
-  "iat": 1773448014,
-  "exp": 1774052814,          // ~7 day access token
+  "iat": <unix seconds>,
+  "exp": <unix seconds>,          // ~7 day access token
   "scp": "LINE_CORE",
-  "rtid": "3116dd99-...",
-  "rexp": 1804984014,         // ~1 year refresh token
+  "rtid": "<uuid>",
+  "rexp": <unix seconds>,         // ~1 year refresh token
   "ver": "3.1",
-  "aid": "uf3b3e...",
+  "aid": "<account MID>",
   "ctype": "CHROMEOS",
   "cmode": "SECONDARY",
-  "cid": "0300000000"
+  "cid": "<client id>"
 }
 ```
 

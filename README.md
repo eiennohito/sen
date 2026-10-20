@@ -1,180 +1,171 @@
 # 閃 (sen)
 
-閃 is a flash, a fast sword cut along a line: a play on 線 (also *sen*, "line").
-The client is meant to be fast.
+![閃 icon](app/assets/icon.svg)
 
-An unofficial desktop client for the LINE messaging service, using LINE for
-Chrome's unmodified crypto WASM and a software-rendered Slint app. Linux is the
-first target.
+An unofficial, fast desktop client for the [LINE](https://line.me) messenger on
+Linux, written in Rust with [Slint](https://slint.dev).
 
-閃 is not affiliated with or endorsed by LY Corporation. LINE is a trademark of
-LY Corporation.
+閃 (*sen*) is a flash, a fast sword cut: a play on 線 (also *sen*, "line").
 
-Read [HANDOFF.md](HANDOFF.md) before account use. **Chrome owns the secondary-device
-slot; native account access requires a new explicit assignment.** Use offline
-synthetic demos for development.
+## tl;dr
 
-## Build and preview
+閃 is a native LINE client for Linux desktops. It speaks the same protocol as
+the official LINE for Chrome extension and borrows that extension's crypto
+module from your browser, so you need the extension installed. Sign in by
+scanning a QR code with LINE on your phone.
 
 ```sh
-cargo build --offline --release -p sen-desktop --features demo
-target/release/sen --demo
-# Headless rendering, with no account access:
-target/release/sen --snapshot /tmp/line-preview.ppm
-target/release/sen --demo --snapshot-scene photos --snapshot /tmp/line-small.ppm --snapshot-size 360x520 --snapshot-text-size 24
+# Needs: a recent stable Rust, a C compiler, pkg-config, fontconfig headers,
+# a Secret Service keyring (GNOME Keyring, KWallet, …) and LINE for Chrome
+# installed in Chrome or Chromium.
+git clone https://github.com/eiennohito/sen.git && cd sen
+cargo build --release -p sen-desktop
+python3 tools/install-desktop.py   # binary, icon, launcher, D-Bus service for your user
+sen                                 # or just run: cargo run --release -p sen-desktop
 ```
 
-The `demo` feature enables synthetic scenarios and snapshots. F12 opens Demo
-scenarios; demo sends use a local transport and in-memory SQLite. `--demo-dark`
-selects the dark preview palette. Normal builds exclude demo modules and flags.
-Snapshots use Slint's software renderer without a desktop window and do not
-verify physical input, IME composition or compositor behavior.
+Builds are local only for now: no CI, no packages.
 
-## Account setup and storage
+**Signing in to 閃 uses the same device slot as LINE for Chrome, so it signs
+the extension out** (and the other way round). 閃 is not affiliated with or
+endorsed by LY Corporation, and using an unofficial client may be against
+LINE's terms of service. Use it at your own risk.
 
-Install LINE for Chrome before using an authorized native account. Startup
-searches Chrome and Chromium profiles under `$XDG_CONFIG_HOME` (default
-`$HOME/.config`) for extension `ophjlpahpchlmihnnnihgmmeilfjmjjc`, choosing the
-newest manifest version. It loads `static/js/ltsm.wasm` directly and uses the
-manifest version for requests and signing. Required interfaces are checked
-before sign-in. No module copy or download script is needed.
+## This project is vibe coded
 
-With a device-slot assignment, the normal foreground app opens saved state or
-offers phone QR/PIN sign-in. Pairing starts only after Start sign-in and can
-replace Chrome's login. Text submission requires Send or an enabled shortcut;
-Enter inserts a newline by default and Ctrl+Enter sends.
+The whole project is vibe coded: AI agents wrote the code, tests and docs. I
+directed them, tested the app and fixed what was broken, but I mostly did not
+read the source, apart from the worst problems. Expect it to look like that in
+places. Bug reports with steps to reproduce are welcome.
 
-Session credentials live at `$XDG_DATA_HOME/sen/auth/session.json` (default
-`~/.local/share/sen/auth/session.json`) and are sealed with the desktop keyring.
-`SEN_CREDENTIALS=plaintext-file` explicitly selects the development
-credential store; it is not the normal account default. Do not delete keyring
-items or existing session files.
+## What works
 
-History, drafts, preferences and pending submissions live in an unencrypted
-SQLite database per account under
-`$XDG_DATA_HOME/sen/<mid>/store.sqlite3`. The last account is plain MID text
-in `sen/auth/last-account`.
-The store opens before network connection when a validated account identity is
-available. It retains messages without an age or count limit; the UI subscribes
-to windows of that history. Clear only the image cache when removing previews,
-not the account database containing drafts and pending sends.
+- Chats, groups and friends, with search across kana and romaji.
+- Text, replies, mentions, LINE emoji, stickers, photos, files and Flex
+  (rich) messages. Rich text is selectable.
+- Sending text, stickers, photos and files, including paste and drag and drop.
+- Reactions (set, remove, see who reacted), read receipts and unread counts.
+- Editing your own display name and status message.
+- Desktop notifications, tray icon, background mode and autostart.
+- Logging out, optionally deleting that account's local data.
+- History is kept locally, so cached chats open instantly and offline.
+- Follows the system light or dark theme; full keyboard navigation and screen
+  reader labels.
 
-On first start, 閃 copies the old session and last account from `line-desktop`
-when their new files are absent. It copies each account store through SQLite
-when that account opens, including committed WAL data. Old files and keyring
-items are left untouched; caches start fresh. Managed desktop/autostart entries
-use the new app id; custom entries are kept.
+Not supported (yet): calls, blocking and reporting, group invitations and
+member management. Unsupported message types show as "This message type isn't
+supported yet". [docs/issues.md](docs/issues.md) tracks everything open.
 
-Image caches use `$XDG_CACHE_HOME/sen/` (default
-`~/.cache/sen/`), in `<mid>/` directories, with private directories/files, a 128 MiB / 4096-file
-disk LRU and 24 MiB decoded budget. Disk hits refresh mtime; there is no age
-expiry. Three asset fetchers download and decode off the UI thread. Originals
-and files are requested explicitly. Media authentication precedes decryption.
-`--state FILE`, `--wasm FILE`, `--client-version VERSION` and `--cache-dir DIR`
-are developer overrides; a module override outside an extension requires a
-client version.
+## How it works
 
-RPC, SSE and media use hyper HTTP/1 over async-io with verified rustls/WebPKI
-TLS. One shared executor drives connections; RPC, SSE and media have separate
-clients/pools. The account net worker owns the WASM runtime and crypto caches;
-the engine/store thread owns SQLite. See [the core model](docs/core-model.md).
-Live protocol compatibility remains unverified while Chrome owns the slot.
+LINE for Chrome talks JSON over HTTPS to LINE's Chrome gateway and does
+end-to-end encryption (Letter Sealing) in a WebAssembly module. 閃 implements
+that protocol in Rust and runs the extension's unmodified `ltsm.wasm` with
+[wasmi](https://github.com/wasmi-labs/wasmi) for the crypto. The module is
+never copied or redistributed. At startup 閃 looks for the newest installed
+extension (`ophjlpahpchlmihnnnihgmmeilfjmjjc`) in Chrome and Chromium profiles
+under `$XDG_CONFIG_HOME` (default `~/.config`), loads `static/js/ltsm.wasm` and
+uses the extension's version for requests. Reaction artwork is also loaded from
+the installed extension.
 
-## Install
+The UI is Slint with the software renderer on winit (Wayland and X11). HTTP is
+hyper with rustls and WebPKI roots. SQLite holds the local history. See
+[docs/core-model.md](docs/core-model.md) and [HANDOFF.md](HANDOFF.md) for the
+architecture.
 
-Build without demo/debug features, then install the executable, icon, launcher
-and D-Bus activation service for the current user:
+## Data and privacy
+
+- **Session credentials**: `$XDG_DATA_HOME/sen/auth/session.json` (default
+  `~/.local/share/sen/`), sealed with a key kept in your desktop keyring
+  (`application=sen`). Deleting that keyring item signs you out.
+- **History, drafts, preferences and the outbox**: one unencrypted SQLite
+  database per account at `$XDG_DATA_HOME/sen/<mid>/store.sqlite3`, with no age
+  or size limit. Store format changes are migrated, never wiped.
+- **Image cache**: `$XDG_CACHE_HOME/sen/<mid>/` (default `~/.cache/sen/`),
+  private files, 128 MiB LRU. It is safe to delete.
+- **Emoji font**: colour emoji use Noto Color Emoji (OFL-1.1). If your system
+  doesn't have a usable copy, 閃 downloads it once from jsDelivr into
+  `$XDG_DATA_HOME/sen/fonts/` and checks for updates at most every 30 days. No
+  account information is sent. Without it, emoji fall back to system fonts.
+
+閃 talks only to LINE's servers and, for the font, to jsDelivr.
+
+## Install details
+
+`tools/install-desktop.py` installs a plain release build (it refuses demo and
+debug builds) to XDG locations for the current user: the `sen` binary, the
+icon, a `.desktop` launcher and a D-Bus activation service. `--destdir DIR`
+stages `bin/` and `share/` instead, without refreshing desktop caches. The
+Wayland app id and X11 class are `org.senclient.Sen`.
+
+## Development
+
+Agents and contributors follow [docs/deslop.md](docs/deslop.md) and
+[docs/dependencies.md](docs/dependencies.md).
+[docs/ux-model.md](docs/ux-model.md) defines behaviour,
+[docs/visual-design.md](docs/visual-design.md) the look, and
+[docs/protocol-traces.md](docs/protocol-traces.md) the protocol evidence.
+
+Synthetic demo (no account, no network):
 
 ```sh
-cargo build --offline --release -p sen-desktop
-python3 tools/install-desktop.py
+cargo run --release -p sen-desktop --features demo -- --demo
 ```
 
-The launcher uses XDG defaults. `--destdir DIRECTORY` stages `bin/` and `share/`
-without refreshing desktop caches. The installer rejects demo and MCP builds.
-The Wayland app ID and X11 class are `org.senclient.Sen`.
+F12 opens demo scenarios and `--demo-dark` selects the dark palette.
+`--snapshot FILE` renders headless, for example
+`--demo --snapshot-scene photos --snapshot shot.ppm --snapshot-size 360x520`.
 
-## Development checks
+Checks:
 
 ```sh
 cargo fmt --all -- --check
-cargo test --offline --workspace
-cargo clippy --offline --workspace --all-targets -- -D warnings
-cargo clippy --offline -p sen-desktop --all-targets --features ui-debug -- -D warnings
+cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy -p sen-desktop --all-targets --features ui-debug -- -D warnings
+cargo test --workspace
 ```
 
-Desktop service contract tests are ignored by default. Run them only on a
-private bus:
+Desktop service tests are ignored by default. Run them only on a private bus:
 
 ```sh
-dbus-run-session -- env SEN_TEST_BUS=1 cargo test --offline -p sen-desktop -- --ignored
+dbus-run-session -- env SEN_TEST_BUS=1 cargo test -p sen-desktop -- --ignored
 ```
 
-MCP is opt-in and absent from normal builds. Build once, then run the checker:
+The UI checker drives a headless `ui-debug` build (MCP on loopback, synthetic
+accounts, private D-Bus and XDG directories) and builds nothing itself:
 
 ```sh
-cargo build --offline --release -p sen-desktop --features ui-debug
-python3 tools/check-ui-mcp.py --all
-python3 tools/check-ui-mcp.py --group rich --screenshots /tmp/line-ui-shots
-python3 tools/check-ui-mcp.py --group layers --wide
-python3 tools/check-ui-mcp.py --group signed-out --group missing-module
+cargo build --profile fast -p sen-desktop --features ui-debug
+python3 tools/check-ui-mcp.py --all --binary target/fast/sen
+python3 tools/check-ui-mcp.py --group rich --screenshots target/shots --binary target/fast/sen
 ```
 
-The checker builds nothing and defaults to `target/release/sen`.
-It owns offline headless demos, private D-Bus sessions and temporary XDG
-directories. `--all` runs the normal and wide matrix plus separate signed-out
-and missing-module instances. It prints a seed (`--seed N` reproduces ordering),
-per-group results and elapsed time; failures exit nonzero. Synthetic state
-resets between groups. Readiness uses MCP initialize retries with a 30-second
-deadline. `--screenshots DIRECTORY` saves intermediate and completed surfaces.
+It prints a seed (`--seed N` reproduces the order) and per-group results.
+`python3 tools/run_ui_debug.py --binary target/fast/sen --port 9447 -- --demo`
+starts the same private headless instance for manual inspection.
 
-For manual inspection, the wrapper owns the same private headless scope:
+For emoji in development builds, `python3 tools/fetch_emoji_font.py` (needs
+python3-fonttools) fetches the font into the gitignored `fonts/`, and
+`SEN_EMOJI_FONT="$PWD/fonts/NotoColorEmoji.ttf"` uses it without downloading.
+The checker and launcher set this automatically.
+
+The crypto harness tests the module against synthetic fixtures:
 
 ```sh
-python3 tools/run_ui_debug.py --binary target/release/sen --port 9447 -- --demo
+cargo run --release --features harness --example crypto-harness
 ```
 
-Ctrl+C, SIGTERM and SIGHUP stop the owned scope and clean temporary directories.
-MCP listens only on loopback. Demo exports and attachments stay in the private
-`SEN_DEMO_DIRECTORY`. These checks use synthetic accounts, not real messages.
-Physical pointer routing, Fcitx composition and desktop interactions require
-person-run verification.
+Never commit credentials, captures or HAR files: `artifacts/` and `dumps/` are
+gitignored for that. Checked-in fixtures are synthetic.
 
-## Protocol fixtures and documentation
+## Licence
 
-The root `sen` crate is the default Cargo target. The optional crypto harness
-uses synthetic fixtures and discovers the installed module by default. An
-explicit WASM argument overrides discovery. AES helpers, Curve25519 key
-import/export, runtime inspection and history benchmarks are compiled only with
-`harness`; product startup validates only the crypto bindings it calls:
+閃 is licensed under the [GNU GPL v3](LICENSE) (`GPL-3.0-only`), in line with
+Slint's GPL option. Vendored and patched crates keep their own licences: Slint's
+software renderer (GPL-3.0-only among its options) and parley (Apache-2.0 or
+MIT) under [third_party/](third_party/README.md). The WASM binding conventions
+are informed by beeper/line (MIT, [licence](licenses/beeper-line-MIT.txt)).
+Noto Color Emoji is OFL-1.1 and is downloaded, never bundled.
 
-```sh
-cargo run --offline --release --features harness --example crypto-harness
-cargo run --offline --release --features harness --example crypto-harness -- --bench
-```
-
-`tools/generate-fixture.go` and `tools/generate-media-fixture.go` generate
-independent synthetic crypto fixtures. `tools/extract_extension.py` can extract
-WASM and provenance from an explicitly supplied CRX3 for oracle work.
-
-[docs/issues.md](docs/issues.md) tracks open issues;
-[docs/ux-model.md](docs/ux-model.md) defines behavior;
-[docs/ux-acceptance.md](docs/ux-acceptance.md) records verification.
-[docs/app-design.md](docs/app-design.md) describes engineering constraints and
-[docs/chromium-ui-map.md](docs/chromium-ui-map.md) records protocol evidence.
-Credentials under `artifacts/auth/`, proprietary artifacts and sensitive HARs
-under `dumps/` must stay out of logs, prompts and Git. Checked-in fixtures are
-synthetic.
-
-Colour emoji uses Noto Color Emoji (OFL-1.1), installed or downloaded to
-`$XDG_DATA_HOME/sen/fonts/` (default `~/.local/share/sen/fonts/`), never embedded.
-Privacy: startup contacts jsDelivr for the font and OFL licence when absent,
-then checks at most every 30 days using ETag/Last-Modified; failures keep system
-fallback or the installed font. Downloads are structurally validated, without a
-pinned hash, and registered live. No account information is sent to the CDN.
-For development, `python3 tools/fetch_emoji_font.py` (requires python3-fonttools)
-fetches the same current bitmap build into gitignored `fonts/`.
-`SEN_EMOJI_FONT="$PWD/fonts/NotoColorEmoji.ttf" cargo run -p sen-desktop`
-uses that file and disables downloads in debug builds. The UI launcher and
-check runner set this override automatically; the installer can copy both files.
-See `third_party/README.md` for the renderer and shaping patches.
+LINE is a trademark of LY Corporation. 閃 is not affiliated with or endorsed by
+LY Corporation.

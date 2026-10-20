@@ -110,7 +110,7 @@ and file modes.
   profile and a working directory:
 
   ```sh
-  codex exec -p line-app -C /home/eien/work/misc/line-app-wt/<name> "<task>"
+  codex exec -p line-app -C ../line-app-wt/<name> "<task>"
   ```
 
   Do not pass `-s`/`--sandbox`, `-c`, `--add-dir`, or approval flags. If a task
