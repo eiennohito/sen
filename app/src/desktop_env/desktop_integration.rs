@@ -182,11 +182,11 @@ mod tests {
     }
     #[test]
     fn lock_excludes_second_writer_and_releases() {
-        let path = std::env::temp_dir().join(format!("line-lock-test-{}", std::process::id()));
+        let root = line::test_support::TempDir::new("lock");
+        let path = root.0.join("instance.lock");
         let first = lock_file(&path).unwrap().unwrap();
         assert!(lock_file(&path).unwrap().is_none());
         drop(first);
         assert!(lock_file(&path).unwrap().is_some());
-        std::fs::remove_file(path).unwrap();
     }
 }

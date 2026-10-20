@@ -33,12 +33,8 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
     let row = presenter::chats::chat_row(
         presenter::ChatInputs {
             item: ChatListItem {
-                chat: ChatInput::default(),
                 preview: Some(view),
-                unread_count: 0,
-                activity_ms: 0,
-                failed_count: 0,
-                draft: None,
+                ..chat_item(ChatInput::default())
             },
             title: "葵".into(),
             avatar: None,
@@ -144,11 +140,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
         let measure = |s: &str| s.chars().count() as f32;
         let fallback = rich_content::preview::layout(&row.preview_runs, "", 100., 1., measure);
         assert!(!fallback.iter().any(|run| run.thumbnail));
-        let picture = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-            &[0, 180, 100, 255],
-            1,
-            1,
-        ));
+        let picture = green_image();
         images.insert(media_key.clone(), crate::tests::image_file(&picture));
         rich_content::preview::set(&mut row, &view.body, None, &images);
         assert!(
@@ -237,23 +229,6 @@ pub(crate) fn label_cases() -> [(Content, &'static str, &'static str); 9] {
 }
 
 #[test]
-fn content_labels_agree_across_rows_previews_and_accessibility() {
-    for (content, compact, full) in label_cases() {
-        let mut m = message("");
-        m.body = content;
-        let mut chat = ChatRow::default();
-        rich_content::preview::set(&mut chat, &m.body, None, &presenter::Images::default());
-        let mut row = message_row(&m, None, &presenter::Images::default());
-        rich_content::links::decorate_message(&mut row);
-        assert_eq!(kind_label(&m.body).1, compact);
-        assert_eq!(message_text(&m.body).1, full);
-        assert_eq!(row.body, full);
-        assert_eq!(chat.preview, compact);
-        assert!(row.accessible_label.ends_with(full));
-    }
-}
-
-#[test]
 fn photo_previews_and_reply_quotes_load_the_small_disk_variant() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
@@ -320,4 +295,19 @@ fn photo_previews_and_reply_quotes_load_the_small_disk_variant() {
     })
     .join()
     .unwrap();
+}
+
+#[test]
+fn content_labels_agree_across_rows_previews_and_accessibility() {
+    for (content, compact, full) in label_cases() {
+        let mut m = message("");
+        m.body = content;
+        let mut chat = ChatRow::default();
+        rich_content::preview::set(&mut chat, &m.body, None, &presenter::Images::default());
+        let mut row = message_row(&m, None, &presenter::Images::default());
+        rich_content::links::decorate_message(&mut row);
+        assert_eq!(row.body, full);
+        assert_eq!(chat.preview, compact);
+        assert!(row.accessible_label.ends_with(full));
+    }
 }

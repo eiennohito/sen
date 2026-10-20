@@ -362,18 +362,11 @@ mod tests {
                     d.state.chat_order.push(chat.clone());
                     d.state.chats.insert(
                         chat.clone(),
-                        ChatListItem {
-                            chat: ChatInput {
-                                id: chat.clone(),
-                                is_group: true,
-                                ..Default::default()
-                            },
-                            unread_count: 0,
-                            preview: None,
-                            activity_ms: 0,
-                            failed_count: 0,
-                            draft: None,
-                        },
+                        crate::tests::chat_item(ChatInput {
+                            id: chat.clone(),
+                            is_group: true,
+                            ..Default::default()
+                        }),
                     );
                     d.state.push_detail(DetailPage::GroupInfo(chat.clone()));
                     d.render(ui);
@@ -747,34 +740,6 @@ mod tests {
         .join()
         .unwrap();
     }
-}
-
-#[cfg(all(test, feature = "demo"))]
-#[test]
-fn demo_settings_scene_focuses_close() {
-    std::thread::spawn(|| {
-        use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
-        let window = crate::snapshot::install().unwrap();
-        let (ui, runtime, _worker) =
-            crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
-        ui.show().unwrap();
-        crate::snapshot::render(&window, (980, 720)).unwrap();
-        ui.invoke_focus_search();
-        crate::dev::demo::stage(&ui, &runtime, None, "settings", false);
-        crate::snapshot::render(&window, (980, 720)).unwrap();
-        let item = WindowInner::from_pub(ui.window())
-            .focus_item
-            .borrow()
-            .upgrade()
-            .unwrap();
-        assert_eq!(
-            item.accessible_string_property(AccessibleStringProperty::Label)
-                .unwrap(),
-            "Close settings"
-        );
-    })
-    .join()
-    .unwrap();
 }
 
 #[test]

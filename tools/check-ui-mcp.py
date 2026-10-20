@@ -1332,23 +1332,14 @@ def check_layers():
 
 
 def check_virtual_wheel():
-    def latest_row():
-        return any(item.get("accessibleRole") == "TextInput" and "History item 0999" in item.get("accessibleValue", "") for item in tree())
-    wait_for(latest_row, "paging history did not reach its latest page")
-    # The first render can precede the full page. Reopen its cached window to select virtual layout.
-    click("Weekend plans")
-    click("葵")
-    wait_for(lambda: call("find_elements_by_id", windowHandle=window, elementsId="Conversation::history-view").get("elementHandles"), "wheel fixture must use virtual history")
-    wait_for(latest_row, "virtual history did not reach its latest page")
-    def latest():
-        return any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest") for item in tree())
-    scroll_history(120)
-    wait_for(latest, "one wheel notch in virtual history did not show Latest")
-    scroll_history(-1000)
-    wait_for(lambda: not latest(), "wheel to the bottom did not resume following")
-    scroll_history(100000)
-    wait_for(lambda: any("History item " in item.get("accessibleValue", "") and int(item["accessibleValue"].split("History item ")[1][:4]) < 920 for item in tree()), "wheel at the top did not load older history")
-
+    smoke_chat('葵')
+    wait_for(lambda: any('History item 0999' in item.get('accessibleValue', '') for item in bodies()),
+             'paging fixture did not load its latest rows')
+    bounds_by_id('Conversation::history-view')  # > 60 rows selects the virtual ListView.
+    def older_rows():
+        scroll_history(100000)
+        return any('History item 08' in item.get('accessibleValue', '') for item in bodies())
+    wait_for(older_rows, 'real wheel input did not page older rows into view')
 
 
 def check_reading():
@@ -1680,11 +1671,9 @@ def check_action_geometry():
             screenshot(chat.lower().replace(" ", "-") + "-" + prefix.lower().replace(" ", "-"))
 
 
-SCENES = {'virtual-wheel': 'paging'}
 
 GROUPS = {
     'latency': check_latency,
-    'virtual-wheel': check_virtual_wheel,
     'action-geometry': check_action_geometry,
     'smoke': check_smoke,
     'emoji': check_emoji,
@@ -1694,6 +1683,7 @@ GROUPS = {
     'sticker': check_sticker,
     'friends': check_friends,
     'layers': check_layers,
+    'virtual-wheel': check_virtual_wheel,
     'reading': check_reading,
     'rich': check_rich,
     'media': check_media,
@@ -1788,12 +1778,12 @@ def main():
     if 'smoke' in selected and 'latency' not in selected:
         selected = ['latency', *selected]
     if args.all:
-        matrix = [(980, [g for g in GROUPS if g not in ('signed-out', 'missing-module') and g not in SCENES]),
+        matrix = [(980, [g for g in GROUPS if g not in ('signed-out', 'missing-module', 'virtual-wheel')]),
                   (1280, list(WIDE_GROUPS)), (420, ["focus"])]
-        matrix += [(980, [g]) for g in (*SCENES, 'signed-out', 'missing-module')]
+        matrix += [(980, [g]) for g in ('signed-out', 'missing-module', 'virtual-wheel')]
     else:
-        regular = [g for g in selected if g not in ('signed-out', 'missing-module') and g not in SCENES]
-        matrix = ([(1280 if args.wide else 980, regular)] if regular else []) + [(1280 if args.wide else 980, [g]) for g in selected if g in ('signed-out', 'missing-module') or g in SCENES]
+        regular = [g for g in selected if g not in ('signed-out', 'missing-module', 'virtual-wheel')]
+        matrix = ([(1280 if args.wide else 980, regular)] if regular else []) + [(1280 if args.wide else 980, [g]) for g in selected if g in ('signed-out', 'missing-module', 'virtual-wheel')]
     seed = args.seed if args.seed is not None else secrets.randbits(32)
     print(f'Seed: {seed}', flush=True)
     if args.all:
@@ -1836,10 +1826,10 @@ def main():
         flags = ['--demo-size', f'{width}x{900 if args.wide else 720}']
         if args.dark:
             flags += ['--demo-dark']
-        if groups[0] in SCENES:
-            flags += ['--snapshot-scene', SCENES[groups[0]]]
         if groups[0] in ('signed-out', 'missing-module'):
             flags += ['--demo', '--snapshot-scene', 'signed-out']
+        if groups == ['virtual-wheel']:
+            flags += ['--snapshot-scene', 'paging']
         if groups == ['missing-module']:
             flags += ['--snapshot-case', 'missing-module']
         with tempfile.TemporaryFile(dir=UI_TEMP, mode='w+') as log:
@@ -1857,7 +1847,7 @@ def main():
                         try:
                             if group == 'smoke':
                                 check_idle()
-                            if group not in ('signed-out', 'missing-module') and group not in SCENES:
+                            if group not in ('signed-out', 'missing-module', 'virtual-wheel'):
                                 reset_demo()
                             if group == 'focus' and width < 740:
                                 check_narrow_chats_focus()

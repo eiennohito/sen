@@ -21,6 +21,10 @@ pub(crate) fn save_bytes(
     save_dialog(bytes, name, title)
 }
 fn save_dialog(bytes: &[u8], name: &str, title: &str) -> Result<Option<PathBuf>, String> {
+    #[cfg(test)]
+    if std::env::var("LINE_DESKTOP_TEST_BUS").as_deref() != Ok("1") {
+        return Err("tests require a private dbus-run-session".into());
+    }
     #[cfg(feature = "demo")]
     if crate::dev::DEMO_SESSION.get().is_some() {
         return write_unique(&crate::dev::demo::directory().join("exports"), name, bytes).map(Some);
@@ -133,14 +137,14 @@ mod tests {
     use super::*;
     #[test]
     fn photo_exports_preserve_bytes_and_use_private_unique_names() {
-        let root = std::env::temp_dir().join(format!("line-export-test-{}", std::process::id()));
+        let root = line::test_support::TempDir::new("export");
         let mut jpeg = std::io::Cursor::new(Vec::new());
         image::RgbImage::new(3, 2)
             .write_to(&mut jpeg, image::ImageFormat::Jpeg)
             .unwrap();
         let jpeg = jpeg.into_inner();
-        let first = write_unique(&root, "閃 photo.jpg", &jpeg).unwrap();
-        let second = write_unique(&root, "閃 photo.jpg", &jpeg).unwrap();
+        let first = write_unique(&root.0, "閃 photo.jpg", &jpeg).unwrap();
+        let second = write_unique(&root.0, "閃 photo.jpg", &jpeg).unwrap();
         assert_ne!(first, second);
         assert_eq!(fs::read(&first).unwrap(), jpeg);
         use std::os::unix::fs::PermissionsExt;
@@ -148,7 +152,6 @@ mod tests {
             fs::metadata(first).unwrap().permissions().mode() & 0o777,
             0o600
         );
-        fs::remove_dir_all(root).unwrap();
     }
 }
 
@@ -226,8 +229,8 @@ mod portal_tests {
                     .unwrap(),
                 ("Save file".to_owned(), "閃 attachment".to_owned())
             );
-            let source =
-                std::env::temp_dir().join(format!("export-photo-{}.png", std::process::id()));
+            let root = line::test_support::TempDir::new("export-photo");
+            let source = root.0.join("photo.png");
             fs::write(&source, b"original bytes").unwrap();
             crate::viewer::save_photo(&ui, Some(source.clone()));
             assert_eq!(

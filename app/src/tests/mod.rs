@@ -27,14 +27,7 @@ pub(crate) fn test_window(
     backend: line::backend::FakeBackend,
     seed: impl FnOnce(&mut Desktop, &Worker, &AppWindow),
 ) -> (AppWindow, Runtime, Worker) {
-    let worker = Worker::start(
-        StoreLocation::Memory,
-        {
-            let mut backend = Some(backend);
-            move || Ok(backend.take().unwrap())
-        },
-        Default::default(),
-    );
+    let worker = test_worker(backend);
     let ui = window::create_app_window().unwrap();
     let mut desktop = desktop(worker.sender.clone());
     desktop.presenter.install(&ui);
@@ -50,14 +43,11 @@ pub(crate) fn test_window(
 
 mod grouping;
 mod layers;
-pub(crate) mod previews;
-mod search;
-
-mod rich_flow;
-
-mod ui_regressions;
-
 mod messages;
+pub(crate) mod previews;
+mod rich_flow;
+mod search;
+mod ui_regressions;
 
 fn element(ui: &AppWindow, label: &str) -> i_slint_backend_testing::ElementHandle {
     i_slint_backend_testing::ElementHandle::find_by_accessible_label(ui, label)
@@ -74,7 +64,9 @@ fn search(ui: &AppWindow) -> i_slint_backend_testing::ElementHandle {
 }
 
 pub(crate) fn image_file(image: &slint::Image) -> std::path::PathBuf {
-    thread_local! { static FIXTURES: line::backend::FakeBackend = line::backend::FakeBackend::canned(); }
+    thread_local! {
+        static FIXTURES: line::backend::FakeBackend = line::backend::FakeBackend::canned();
+    }
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let pixels = image.to_rgba8().unwrap();
     FIXTURES.with(|fake| {
@@ -113,4 +105,83 @@ pub(crate) fn desktop(sender: Sender) -> Desktop {
         sender,
         category: ChatCategory::All,
     }
+}
+
+pub(crate) fn test_worker(backend: line::backend::FakeBackend) -> Worker {
+    let mut backend = Some(backend);
+    Worker::start(
+        StoreLocation::Memory,
+        move || Ok(backend.take().unwrap()),
+        Default::default(),
+    )
+}
+
+pub(crate) fn chat_item(chat: ChatInput) -> ChatListItem {
+    ChatListItem {
+        chat,
+        unread_count: 0,
+        preview: None,
+        activity_ms: 0,
+        failed_count: 0,
+        draft: None,
+    }
+}
+
+pub(crate) fn press(ui: &AppWindow, text: impl Into<slint::SharedString>) {
+    use slint::platform::WindowEvent;
+    let text = text.into();
+    ui.window()
+        .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+    ui.window()
+        .dispatch_event(WindowEvent::KeyReleased { text });
+}
+
+pub(crate) fn chord(ui: &AppWindow, modifier: slint::platform::Key, key: slint::SharedString) {
+    ui.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyPressed {
+            text: modifier.into(),
+        });
+    press(ui, key);
+    ui.window()
+        .dispatch_event(slint::platform::WindowEvent::KeyReleased {
+            text: modifier.into(),
+        });
+}
+
+pub(crate) fn click_at(ui: &AppWindow, position: slint::LogicalPosition) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let button = PointerEventButton::Left;
+    ui.window()
+        .dispatch_event(WindowEvent::PointerPressed { position, button });
+    ui.window()
+        .dispatch_event(WindowEvent::PointerReleased { position, button });
+}
+
+pub(crate) fn focus_item(ui: &AppWindow) -> i_slint_core::item_tree::ItemRc {
+    use slint::private_unstable_api::re_exports::WindowInner;
+    WindowInner::from_pub(ui.window())
+        .focus_item
+        .borrow()
+        .upgrade()
+        .expect("window has no keyboard focus")
+}
+
+pub(crate) fn focus_label(ui: &AppWindow) -> String {
+    use slint::private_unstable_api::re_exports::AccessibleStringProperty;
+    focus_item(ui)
+        .accessible_string_property(AccessibleStringProperty::Label)
+        .unwrap_or_default()
+        .to_string()
+}
+
+pub(crate) fn advance(ms: u64) {
+    i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
+}
+
+pub(crate) fn green_image() -> slint::Image {
+    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+        &[0, 180, 100, 255],
+        1,
+        1,
+    ))
 }

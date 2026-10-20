@@ -26,6 +26,7 @@ pub fn render(
     (width, height): (u32, u32),
 ) -> Result<SharedPixelBuffer<Rgb8Pixel>, Box<dyn std::error::Error>> {
     window.set_size(PhysicalSize::new(width, height));
+    window.window().request_redraw();
     let mut pixels = SharedPixelBuffer::<Rgb8Pixel>::new(width, height);
     // Let one-shot scroll/layout restoration settle just as it does on the
     // desktop; keep the final buffer even if the last pass needs no repaint.
@@ -35,7 +36,6 @@ pub fn render(
         drawn |= window.draw_if_needed(|renderer| {
             renderer.render(pixels.make_mut_slice(), width as usize);
         });
-        std::thread::sleep(std::time::Duration::from_millis(2));
     }
     if !drawn {
         return Err("snapshot did not render".into());

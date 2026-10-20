@@ -69,15 +69,6 @@ pub(crate) struct Attention {
     worker: Option<std::thread::JoinHandle<()>>,
 }
 impl Attention {
-    #[cfg(test)]
-    pub(crate) fn disconnected() -> Self {
-        let (wake, _) = mpsc::sync_channel(1);
-        Self {
-            shared: Arc::new(Shared::default()),
-            wake,
-            worker: None,
-        }
-    }
     pub(crate) fn start() -> Self {
         let (wake, receiver) = mpsc::sync_channel(1);
         let shared = Arc::new(Shared::default());
