@@ -1,6 +1,6 @@
 import { ContentState } from "globals.slint";
 import { Pressable, FocusRing } from "button.slint";
-import { RichRun } from "types.slint";
+import { RichRun, RichPoint, RichSelection } from "types.slint";
 import { Tokens } from "tokens.slint";
 
 export component RichFlow inherits Rectangle {
@@ -9,7 +9,45 @@ export component RichFlow inherits Rectangle {
     in property <bool> elide-overflow;
     in property <bool> centered;
     in property <brush> text-color: Tokens.foreground;
-    callback select-text();
+    in property <bool> selectable;
+    in property <bool> focused;
+    callback focus-request();
+    callback context-request(length, length, string);
+    out property <bool> selecting: root.selection.anchor.run != root.selection.focus.run || root.selection.anchor.char != root.selection.focus.char;
+    property <RichSelection> selection;
+    changed focused => { if !root.focused { root.clear(); } }
+    public function clear() { root.selection = {anchor: {run: 0, char: 0}, focus: {run: 0, char: 0}}; }
+    public function selected-text() -> string { ContentState.rich-copy(root.source, root.lines, root.selection) }
+    public function copy() { ContentState.copy-text(root.selected-text()); }
+    public function key(event: KeyEvent) -> EventResult {
+        if event.text == Key.Menu { root.context-request(0px, 0px, ""); return accept; }
+        if event.text == Key.Escape { root.clear(); return accept; }
+        if event.modifiers.control && (event.text == "c" || event.text == "C") { root.copy(); return accept; }
+        if event.modifiers.control && (event.text == "a" || event.text == "A") {
+            root.selection = {anchor: {run: 0, char: 0}, focus: {run: root.lines.length - 1, char: 2147483647}};
+            return accept;
+        }
+        reject
+    }
+    function hit(x: length, y: length) -> RichPoint {
+        ContentState.rich-hit(root.lines, root.text-size / 1px, x / 1px, y / 1px, root.centered, root.width / 1px)
+    }
+    property <bool> forward: root.selection.anchor.run < root.selection.focus.run || (root.selection.anchor.run == root.selection.focus.run && root.selection.anchor.char <= root.selection.focus.char);
+    property <RichPoint> first: root.forward ? root.selection.anchor : root.selection.focus;
+    property <RichPoint> last: root.forward ? root.selection.focus : root.selection.anchor;
+    function start(index: int) -> int {
+        if !root.selecting || index < root.first.run || index > root.last.run { return 0; }
+        return index == root.first.run ? root.first.char : 0;
+    }
+    function end(index: int) -> int {
+        if !root.selecting || index < root.first.run || index > root.last.run { return 0; }
+        return index == root.last.run ? root.last.char : 2147483647;
+    }
+    function extent(run: RichRun, chars: int) -> length {
+        if chars <= 0 { return 0px; }
+        if run.emoji || chars == 2147483647 { return run.measured-width * 1px; }
+        ContentState.rich-offset(run.text, root.text-size / 1px, chars) * 1px
+    }
     background: transparent;
     clip: true;
     callback fallback(bool);
@@ -35,12 +73,26 @@ export component RichFlow inherits Rectangle {
     out property <length> first-line-height: root.lines.length == 0 ? 0px : root.lines[0].measured-height * 1px;
     property <length> natural-height: root.lines.length == 0 ? 0px : root.lines[root.lines.length - 1].y * 1px + root.lines[root.lines.length - 1].measured-height * 1px;
     height: root.max-lines > 0 && root.lines.length > 0 ? min(root.natural-height, root.lines[0].measured-height * root.max-lines * 1px) : root.natural-height;
-    for run in root.lines: Rectangle {
+    for run[index] in root.lines: Rectangle {
         x: run.x * 1px + (root.centered ? max(0px, (root.width - run.line-width * 1px) / 2) : 0px); y: run.y * 1px;
         width: run.measured-width * 1px;
         height: run.measured-height * 1px;
         background: transparent;
-        Text { x: 0px; y: 0px; width: parent.width; height: parent.height; min-width: 0px; min-height: 0px; preferred-width: parent.width; preferred-height: parent.height; accessible-role: none; wrap: no-wrap; visible: !run.emoji || !run.has-picture; text: run.text; font-size: run.emoji ? max(11px,root.text-size - 2px) : root.text-size; color: run.url != "" ? Tokens.accent-strong : root.text-color; vertical-alignment: center; overflow: clip; }
+        highlight := Rectangle {
+            x: root.selecting ? root.extent(run, root.start(index)) : 0px;
+            width: root.selecting ? max(0px, min(parent.width, root.extent(run, root.end(index))) - self.x) : 0px;
+            height: parent.height; background: Tokens.message-selection;
+        }
+        Text { x: 0px; y: 0px; width: parent.width; height: parent.height; min-width: 0px; min-height: 0px; preferred-width: parent.width; preferred-height: parent.height; accessible-role: none; wrap: no-wrap; visible: !run.newline && (!run.emoji || !run.has-picture); text: run.text; font-size: run.emoji ? max(11px,root.text-size - 2px) : root.text-size; color: root.selecting && highlight.width > 0px && highlight.x == 0px && highlight.width == parent.width ? Tokens.message-selection-foreground : run.url != "" ? Tokens.accent-strong : root.text-color; vertical-alignment: center; overflow: clip; }
+        Rectangle {
+            x: highlight.x; width: highlight.width; height: parent.height; clip: true;
+            Text {
+                x: -parent.x; width: run.measured-width * 1px; height: parent.height;
+                visible: root.selecting && highlight.width > 0px && (highlight.x > 0px || highlight.width < run.measured-width * 1px) && !run.newline && (!run.emoji || !run.has-picture); text: run.text; font-size: run.emoji ? max(11px, root.text-size - 2px) : root.text-size;
+                color: Tokens.message-selection-foreground; wrap: no-wrap; vertical-alignment: center;
+                accessible-role: none;
+            }
+        }
         Image { visible: run.emoji && run.has-picture; width: parent.width; height: parent.height; source: run.picture; image-fit: contain; accessible-role: image; accessible-label: run.text; }
         if run.link-start: ContextMenuArea {
             x: 0px; y: 0px;
@@ -59,20 +111,51 @@ export component RichFlow inherits Rectangle {
                 FocusRing { focused: parent.has-focus; border-radius: 0px; border-color: Tokens.accent; }
             }
             TouchArea {
+                enabled: !root.selectable;
                 mouse-cursor: pointer;
                 property <bool> dragged;
                 property <length> start-x;
                 property <length> start-y;
                 moved => { if self.pressed && (abs(self.mouse-x - self.start-x) > 4px || abs(self.mouse-y - self.start-y) > 4px) { self.dragged = true; } }
                 pointer-event(event) => {
-                    if event.kind == PointerEventKind.up && self.dragged { root.select-text(); }
-                    else if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { parent.show({ x: self.mouse-x, y: self.mouse-y }); }
+                    if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { parent.show({ x: self.mouse-x, y: self.mouse-y }); }
                     else if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { self.dragged = false; self.start-x = self.mouse-x; self.start-y = self.mouse-y; }
                 }
                 clicked => { if !self.dragged { if run.link-first { link-focus.focus(); } ContentState.open-link(run.url); } }
                 Tooltip { Text { text: run.url; font-size: Tokens.small; color: Tokens.foreground; } }
             }
         }
+    }
+    TouchArea {
+        enabled: root.selectable;
+        mouse-cursor: text;
+        property <length> start-x;
+        property <length> start-y;
+        property <bool> dragged;
+        property <RichPoint> down;
+        pointer-event(event) => {
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.right {
+                root.context-request(self.mouse-x, self.mouse-y, root.lines[root.hit(self.mouse-x, self.mouse-y).run].url);
+            }
+            if event.kind == PointerEventKind.down && event.button == PointerEventButton.left {
+                root.focus-request();
+                self.start-x = self.mouse-x; self.start-y = self.mouse-y; self.dragged = false;
+                self.down = root.hit(self.mouse-x, self.mouse-y);
+                root.selection = {anchor: self.down, focus: self.down};
+            }
+        }
+        moved => {
+            if self.pressed && (self.dragged || abs(self.mouse-x - self.start-x) > 4px || abs(self.mouse-y - self.start-y) > 4px) {
+                self.dragged = true;
+                root.selection = {anchor: self.down, focus: root.hit(self.mouse-x, self.mouse-y)};
+            }
+        }
+        clicked => {
+            if !self.dragged {
+                if root.lines[self.down.run].url != "" { ContentState.open-link(root.lines[self.down.run].url); }
+            }
+        }
+        double-clicked => { if !self.dragged { root.selection = ContentState.rich-word(root.source, root.lines, root.hit(self.mouse-x, self.mouse-y)); } }
     }
     Rectangle { visible: root.elide-overflow && root.natural-height > root.height;
         x: max(0px, root.width - root.text-size * 1.5); y: max(0px, root.height - root.text-size * 1.4);

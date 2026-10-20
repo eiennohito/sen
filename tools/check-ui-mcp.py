@@ -1395,14 +1395,16 @@ def check_reading():
     target = other_link["absolutePosition"]
     call("drag_element", elementHandle=other_link["handle"], target={"x": target["x"] + 2, "y": target["y"] + 2})
     assert element("Recorded link activation", "Text").get("accessibleValue") == url, "drag activated a link"
-    ctrl("c")
+    screenshot("rich-selection")
+    call("click_element", elementHandle=other_link["handle"], button="Right")
+    copy_selection = next(item for item in tree() if item.get("accessibleLabel") == "Copy selection")
+    call("click_element", elementHandle=copy_selection["handle"])
     set_value("Message draft", "")
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     ctrl("v")
-    wait_for(lambda: element("Message draft", "TextInput").get("accessibleValue") == first.get("accessibleValue"), "dragging URL action did not select original message text")
-    assert wait_element("Message draft", "TextInput").get("accessibleValue") == first.get("accessibleValue"), "dragging URL action did not select original message text"
+    selected = wait_for(lambda: element("Message draft", "TextInput").get("accessibleValue", ""), "selection was not pasted")
+    assert selected == "www.ex", f"drag did not copy only the selected URL range: {selected!r}"
     set_value("Message draft", before_copy)
-    click("Show message", "Button")
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     link = element("Open link " + url, "Button")
     call("click_element", elementHandle=link["handle"], button="Right")
@@ -1567,10 +1569,7 @@ def check_rich():
         click("Jump to replied message","Button")
         click("Return to message","Button")
         assert abs(emoji_body()["absolutePosition"]["y"]-origin_y)<=1, "fit-history reply return moved content"
-    call("click_element", elementHandle=emoji_body()["handle"], button="Right")
-    select_text = next(item for item in tree() if item.get("accessibleLabel") == "Select text")
-    call("click_element", elementHandle=select_text["handle"])
-    body = next(item for item in tree() if item.get("accessibleRole") == "TextInput" and "日😀[笑]本🌸" in item.get("accessibleValue", ""))
+    body = emoji_body()
     original = body["accessibleValue"]
     call("click_element", elementHandle=body["handle"])
     ctrl("a")
@@ -1579,7 +1578,6 @@ def check_rich():
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     ctrl("v")
     wait_for(lambda: wait_element("Message draft", "TextInput").get("accessibleValue") == original, "rich copy lost emoji fallback or newlines")
-    click("Show emoji", "Button")
     wait_element("[笑]", "Image")
     exports = demo_directory / "exports"
     existing = set(exports.glob("*"))

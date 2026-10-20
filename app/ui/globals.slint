@@ -1,4 +1,4 @@
-import { ReadingGeometry, ReadingViewport, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
+import { ReadingGeometry, ReadingViewport, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, ChatRow, MemberRow, FriendRow, MessageRow, RichRun, RichPoint, RichSelection } from "types.slint";
 export enum Section { chats, friends }
 export enum PanelState { none, settings, detail, viewer, sign-in }
 export enum ConnectionState { local, connecting, online, offline, signed-out, fatal, signing-in }
@@ -317,6 +317,10 @@ export global ContentState {
     pure callback rich-source([RichRun]) -> [RichRun];
     callback preview-layout([RichRun], string, float, float) -> [RichRun];
     callback rich-layout([RichRun], float, float, [RichRun]) -> [RichRun];
+    callback rich-hit([RichRun], float, float, float, bool, float) -> RichPoint;
+    pure callback rich-offset(string, float, int) -> float;
+    pure callback rich-word([RichRun], [RichRun], RichPoint) -> RichSelection;
+    callback rich-copy([RichRun], [RichRun], RichSelection) -> string;
     callback save-file(string);
     in-out property <string> file-save-id;
     in-out property <string> file-save-status;

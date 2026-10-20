@@ -809,3 +809,226 @@ fn link_runs_keep_the_body_break_opportunities_and_capped_fallback() {
         }
     }
 }
+
+#[test]
+fn rich_selection_copies_source_breaks_and_whole_emoji() {
+    std::thread::spawn(|| {
+        let _window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        let source = rich_fixture().remove(1).rich_runs;
+        let lines = layout(&ui, &source, 135., 18.);
+        let text: String = source.iter().map(|r| r.text.to_string()).collect();
+        let point = |run, char| RichPoint { run, char };
+        let selection = |anchor, focus| RichSelection { anchor, focus };
+        let end = point(lines.row_count() as i32 - 1, i32::MAX);
+        assert_eq!(
+            rich_content::selection::copy(&source, &lines, selection(point(0, 0), end.clone())),
+            text
+        );
+        for body in ["  before\n\nafter \n", "averylongunbrokenword"] {
+            let source = runs(body, &[]);
+            let wrapped = layout(&ui, &source, 65., 18.);
+            let all = selection(point(0, 0), point(wrapped.row_count() as i32 - 1, i32::MAX));
+            assert_eq!(rich_content::selection::copy(&source, &wrapped, all), body);
+            if !body.contains(' ') {
+                let word = rich_content::selection::word(&source, &wrapped, point(1, 1));
+                assert_eq!(rich_content::selection::copy(&source, &wrapped, word), body);
+            } else {
+                let blank = wrapped.iter().position(|run| run.newline).unwrap();
+                let range = selection(
+                    point(blank as i32, 0),
+                    point(wrapped.row_count() as i32 - 1, i32::MAX),
+                );
+                assert_eq!(
+                    rich_content::selection::copy(&source, &wrapped, range),
+                    "\nafter \n"
+                );
+            }
+        }
+        let emoji = lines.iter().position(|r| r.emoji).unwrap();
+        let run = lines.row_data(emoji).unwrap();
+        let left =
+            rich_content::selection::hit(&lines, run.x + 1., run.y + 1., false, 135., |_| {
+                panic!("emoji must not measure text")
+            });
+        let right = rich_content::selection::hit(
+            &lines,
+            run.x + run.measured_width - 1.,
+            run.y + 1.,
+            false,
+            135.,
+            |_| panic!("emoji must not measure text"),
+        );
+        assert_eq!(
+            rich_content::selection::copy(&source, &lines, selection(left.clone(), right.clone())),
+            "[笑]"
+        );
+        assert_eq!(
+            rich_content::selection::copy(&source, &lines, selection(right, left)),
+            "[笑]"
+        );
+        let across = selection(point(emoji as i32, 0), end);
+        assert_eq!(
+            rich_content::selection::copy(&source, &lines, across),
+            &text[text.find("[笑]").unwrap()..]
+        );
+        let word_rows = ModelRc::new(VecModel::from(vec![RichRun {
+            text: "hello café 日本語".into(),
+            ..Default::default()
+        }]));
+        let word = rich_content::selection::word(&word_rows, &word_rows, point(0, 8));
+        assert_eq!(
+            rich_content::selection::copy(&word_rows, &word_rows, word),
+            "café"
+        );
+        let word = rich_content::selection::word(&source, &lines, point(emoji as i32, 1));
+        assert_eq!(rich_content::selection::copy(&source, &lines, word), "[笑]");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn dragging_link_and_emoji_copies_only_the_range_and_keeps_images() {
+    std::thread::spawn(|| {
+        use slint::platform::{PointerEventButton, WindowEvent};
+        let window = snapshot::install().unwrap();
+        let ui = create_app_window().unwrap();
+        install(&ui);
+        let observed_layout = watch_layout(&ui);
+        let body = "https://example.org [笑] after";
+        let mut row = rich_fixture().remove(1);
+        let mut emoji = row.rich_runs.iter().find(|r| r.emoji).unwrap();
+        emoji.text = "[笑]".into();
+        row.body = body.into();
+        row.rich_runs = ModelRc::new(VecModel::from(vec![
+            RichRun {
+                text: "https://example.org ".into(),
+                ..Default::default()
+            },
+            emoji,
+            RichRun {
+                text: " after".into(),
+                ..Default::default()
+            },
+        ]));
+        rich_content::links::decorate_message(&mut row);
+        let copied = Rc::new(RefCell::new(String::new()));
+        let observed = copied.clone();
+        ui.global::<ContentState>()
+            .on_copy_text(move |text| *observed.borrow_mut() = text.to_string());
+        let opened = Rc::new(RefCell::new(String::new()));
+        let observed = opened.clone();
+        ui.global::<ContentState>()
+            .on_open_link(move |url| *observed.borrow_mut() = url.to_string());
+        let messages = Rc::new(VecModel::from(vec![row]));
+        ui.global::<ConversationState>()
+            .set_messages(ModelRc::from(messages.clone()));
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.show().unwrap();
+        let pixels = render(&window, (980, 720));
+        let (ex, ey, _) = pixels
+            .enumerate_pixels()
+            .find(|(_, _, p)| p.0 == [0, 180, 100])
+            .expect("emoji missing");
+        let (_, ly, _) = pixels
+            .enumerate_pixels()
+            .find(|(x, y, p)| *x > 342 && *y > 56 && p.0 == [0, 69, 204])
+            .expect("link missing");
+        let emoji_x = observed_layout
+            .borrow()
+            .0
+            .iter()
+            .find(|run| run.emoji)
+            .unwrap()
+            .x;
+        let start = slint::LogicalPosition::new(ex as f32 - emoji_x + 1., ly as f32);
+        let prefix_end = slint::LogicalPosition::new(start.x + 45., start.y);
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position: start,
+            button: PointerEventButton::Left,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerMoved {
+            position: prefix_end,
+        });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position: prefix_end,
+            button: PointerEventButton::Left,
+        });
+        let prefix = render(&window, (980, 720));
+        assert!(
+            (start.y as u32..start.y as u32 + 15).any(|y| {
+                (start.x as u32..prefix_end.x as u32).any(|x| {
+                    prefix.get_pixel(x, y).0 == [255, 255, 255]
+                        && [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)]
+                            .iter()
+                            .any(|&(x, y)| prefix.get_pixel(x, y).0 == [0, 69, 204])
+                })
+            }),
+            "partial link selection did not paint contrasting text"
+        );
+        press(&ui, slint::platform::Key::Escape);
+        ui.global::<ConversationState>().set_following(true);
+        click_at(&ui, start);
+        assert_eq!(*opened.borrow(), "https://example.org");
+        opened.borrow_mut().clear();
+        ui.window().dispatch_event(WindowEvent::PointerPressed {
+            position: start,
+            button: PointerEventButton::Left,
+        });
+        let end = slint::LogicalPosition::new(ex as f32 + 23., ey as f32 + 4.);
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position: end });
+        ui.window().dispatch_event(WindowEvent::PointerReleased {
+            position: end,
+            button: PointerEventButton::Left,
+        });
+        chord(&ui, slint::platform::Key::Control, "c".into());
+        assert_eq!(*copied.borrow(), "https://example.org [笑]");
+        assert!(opened.borrow().is_empty(), "drag opened a link");
+        assert!(ui.global::<ConversationState>().get_history_interacting());
+        assert!(!ui.global::<ConversationState>().get_following());
+        messages.push(MessageRow {
+            id: "arrival".into(),
+            body: "new message".into(),
+            ..Default::default()
+        });
+        let selected = render(&window, (980, 720));
+        chord(&ui, slint::platform::Key::Control, "c".into());
+        assert_eq!(*copied.borrow(), "https://example.org [笑]");
+        assert!(
+            selected.pixels().any(|p| p.0 == [0, 180, 100]),
+            "selection removed emoji"
+        );
+        press(&ui, slint::platform::Key::Escape);
+        assert!(!ui.global::<ConversationState>().get_history_interacting());
+        let after = observed_layout
+            .borrow()
+            .0
+            .iter()
+            .find(|run| run.text.contains("after"))
+            .unwrap();
+        let emoji = observed_layout
+            .borrow()
+            .0
+            .iter()
+            .find(|run| run.emoji)
+            .unwrap();
+        let word_position =
+            slint::LogicalPosition::new(ex as f32 - emoji.x + after.x + 15., ey as f32 + 4.);
+        click_at(&ui, word_position);
+        click_at(&ui, word_position);
+        chord(&ui, slint::platform::Key::Control, "c".into());
+        assert_eq!(*copied.borrow(), "after");
+        chord(&ui, slint::platform::Key::Control, "a".into());
+        chord(&ui, slint::platform::Key::Control, "c".into());
+        assert_eq!(*copied.borrow(), body);
+        ui.invoke_focus_composer();
+        render(&window, (980, 720));
+        assert!(!ui.global::<ConversationState>().get_history_interacting());
+        ui.hide().unwrap();
+    })
+    .join()
+    .unwrap();
+}

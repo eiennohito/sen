@@ -122,6 +122,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
             render[4], layout[4]
         );
     }
+    selection_latency(ui, window);
     // Fixed-height side lists are measured separately before deciding whether
     // they need virtualization too.
     d.state.messages.clear();
@@ -180,4 +181,104 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
             times[4]
         );
     }
+}
+
+fn selection_latency(ui: &AppWindow, window: &MinimalSoftwareWindow) {
+    use slint::platform::{PointerEventButton, WindowEvent};
+    let mut runs = Vec::new();
+    for i in 0..10 {
+        if i > 0 {
+            runs.push(RichRun {
+                text: "\n".into(),
+                newline: true,
+                ..Default::default()
+            });
+        }
+        runs.push(RichRun {
+            text: "link".into(),
+            url: "https://example.org".into(),
+            link_id: i + 1,
+            ..Default::default()
+        });
+        runs.push(RichRun {
+            text: " words ".into(),
+            ..Default::default()
+        });
+        runs.push(RichRun {
+            text: "[笑]".into(),
+            emoji: true,
+            ..Default::default()
+        });
+    }
+    let body: String = runs.iter().map(|r| r.text.to_string()).collect();
+    ui.global::<ConversationState>()
+        .set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
+            id: "selection-latency".into(),
+            body: body.into(),
+            rich_runs: ModelRc::new(VecModel::from(runs)),
+            ..Default::default()
+        }])));
+    let mut pixels = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(980, 720);
+    let draw = |pixels: &mut slint::SharedPixelBuffer<slint::Rgb8Pixel>| {
+        window.request_redraw();
+        window.draw_if_needed(|renderer| {
+            renderer.set_repaint_buffer_type(
+                slint::platform::software_renderer::RepaintBufferType::ReusedBuffer,
+            );
+            renderer.render(pixels.make_mut_slice(), 980);
+        });
+    };
+    draw(&mut pixels);
+    let start_pixel = pixels
+        .as_slice()
+        .iter()
+        .enumerate()
+        .find(|(i, p)| i % 980 > 342 && i / 980 > 56 && (p.r, p.g, p.b) == (0, 69, 204))
+        .expect("selection fixture link")
+        .0;
+    let start = slint::LogicalPosition::new((start_pixel % 980) as f32, (start_pixel / 980) as f32);
+    ui.window().dispatch_event(WindowEvent::PointerPressed {
+        position: start,
+        button: PointerEventButton::Left,
+    });
+    draw(&mut pixels);
+    let mut updates = Vec::new();
+    let mut frames = Vec::new();
+    let mut totals = Vec::new();
+    for i in 0..31 {
+        let position = slint::LogicalPosition::new(
+            start.x + 12. + (i % 7) as f32 * 12.,
+            start.y + 9. * ui.global::<SettingsState>().get_text_size() as f32 * 1.5,
+        );
+        let began = Instant::now();
+        ui.window()
+            .dispatch_event(WindowEvent::PointerMoved { position });
+        slint::private_unstable_api::re_exports::WindowInner::from_pub(ui.window())
+            .ensure_tree_instantiated();
+        updates.push(began.elapsed().as_secs_f64() * 1000.);
+        let began = Instant::now();
+        draw(&mut pixels);
+        let frame = began.elapsed().as_secs_f64() * 1000.;
+        frames.push(frame);
+        totals.push(updates.last().unwrap() + frame);
+    }
+    let cold = totals[0];
+    updates.sort_by(f64::total_cmp);
+    frames.sort_by(f64::total_cmp);
+    totals.sort_by(f64::total_cmp);
+    println!(
+        "LATENCY rich-selection lines=10 reused_buffer=true cold_ms={cold:.3} median_ms={:.3} max_ms={:.3} update_median_ms={:.3} layout_draw_median_ms={:.3}",
+        totals[15], totals[30], updates[15], frames[15]
+    );
+    ui.window().dispatch_event(WindowEvent::PointerReleased {
+        position: start,
+        button: PointerEventButton::Left,
+    });
+    ui.invoke_focus_composer();
+    window.request_redraw();
+    window.draw_if_needed(|renderer| {
+        renderer.set_repaint_buffer_type(
+            slint::platform::software_renderer::RepaintBufferType::NewBuffer,
+        )
+    });
 }
