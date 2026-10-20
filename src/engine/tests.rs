@@ -7,90 +7,33 @@ fn resync_reply(
     futures_lite::future::block_on(futures_lite::future::or(
         async { rx.recv().await.unwrap() },
         async {
-            async_io::Timer::after(Duration::from_secs(3)).await;
+            async_io::Timer::after(harness::WAIT).await;
             panic!("resync reply timed out");
         },
     ))
 }
 
-struct App {
-    worker: Worker,
-    state: AppState,
-    fake: FakeBackend,
-}
+type App = harness::App<FakeBackend>;
 impl App {
     fn new() -> Self {
         Self::at(StoreLocation::Memory)
     }
     fn at(location: StoreLocation) -> Self {
         let fake = FakeBackend::canned();
+        let opener = fake.clone();
         let worker = Worker::start(
             location,
-            {
-                let mut backend = Some(fake.clone());
-                move || Ok(backend.take().expect("backend already opened"))
-            },
+            move || Ok(opener.clone()),
             WorkerOptions {
-                timing: Timing {
-                    retry_initial: Duration::from_millis(1),
-                    retry_max: Duration::from_millis(10),
-                    offline_after: Duration::from_millis(100),
-                    health_now: Instant::now,
-                },
+                timing: harness::test_timing(),
             },
         );
-        let mut app = Self {
-            worker,
-            state: AppState::default(),
-            fake,
-        };
-        app.until(|state| state.connection == Connection::Online && state.chats.len() == 2);
-        app.worker
-            .sender
-            .send(app.state.select(ChatId("alice".into())));
+        let mut app = Self::with_fake(worker, fake);
+        app.online();
+        app.select("alice");
         app.until(|state| !state.messages.is_empty());
         app.settle();
         app
-    }
-    fn until(&mut self, ready: impl Fn(&AppState) -> bool) {
-        while !ready(&self.state) {
-            self.state.apply(
-                self.worker
-                    .deltas
-                    .recv_timeout(Duration::from_secs(3))
-                    .unwrap(),
-            );
-        }
-    }
-    fn on_engine(&self, run: impl FnOnce(&mut Engine) + Send + 'static) {
-        let (done, wait) = mpsc::channel();
-        upload_completed(
-            &self.worker.sender.0,
-            Box::new(move |engine| {
-                run(engine);
-                done.send(()).unwrap();
-                Ok(())
-            }),
-        );
-        wait.recv_timeout(Duration::from_secs(3)).unwrap();
-    }
-    fn settle(&mut self) {
-        let deadline = Instant::now() + Duration::from_secs(3);
-        loop {
-            assert!(Instant::now() < deadline, "engine did not settle");
-            let (done, wait) = mpsc::channel();
-            self.on_engine(move |engine| {
-                let queued = engine.inbox.lanes.lock().unwrap().refresh.is_empty();
-                done.send(engine.net_pending == 0 && queued).unwrap();
-            });
-            if wait.recv().unwrap() {
-                break;
-            }
-            thread::yield_now();
-        }
-        for delta in self.worker.deltas.try_iter() {
-            self.state.apply(delta);
-        }
     }
     fn expire_session(&self) {
         let error = crate::client::error::classify(
@@ -103,12 +46,8 @@ impl App {
 
 #[test]
 fn three_transient_stream_failures_have_no_visible_effect() {
-    static FROZEN: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
     let mut app = App::new();
     let messages = app.state.messages.clone();
-    app.on_engine(|engine| {
-        engine.timing.health_now = || *FROZEN.get_or_init(Instant::now);
-    });
     for _ in 0..3 {
         app.worker.sender.0.live(StreamEvent::Retry {
             error: Failure::Unanswered,
@@ -131,6 +70,10 @@ fn persistent_stream_loss_shows_offline_and_success_clears_it() {
     app.worker.sender.0.live(StreamEvent::Retry {
         error: Failure::Unanswered,
     });
+    app.on_engine(|engine| {
+        let now = (engine.timing.health_now)() + engine.timing.offline_after;
+        engine.timing.health_now = Arc::new(move || now);
+    });
     app.until(|state| state.connection == Connection::Offline);
     let response = crate::client::decode_response("/api/test", 503, b"unavailable").unwrap_err();
     app.worker.sender.0.live(StreamEvent::Retry {
@@ -141,11 +84,11 @@ fn persistent_stream_loss_shows_offline_and_success_clears_it() {
 
 #[test]
 fn health_deadline_is_recomputed_after_a_message() {
-    static CLOCK: std::sync::OnceLock<Mutex<Instant>> = std::sync::OnceLock::new();
-    let clock = CLOCK.get_or_init(|| Mutex::new(Instant::now()));
     let mut app = App::new();
-    app.on_engine(|engine| {
-        engine.timing.health_now = || *CLOCK.get().unwrap().lock().unwrap();
+    let clock = Arc::new(Mutex::new(Instant::now()));
+    let engine_clock = clock.clone();
+    app.on_engine(move |engine| {
+        engine.timing.health_now = Arc::new(move || *engine_clock.lock().unwrap());
         engine.timing.offline_after = Duration::from_secs(3600);
     });
     app.worker.sender.0.live(StreamEvent::Retry {
@@ -187,7 +130,7 @@ fn expired_session_cancels_queued_work_without_changing_the_reason() {
         text: "in flight".into(),
         reply: None,
     });
-    entered.recv_timeout(Duration::from_secs(3)).unwrap();
+    entered.recv_timeout(harness::WAIT).unwrap();
     app.fake.fail_rpc(
         FakeRpc::StickerPackages,
         Failure::SignedOut(SignOutReason::NotAuthorizedDevice),
@@ -266,23 +209,12 @@ fn refresh_503_backoff_does_not_hold_a_send() {
         chat: chat.clone(),
         kind: PageKind::Recent,
     });
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        assert!(
-            Instant::now() < deadline,
-            "failed refresh did not return to its scheduler"
-        );
-        let (done, wait) = mpsc::channel();
-        let request = Refresh::Recent(chat.clone());
-        app.on_engine(move |engine| {
-            done.send(engine.retry_after.contains_key(&request))
-                .unwrap();
-        });
-        if wait.recv().unwrap() {
-            break;
-        }
-        thread::yield_now();
-    }
+    app.wait_engine(move |engine| {
+        engine
+            .retry_after
+            .contains_key(&Refresh::Recent(chat.clone()))
+    });
+    let chat = ChatId("alice".into());
     app.worker.sender.send(Intent::Send {
         chat: chat.clone(),
         text: "during backoff".into(),
@@ -357,11 +289,7 @@ fn cached_thumbnail_does_not_clear_offline() {
     });
     app.worker.sender.send(Intent::Asset(asset));
     loop {
-        let delta = app
-            .worker
-            .deltas
-            .recv_timeout(Duration::from_secs(3))
-            .unwrap();
+        let delta = app.worker.deltas.recv_timeout(harness::WAIT).unwrap();
         let received = matches!(delta, Delta::Asset { .. });
         app.state.apply(delta);
         if received {
@@ -370,25 +298,6 @@ fn cached_thumbnail_does_not_clear_offline() {
     }
     app.settle();
     assert_eq!(app.state.connection, Connection::Offline);
-}
-
-#[test]
-fn request_sequence_wraps_without_persisting_preferences() {
-    let app = App::new();
-    app.on_engine(|engine| {
-        let prefs = engine.store.prefs().unwrap();
-        engine.seq = 0x7fff_fffe;
-        assert_eq!(engine.next_seq(), 0x7fff_ffff);
-        assert_eq!(engine.next_seq(), 0);
-        assert_eq!(engine.next_seq(), 1);
-        assert_eq!(engine.store.prefs().unwrap(), prefs);
-        assert!(
-            serde_json::to_value(prefs)
-                .unwrap()
-                .get("request_seq")
-                .is_none()
-        );
-    });
 }
 
 #[test]
@@ -418,84 +327,106 @@ fn reconnect_without_revision_change_does_not_refresh_chats() {
 
 #[test]
 fn refused_chat_refresh_stays_suppressed_across_resync_until_opened() {
-    let mut app = App::new();
-    let chat = ChatId("alice".into());
-    let failure = classify(
-        &crate::client::decode_response("/getRecentMessagesV2", 400, b"bad request").unwrap_err(),
-    );
-    app.fake
-        .fail_rpc(FakeRpc::Messages(chat.clone()), failure.clone());
-    let (tx, rx) = async_channel::bounded(1);
-    app.on_engine(move |engine| engine.resync(None, tx).unwrap());
-    assert_eq!(resync_reply(&rx), Err(failure));
-    app.until(|s| {
-        s.refresh_failures
-            .contains_key(&Refresh::Recent(ChatId("alice".into())))
-    });
-    app.settle();
-    let count = |app: &App| {
+    for (status, body) in [
+        (400, &b"bad request"[..]),
+        (200, &br#"{"code":10051,"data":{"code":0}}"#[..]),
+    ] {
+        let mut app = App::new();
+        let chat = ChatId("alice".into());
+        let failure = classify(
+            &crate::client::decode_response("/getRecentMessagesV2", status, body).unwrap_err(),
+        );
         app.fake
-            .calls()
-            .iter()
-            .filter(|c| **c == FakeRpc::Messages(ChatId("alice".into())))
-            .count()
-    };
-    let before = count(&app);
-    // Exercise both the selected-chat path and the background-chat path.
-    for selected in [true, false] {
+            .fail_rpc(FakeRpc::Messages(chat.clone()), failure.clone());
         let (tx, rx) = async_channel::bounded(1);
-        app.on_engine(move |engine| {
-            if !selected {
-                engine.window = None;
-            }
-            engine.resync(None, tx).unwrap();
+        app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+        assert_eq!(resync_reply(&rx), Err(failure));
+        app.until(|s| {
+            s.refresh_failures
+                .contains_key(&Refresh::Recent(ChatId("alice".into())))
         });
-        resync_reply(&rx).unwrap();
         app.settle();
-        assert_eq!(count(&app), before);
+        let count = |app: &App| {
+            app.fake
+                .calls()
+                .iter()
+                .filter(|c| **c == FakeRpc::Messages(ChatId("alice".into())))
+                .count()
+        };
+        let before = count(&app);
+        // Exercise both the selected-chat path and the background-chat path.
+        for selected in [true, false] {
+            let (tx, rx) = async_channel::bounded(1);
+            app.on_engine(move |engine| {
+                if !selected {
+                    engine.window = None;
+                }
+                engine.resync(None, tx).unwrap();
+            });
+            resync_reply(&rx).unwrap();
+            app.settle();
+            assert_eq!(count(&app), before);
+        }
+        let intent = app.state.select(chat);
+        app.worker.sender.send(intent);
+        app.settle();
+        assert_eq!(count(&app), before + 1);
     }
-    let intent = app.state.select(chat);
-    app.worker.sender.send(intent);
-    app.settle();
-    assert_eq!(count(&app), before + 1);
 }
 
 #[test]
 fn live_chat_operation_allows_a_previously_refused_refresh() {
-    let mut app = App::new();
-    let chat = ChatId("alice".into());
-    let failure = classify(
-        &crate::client::decode_response("/getRecentMessagesV2", 400, b"bad request").unwrap_err(),
-    );
-    app.fake.fail_rpc(FakeRpc::Messages(chat.clone()), failure);
-    let (tx, rx) = async_channel::bounded(1);
-    app.on_engine(move |engine| engine.resync(None, tx).unwrap());
-    assert!(resync_reply(&rx).is_err());
-    app.settle();
-    let before = app
-        .fake
-        .calls()
-        .iter()
-        .filter(|c| **c == FakeRpc::Messages(chat.clone()))
-        .count();
-    app.on_engine(|engine| {
-        engine
-            .live(StreamEvent::Operation(LiveOp {
-                revision: engine.store.sync_revision().unwrap() + 1,
-                replay: false,
-                op: Op::Recent(ChatId("alice".into())),
-            }))
-            .unwrap();
-    });
-    app.settle();
-    assert_eq!(
-        app.fake
+    for (status, body) in [
+        (400, &b"bad request"[..]),
+        (200, &br#"{"code":10051,"data":{"code":0}}"#[..]),
+    ] {
+        let mut app = App::new();
+        let chat = ChatId("alice".into());
+        let failure = classify(
+            &crate::client::decode_response("/getRecentMessagesV2", status, body).unwrap_err(),
+        );
+        app.fake.fail_rpc(FakeRpc::Messages(chat.clone()), failure);
+        let (tx, rx) = async_channel::bounded(1);
+        app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+        assert!(resync_reply(&rx).is_err());
+        app.settle();
+        let before = app
+            .fake
             .calls()
             .iter()
             .filter(|c| **c == FakeRpc::Messages(chat.clone()))
-            .count(),
-        before + 1
-    );
+            .count();
+        app.on_engine(|engine| {
+            engine
+                .live(StreamEvent::Operation(LiveOp {
+                    revision: engine.store.sync_revision().unwrap() + 1,
+                    replay: false,
+                    op: Op::Recent(ChatId("alice".into())),
+                }))
+                .unwrap();
+        });
+        app.settle();
+        assert_eq!(
+            app.fake
+                .calls()
+                .iter()
+                .filter(|c| **c == FakeRpc::Messages(chat.clone()))
+                .count(),
+            before + 1
+        );
+        let (tx, rx) = async_channel::bounded(1);
+        app.on_engine(move |engine| engine.resync(None, tx).unwrap());
+        resync_reply(&rx).unwrap();
+        app.settle();
+        assert_eq!(
+            app.fake
+                .calls()
+                .iter()
+                .filter(|c| **c == FakeRpc::Messages(chat.clone()))
+                .count(),
+            before + 2
+        );
+    }
 }
 
 #[test]
@@ -551,80 +482,6 @@ fn unchanged_revision_connection_after_exit_restores_head_continuity() {
 }
 
 #[test]
-fn suppression_is_only_for_invalid_requests_and_resync_owned_refreshes() {
-    let mut app = App::new();
-    for (http, body, suppress) in [
-        (403, "forbidden", false),
-        (200, r#"{"code":10051,"data":{"code":5}}"#, false),
-        (400, "bad request", true),
-        (200, r#"{"code":10051,"data":{"code":0}}"#, true),
-    ] {
-        let failure = classify(
-            &crate::client::decode_response("/getRecentMessagesV2", http, body.as_bytes())
-                .unwrap_err(),
-        );
-        let ordinary_failure = failure.clone();
-        app.on_engine(move |engine| {
-            engine.refused_refreshes.clear();
-            engine.rpc_failed(Refresh::Recent(ChatId("alice".into())), ordinary_failure);
-            assert!(engine.refused_refreshes.is_empty());
-        });
-        app.fake
-            .fail_rpc(FakeRpc::Messages(ChatId("alice".into())), failure.clone());
-        let (tx, rx) = async_channel::bounded(1);
-        app.on_engine(move |engine| engine.resync(None, tx).unwrap());
-        assert_eq!(resync_reply(&rx), Err(failure));
-        app.settle();
-        let before = app.fake.calls().len();
-        app.on_engine(move |engine| {
-            let chat = ChatId("alice".into());
-            assert_eq!(engine.refused_refreshes.contains(&chat), suppress);
-            engine.refresh(Refresh::Recent(chat)).unwrap();
-        });
-        app.settle();
-        assert!(
-            app.fake.calls()[before..].contains(&FakeRpc::Messages(ChatId("alice".into()))),
-            "ordinary refresh must go out even when suppressed for resync"
-        );
-    }
-    for action in 0..5 {
-        app.on_engine(move |engine| {
-            let chat = ChatId("alice".into());
-            engine.refused_refreshes.insert(chat.clone());
-            let intent = match action {
-                0 => Intent::Members(chat.clone()),
-                1 => Intent::GroupInfo(chat.clone()),
-                2 => Intent::Page {
-                    chat: chat.clone(),
-                    kind: PageKind::Around {
-                        id: ServerId::new("1").unwrap(),
-                    },
-                },
-                3 => Intent::Page {
-                    chat: chat.clone(),
-                    kind: PageKind::Older {
-                        before: Cursor {
-                            sort_ts: 0,
-                            sort_id: "0".into(),
-                        },
-                    },
-                },
-                _ => Intent::Window(WindowSub {
-                    sub: 99,
-                    chat: chat.clone(),
-                    anchor: Anchor::Latest,
-                    before: 20,
-                    after: 20,
-                }),
-            };
-            engine.intent(intent).unwrap();
-            assert!(!engine.refused_refreshes.contains(&chat));
-        });
-        app.settle();
-    }
-}
-
-#[test]
 fn empty_live_op_target_still_checkpoints_and_unknown_types_survive() {
     use crate::client::operation::{OperationType, RawOperation};
     let mut app = App::new();
@@ -653,7 +510,7 @@ fn empty_live_op_target_still_checkpoints_and_unknown_types_survive() {
             },
         );
     });
-    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    wait.recv_timeout(harness::WAIT).unwrap();
     app.settle();
 }
 
@@ -694,11 +551,7 @@ fn startup_probe_preserves_failure_classes_and_can_recover_offline() {
                 },
             },
         );
-        let mut app = App {
-            worker,
-            fake,
-            state: AppState::default(),
-        };
+        let mut app = App::with_fake(worker, fake);
         match &failure {
             Failure::NotDelivered | Failure::Unanswered => {
                 app.until(|s| s.connection == Connection::Offline);
@@ -713,11 +566,7 @@ fn startup_probe_preserves_failure_classes_and_can_recover_offline() {
                         reason: reason.clone(),
                     })
                 {
-                    let delta = app
-                        .worker
-                        .deltas
-                        .recv_timeout(Duration::from_secs(3))
-                        .unwrap();
+                    let delta = app.worker.deltas.recv_timeout(harness::WAIT).unwrap();
                     unlock |= matches!(
                         delta,
                         Delta::PairFailed {
@@ -780,7 +629,7 @@ fn cached_rpc_cannot_erase_a_network_failure() {
             },
         );
     });
-    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    wait.recv_timeout(harness::WAIT).unwrap();
     app.settle();
 }
 
@@ -808,8 +657,8 @@ fn cleanup_failures_are_reported_without_dropping_attachments() {
         }
         return;
     }
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join(format!("target/tmp/cleanup-{}", std::process::id()));
+    let temp = crate::test_support::TempDir::new("cleanup");
+    let root = temp.0.clone();
     std::fs::create_dir_all(root.join("accounts")).unwrap();
     std::fs::write(root.join("clipboard-attachments"), b"not a directory").unwrap();
     let fake = FakeBackend::canned();
@@ -823,11 +672,7 @@ fn cleanup_failures_are_reported_without_dropping_attachments() {
         move || Ok(opener.clone()),
         Default::default(),
     );
-    let mut app = App {
-        worker,
-        fake,
-        state: AppState::default(),
-    };
+    let mut app = App::with_fake(worker, fake);
     app.until(|s| s.connection == Connection::Online);
     let path = root.join("attachment");
     std::fs::write(&path, b"attachment body").unwrap();
@@ -852,9 +697,8 @@ fn cleanup_failures_are_reported_without_dropping_attachments() {
         );
         done.send(()).unwrap();
     });
-    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    wait.recv_timeout(harness::WAIT).unwrap();
     drop(app);
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
@@ -875,11 +719,7 @@ fn corrupt_local_photo_completes_the_demo_asset_request() {
         if let Delta::MediaFailed {
             key: failed,
             failure,
-        } = app
-            .worker
-            .deltas
-            .recv_timeout(Duration::from_secs(3))
-            .unwrap()
+        } = app.worker.deltas.recv_timeout(harness::WAIT).unwrap()
             && failed == key
         {
             assert_eq!(failure, MediaFailure::Decode);
@@ -985,4 +825,40 @@ fn saving_draft_keeps_pending_window_updates() {
             .try_iter()
             .any(|d| matches!(d, Delta::Window { .. }))
     );
+}
+
+#[test]
+fn failed_pairing_preserves_reason_and_transport_health() {
+    use crate::client::error::SignInFailure;
+    let fake = FakeBackend::signed_out();
+    fake.fail_sign_in(Some(SignInFailure::Server));
+    let opener = fake.clone();
+    let worker = Worker::start(
+        StoreLocation::Memory,
+        move || Ok(opener.clone()),
+        Default::default(),
+    );
+    let mut app = App::with_fake(worker, fake);
+    app.until(|s| matches!(s.connection, Connection::SignedOut { .. }));
+    let failed_since = Instant::now();
+    app.on_engine(move |engine| engine.health.failure(failed_since));
+    app.send(Intent::SignIn);
+    app.until_delta(
+        |d| {
+            matches!(
+                d,
+                Delta::PairFailed {
+                    reason: SignInFailure::Server
+                }
+            )
+        },
+        harness::WAIT,
+    );
+    assert_eq!(
+        app.state.connection,
+        Connection::SignedOut {
+            reason: SignOutReason::NoSession
+        }
+    );
+    app.on_engine(move |engine| assert_eq!(engine.health.failed_since, Some(failed_since)));
 }

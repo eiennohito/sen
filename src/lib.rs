@@ -12,8 +12,8 @@ pub mod reporting;
 pub mod runtime;
 pub mod store;
 pub mod system_events;
-#[cfg(test)]
-mod test_support;
+#[cfg(any(test, feature = "demo"))]
+pub mod test_support;
 
 pub(crate) fn fill_random(bytes: &mut [u8]) -> std::io::Result<()> {
     use std::io::Read;

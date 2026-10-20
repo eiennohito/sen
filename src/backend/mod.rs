@@ -753,54 +753,6 @@ mod tests {
     }
 
     #[test]
-    fn demo_stream_and_pairing_wake_on_cancellation() {
-        use std::{sync::mpsc, thread, time::Duration};
-        for pairing in [false, true] {
-            let stop = Arc::new(CancelToken::new());
-            let worker_stop = stop.clone();
-            let (started, entered) = mpsc::channel();
-            let (finished, done) = mpsc::channel();
-            let worker = thread::spawn(move || {
-                if pairing {
-                    let mut backend = FakeBackend::signed_out();
-                    let result = backend.sign_in(
-                        worker_stop,
-                        Arc::new(move |event| {
-                            if matches!(
-                                event,
-                                PairEvent::Stage(crate::client::pairing::Stage::AwaitScan)
-                            ) {
-                                started.send(()).unwrap();
-                            }
-                        }),
-                    );
-                    assert!(result.is_err());
-                } else {
-                    let mut backend = FakeBackend::canned();
-                    backend
-                        .stream(
-                            0,
-                            worker_stop,
-                            Arc::new(move |event| {
-                                if matches!(event, StreamEvent::Connection(Ok(()))) {
-                                    started.send(()).unwrap();
-                                }
-                                true
-                            }),
-                        )
-                        .unwrap()();
-                }
-                finished.send(()).unwrap();
-            });
-            entered.recv_timeout(Duration::from_secs(3)).unwrap();
-            stop.cancel();
-            done.recv_timeout(Duration::from_secs(3))
-                .expect("demo worker stayed blocked");
-            worker.join().unwrap();
-        }
-    }
-
-    #[test]
     fn reaction_actor_uses_the_observed_wire_field() {
         let mut raw = json!({"type":140,"param1":"10","param2":json!({"chatMid":"chat","curr":{"predefinedReactionType":2},"fromUserMid":"guessed"}).to_string()});
         assert!(

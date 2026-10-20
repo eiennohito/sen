@@ -65,12 +65,12 @@ impl AccountSession {
     }
 }
 /// Retry policy and health clock, injectable for offline tests.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone)]
 pub struct Timing {
     pub retry_initial: Duration,
     pub retry_max: Duration,
     pub offline_after: Duration,
-    pub health_now: fn() -> Instant,
+    pub health_now: Arc<dyn Fn() -> Instant + Send + Sync>,
 }
 impl Default for Timing {
     fn default() -> Self {
@@ -78,12 +78,12 @@ impl Default for Timing {
             retry_initial: Duration::from_secs(2),
             retry_max: Duration::from_secs(60),
             offline_after: Duration::from_secs(15),
-            health_now: Instant::now,
+            health_now: Arc::new(Instant::now),
         }
     }
 }
 impl Timing {
-    fn delay(self, attempt: u32) -> Duration {
+    fn delay(&self, attempt: u32) -> Duration {
         self.retry_initial
             .saturating_mul(2u32.saturating_pow(attempt.saturating_sub(1).min(31)))
             .min(self.retry_max)
@@ -667,6 +667,8 @@ impl Worker {
                                 retry_after: Default::default(),
                                 retry_attempts: Default::default(),
                                 timing,
+                                #[cfg(any(test, feature = "demo"))]
+                                waiters: Vec::new(),
                             };
                             e.run()?;
                         }
@@ -712,6 +714,8 @@ enum ReactionFlight {
     Set(u32),
 }
 struct Engine {
+    #[cfg(any(test, feature = "demo"))]
+    waiters: Vec<harness::EngineWaiter>,
     timing: Timing,
     retry_attempts: std::collections::BTreeMap<Refresh, u32>,
     retry_after: std::collections::BTreeMap<Refresh, Instant>,
@@ -1100,6 +1104,15 @@ impl Engine {
         }
         self.probe_session();
         loop {
+            #[cfg(any(test, feature = "demo"))]
+            {
+                let waiters = std::mem::take(&mut self.waiters);
+                for waiter in waiters {
+                    if !waiter(self) {
+                        self.waiters.push(waiter);
+                    }
+                }
+            }
             enum Work {
                 User(Intent),
                 Live(StreamEvent),
@@ -3013,3 +3026,6 @@ fn initial_request_seq() -> std::io::Result<u32> {
     crate::fill_random(&mut bytes)?;
     Ok(u32::from_ne_bytes(bytes) & 0x7fff_ffff)
 }
+
+#[cfg(any(test, feature = "demo"))]
+pub mod harness;

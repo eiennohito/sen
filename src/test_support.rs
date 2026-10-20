@@ -1,4 +1,5 @@
 //! Tests require the installed public extension module.
+#[cfg(test)]
 pub(crate) fn installed_module() -> crate::crypto_module::CryptoModule {
     crate::crypto_module::resolve(None, None).unwrap_or_else(|error| {
         panic!("WASM tests require <config>/{{google-chrome*,chromium}}/<profile>/Extensions/{}/<version>/static/js/ltsm.wasm: {error}", crate::crypto_module::EXTENSION_ID)
@@ -6,6 +7,7 @@ pub(crate) fn installed_module() -> crate::crypto_module::CryptoModule {
 }
 
 /// Tiny JPEG with an EXIF orientation-6 IFD, constructed rather than checked in.
+#[cfg(test)]
 pub(crate) fn oriented_jpeg() -> Vec<u8> {
     let image = image::RgbImage::from_fn(3, 2, |x, _| {
         if x == 0 {
@@ -25,4 +27,26 @@ pub(crate) fn oriented_jpeg() -> Vec<u8> {
     result.extend_from_slice(exif);
     result.extend_from_slice(&jpeg[2..]);
     result
+}
+
+/// A test directory removed when its owner drops.
+pub struct TempDir(pub std::path::PathBuf);
+impl TempDir {
+    pub fn new(name: &str) -> Self {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target/tmp")
+            .join(format!(
+                "{name}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ));
+        std::fs::create_dir_all(&path).unwrap();
+        Self(path)
+    }
+}
+impl Drop for TempDir {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
 }

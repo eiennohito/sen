@@ -3,133 +3,14 @@ mod blocked;
 use line::client::error::{Refusal, SignOutReason};
 use line::{
     backend::{Failure, FakeBackend, FakeRpc, LiveOp, Op},
-    controller::AppState,
-    engine::{Connection, Delta, Intent, StoreLocation, Timing, Worker},
+    engine::{Connection, Delta, Intent, StoreLocation, Worker},
     store::{ChatId, Delivery, Key, Prefs, Reaction, ReactionKind},
 };
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-fn take_once<B: line::backend::Backend + 'static>(backend: B) -> impl FnMut() -> anyhow::Result<B> {
-    let mut backend = Some(backend);
-    move || Ok(backend.take().expect("backend already opened"))
-}
-struct TempDir(std::path::PathBuf);
-impl TempDir {
-    fn new(name: &str) -> Self {
-        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "{name}-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        ));
-        std::fs::create_dir_all(&path).unwrap();
-        Self(path)
-    }
-}
-impl Drop for TempDir {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
-    }
-}
-struct App {
-    worker: Worker,
-    state: AppState,
-    notifications: usize,
-}
-impl App {
-    fn from_worker(worker: Worker) -> Self {
-        Self {
-            worker,
-            state: AppState::default(),
-            notifications: 0,
-        }
-    }
-
-    fn new(fake: impl line::backend::Backend + 'static, location: StoreLocation) -> Self {
-        Self {
-            worker: Worker::start(
-                location,
-                take_once(fake),
-                line::engine::WorkerOptions {
-                    timing: Timing {
-                        retry_initial: Duration::from_millis(5),
-                        retry_max: Duration::from_millis(50),
-                        offline_after: Duration::from_millis(100),
-                        health_now: Instant::now,
-                    },
-                },
-            ),
-            state: AppState::default(),
-            notifications: 0,
-        }
-    }
-    fn send(&self, i: Intent) {
-        self.worker.sender.send(i);
-    }
-    fn select(&mut self, chat: &str) {
-        let i = self.state.select(ChatId(chat.into()));
-        self.send(i);
-    }
-    fn apply(&mut self, delta: Delta) {
-        if matches!(delta, Delta::Notify(_)) {
-            self.notifications += 1;
-        }
-        assert!(
-            !matches!(delta, Delta::Fatal | Delta::StorageFailed(_)),
-            "engine failure"
-        );
-        self.state.apply(delta);
-    }
-    fn until(&mut self, condition: impl Fn(&AppState) -> bool) {
-        if condition(&self.state) {
-            return;
-        }
-        let deadline = Instant::now() + Duration::from_secs(5);
-        loop {
-            self.until_delta(|_| true, deadline.saturating_duration_since(Instant::now()));
-            if condition(&self.state) {
-                return;
-            }
-        }
-    }
-    fn until_delta(&mut self, condition: impl Fn(&Delta) -> bool, timeout: Duration) -> Delta {
-        let deadline = Instant::now() + timeout;
-        loop {
-            let delta = self
-                .worker
-                .deltas
-                .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-                .expect("engine progress");
-            let done = condition(&delta);
-            self.apply(delta.clone());
-            if done {
-                return delta;
-            }
-        }
-    }
-    fn fence(&mut self) {
-        let size = self.state.prefs.text_size + 1;
-        self.send(Intent::Prefs(Prefs {
-            text_size: size,
-            ..self.state.prefs.clone()
-        }));
-        self.until(|s| s.prefs.text_size == size);
-    }
-    fn online(&mut self) {
-        self.until(|s| s.connection == Connection::Online && s.chats.len() == 2);
-    }
-    fn body_key(&mut self, body: &str) -> Key {
-        self.until(|s| s.messages.values().any(|m| m.body.as_text() == body));
-        self.state
-            .messages
-            .values()
-            .find(|m| m.body.as_text() == body)
-            .unwrap()
-            .key
-    }
-}
+use line::{engine::harness::App, test_support::TempDir};
 #[test]
-fn m13_send_switch_return_with_stale_page() {
+fn send_switch_return_with_stale_page() {
     let fake = FakeBackend::canned();
     let (backend, entered, release) =
         blocked::Blocked::new(fake.clone(), FakeRpc::Messages(ChatId("alice".into())), 0);
@@ -166,7 +47,7 @@ fn m13_send_switch_return_with_stale_page() {
     assert_eq!(app.state.messages[&key].body.as_text(), "durable send");
 }
 #[test]
-fn m14_closed_chat_incoming_then_open_stale_history() {
+fn closed_chat_incoming_then_open_stale_history() {
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -2060,11 +1941,17 @@ fn committed_write_clears_storage_banner_and_sending_still_works() {
     app.online();
     app.select("alice");
     app.body_key("Hello! 日本語も使えます。");
-    app.fence();
+    app.send(Intent::Prefs(Prefs {
+        text_size: 19,
+        ..app.state.prefs.clone()
+    }));
     app.until_delta(|d| matches!(d, Delta::StoreSaved), Duration::from_secs(5));
     app.state.apply(Delta::StorageFailed(StorageFailure::Full));
     assert_eq!(app.state.error, Some(StorageFailure::Full));
-    app.fence();
+    app.send(Intent::Prefs(Prefs {
+        text_size: 20,
+        ..app.state.prefs.clone()
+    }));
     app.until_delta(|d| matches!(d, Delta::StoreSaved), Duration::from_secs(5));
     assert!(app.state.error.is_none());
     app.state.apply(Delta::StorageFailed(StorageFailure::Full));
@@ -2147,4 +2034,51 @@ fn shutdown_saves_the_final_queued_draft() {
         .unwrap();
     assert_eq!(saved.text, draft.text);
     assert_eq!((saved.cursor, saved.anchor), (draft.cursor, draft.anchor));
+}
+
+#[test]
+fn fencing_a_draft_keeps_saved_preferences() {
+    use line::store::{Draft, Store};
+    let temp = TempDir::new("fence-prefs");
+    let mut app = App::new(
+        FakeBackend::canned(),
+        StoreLocation::Directory(temp.0.clone()),
+    );
+    app.online();
+    app.select("alice");
+    app.body_key("Hello! 日本語も使えます。");
+    app.settle();
+    let prefs = app.state.prefs.clone();
+    let saved_prefs = Store::open(&temp.0).unwrap().prefs().unwrap();
+    app.send(Intent::Draft {
+        chat: ChatId("alice".into()),
+        draft: Draft {
+            text: "fenced draft".into(),
+            cursor: 0,
+            anchor: 0,
+            updated: 0,
+            reply: None,
+        },
+    });
+    app.fence();
+    assert_eq!(app.state.prefs, prefs);
+    assert_eq!(
+        app.state.chats[&ChatId("alice".into())]
+            .draft
+            .as_ref()
+            .unwrap()
+            .text,
+        "fenced draft"
+    );
+    drop(app);
+    let store = Store::open(&temp.0).unwrap();
+    assert_eq!(store.prefs().unwrap(), saved_prefs);
+    assert_eq!(
+        store
+            .load_draft(&ChatId("alice".into()))
+            .unwrap()
+            .unwrap()
+            .text,
+        "fenced draft"
+    );
 }

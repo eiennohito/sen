@@ -1067,27 +1067,3 @@ impl Backend for FakeBackend {
         Ok(())
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn sign_in_failure_preserves_reason_without_touching_health() {
-        use crate::client::error::SignInFailure;
-        let mut fake = FakeBackend::signed_out();
-        fake.offline(true);
-        fake.fail_sign_in(Some(SignInFailure::Server));
-        let activity = NetworkActivity::default();
-        fake.set_network_activity(activity.clone());
-        let result = fake.sign_in(Arc::new(CancelToken::new()), Arc::new(|_| {}));
-        assert_eq!(
-            result,
-            Err(Failure::SignedOut(SignOutReason::Unavailable(
-                SignInFailure::Server
-            )))
-        );
-        assert!(!activity.touched());
-        assert_eq!(fake.calls(), vec![FakeRpc::SignIn]);
-    }
-}
