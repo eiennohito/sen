@@ -65,11 +65,8 @@ pub enum Purpose {
 #[derive(Clone)]
 pub enum Payload {
     Evicted,
-    Image(Arc<Pixels>),
-    Original {
-        pixels: Arc<Pixels>,
-        bytes: Arc<Vec<u8>>,
-    },
+    Image(PathBuf),
+    Original { path: PathBuf, source: PathBuf },
     File(Arc<Vec<u8>>),
 }
 
@@ -431,23 +428,24 @@ fn fetch(
             let cached = if job.bypass {
                 None
             } else {
-                ImageCache::read_shared(cache, &job.asset)?
+                cache.lock().unwrap().read(&job.asset)?
             };
-            let pixels = match cached {
-                Some(pixels) => pixels,
+            let path = match cached {
+                Some(path) => path,
                 None => {
                     let bytes = download()?;
-                    ImageCache::store_shared(cache, &job.asset, &bytes)?
+                    cache.lock().unwrap().store(&job.asset, &bytes)?
                 }
             };
-            Ok(Payload::Image(pixels))
+            Ok(Payload::Image(path))
         }
         Purpose::Original => {
+            if let Some((path, source)) = cache.lock().unwrap().read_original(&job.asset)? {
+                return Ok(Payload::Original { path, source });
+            }
             let bytes = download()?;
-            Ok(Payload::Original {
-                pixels: Arc::new(original_pixels(&bytes)?),
-                bytes: Arc::new(bytes),
-            })
+            let (path, source) = cache.lock().unwrap().original(&job.asset, &bytes)?;
+            Ok(Payload::Original { path, source })
         }
         Purpose::File { .. } => Ok(Payload::File(Arc::new(download()?))),
     }

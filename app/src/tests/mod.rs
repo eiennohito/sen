@@ -36,23 +36,7 @@ pub(crate) fn test_window(
         Default::default(),
     );
     let ui = window::create_app_window().unwrap();
-    let mut desktop = Desktop {
-        clipboard_root: std::env::temp_dir(),
-        history: Default::default(),
-        shown_composer: String::new(),
-        reveal: None,
-        viewer_asset: None,
-        viewer_source: None,
-        viewer_name: String::new(),
-        attachments: Default::default(),
-        notifications: None,
-        background: Default::default(),
-        assets: Default::default(),
-        state: AppState::default(),
-        presenter: Default::default(),
-        sender: worker.sender.clone(),
-        category: ChatCategory::All,
-    };
+    let mut desktop = desktop(worker.sender.clone());
     desktop.presenter.install(&ui);
     seed(&mut desktop, &worker, &ui);
     let runtime = Runtime {
@@ -87,4 +71,46 @@ fn visible(ui: &AppWindow, label: &str) -> bool {
 }
 fn search(ui: &AppWindow) -> i_slint_backend_testing::ElementHandle {
     element(ui, "Find a conversation")
+}
+
+pub(crate) fn image_file(image: &slint::Image) -> std::path::PathBuf {
+    thread_local! { static FIXTURES: line::backend::FakeBackend = line::backend::FakeBackend::canned(); }
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let pixels = image.to_rgba8().unwrap();
+    FIXTURES.with(|fake| {
+        fake.set_image(
+            &line::client::desktop::assets::Asset::avatar(&format!(
+                "/fixture-{}",
+                NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ))
+            .unwrap()
+            .original()
+            .unwrap(),
+            line::client::desktop::assets::Pixels {
+                width: pixels.width(),
+                height: pixels.height(),
+                rgba: pixels.as_bytes().to_vec(),
+            },
+        )
+    })
+}
+
+pub(crate) fn desktop(sender: Sender) -> Desktop {
+    Desktop {
+        clipboard_root: std::env::temp_dir(),
+        history: Default::default(),
+        shown_composer: String::new(),
+        reveal: None,
+        viewer_asset: None,
+        viewer_source: None,
+        viewer_name: String::new(),
+        attachments: Default::default(),
+        notifications: None,
+        background: Default::default(),
+        assets: Default::default(),
+        state: AppState::default(),
+        presenter: Default::default(),
+        sender,
+        category: ChatCategory::All,
+    }
 }

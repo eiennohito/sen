@@ -1,5 +1,23 @@
 use crate::*;
 impl crate::Desktop {
+    pub(crate) fn show_original(&self, ui: &AppWindow, path: &std::path::Path) {
+        let viewer = ui.global::<ViewerState>();
+        viewer.set_viewer_loading(false);
+        match slint::Image::load_from_path(path) {
+            Ok(image) => {
+                let size = image.size();
+                viewer.set_viewer_image(image);
+                viewer.set_viewer_status(
+                    format!("{} · {} × {}", self.viewer_name, size.width, size.height).into(),
+                );
+            }
+            Err(_) => {
+                viewer.set_viewer_error("Could not load original".into());
+                viewer.set_viewer_status("Original unavailable".into());
+            }
+        }
+    }
+
     pub(crate) fn open_profile_photo(&mut self, ui: &AppWindow) {
         if ui.global::<DetailState>().get_profile_avatar().size().width == 0 {
             return;
@@ -14,7 +32,7 @@ impl crate::Desktop {
             .set_viewer_key(format!("profile:{id}").into());
         ui.invoke_reset_viewer();
         ui.global::<ViewerState>()
-            .set_viewer_image(ui.global::<DetailState>().get_profile_avatar());
+            .set_viewer_image(slint::Image::default());
         self.viewer_name = ui.global::<DetailState>().get_profile_name().to_string();
         ui.global::<ViewerState>()
             .set_viewer_loading(asset.is_some());
@@ -49,11 +67,7 @@ impl crate::Desktop {
         let rows = self.state.rows();
         let asset = rows.iter().find_map(|m| {
             let asset = m.body.image().filter(|a| a.key() == key)?;
-            if matches!(m.body, Content::Sticker { .. }) {
-                Some(asset.clone())
-            } else {
-                asset.original()
-            }
+            asset.original()
         });
         if let Some(asset) = asset {
             let photos = Self::photo_keys(&rows);
@@ -77,5 +91,75 @@ impl crate::Desktop {
             }
             self.sender.send(Intent::Original(asset));
         }
+    }
+}
+
+#[cfg(all(test, feature = "demo"))]
+mod tests {
+    use super::*;
+    #[test]
+    fn viewer_original_failures_end_loading_and_profiles_wait_for_the_uncropped_image() {
+        std::thread::spawn(|| {
+            let _platform = crate::snapshot::install().unwrap();
+            let (ui, runtime, _worker) =
+                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            runtime.update(|desktop| {
+                ui.global::<DetailState>()
+                    .set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::new(
+                        192, 192,
+                    )));
+                ui.global::<DetailState>().set_profile_id("contact".into());
+                desktop.state.contacts.insert(
+                    "contact".into(),
+                    Friend {
+                        id: "contact".into(),
+                        avatar: line::client::desktop::assets::Asset::avatar("/contact"),
+                        ..Default::default()
+                    },
+                );
+                desktop.open_profile_photo(&ui);
+                assert_eq!(
+                    ui.global::<ViewerState>().get_viewer_image().size().width,
+                    0
+                );
+                assert!(ui.global::<ViewerState>().get_viewer_loading());
+                let key = desktop.viewer_asset.clone().unwrap();
+                desktop.apply(
+                    &ui,
+                    Delta::MediaFailed {
+                        key: key.clone(),
+                        failure: line::client::desktop::assets::Failure::Network,
+                    },
+                );
+                assert!(!ui.global::<ViewerState>().get_viewer_loading());
+                assert_eq!(
+                    ui.global::<ViewerState>().get_viewer_status(),
+                    "Original unavailable"
+                );
+                ui.global::<ViewerState>().set_viewer_loading(true);
+                ui.global::<ViewerState>()
+                    .set_viewer_status("Loading original…".into());
+
+                desktop.apply(
+                    &ui,
+                    Delta::Original {
+                        key,
+                        path: "missing-original.jpg".into(),
+                        source: "missing-source.jpg".into(),
+                    },
+                );
+                assert!(!ui.global::<ViewerState>().get_viewer_loading());
+                assert_eq!(
+                    ui.global::<ViewerState>().get_viewer_error(),
+                    "Could not load original"
+                );
+                assert_eq!(
+                    ui.global::<ViewerState>().get_viewer_status(),
+                    "Original unavailable"
+                );
+            });
+        })
+        .join()
+        .unwrap();
     }
 }

@@ -274,7 +274,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
     requests.recv_timeout(Duration::from_secs(10)).unwrap();
     assert!(requests.try_recv().is_err());
     server.join().unwrap();
-    let cache = cache.lock().unwrap();
+    let mut cache = cache.lock().unwrap();
     assert_eq!(
         fs::metadata(cache.directory())
             .unwrap()
@@ -284,7 +284,7 @@ fn permanent_failure_has_no_expiry_and_cached_private_images_need_no_token() {
         0o700
     );
     assert_eq!(
-        fs::metadata(cache.directory().join(format!("{}.png", photo.key())))
+        fs::metadata(cache.read(&photo).unwrap().unwrap())
             .unwrap()
             .permissions()
             .mode()

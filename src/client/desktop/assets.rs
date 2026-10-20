@@ -1,10 +1,10 @@
 //! Private, account-scoped thumbnail cache. Never stores URLs or media keys.
 use super::*;
 use image::{ImageFormat, ImageReader};
-use std::{collections::HashMap, io::Cursor};
+use std::io::Cursor;
 
 const DISK_LIMIT: u64 = 128 * 1024 * 1024;
-const MEMORY_LIMIT: usize = 24 * 1024 * 1024;
+const ORIGINAL_LIMIT: u64 = 32 * 1024 * 1024;
 const MAX_DOWNLOAD: usize = 16 * 1024 * 1024;
 
 mod failure;
@@ -12,7 +12,7 @@ pub use failure::Failure;
 mod fetchers;
 pub use fetchers::{Completion, Failures, Fetchers, Payload, Purpose};
 
-#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Asset {
     url: String,
     #[serde(default)]
@@ -31,7 +31,40 @@ pub struct Asset {
     name: Option<String>,
 }
 
+impl std::hash::Hash for Asset {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        std::hash::Hash::hash(
+            &(
+                &self.url,
+                self.dimension,
+                self.private,
+                &self.key_material,
+                self.failure,
+            ),
+            state,
+        );
+    }
+}
+
 impl Asset {
+    pub fn dimension(&self) -> u32 {
+        self.dimension
+    }
+    pub fn request(&self) -> Self {
+        Self {
+            url: self.url.clone(),
+            dimension: self.dimension,
+            private: self.private,
+            local: None,
+            key_material: self.key_material.clone(),
+            talk_meta: self.talk_meta.clone(),
+            original_suffix: self.original_suffix.clone(),
+            original_url: self.original_url.clone(),
+            failure: self.failure,
+            name: self.name.clone(),
+        }
+    }
+
     pub fn local(item: crate::attachments::Attachment) -> Self {
         Self {
             url: format!("local:{}", item.path.display()),
@@ -49,14 +82,6 @@ impl Asset {
     pub fn local_attachment(&self) -> Option<&crate::attachments::Attachment> {
         self.local.as_deref()
     }
-    pub fn local_pixels(&self) -> Result<Option<Pixels>> {
-        self.local
-            .as_ref()
-            .filter(|item| !item.preview.is_empty())
-            .map(|item| pixels(&item.preview, 384))
-            .transpose()
-    }
-
     pub fn display_name(&self) -> &str {
         self.name.as_deref().unwrap_or_else(|| {
             self.url
@@ -87,7 +112,7 @@ impl Asset {
         format!(
             "{:x}",
             Sha256::digest(format!(
-                "v1:{}:{}:{}:{}{failure}",
+                "v2:{}:{}:{}:{}{failure}",
                 self.url, self.dimension, self.private, material
             ))
         )
@@ -111,7 +136,7 @@ impl Asset {
             private: false,
             key_material: None,
             talk_meta: None,
-            dimension: 256,
+            dimension: 192,
             local: None,
             original_url: None,
             original_suffix: None,
@@ -268,6 +293,9 @@ impl Asset {
 
     /// Chrome's encrypted source uses the bare OID; __ud-preview is only a thumbnail.
     pub fn original(&self) -> Option<Self> {
+        if self.dimension == 8192 {
+            return None;
+        }
         if let Some(url) = &self.original_url {
             let mut original = self.clone();
             original.url = url.clone();
@@ -280,11 +308,12 @@ impl Asset {
             return Some(original);
         }
         if !self.private {
-            if self.kind() != "avatar" {
-                return None;
-            }
             let mut original = self.clone();
-            original.url = self.url.strip_suffix("/preview")?.to_owned();
+            original.url = match self.kind() {
+                "avatar" => self.url.strip_suffix("/preview")?.to_owned(),
+                "sticker" => self.url.clone(),
+                _ => return None,
+            };
             original.dimension = 8192;
             return Some(original);
         }
@@ -310,8 +339,13 @@ impl Asset {
         http: &http::Transport,
         access_token: Option<&str>,
     ) -> Result<Vec<u8>> {
-        if let Some(item) = &self.local {
+        if let Some(item) = &self.local
+            && !item.preview.is_empty()
+        {
             return Ok(item.preview.clone());
+        }
+        if let Some(path) = self.url.strip_prefix("local:") {
+            return fs::read(path).map_err(Into::into);
         }
         if let Some(failure) = self.failure {
             return Err(failure.into());
@@ -412,11 +446,18 @@ pub struct Pixels {
 
 pub struct ImageCache {
     directory: PathBuf,
-    memory: HashMap<String, (Arc<Pixels>, u64)>,
-    tick: u64,
+    paths: HashMap<String, PathBuf>,
 }
 
 impl ImageCache {
+    pub fn store_pixels(&mut self, key: &str, pixels: Pixels) -> Result<PathBuf> {
+        let mut png = Cursor::new(Vec::new());
+        image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba)
+            .context("invalid image pixels")?
+            .write_to(&mut png, ImageFormat::Png)?;
+        self.write(key, png.get_ref(), "png")
+    }
+
     #[cfg(test)]
     pub(super) fn directory(&self) -> &Path {
         &self.directory
@@ -426,165 +467,264 @@ impl ImageCache {
         super::super::private_directory(&directory)?;
         let mut cache = Self {
             directory,
-            memory: HashMap::new(),
-            tick: 0,
+            paths: HashMap::new(),
         };
-        cache.prune(0)?;
+        cache.prune(0, false)?;
         Ok(cache)
     }
-    fn memory(&mut self, key: &str) -> Option<Arc<Pixels>> {
-        self.tick += 1;
-        let (pixels, used) = self.memory.get_mut(key)?;
-        *used = self.tick;
-        Some(pixels.clone())
-    }
-
-    fn finish_read(&mut self, key: String, disk: DiskImage) -> Result<Option<Arc<Pixels>>> {
-        let path = self.directory.join(format!("{key}.png"));
-        match disk {
-            DiskImage::Pixels(pixels) => {
-                if let Ok(file) = OpenOptions::new().write(true).open(&path) {
-                    let _ = file.set_times(fs::FileTimes::new().set_modified(SystemTime::now()));
-                }
-                Ok(Some(self.remember(key, pixels)))
-            }
-            disk => {
-                if matches!(disk, DiskImage::Invalid) {
-                    let _ = fs::remove_file(path);
-                }
-                Ok(None)
-            }
+    fn cache_key(asset: &Asset) -> String {
+        if asset.dimension == 8192 {
+            format!("original-{}", asset.key())
+        } else {
+            asset.key()
         }
     }
-
-    pub fn read(&mut self, asset: &Asset) -> Result<Option<Arc<Pixels>>> {
-        let key = asset.key();
-        if let Some(pixels) = self.memory(&key) {
-            return Ok(Some(pixels));
-        }
-        let disk = disk_image(&self.directory.join(format!("{key}.png")), asset.dimension)?;
-        self.finish_read(key, disk)
-    }
-
-    pub(super) fn read_shared(
-        cache: &std::sync::Mutex<Self>,
-        asset: &Asset,
-    ) -> Result<Option<Arc<Pixels>>> {
-        let key = asset.key();
-        let path = {
-            let mut cache = cache.lock().unwrap();
-            if let Some(pixels) = cache.memory(&key) {
-                return Ok(Some(pixels));
-            }
-            cache.directory.join(format!("{key}.png"))
-        };
-        let disk = disk_image(&path, asset.dimension)?;
-        cache.lock().unwrap().finish_read(key, disk)
-    }
-
-    pub fn store(&mut self, asset: &Asset, bytes: &[u8]) -> Result<Arc<Pixels>> {
-        self.store_prepared(asset, prepare_image(bytes, asset.dimension)?)
-    }
-
-    pub(super) fn store_shared(
-        cache: &std::sync::Mutex<Self>,
-        asset: &Asset,
-        bytes: &[u8],
-    ) -> Result<Arc<Pixels>> {
-        let prepared = prepare_image(bytes, asset.dimension)?;
-        cache.lock().unwrap().store_prepared(asset, prepared)
-    }
-
-    fn store_prepared(
-        &mut self,
-        asset: &Asset,
-        (pixels, png): (Pixels, Vec<u8>),
-    ) -> Result<Arc<Pixels>> {
-        self.prune(png.len() as u64)?;
-        let key = asset.key();
-        private_write(&self.directory.join(format!("{key}.png")), &png)?;
-        Ok(self.remember(key, pixels))
-    }
-
-    fn remember(&mut self, key: String, pixels: Pixels) -> Arc<Pixels> {
-        self.tick += 1;
-        let pixels = Arc::new(pixels);
-        while self
-            .memory
-            .values()
-            .map(|(p, _)| p.rgba.len())
-            .sum::<usize>()
-            + pixels.rgba.len()
-            > MEMORY_LIMIT
+    pub fn read(&mut self, asset: &Asset) -> Result<Option<PathBuf>> {
+        let path = self.read_key(&Self::cache_key(asset))?;
+        if let Some(path) = &path
+            && has_small(asset)
+            && !small_path(path).is_file()
         {
-            let Some(oldest) = self
-                .memory
-                .iter()
-                .min_by_key(|(_, (_, tick))| tick)
-                .map(|(key, _)| key.clone())
-            else {
-                break;
-            };
-            self.memory.remove(&oldest);
+            let bytes = small_png(&image::open(path)?.to_rgba8())?;
+            self.prune(bytes.len() as u64, false)?;
+            self.replace(&format!("small-{}", asset.key()), &small_path(path), &bytes)?;
         }
-        self.memory.insert(key, (pixels.clone(), self.tick));
-        pixels
+        Ok(path)
     }
-
-    fn prune(&mut self, incoming: u64) -> Result<()> {
+    fn read_key(&mut self, key: &str) -> Result<Option<PathBuf>> {
+        let Some(path) = self.paths.get(key).cloned() else {
+            return Ok(None);
+        };
+        if !path.is_file() {
+            self.paths.remove(key);
+            return Ok(None);
+        }
+        if ImageReader::open(&path)?
+            .with_guessed_format()?
+            .into_dimensions()
+            .is_err()
+        {
+            remove_file(&path)?;
+            self.paths.remove(key);
+            return Ok(None);
+        }
+        OpenOptions::new()
+            .write(true)
+            .open(&path)?
+            .set_times(fs::FileTimes::new().set_modified(SystemTime::now()))?;
+        Ok(Some(path))
+    }
+    pub fn read_original(&mut self, asset: &Asset) -> Result<Option<(PathBuf, PathBuf)>> {
+        use image::ImageDecoder;
+        // Sticker originals use exactly the same file as their inline image.
+        let source = match self.read(asset)? {
+            None if asset.kind() == "sticker" => {
+                let mut thumbnail = asset.clone();
+                thumbnail.dimension = 256;
+                self.read(&thumbnail)?
+            }
+            source => source,
+        };
+        let Some(source) = source else {
+            return Ok(None);
+        };
+        let reader = ImageReader::open(&source)?.with_guessed_format()?;
+        if reader.into_decoder()?.orientation()? == image::metadata::Orientation::NoTransforms {
+            return Ok(Some((source.clone(), source)));
+        }
+        let display_key = format!("display-{}", asset.key());
+        let path = match self.read_key(&display_key)? {
+            Some(path) => path,
+            None => self.rotated(&display_key, &fs::read(&source)?)?,
+        };
+        Ok(Some((path, source)))
+    }
+    pub fn store(&mut self, asset: &Asset, bytes: &[u8]) -> Result<PathBuf> {
+        let image = prepare_image(
+            bytes,
+            asset.dimension,
+            asset.kind() == "avatar" && asset.dimension < 8192,
+        )?;
+        let mut png = Cursor::new(Vec::new());
+        image.write_to(&mut png, ImageFormat::Png)?;
+        let small = if has_small(asset) {
+            Some(small_png(&image)?)
+        } else {
+            None
+        };
+        self.prune(
+            (png.get_ref().len() + small.as_ref().map_or(0, Vec::len)) as u64,
+            asset.dimension == 8192,
+        )?;
+        let key = Self::cache_key(asset);
+        let path = self
+            .directory
+            .join(format!("{key}-{:x}.png", Sha256::digest(png.get_ref())));
+        self.replace(&key, &path, png.get_ref())?;
+        if let Some(bytes) = small {
+            self.replace(&format!("small-{key}"), &small_path(&path), &bytes)?;
+        }
+        Ok(path)
+    }
+    fn write(&mut self, key: &str, bytes: &[u8], extension: &str) -> Result<PathBuf> {
+        self.prune(bytes.len() as u64, original_key(key))?;
+        // Content-addressed paths keep Slint's path cache valid after a rewrite.
+        let path = self
+            .directory
+            .join(format!("{key}-{:x}.{extension}", Sha256::digest(bytes)));
+        self.replace(key, &path, bytes)?;
+        Ok(path)
+    }
+    fn replace(&mut self, key: &str, path: &Path, bytes: &[u8]) -> Result<()> {
+        private_write(path, bytes)?;
+        if let Some(previous) = self.paths.insert(key.to_owned(), path.to_owned())
+            && previous != path
+        {
+            remove_file(&previous)?;
+        }
+        Ok(())
+    }
+    pub fn original(&mut self, asset: &Asset, bytes: &[u8]) -> Result<(PathBuf, PathBuf)> {
+        use image::ImageDecoder;
+        ensure!(bytes.len() <= MAX_DOWNLOAD, Failure::TooLarge);
+        let reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
+        let format = reader.format().ok_or(Failure::Decode)?;
+        let mut decoder = reader.into_decoder()?;
+        let orientation = decoder.orientation()?;
+        let (width, height) = (decoder.dimensions().0, decoder.dimensions().1);
+        ensure!(
+            width <= 8192
+                && height <= 8192
+                && u64::from(width) * u64::from(height) * 4 <= 64 * 1024 * 1024,
+            Failure::TooLarge
+        );
+        let source = self.write(&Self::cache_key(asset), bytes, format.extensions_str()[0])?;
+        if orientation == image::metadata::Orientation::NoTransforms {
+            return Ok((source.clone(), source));
+        }
+        let path = self.rotated(&format!("display-{}", asset.key()), bytes)?;
+        Ok((path, source))
+    }
+    fn rotated(&mut self, key: &str, bytes: &[u8]) -> Result<PathBuf> {
+        let mut jpeg = Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(pixels(bytes, 8192)?)
+            .to_rgb8()
+            .write_to(&mut jpeg, ImageFormat::Jpeg)?;
+        self.write(key, jpeg.get_ref(), "jpg")
+    }
+    fn prune(&mut self, incoming: u64, original: bool) -> Result<()> {
         let mut entries = Vec::new();
         for entry in fs::read_dir(&self.directory)? {
             let entry = entry?;
             if !entry.file_type()?.is_file() {
                 continue;
             }
+            let name = entry.file_name();
+            let Some((key, _)) = name.to_str().and_then(|name| name.rsplit_once('-')) else {
+                continue;
+            };
             let metadata = entry.metadata()?;
-            entries.push((metadata.modified()?, metadata.len(), entry.path()));
+            entries.push((
+                metadata.modified()?,
+                metadata.len(),
+                entry.path(),
+                key.to_owned(),
+            ));
         }
-        entries.sort_by_key(|entry| entry.0);
-        let mut total: u64 = entries.iter().map(|entry| entry.1).sum();
-        let mut count = entries.len();
-        for (_, size, path) in entries {
-            if total + incoming <= DISK_LIMIT && count + usize::from(incoming > 0) <= 4096 {
-                break;
+        entries.sort_by_key(|entry| std::cmp::Reverse(entry.0));
+        self.paths.clear();
+        let mut seen = std::collections::HashSet::new();
+        let mut totals = [0u64; 2];
+        let mut counts = [0; 2];
+        for (_, size, path, key) in entries {
+            let kind = usize::from(original_key(&key));
+            let reserve = if original == (kind == 1) { incoming } else { 0 };
+            let limit = if kind == 1 {
+                ORIGINAL_LIMIT
+            } else {
+                DISK_LIMIT
+            };
+            let count_limit = if kind == 1 { 128 } else { 4096 };
+            if !seen.insert(key.clone())
+                || totals[kind] + size + reserve > limit
+                || counts[kind] + usize::from(reserve > 0) >= count_limit
+            {
+                remove_file(&path)?;
+            } else {
+                totals[kind] += size;
+                counts[kind] += 1;
+                self.paths.insert(key, path);
             }
-            fs::remove_file(path)?;
-            total -= size;
-            count -= 1;
         }
         Ok(())
     }
 }
-
-enum DiskImage {
-    Missing,
-    Invalid,
-    Pixels(Pixels),
+fn original_key(key: &str) -> bool {
+    key.starts_with("original-") || key.starts_with("display-")
 }
-fn disk_image(path: &Path, dimension: u32) -> Result<DiskImage> {
-    if let Ok(metadata) = path.metadata()
-        && metadata.len() <= MAX_DOWNLOAD as u64
-    {
-        return Ok(
-            match fs::read(path).ok().and_then(|v| pixels(&v, dimension).ok()) {
-                Some(pixels) => DiskImage::Pixels(pixels),
-                None => DiskImage::Invalid,
-            },
-        );
+fn remove_file(path: &Path) -> std::io::Result<()> {
+    match fs::remove_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        result => result,
     }
-    Ok(DiskImage::Missing)
 }
 
-fn prepare_image(bytes: &[u8], dimension: u32) -> Result<(Pixels, Vec<u8>)> {
-    let pixels = pixels(bytes, dimension)?;
-    let image = image::RgbaImage::from_raw(pixels.width, pixels.height, pixels.rgba.clone())
-        .context("invalid thumbnail pixels")?;
-    let mut png = Cursor::new(Vec::new());
-    image.write_to(&mut png, ImageFormat::Png)?;
-    Ok((pixels, png.into_inner()))
+/// The software renderer doesn't round image clipping. Supply a masked square
+/// to render decoded avatar pixels as a circle.
+fn circular_avatar(image: image::RgbaImage, size: u32) -> image::RgbaImage {
+    let mut square = image;
+    for pixel in square.pixels_mut() {
+        let alpha = u16::from(pixel.0[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = (u16::from(*channel) * alpha / 255) as u8;
+        }
+    }
+    let mut image = image::DynamicImage::ImageRgba8(square)
+        .resize_to_fill(size, size, image::imageops::FilterType::Triangle)
+        .to_rgba8();
+    let radius = size as f32 / 2.;
+    for (x, y, pixel) in image.enumerate_pixels_mut() {
+        let distance =
+            ((x as f32 + 0.5 - radius).powi(2) + (y as f32 + 0.5 - radius).powi(2)).sqrt();
+        let alpha = u16::from(pixel.0[3]);
+        for channel in &mut pixel.0[..3] {
+            *channel = (u16::from(*channel) * 255)
+                .checked_div(alpha)
+                .unwrap_or(0)
+                .min(255) as u8;
+        }
+        pixel.0[3] = (alpha as f32 * (radius + 0.5 - distance).clamp(0., 1.)).round() as u8;
+    }
+    image
 }
 
-fn pixels(bytes: &[u8], dimension: u32) -> Result<Pixels> {
+fn prepare_image(bytes: &[u8], dimension: u32, avatar: bool) -> Result<image::RgbaImage> {
+    let pixels = pixels(bytes, if avatar { 8192 } else { dimension })?;
+    let image = if avatar {
+        circular_avatar(pixels, dimension)
+    } else {
+        pixels
+    };
+    Ok(image)
+}
+fn has_small(asset: &Asset) -> bool {
+    asset.dimension < 8192 && matches!(asset.kind(), "photo" | "sticker")
+}
+pub fn small_path(path: &Path) -> PathBuf {
+    path.with_file_name(format!(
+        "small-{}",
+        path.file_name().unwrap().to_string_lossy()
+    ))
+}
+fn small_png(image: &image::RgbaImage) -> Result<Vec<u8>> {
+    let mut bytes = Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image.clone())
+        .thumbnail(64.min(image.width()), 64.min(image.height()))
+        .write_to(&mut bytes, ImageFormat::Png)?;
+    Ok(bytes.into_inner())
+}
+
+fn pixels(bytes: &[u8], dimension: u32) -> Result<image::RgbaImage> {
     ensure!(bytes.len() <= MAX_DOWNLOAD, Failure::TooLarge);
     let mut reader = ImageReader::new(Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
@@ -601,16 +741,7 @@ fn pixels(bytes: &[u8], dimension: u32) -> Result<Pixels> {
     } else {
         decoded.to_rgba8()
     };
-    Ok(Pixels {
-        width: image.width(),
-        height: image.height(),
-        rgba: image.into_raw(),
-    })
-}
-
-/// Source images are decoded on demand and never put in the thumbnail cache.
-pub(super) fn original_pixels(bytes: &[u8]) -> Result<Pixels> {
-    pixels(bytes, 8192)
+    Ok(image)
 }
 
 #[cfg(test)]
@@ -618,49 +749,185 @@ mod tests {
     use super::*;
     use std::os::unix::fs::PermissionsExt;
     #[test]
-    fn recently_read_old_media_survives_prune() -> Result<()> {
-        let root = std::env::temp_dir().join(format!("line-cache-lru-{}", std::process::id()));
-        let mut cache = ImageCache::new(&root, "synthetic-account")?;
-        let read = Asset::avatar("/read").unwrap();
-        let unread = Asset::avatar("/unread").unwrap();
-        let mut png = Cursor::new(Vec::new());
-        image::RgbaImage::from_pixel(2, 3, image::Rgba([1, 2, 3, 255]))
-            .write_to(&mut png, ImageFormat::Png)?;
-        let old = SystemTime::now() - Duration::from_secs(60 * 24 * 3600);
-        for asset in [&read, &unread] {
-            let path = cache.directory.join(format!("{}.png", asset.key()));
-            private_write(&path, png.get_ref())?;
-            OpenOptions::new()
-                .write(true)
-                .open(path)?
-                .set_times(fs::FileTimes::new().set_modified(old))?;
+    fn avatar_crops_full_non_square_source_to_a_sharp_centred_circle() -> Result<()> {
+        let root = root();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let mut bytes = Cursor::new(Vec::new());
+        image::RgbaImage::from_fn(1600, 1000, |x, _| {
+            if (300..1300).contains(&x) {
+                image::Rgba([0, 0, if ((x - 300) / 8) % 2 == 0 { 80 } else { 240 }, 255])
+            } else {
+                image::Rgba([255, 0, 0, 255])
+            }
+        })
+        .write_to(&mut bytes, ImageFormat::Png)?;
+        let path = cache.store(&Asset::avatar("/wide").unwrap(), bytes.get_ref())?;
+        let circle = image::open(path)?.to_rgba8();
+        assert_eq!(circle.dimensions(), (192, 192));
+        assert_eq!(circle.get_pixel(0, 0).0[3], 0);
+        assert_eq!(circle.get_pixel(96, 96).0[3], 255);
+        assert_eq!(circle.get_pixel(1, 96).0[0], 0);
+        let expected = image::load_from_memory(bytes.get_ref())?
+            .resize_to_fill(192, 192, image::imageops::FilterType::Triangle)
+            .to_rgba8();
+        for x in 90..102 {
+            assert_eq!(circle.get_pixel(x, 96), expected.get_pixel(x, 96));
         }
-        // Reopening must not expire old files, and a disk hit must refresh mtime.
-        cache = ImageCache::new(&root, "synthetic-account")?;
-        assert!(cache.read(&read)?.is_some());
-        assert!(
-            cache
-                .directory
-                .join(format!("{}.png", unread.key()))
-                .exists()
-        );
-        cache.prune(DISK_LIMIT - png.get_ref().len() as u64)?;
-        assert!(cache.directory.join(format!("{}.png", read.key())).exists());
-        assert!(
-            !cache
-                .directory
-                .join(format!("{}.png", unread.key()))
-                .exists()
-        );
-        fs::remove_dir_all(root)?;
         Ok(())
     }
     #[test]
-    fn avatar_original_and_exif_display() {
-        let preview = Asset::avatar("/profile-picture").unwrap();
-        let original = preview.original().unwrap();
+    fn cache_indexes_paths_and_discards_older_crash_duplicates() -> Result<()> {
+        let root = root();
+        let asset = Asset::avatar("/crash").unwrap();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let newest = cache.store(&asset, &png([25, 70, 200, 255]))?;
+        let older = cache.directory.join(format!("{}-older.png", asset.key()));
+        fs::copy(&newest, &older)?;
+        OpenOptions::new().write(true).open(&older)?.set_times(
+            fs::FileTimes::new().set_modified(SystemTime::now() - Duration::from_secs(60)),
+        )?;
+        let mut restored = ImageCache::new(root.path(), "synthetic")?;
+        assert!(!older.exists());
+        restored.directory = root.path().join("does-not-exist");
+        assert_eq!(restored.read(&asset)?, Some(newest));
+        Ok(())
+    }
+    #[test]
+    fn originals_have_a_separate_smaller_disk_budget() -> Result<()> {
+        let root = root();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let asset = Asset::avatar("/budget").unwrap();
+        let thumbnail = cache.store(&asset, &png([25, 70, 200, 255]))?;
+        let (original, _) = cache.original(&asset.original().unwrap(), &png([25, 70, 200, 255]))?;
+        cache.prune(DISK_LIMIT, false)?;
+        assert!(!thumbnail.exists());
+        assert!(original.exists());
+        let thumbnail = cache.store(&asset, &png([25, 70, 200, 255]))?;
+        cache.prune(ORIGINAL_LIMIT, true)?;
+        assert!(!original.exists());
+        assert!(thumbnail.exists());
+        Ok(())
+    }
+    #[test]
+    fn rewrite_cleanup_tolerates_a_concurrently_removed_previous_file() -> Result<()> {
+        let root = root();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let first = cache.write("key", &png([25, 70, 200, 255]), "png")?;
+        fs::remove_file(&first)?;
+        let next = cache.directory.join("key-next.png");
+        cache.replace("key", &next, &png([200, 70, 25, 255]))?;
+        assert!(next.exists());
+        Ok(())
+    }
+    #[test]
+    fn cached_sticker_opens_as_original_without_downloading() -> Result<()> {
+        let root = root();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let sticker = Asset::sticker(&json!({"STKID":"42"})).unwrap();
+        let path = cache.store(&sticker, &png([25, 70, 200, 255]))?;
+        let original = sticker.original().unwrap();
+        assert_ne!(sticker.key(), original.key());
+        assert_eq!(cache.read_original(&original)?, Some((path.clone(), path)));
+        Ok(())
+    }
+    #[test]
+    fn small_previews_are_stored_and_regenerated_after_pruning() -> Result<()> {
+        let root = root();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let asset = Asset::photo(&json!({"id":"42"})).unwrap();
+        let mut bytes = Cursor::new(Vec::new());
+        image::RgbImage::new(1600, 1000).write_to(&mut bytes, ImageFormat::Jpeg)?;
+        let path = cache.store(&asset, bytes.get_ref())?;
+        assert_eq!(image::open(&path)?.width(), 384);
+        let small = small_path(&path);
+        assert_eq!(image::open(&small)?.to_rgba8().dimensions(), (64, 40));
+        fs::remove_file(&small)?;
+        assert_eq!(cache.read(&asset)?, Some(path));
+        assert_eq!(image::open(&small)?.width(), 64);
+        assert_eq!(fs::metadata(small)?.permissions().mode() & 0o777, 0o600);
+        Ok(())
+    }
+    fn root() -> tempfile::TempDir {
+        fs::create_dir_all(Path::new(env!("CARGO_MANIFEST_DIR")).join("target/tmp")).unwrap();
+        tempfile::Builder::new()
+            .prefix("image-cache-")
+            .tempdir_in(Path::new(env!("CARGO_MANIFEST_DIR")).join("target/tmp"))
+            .unwrap()
+    }
+    fn png(color: [u8; 4]) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        image::RgbaImage::from_pixel(2, 3, image::Rgba(color))
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+    #[test]
+    fn cache_prunes_least_recently_used_files() -> Result<()> {
+        let root = root();
+        let asset = Asset::avatar("/profile-picture").unwrap();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let unread = Asset::avatar("/unread").unwrap();
+        let first = cache.store(&asset, &png([25, 70, 200, 255]))?;
+        let unused = cache.store(&unread, &png([25, 70, 200, 255]))?;
+        for path in [&first, &unused] {
+            OpenOptions::new().write(true).open(path)?.set_times(
+                fs::FileTimes::new()
+                    .set_modified(SystemTime::now() - Duration::from_secs(60 * 24 * 3600)),
+            )?;
+        }
+        cache = ImageCache::new(root.path(), "synthetic")?;
+        assert!(unused.exists());
+        assert_eq!(cache.read(&asset)?, Some(first.clone()));
+        cache.prune(DISK_LIMIT - fs::metadata(&unused)?.len(), false)?;
+        assert!(first.exists());
+        assert!(!unused.exists());
+
+        Ok(())
+    }
+    #[test]
+    fn cache_restores_private_files_across_instances_and_isolates_accounts() -> Result<()> {
+        let root = root();
+        let asset = Asset::avatar("/profile-picture").unwrap();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let first = cache.store(&asset, &png([25, 70, 200, 255]))?;
+        cache = ImageCache::new(root.path(), "synthetic")?;
+        assert_eq!(cache.read(&asset)?, Some(first.clone()));
+        assert_eq!(fs::metadata(&first)?.permissions().mode() & 0o777, 0o600);
         assert_eq!(
-            preview.url,
+            fs::metadata(&cache.directory)?.permissions().mode() & 0o777,
+            0o700
+        );
+        assert!(
+            ImageCache::new(root.path(), "other-account")?
+                .read(&asset)?
+                .is_none()
+        );
+
+        Ok(())
+    }
+    #[test]
+    fn rewritten_assets_get_a_new_path_and_missing_files_are_misses() -> Result<()> {
+        let root = root();
+        let asset = Asset::avatar("/profile-picture").unwrap();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let first = cache.store(&asset, &png([25, 70, 200, 255]))?;
+        let second = cache.store(&asset, &png([200, 70, 25, 255]))?;
+        assert_ne!(first, second);
+        assert!(!first.exists());
+        assert_eq!(cache.read(&asset)?, Some(second.clone()));
+        fs::remove_file(second)?;
+        assert!(cache.read(&asset)?.is_none());
+
+        Ok(())
+    }
+    #[test]
+    fn originals_preserve_source_rotation_and_encrypted_media_identity() -> Result<()> {
+        let root = root();
+        let asset = Asset::avatar("/profile-picture").unwrap();
+        let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        let original = asset.original().unwrap();
+        assert_eq!(
+            asset.url,
             "https://profile.line-scdn.net/profile-picture/preview"
         );
         assert_eq!(
@@ -668,15 +935,29 @@ mod tests {
             "https://profile.line-scdn.net/profile-picture"
         );
         assert_eq!(original.dimension, 8192);
-        assert_ne!(original.key(), preview.key());
-        let bytes = crate::test_support::oriented_jpeg();
-        for size in [256, 8192] {
-            let displayed = pixels(&bytes, size).unwrap();
-            assert_eq!((displayed.width, displayed.height), (2, 3));
-        }
-    }
-    #[test]
-    fn original_photo_uses_source_object() -> Result<()> {
+        assert_ne!(original.key(), asset.key());
+        let jpeg = crate::test_support::oriented_jpeg();
+        assert_eq!(pixels(&jpeg, 256)?.dimensions(), (2, 3));
+        let (path, source) = cache.original(&original, &jpeg)?;
+        assert_eq!(fs::read(&source)?, jpeg);
+        assert_eq!(fs::metadata(source)?.permissions().mode() & 0o777, 0o600);
+        let display = image::open(&path)?.to_rgb8();
+        assert_eq!(display.dimensions(), (2, 3));
+        assert!(display.get_pixel(0, 0)[0] > display.get_pixel(0, 0)[2]);
+        assert_eq!(
+            ImageReader::open(&path)?.with_guessed_format()?.format(),
+            Some(ImageFormat::Jpeg)
+        );
+        fs::remove_file(&path)?;
+        assert_eq!(cache.read_original(&original)?.unwrap().0, path);
+        assert!(path.exists());
+        let mut plain = Cursor::new(Vec::new());
+        image::RgbImage::new(1600, 1000).write_to(&mut plain, ImageFormat::Jpeg)?;
+        let (path, source) = cache.original(&original, plain.get_ref())?;
+        assert_eq!(path, source);
+        assert_eq!(fs::read(&path)?, plain.into_inner());
+        assert_eq!(image::open(&path)?.into_rgb8().dimensions(), (1600, 1000));
+        assert_eq!(pixels(&fs::read(path)?, 384)?.width(), 384);
         let encrypted = Asset::photo(
             &json!({"id":"42", "contentMetadata":{"SID":"m","OID":"asset42","ENC_KM":"synthetic"}}),
         )
@@ -688,12 +969,7 @@ mod tests {
         assert_ne!(original.key(), encrypted.key());
         let plain = Asset::photo(&json!({"id":"43","contentMetadata":{"MEDIA_CONTENT_INFO":"{\"category\":\"original\"}"}})).unwrap();
         assert!(plain.original().unwrap().url.ends_with("/43/original"));
-        let image = image::RgbaImage::from_pixel(1600, 1000, image::Rgba([25, 70, 200, 255]));
-        let mut bytes = Cursor::new(Vec::new());
-        image.write_to(&mut bytes, ImageFormat::Png)?;
-        let source = original_pixels(bytes.get_ref())?;
-        assert_eq!((source.width, source.height), (1600, 1000));
-        assert_eq!(pixels(bytes.get_ref(), 384)?.width, 384);
+
         Ok(())
     }
     #[test]
@@ -740,43 +1016,6 @@ mod tests {
         );
         bytes[0] ^= 1;
         assert!(decrypt_media(&bytes, &material).is_err());
-    }
-    #[test]
-    fn thumbnail_cache_restores_across_instances_and_is_private() {
-        let root = std::env::temp_dir().join(format!("line-cache-test-{}", std::process::id()));
-        let asset = Asset::avatar("/test").unwrap();
-        let mut bytes = Cursor::new(Vec::new());
-        image::RgbaImage::from_pixel(2, 3, image::Rgba([1, 2, 3, 255]))
-            .write_to(&mut bytes, ImageFormat::Png)
-            .unwrap();
-        let mut cache = ImageCache::new(&root, "synthetic-account").unwrap();
-        assert!(cache.read(&asset).unwrap().is_none());
-        cache.store(&asset, bytes.get_ref()).unwrap();
-        let directory = cache.directory.clone();
-        drop(cache);
-        let mut cache = ImageCache::new(&root, "synthetic-account").unwrap();
-        let pixels = cache.read(&asset).unwrap().unwrap();
-        assert_eq!((pixels.width, pixels.height), (2, 3));
-        assert_eq!(
-            fs::metadata(directory.join(format!("{}.png", asset.key())))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
-        );
-        assert_eq!(
-            fs::metadata(&directory).unwrap().permissions().mode() & 0o777,
-            0o700
-        );
-        assert!(
-            ImageCache::new(&root, "other-account")
-                .unwrap()
-                .read(&asset)
-                .unwrap()
-                .is_none()
-        );
-        fs::remove_dir_all(root).unwrap();
     }
     #[test]
     fn asset_paths_cannot_change_origins_or_escape_segments() {

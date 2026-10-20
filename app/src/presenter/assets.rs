@@ -1,42 +1,55 @@
 use super::*;
 
+type Reload = Rc<dyn Fn(&str)>;
+
 #[derive(Clone, Default)]
 pub(crate) struct Images {
-    pixels: Rc<RefCell<HashMap<String, slint::Image>>>,
-    scaled: Rc<RefCell<HashMap<(String, i32), slint::Image>>>,
+    paths: Rc<RefCell<HashMap<String, std::path::PathBuf>>>,
+    requests: Rc<RefCell<Option<Reload>>>,
     failures: Rc<RefCell<HashMap<String, Failure>>>,
 }
 impl Images {
-    pub fn insert(&self, key: String, image: slint::Image) {
+    pub fn on_missing(&self, reload: impl Fn(&str) + 'static) {
+        *self.requests.borrow_mut() = Some(Rc::new(reload));
+    }
+    pub fn insert(&self, key: String, path: std::path::PathBuf) {
         self.failures.borrow_mut().remove(&key);
-        for size in 12..=24 {
-            self.scaled.borrow_mut().insert(
-                (key.clone(), size),
-                rich_content::preview::small(&image, size),
-            );
+        self.paths.borrow_mut().insert(key, path);
+    }
+    pub fn small(&self, key: &str) -> Option<slint::Image> {
+        let path = self
+            .paths
+            .borrow()
+            .get(key)
+            .map(|path| line::client::desktop::assets::small_path(path))?;
+        if path.is_file() {
+            return slint::Image::load_from_path(&path).ok();
         }
-        self.pixels.borrow_mut().insert(key, image);
+        if let Some(reload) = self.requests.borrow().as_ref() {
+            reload(key);
+        }
+        self.get(key)
     }
     pub fn get(&self, key: &str) -> Option<slint::Image> {
-        self.pixels.borrow().get(key).cloned()
+        let path = self.paths.borrow().get(key)?.clone();
+        if path.is_file() {
+            return slint::Image::load_from_path(&path).ok();
+        }
+        self.paths.borrow_mut().remove(key);
+        if let Some(reload) = self.requests.borrow().as_ref() {
+            reload(key);
+        }
+        None
     }
     pub fn picture(&self, asset: Option<&Asset>) -> slint::Image {
         asset.and_then(|a| self.get(&a.key())).unwrap_or_default()
     }
     pub fn failed(&self, key: String, failure: Failure) {
+        self.paths.borrow_mut().remove(&key);
         self.failures.borrow_mut().insert(key, failure);
     }
     pub fn failure(&self, key: &str) -> Option<Failure> {
         self.failures.borrow().get(key).copied()
-    }
-    pub fn preview(&self, key: &str, size: i32) -> Option<slint::Image> {
-        if self.failure(key).is_some() {
-            return None;
-        }
-        self.scaled
-            .borrow()
-            .get(&(key.into(), size.clamp(12, 24)))
-            .cloned()
     }
     pub fn runs(&self, runs: Vec<RichRun>) -> ModelRc<RichRun> {
         ModelRc::new(VecModel::from(

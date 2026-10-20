@@ -4,11 +4,11 @@ use super::*;
 #[allow(clippy::large_enum_variant)] // Keep Friend inline instead of allocating it every present.
 pub(super) enum FriendEntry {
     Header(&'static str, usize, bool),
-    Contact(Friend, i32),
+    Contact(Friend),
 }
 
 impl Presenter {
-    pub(crate) fn present_people(&mut self, ui: &AppWindow, state: &AppState, text_size: i32) {
+    pub(crate) fn present_people(&mut self, ui: &AppWindow, state: &AppState) {
         let g = ui.global::<FriendsState>();
         let query = Query::new(&g.get_friend_query());
         let friends: Vec<_> = state
@@ -39,7 +39,7 @@ impl Presenter {
                 grouped.extend(rows.into_iter().map(|f| {
                     (
                         f.id.clone(),
-                        FriendEntry::Contact((*f).clone(), text_size),
+                        FriendEntry::Contact((*f).clone()),
                         friend_assets(f),
                     )
                 }));
@@ -73,7 +73,7 @@ pub(super) fn friend_row(entry: FriendEntry, images: &Images) -> FriendRow {
             group,
             ..Default::default()
         },
-        FriendEntry::Contact(f, size) => {
+        FriendEntry::Contact(f) => {
             let metadata = emoji_spans(&f.status, &f.profile.status_metadata)
                 .into_iter()
                 .map(EmojiView::new)
@@ -83,9 +83,7 @@ pub(super) fn friend_row(entry: FriendEntry, images: &Images) -> FriendRow {
                 name: single_line(text::friend_name(&f)).into(),
                 initial: name_initial(text::friend_name(&f)),
                 status: single_line(&f.status).into(),
-                status_runs: rich_content::preview::preview_runs(
-                    &f.status, &metadata, images, size,
-                ),
+                status_runs: rich_content::preview::preview_runs(&f.status, &metadata, images),
                 group: f.group,
                 avatar_key: asset_key(f.avatar.as_ref()),
                 avatar: images.picture(f.avatar.as_ref()),

@@ -50,6 +50,7 @@ zbus = { version = "5.19", default-features = false, features = ["async-io", "bl
 rusqlite = { version = "0.37", features = ["bundled"] }
 thiserror = "2"
 sys-locale = "0.3"
+tempfile = "3"
 
 [dev-dependencies]
 line = { path = ".", features = ["demo"] }

@@ -1284,7 +1284,10 @@ def check_layers():
     saved = wait_for(lambda: [item.get("accessibleLabel", "") for item in tree() if item.get("accessibleLabel", "").startswith("Saved to ")], "Save did not report a completed export")
     exported = Path(saved[0].removeprefix("Saved to "))
     assert exported.is_relative_to(demo_directory / "exports"), "preview export escaped its isolated folder"
-    assert exported.read_bytes().startswith(b"\x89PNG\r\n\x1a\n")
+    exported_bytes = exported.read_bytes()
+    assert exported_bytes.startswith(b"\xff\xd8")
+    assert b"Exif\0\0" in exported_bytes
+    assert b"\x12\x01\x03\0\x01\0\0\0\x06\0" in exported_bytes, "export lost source orientation"
     exported.unlink()
     key("\x1b")
     assert any(item.get("accessibleLabel") == "Open photo" and is_focused(item) for item in tree()), "viewer did not restore the photo opener"

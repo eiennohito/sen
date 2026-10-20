@@ -271,7 +271,7 @@ fn build_row(inputs: &MessageInputs, images: &Images) -> MessageRow {
         )
         .into();
         row.reply_image_key = asset_key(target.body.image());
-        let picture = images.get(row.reply_image_key.as_str());
+        let picture = images.small(row.reply_image_key.as_str());
         row.reply_has_picture = picture.is_some()
             && matches!(target.body, Content::Photo { .. } | Content::Sticker { .. });
         row.reply_picture = picture.unwrap_or_default();

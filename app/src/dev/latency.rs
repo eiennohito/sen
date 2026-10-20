@@ -17,7 +17,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
         chat.chat.title = format!("Conversation {i}");
         chat.chat.avatar = if i < 100 {
             let asset =
-                demo_data::image_asset(&fake, &format!("latency-{i}"), demo_data::avatar(i % 3));
+                demo_data::avatar_asset(&fake, &format!("latency-{i}"), demo_data::avatar(i % 3));
             assets.push(asset.key());
             Some(asset)
         } else {
@@ -52,19 +52,22 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
         });
     };
     draw();
-    let image = demo_data::avatar(0).to_rgba8().unwrap();
-    let pixels = std::sync::Arc::new(line::client::desktop::assets::Pixels {
-        rgba: image.as_bytes().to_vec(),
-        width: image.width(),
-        height: image.height(),
-    });
+    let pixels = demo_data::avatar(0).to_rgba8().unwrap();
+    let path = fake.set_image(
+        &FakeBackend::asset(true),
+        line::client::desktop::assets::Pixels {
+            rgba: pixels.as_bytes().to_vec(),
+            width: pixels.width(),
+            height: pixels.height(),
+        },
+    );
     RENDERS.set(0);
     let start = Instant::now();
     d.apply_batch(
         ui,
         assets.iter().map(|key| Delta::Asset {
             key: key.clone(),
-            pixels: pixels.clone(),
+            path: path.clone(),
         }),
     );
     println!(
@@ -84,7 +87,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
                     ui,
                     [Delta::Asset {
                         key: key.clone(),
-                        pixels: pixels.clone(),
+                        path: path.clone(),
                     }],
                 );
             } else {

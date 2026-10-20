@@ -45,7 +45,6 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
             system_text: None,
             offline: false,
             index: 0,
-            text_size: 15,
         },
         &presenter::Images::default(),
     );
@@ -135,7 +134,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
         let images = presenter::Images::default();
         let view = m;
         let mut row = ChatRow::default();
-        rich_content::preview::set(&mut row, &view.body, None, &images, 15);
+        rich_content::preview::set(&mut row, &view.body, None, &images);
         assert_eq!(row.preview, text);
         if kind == MessageKind::File {
             assert_eq!(row.preview_runs.row_count(), 0);
@@ -150,15 +149,15 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
             1,
             1,
         ));
-        images.insert(media_key.clone(), picture);
-        rich_content::preview::set(&mut row, &view.body, None, &images, 15);
+        images.insert(media_key.clone(), crate::tests::image_file(&picture));
+        rich_content::preview::set(&mut row, &view.body, None, &images);
         assert!(
             rich_content::preview::layout(&row.preview_runs, "", 100., 1., measure)
                 .iter()
                 .any(|r| r.thumbnail)
         );
         images.failed(media_key, line::client::desktop::assets::Failure::Decode);
-        rich_content::preview::set(&mut row, &view.body, None, &images, 15);
+        rich_content::preview::set(&mut row, &view.body, None, &images);
         assert_eq!(row.preview, text);
         assert!(!row.preview_runs.row_data(0).unwrap().has_picture);
     }
@@ -243,7 +242,7 @@ fn content_labels_agree_across_rows_previews_and_accessibility() {
         let mut m = message("");
         m.body = content;
         let mut chat = ChatRow::default();
-        rich_content::preview::set(&mut chat, &m.body, None, &presenter::Images::default(), 15);
+        rich_content::preview::set(&mut chat, &m.body, None, &presenter::Images::default());
         let mut row = message_row(&m, None, &presenter::Images::default());
         rich_content::links::decorate_message(&mut row);
         assert_eq!(kind_label(&m.body).1, compact);
@@ -252,4 +251,73 @@ fn content_labels_agree_across_rows_previews_and_accessibility() {
         assert_eq!(chat.preview, compact);
         assert!(row.accessible_label.ends_with(full));
     }
+}
+
+#[test]
+fn photo_previews_and_reply_quotes_load_the_small_disk_variant() {
+    std::thread::spawn(|| {
+        let _platform = snapshot::install().unwrap();
+        let fake = line::backend::FakeBackend::canned();
+        let asset = line::backend::FakeBackend::asset(true);
+        let path = fake.set_image(
+            &asset,
+            line::client::desktop::assets::Pixels {
+                width: 384,
+                height: 256,
+                rgba: [20, 30, 40, 255].repeat(384 * 256),
+            },
+        );
+        let mut presenter = presenter::Presenter::default();
+        presenter.images.insert(asset.key(), path);
+        let mut target = message("");
+        target.body = Content::Photo {
+            asset: Some(asset),
+            size: Some((1200, 800)),
+            album_count: None,
+            caption: None,
+        };
+        let mut row = ChatRow::default();
+        rich_content::preview::set(&mut row, &target.body, None, &presenter.images);
+        assert_eq!(
+            row.preview_runs.row_data(0).unwrap().picture.size().width,
+            64
+        );
+        let ui = window::create_app_window().unwrap();
+        presenter.install(&ui);
+        let mut state = AppState::default();
+        let id = line::store::ServerId::new("42").unwrap();
+        target.server_id = Some(id.clone());
+        state.messages.insert(target.key, target.clone());
+        state.composer_reply = Some(line::store::ReplyReference {
+            message_id: id,
+            service_code: None,
+        });
+        state.selected = Some(target.chat_id.clone());
+        let mut reply = message("reply");
+        reply.key = Key(2);
+        reply.reply = state.composer_reply.clone().map(Box::new);
+        state.messages.insert(reply.key, reply);
+        presenter.present(&ui, &state, ChatCategory::All);
+        assert_eq!(
+            ui.global::<ComposerState>()
+                .get_composer_reply()
+                .picture
+                .size()
+                .width,
+            64
+        );
+        let reply = ui
+            .global::<ConversationState>()
+            .get_messages()
+            .iter()
+            .find(|row| row.id == "2")
+            .unwrap();
+        assert_eq!(reply.reply_picture.size().width, 64);
+        assert_eq!(
+            presenter.images.picture(target.body.image()).size().width,
+            384
+        );
+    })
+    .join()
+    .unwrap();
 }

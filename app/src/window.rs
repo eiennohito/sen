@@ -21,6 +21,11 @@ pub(crate) fn configure(
     install_events(ui, runtime.clone(), native_events);
     ui.global::<ShellState>()
         .set_desktop_warning(warning.into());
+    let assets = d.assets.clone();
+    let sender = d.sender.clone();
+    d.presenter
+        .images
+        .on_missing(move |key| assets.reload(key, &sender));
     d.presenter.install(ui);
     callbacks::install(ui, runtime);
 }
@@ -32,42 +37,6 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
         .on_avatar_tint(|id| presenter::format::avatar_tint(&id));
     ui.global::<ContentState>()
         .on_name_tint(|id, background, dark| presenter::format::name_tint(&id, background, dark));
-    let mut avatars: std::collections::VecDeque<(slint::Image, u32, slint::Image)> =
-        std::collections::VecDeque::new();
-    ui.global::<ContentState>()
-        .on_avatar_picture(move |source, width, scale| {
-            if source.size().width == 0 {
-                return source;
-            }
-            let edge = (width * scale).round().max(1.) as u32;
-            if let Some((_, _, picture)) = avatars
-                .iter()
-                .find(|(old, size, _)| *old == source && *size == edge)
-            {
-                return picture.clone();
-            }
-            let Some(pixels) = source.to_rgba8() else {
-                return source;
-            };
-            let pixels = crate::assets::circular_avatar(
-                &line::client::desktop::assets::Pixels {
-                    width: pixels.width(),
-                    height: pixels.height(),
-                    rgba: pixels.as_bytes().to_vec(),
-                },
-                edge,
-            );
-            let picture = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
-                &pixels.rgba,
-                pixels.width,
-                pixels.height,
-            ));
-            if avatars.len() == 256 {
-                avatars.pop_front();
-            }
-            avatars.push_back((source, edge, picture.clone()));
-            picture
-        });
     focus::install(&ui);
     #[cfg(feature = "demo")]
     dev::install_focus(&ui);

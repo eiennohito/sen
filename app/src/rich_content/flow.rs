@@ -100,14 +100,8 @@ pub(crate) fn layout(
         if run.text.is_empty() || run.newline {
             return (0., size * 1.5);
         }
-        let key = (run.text.clone(), size.to_bits());
-        if let Some(measured) = metrics.borrow_mut().get(&key) {
-            return measured;
-        }
-        let measured = ui.invoke_measure_rich(run.text.clone(), size);
-        let measured = (measured.width, measured.height.max(size * 1.5));
-        metrics.borrow_mut().insert(key, measured);
-        measured
+        let (width, height) = super::measure(ui, metrics, &run.text, size);
+        (width, height.max(size * 1.5))
     };
     let whitespace = |text: &str| {
         measure(&RichRun {

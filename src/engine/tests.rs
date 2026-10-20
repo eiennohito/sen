@@ -344,7 +344,7 @@ fn cached_thumbnail_does_not_clear_offline() {
     use crate::client::desktop::assets::Pixels;
     let mut app = App::new();
     let asset = FakeBackend::asset(true);
-    app.fake.set_pixels(
+    app.fake.set_image(
         &asset,
         Pixels {
             width: 1,
@@ -886,6 +886,38 @@ fn corrupt_local_photo_completes_the_demo_asset_request() {
             break;
         }
     }
+}
+
+#[test]
+fn local_preview_is_ready_before_any_fetcher_request_or_upload() {
+    let app = App::new();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("immediate-photo.png");
+    image::RgbImage::from_pixel(8, 6, image::Rgb([20, 30, 40]))
+        .save(&path)
+        .unwrap();
+    let item = crate::attachments::Attachment::prepare(&path).unwrap();
+    let key = crate::client::desktop::assets::Asset::local(item.clone()).key();
+    app.on_engine(move |engine| {
+        // A missing media handle must not delay a local preview in the fetch queue.
+        engine.media = None;
+        engine
+            .intent(Intent::SendAttachments {
+                chat: ChatId("alice".into()),
+                items: vec![item],
+            })
+            .unwrap();
+        assert!(engine.waiting_assets.is_empty());
+    });
+    let deltas: Vec<_> = app.worker.deltas.try_iter().collect();
+    let path = deltas
+        .iter()
+        .find_map(|delta| match delta {
+            Delta::Asset { key: ready, path } if ready == &key => Some(path),
+            _ => None,
+        })
+        .expect("preview must be delivered synchronously");
+    assert_eq!(image::open(path).unwrap().width(), 384);
 }
 
 #[test]

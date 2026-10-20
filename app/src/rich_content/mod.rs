@@ -91,15 +91,7 @@ pub(crate) fn install(ui: &AppWindow) {
                 return ModelRc::default();
             };
             crate::rich_content::preview::layout(&rows, &prefix, width, size, |text| {
-                let key = (text.into(), size.to_bits());
-                if let Some(value) = preview_metrics.borrow_mut().get(&key) {
-                    return value.0;
-                }
-                let value = ui.invoke_measure_rich(text.into(), size);
-                preview_metrics
-                    .borrow_mut()
-                    .insert(key, (value.width, value.height));
-                value.width
+                measure(&ui, &preview_metrics, text, size).0
             })
         });
     let weak = ui.as_weak();
@@ -109,4 +101,20 @@ pub(crate) fn install(ui: &AppWindow) {
                 .map(|ui| flow::reuse(previous, flow::layout(&ui, &rows, width, size, &metrics)))
                 .unwrap_or_default()
         });
+}
+
+pub(crate) fn measure(
+    ui: &AppWindow,
+    metrics: &RefCell<flow::Measurements>,
+    text: &str,
+    size: f32,
+) -> (f32, f32) {
+    let key = (text.into(), size.to_bits());
+    if let Some(value) = metrics.borrow_mut().get(&key) {
+        return value;
+    }
+    let value = ui.invoke_measure_rich(text.into(), size);
+    let value = (value.width, value.height);
+    metrics.borrow_mut().insert(key, value);
+    value
 }
