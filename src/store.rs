@@ -68,11 +68,7 @@ impl Store {
         let mut referenced = std::collections::BTreeSet::new();
         let mut collect = |bodies: Vec<Content>| {
             for body in bodies {
-                if let Some(item) = body
-                    .image()
-                    .or_else(|| body.attachment())
-                    .and_then(|asset| asset.local_attachment())
-                {
+                if let Some(item) = body.local_attachment() {
                     referenced.insert(item.path.clone());
                 }
             }
@@ -188,6 +184,7 @@ impl Store {
         tx.commit()?;
         self.writes += 1;
         self.changes.chats_changed.extend(changes.chats_changed);
+        self.changes.drafts_changed.extend(changes.drafts_changed);
         self.changes.chats_removed.extend(changes.chats_removed);
         self.changes
             .messages_removed

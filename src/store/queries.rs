@@ -1,6 +1,7 @@
 use super::messages::{by_key, by_server, segments, select_rows};
 use super::*;
 use serde_json::Value;
+use std::collections::BTreeSet;
 
 fn sql_limit(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
@@ -457,7 +458,7 @@ impl Store {
                     serde_json::to_string(&draft.reply)?,
                 ],
             )?;
-            c.chats_changed.insert(chat.clone());
+            c.drafts_changed.insert(chat.clone());
             Ok(())
         })
     }
@@ -482,7 +483,7 @@ impl Store {
     pub fn clear_draft(&mut self, chat: &ChatId) -> Result<()> {
         self.mutate(|tx, c| {
             tx.execute("DELETE FROM draft WHERE chat_id=?", [&chat.0])?;
-            c.chats_changed.insert(chat.clone());
+            c.drafts_changed.insert(chat.clone());
             Ok(())
         })
     }
@@ -609,6 +610,22 @@ impl Store {
             }
             Ok(())
         })
+    }
+    pub fn contact(&self, mid: &str) -> Result<Option<Friend>> {
+        Ok(self
+            .conn
+            .query_row(
+                &format!("SELECT {CONTACT_COLUMNS} FROM contact WHERE mid=?"),
+                [mid],
+                decode_contact,
+            )
+            .optional()?)
+    }
+    pub fn contact_ids(&self) -> Result<BTreeSet<String>> {
+        let mut stmt = self.conn.prepare("SELECT mid FROM contact")?;
+        Ok(stmt
+            .query_map([], |row| row.get(0))?
+            .collect::<std::result::Result<_, _>>()?)
     }
     pub fn contacts(&self) -> Result<Vec<Friend>> {
         let mut stmt = self.conn.prepare(&format!(

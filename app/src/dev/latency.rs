@@ -89,15 +89,13 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
                 );
             } else {
                 d.state.selected = Some(d.state.chat_order[i + 1].clone());
-                let rows = std::mem::take(&mut d.state.messages);
-                d.state.messages = rows
-                    .into_values()
-                    .map(|mut row| {
-                        row.key = Key(row.key.0 + 1000);
-                        row.chat_id = d.state.selected.clone().unwrap();
-                        (row.key, row)
-                    })
-                    .collect();
+                let rows: Vec<_> = d.state.rows().into_iter().cloned().collect();
+                d.state.messages.clear();
+                for mut row in rows {
+                    row.key = Key(row.key.0 + 1000);
+                    row.chat_id = d.state.selected.clone().unwrap();
+                    d.state.messages.insert(row.key, row);
+                }
                 d.render(ui);
             }
             render.push(start.elapsed().as_secs_f64() * 1000.);

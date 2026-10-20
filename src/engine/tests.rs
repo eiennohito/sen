@@ -234,7 +234,7 @@ fn expired_session_cancels_queued_work_without_changing_the_reason() {
     });
     app.on_engine(|_| {});
     app.until(|state| state.action.is_none());
-    assert_eq!(app.state.action_error, Some(ProfileFailure::Mute));
+    assert_eq!(app.state.action_error, Some(action.clone()));
     assert!(!app.fake.calls().contains(&FakeRpc::StickerPackages));
     assert!(!app.fake.calls().contains(&FakeRpc::Action(action)));
     assert_eq!(
@@ -886,4 +886,103 @@ fn corrupt_local_photo_completes_the_demo_asset_request() {
             break;
         }
     }
+}
+
+#[test]
+fn stale_window_row_does_not_remove_current_reply_target() {
+    let mut app = App::new();
+    let mut stale = app.state.messages.values().next().unwrap().clone();
+    let id = stale.server_id.clone().unwrap();
+    let stale_key = stale.key;
+    let mut current = stale.clone();
+    current.key = Key(stale_key.0 + 1000);
+    app.state.messages.insert(current.key, current.clone());
+    let mut removed = app.state.messages.clone();
+    removed.remove(&stale_key);
+    let removed_state = AppState {
+        messages: removed,
+        ..Default::default()
+    };
+    assert_eq!(removed_state.reply_target(&id), Some(&current));
+    stale.server_id = None;
+    app.state.messages.insert(stale_key, stale);
+    assert_eq!(app.state.reply_target(&id), Some(&current));
+}
+
+#[test]
+fn saving_draft_keeps_pending_window_updates() {
+    let app = App::new();
+    app.on_engine(|engine| {
+        let key = engine
+            .store
+            .insert_pending(
+                &ChatId("alice".into()),
+                LocalId("discard-before-draft".into()),
+                1234,
+                Content::text("discard me"),
+                i64::MAX / 2,
+                None,
+            )
+            .unwrap();
+        engine
+            .store
+            .mark_failed(
+                key,
+                Delivery::Rejected {
+                    reason: Refusal::AppClosed,
+                },
+            )
+            .unwrap();
+        engine.publish().unwrap();
+        engine.store.discard(key).unwrap();
+        engine
+            .intent(Intent::Draft {
+                chat: ChatId("alice".into()),
+                draft: Draft {
+                    text: "draft".into(),
+                    cursor: 0,
+                    updated: 0,
+                    anchor: 0,
+                    reply: None,
+                },
+            })
+            .unwrap();
+    });
+    let deltas: Vec<_> = app.worker.deltas.try_iter().collect();
+    let removed_key = deltas
+        .iter()
+        .find_map(|d| match d {
+            Delta::Window { upsert, .. } => upsert
+                .iter()
+                .find(|row| row.body.as_text() == "discard me")
+                .map(|row| row.key),
+            _ => None,
+        })
+        .unwrap();
+    assert!(
+        deltas
+            .iter()
+            .any(|d| matches!(d, Delta::Window { remove, .. } if remove.contains(&removed_key)))
+    );
+    assert!(deltas.iter().any(|d| matches!(d, Delta::Chats { upsert, .. } if upsert.iter().any(|r| r.draft.as_ref().is_some_and(|d| d.text == "draft")))));
+    app.on_engine(|engine| {
+        engine
+            .intent(Intent::Draft {
+                chat: ChatId("alice".into()),
+                draft: Draft {
+                    text: "draft again".into(),
+                    cursor: 0,
+                    updated: 0,
+                    anchor: 0,
+                    reply: None,
+                },
+            })
+            .unwrap();
+    });
+    assert!(
+        !app.worker
+            .deltas
+            .try_iter()
+            .any(|d| matches!(d, Delta::Window { .. }))
+    );
 }

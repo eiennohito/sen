@@ -63,6 +63,7 @@ impl Presenter {
         g.set_detail_error(
             state
                 .action_error
+                .as_ref()
                 .map(text::profile_failure)
                 .map(str::to_owned)
                 .unwrap_or(detail_error)

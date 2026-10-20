@@ -49,8 +49,8 @@ impl Desktop {
         } else {
             d
         };
-        // The engine may publish an unchanged window and a whole chat list on a
-        // draft save. Keep that acknowledgement out of the conversation render.
+        // Refreshes can publish identical window snapshots. Avoid rendering
+        // the conversation again when its contents and bounds are unchanged.
         if let Delta::Window {
             sub,
             upsert,
