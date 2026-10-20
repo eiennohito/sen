@@ -1,4 +1,4 @@
-//! Explicit native sign-in. QR/PIN data stays in memory; one previous session is retained.
+//! Explicit native sign-in. QR/PIN data stays in memory; a new session replaces the old one.
 use super::*;
 use crate::client::http::CancelToken;
 
@@ -240,15 +240,8 @@ fn install_session(state: &Path, staged: &Path, cancel: &CancelToken) -> Result<
         !cancel.is_cancelled(),
         super::error::SignInFailure::Cancelled
     );
-    let bytes = fs::read(staged)?;
-    // Preserve old credentials so their separately encrypted drafts remain
-    // recoverable. Never re-key or migrate drafts into a newly paired account.
-    if state.exists() {
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
-        let backup = state.with_extension(format!("before-sign-in-{stamp}.json"));
-        private_write(&backup, &fs::read(state)?)?;
-    }
-    private_write(state, &bytes)?;
+    // The replaced session is not kept: re-pairing invalidates its tokens.
+    private_write(state, &fs::read(staged)?)?;
     let _ = fs::remove_file(staged);
     Ok(())
 }
@@ -345,7 +338,7 @@ mod tests {
     }
 
     #[test]
-    fn replacement_preserves_old_session_and_cancellation_never_pairs() -> Result<()> {
+    fn replacement_leaves_only_the_new_session_and_cancellation_never_pairs() -> Result<()> {
         let root = std::env::temp_dir().join(format!("line-pairing-{}", std::process::id()));
         fs::create_dir_all(&root)?;
         let state = root.join("session.json");
@@ -354,26 +347,19 @@ mod tests {
         private_write(&staged, b"new session")?;
         install_session(&state, &staged, &CancelToken::new())?;
         assert_eq!(fs::read(&state)?, b"new session");
-        let backup = fs::read_dir(&root)?
-            .find_map(|e| {
-                let e = e.ok()?;
-                e.file_name()
-                    .to_string_lossy()
-                    .contains("before-sign-in")
-                    .then(|| e.path())
-            })
-            .unwrap();
-        assert_eq!(fs::read(&backup)?, b"old session");
-        assert_eq!(fs::metadata(&backup)?.permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(&state)?.permissions().mode() & 0o777, 0o600);
         private_write(&staged, b"latest session")?;
         install_session(&state, &staged, &CancelToken::new())?;
-        assert_eq!(fs::read(&backup)?, b"old session");
-        assert_eq!(fs::read_dir(&root)?.count(), 3);
+        assert_eq!(
+            fs::read_dir(&root)?.count(),
+            1,
+            "replaced sessions were kept"
+        );
         let cancel = CancelToken::new();
         cancel.cancel();
         private_write(&staged, b"cancelled session")?;
         assert!(install_session(&state, &staged, &cancel).is_err());
-        assert_eq!(fs::read(&backup)?, b"old session");
+        assert_eq!(fs::read(&state)?, b"latest session");
         assert!(
             sign_in_validated(
                 &state,
