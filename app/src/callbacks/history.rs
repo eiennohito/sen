@@ -32,7 +32,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         if let Some((key, offset)) = d.history.return_anchor.take() {
             // The origin is kept below the top cover, which may have changed.
             d.history
-                .jump_to(key, offset - ui.global::<State>().get_history_visible_top());
+                .jump_to(key, offset - ui.global::<State>().get_reading().visible_top);
             ui.global::<State>().set_following(false);
             ui.global::<State>().set_return_visible(false);
             ui.global::<State>().set_highlight_message("".into());
@@ -80,12 +80,12 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
                     geometry.insert(key, (top, height));
                 }
             }
+            // Row geometry can change without changing the viewport (opening and restoring anchors).
             d.observe_reading(&ui);
         }
     );
     global_callback!(ui, actions, on_history_scrolled, |ui, d| {
-        d.observe_reading(&ui);
-        let geometry = Desktop::reading_geometry(&ui);
+        let geometry = ui.global::<State>().get_reading();
         for intent in reading::page_older(&mut d.history, &mut d.state, geometry) {
             d.sender.send(intent);
         }

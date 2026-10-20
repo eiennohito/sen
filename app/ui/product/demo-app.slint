@@ -1,4 +1,5 @@
-export component DemoExtension inherits Rectangle {
-    public function handle-key(event: KeyEvent) -> EventResult { return reject; }
+export component DemoExtension inherits FocusScope {
+    focus-on-tab-navigation: false;
+    focus-on-click: false;
     @children
 }

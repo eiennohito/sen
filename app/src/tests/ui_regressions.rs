@@ -205,3 +205,242 @@ fn copy_message_preserves_the_selected_text() {
     .join()
     .unwrap();
 }
+
+fn focus_label(ui: &AppWindow) -> String {
+    use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
+    WindowInner::from_pub(ui.window())
+        .focus_item
+        .borrow()
+        .upgrade()
+        .unwrap()
+        .accessible_string_property(AccessibleStringProperty::Label)
+        .unwrap_or_default()
+        .to_string()
+}
+
+#[test]
+fn members_search_keeps_alt_arrows_for_editing() {
+    std::thread::spawn(|| {
+        use i_slint_backend_testing::ElementHandle;
+        use slint::platform::{Key, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = window::create_app_window().unwrap();
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(1280., 900.));
+        let g = ui.global::<State>();
+        g.set_panel(PanelState::Detail);
+        g.set_detail_depth(1);
+        g.set_detail_page(DetailPageMode::Members);
+        slint::platform::update_timers_and_animations();
+        let switches = Rc::new(std::cell::Cell::new(0));
+        let recorded = switches.clone();
+        g.on_switch_chat(move |_| recorded.set(recorded.get() + 1));
+        ElementHandle::find_by_accessible_label(&ui, "Search members")
+            .next()
+            .unwrap()
+            .mock_single_click(slint::platform::PointerEventButton::Left);
+        for text in [Key::Alt.into(), Key::UpArrow.into()] {
+            ui.window().dispatch_event(WindowEvent::KeyPressed { text });
+        }
+        for text in [Key::UpArrow.into(), Key::Alt.into()] {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        }
+        assert_eq!(switches.get(), 0, "Alt+Up in members search switched chat");
+        assert_eq!(focus_label(&ui), "Search members");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn notice_banner_f6_leaves_for_history() {
+    std::thread::spawn(|| {
+        use i_slint_backend_testing::ElementHandle;
+        use slint::platform::{Key, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = window::create_app_window().unwrap();
+        let g = ui.global::<State>();
+        g.set_has_account(true);
+        g.set_has_chat(true);
+        g.set_show_conversation(true);
+        g.set_connection(ConnectionState::SignedOut);
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(980., 720.));
+        slint::platform::update_timers_and_animations();
+        ElementHandle::find_by_accessible_label(&ui, "Connection needs attention")
+            .next()
+            .unwrap()
+            .mock_single_click(slint::platform::PointerEventButton::Left);
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::F6.into(),
+        });
+        ui.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::F6.into(),
+        });
+        assert_eq!(focus_label(&ui), "Message history");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn narrow_to_medium_detail_keeps_focus_inside_detail() {
+    std::thread::spawn(|| {
+        let window = snapshot::install().unwrap();
+        let ui = window::create_app_window().unwrap();
+        ui.global::<State>().set_panel(PanelState::Detail);
+        ui.global::<State>().set_detail_depth(1);
+        ui.global::<State>()
+            .set_detail_page(DetailPageMode::Members);
+        ui.show().unwrap();
+        snapshot::render(&window, (739, 720)).unwrap();
+        ui.invoke_focus_profile_close();
+        snapshot::render(&window, (740, 720)).unwrap();
+        assert_eq!(focus_label(&ui), "Close details");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn viewer_returns_to_current_photo_key_or_history_after_recycling() {
+    std::thread::spawn(|| {
+        use slint::platform::{Key, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = window::create_app_window().unwrap();
+        let g = ui.global::<State>();
+        g.set_has_chat(true);
+        g.set_show_conversation(true);
+        let photo = |key: &str| MessageRow {
+            kind: MessageKind::Photo,
+            id: key.into(),
+            image_key: key.into(),
+            has_picture: true,
+            picture: slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
+                &[0, 180, 100, 255],
+                1,
+                1,
+            )),
+            ..Default::default()
+        };
+        let rows = Rc::new(slint::VecModel::from(vec![photo("first"), photo("second")]));
+        g.set_messages(rows.clone().into());
+        let opened = Rc::new(RefCell::new(String::new()));
+        let recorded = opened.clone();
+        g.on_open_photo(move |key| *recorded.borrow_mut() = key.to_string());
+        let weak = ui.as_weak();
+        g.on_request_panel(move |panel| {
+            let ui = weak.upgrade().unwrap();
+            ui.global::<State>().set_panel(panel);
+            if panel == PanelState::None {
+                ui.invoke_focus_history();
+            }
+        });
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(980., 720.));
+        slint::platform::update_timers_and_animations();
+        for recycled in [false, true] {
+            ui.invoke_focus_history();
+            g.invoke_show_viewer("first".into());
+            slint::platform::update_timers_and_animations();
+            g.set_viewer_key("second".into());
+            if recycled {
+                rows.set_row_data(1, photo("replacement"));
+            }
+            g.invoke_close_viewer();
+            slint::platform::update_timers_and_animations();
+            if recycled {
+                assert_eq!(
+                    focus_label(&ui),
+                    "Message history",
+                    "recycled photo received focus for another message"
+                );
+            } else {
+                ui.window().dispatch_event(WindowEvent::KeyPressed {
+                    text: Key::Return.into(),
+                });
+                ui.window().dispatch_event(WindowEvent::KeyReleased {
+                    text: Key::Return.into(),
+                });
+                assert_eq!(
+                    *opened.borrow(),
+                    "second",
+                    "closing after Next focused the original photo"
+                );
+            }
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn virtual_wheel_frames_update_latest_and_top_paging() {
+    std::thread::spawn(|| {
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = window::create_app_window().unwrap();
+        let g = ui.global::<State>();
+        g.set_has_chat(true);
+        g.set_show_conversation(true);
+        g.set_history_virtual(true);
+        g.set_messages(
+            Rc::new(slint::VecModel::from(
+                (0..100)
+                    .map(|i| MessageRow {
+                        id: i.to_string().into(),
+                        body: format!("Wheel message {i}").into(),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+            .into(),
+        );
+        let pages = Rc::new(std::cell::Cell::new(0));
+        let recorded = pages.clone();
+        let weak = ui.as_weak();
+        g.on_history_scrolled(move || {
+            if weak.upgrade().unwrap().global::<State>().get_history_y() >= -30. {
+                recorded.set(recorded.get() + 1);
+            }
+        });
+        let frame = || {
+            i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
+            slint::platform::update_timers_and_animations();
+        };
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(980., 720.));
+        for _ in 0..10 {
+            frame();
+        }
+        ui.invoke_history_jump(-100000.);
+        for _ in 0..10 {
+            frame();
+        }
+        let bottom = g.get_history_y();
+        assert!(bottom < -1000.);
+        // Wheel frames update content-y after Flickable's single, pre-motion flicked callback.
+        g.set_history_y(bottom + 120.);
+        frame();
+        assert!(
+            !g.get_following(),
+            "a wheel frame away from bottom must show Latest"
+        );
+        g.set_new_count(3);
+        g.set_history_y(bottom);
+        frame();
+        assert!(
+            g.get_following(),
+            "the final wheel frame must resume following"
+        );
+        assert_eq!(g.get_new_count(), 0);
+        g.set_history_y(0.);
+        frame();
+        assert!(
+            pages.get() > 0,
+            "the top wheel frame must request older history"
+        );
+    })
+    .join()
+    .unwrap();
+}

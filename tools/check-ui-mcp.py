@@ -1102,6 +1102,16 @@ def check_layers():
     exported.unlink()
     key("\x1b")
     assert any(item.get("accessibleLabel") == "Open photo" and is_focused(item) for item in tree()), "viewer did not restore the photo opener"
+    photos = [item for item in tree() if item.get("accessibleLabel") == "Open photo" and item.get("accessibleRole") == "Button"]
+    call("click_element", elementHandle=photos[0]["handle"], button="Right")
+    click("Open photo", "Text")
+    key("\x1b")
+    assert is_focused(element("Open photo", "Button")), "context-menu viewer did not return focus to its photo"
+    click("Open photo")
+    click("Next")
+    click("Close photo")
+    photos = [item for item in tree() if item.get("accessibleLabel") == "Open photo" and item.get("accessibleRole") == "Button"]
+    assert is_focused(photos[-1]), "closing after Next did not focus the displayed photo"
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == before, "layers changed the draft"
     # Cache the members while connected, then exercise the same layer signed out.
     click("Weekend plans")
@@ -1123,6 +1133,28 @@ def check_layers():
         set_value("Search members", name)
         wait_for(lambda: element("Open member: " + name, "Button"), f"member {name} did not appear")
     key("\x1b")
+
+
+def check_virtual_wheel():
+    def latest_row():
+        return any(item.get("accessibleRole") == "TextInput" and "History item 0999" in item.get("accessibleValue", "") for item in tree())
+    wait_for(latest_row, "paging history did not reach its latest page")
+    # The first render can precede the full page. Reopen its cached window to select virtual layout.
+    click("Weekend plans")
+    click("葵")
+    wait_for(lambda: call("find_elements_by_id", windowHandle=window, elementsId="Conversation::history-view").get("elementHandles"), "wheel fixture must use virtual history")
+    wait_for(latest_row, "virtual history did not reach its latest page")
+    def latest():
+        return any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest") for item in tree())
+    def wheel(delta):
+        call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=delta, deltaX=0)
+    wheel(120)
+    wait_for(latest, "one wheel notch in virtual history did not show Latest")
+    wheel(-1000)
+    wait_for(lambda: not latest(), "wheel to the bottom did not resume following")
+    wheel(100000)
+    wait_for(lambda: any("History item " in item.get("accessibleValue", "") and int(item["accessibleValue"].split("History item ")[1][:4]) < 920 for item in tree()), "wheel at the top did not load older history")
+
 
 
 def check_reading():
@@ -1434,7 +1466,10 @@ def check_action_geometry():
             screenshot(chat.lower().replace(" ", "-") + "-" + prefix.lower().replace(" ", "-"))
 
 
+SCENES = {'virtual-wheel': 'paging'}
+
 GROUPS = {
+    'virtual-wheel': check_virtual_wheel,
     'action-geometry': check_action_geometry,
     'smoke': check_smoke,
     'emoji': check_emoji,
@@ -1536,12 +1571,12 @@ def main():
         parser.error('--all supplies the groups and both window sizes')
     selected = args.group or ['smoke']
     if args.all:
-        matrix = [(False, [g for g in GROUPS if g not in ('signed-out', 'missing-module')]),
+        matrix = [(False, [g for g in GROUPS if g not in ('signed-out', 'missing-module') and g not in SCENES]),
                   (True, list(WIDE_GROUPS))]
-        matrix += [(False, ['signed-out']), (False, ['missing-module'])]
+        matrix += [(False, [g]) for g in (*SCENES, 'signed-out', 'missing-module')]
     else:
-        regular = [g for g in selected if g not in ('signed-out', 'missing-module')]
-        matrix = ([(args.wide, regular)] if regular else []) + [(args.wide, [g]) for g in selected if g in ('signed-out', 'missing-module')]
+        regular = [g for g in selected if g not in ('signed-out', 'missing-module') and g not in SCENES]
+        matrix = ([(args.wide, regular)] if regular else []) + [(args.wide, [g]) for g in selected if g in ('signed-out', 'missing-module') or g in SCENES]
     seed = args.seed if args.seed is not None else secrets.randbits(32)
     print(f'Seed: {seed}', flush=True)
     if args.all:
@@ -1563,6 +1598,8 @@ def main():
         flags = ['--demo-size', '1280x900' if wide else '980x720']
         if args.dark:
             flags += ['--demo-dark']
+        if groups[0] in SCENES:
+            flags += ['--snapshot-scene', SCENES[groups[0]]]
         if groups[0] in ('signed-out', 'missing-module'):
             flags += ['--demo', '--snapshot-scene', 'signed-out']
         if groups == ['missing-module']:
@@ -1582,7 +1619,7 @@ def main():
                         try:
                             if group == 'smoke':
                                 check_idle()
-                            if group not in ('signed-out', 'missing-module'):
+                            if group not in ('signed-out', 'missing-module') and group not in SCENES:
                                 reset_demo()
                             GROUPS[group]()
                             screenshot('complete')

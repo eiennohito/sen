@@ -1,25 +1,7 @@
 use crate::*;
 impl crate::Desktop {
-    pub(crate) fn reading_geometry(ui: &AppWindow) -> reading::Geometry {
-        let global = ui.global::<State>();
-        reading::Geometry {
-            y: ui.global::<State>().get_history_y(),
-            at_bottom: global.get_following()
-                && global.get_history_extent() + ui.global::<State>().get_history_y()
-                    <= global.get_text_size() as f32,
-            visible_top: global.get_history_visible_top(),
-            height: global.get_history_viewport_height(),
-            pill_height: global.get_history_pill_height(),
-            active: global.get_window_active(),
-            modal: global.get_modal_open(),
-            dragging: ui.global::<State>().get_history_dragging(),
-            interacting: global.get_history_interacting(),
-            narrow: global.get_narrow(),
-            conversation: ui.global::<State>().get_show_conversation(),
-        }
-    }
     pub(crate) fn observe_reading(&mut self, ui: &AppWindow) {
-        let geometry = Self::reading_geometry(ui);
+        let geometry = ui.global::<State>().get_reading();
         let effects = reading::observe(&mut self.history, &self.state, geometry);
         for intent in effects.intents {
             self.sender.send(intent);
@@ -27,7 +9,7 @@ impl crate::Desktop {
         if let Some((y, latest)) = effects.show {
             ui.global::<State>().invoke_show_history(y, latest);
         }
-        let geometry = Self::reading_geometry(ui);
+        let geometry = ui.global::<State>().get_reading();
         for intent in reading::exposure(&mut self.history, &self.state, geometry) {
             self.sender.send(intent);
         }
@@ -36,12 +18,15 @@ impl crate::Desktop {
         }
     }
     pub(crate) fn jump_to_message(&mut self, ui: &AppWindow, key: Key) {
-        let origin =
-            reading::return_anchor(&self.history, self.state.rows(), Self::reading_geometry(ui));
+        let origin = reading::return_anchor(
+            &self.history,
+            self.state.rows(),
+            ui.global::<State>().get_reading(),
+        );
         self.history.return_anchor = origin;
         self.history.opening_history = false;
         self.history
-            .jump_to(key, ui.global::<State>().get_history_visible_top());
+            .jump_to(key, ui.global::<State>().get_reading().visible_top);
         ui.global::<State>().set_following(false);
         ui.global::<State>().set_return_visible(origin.is_some());
         ui.global::<State>()

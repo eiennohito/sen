@@ -1,5 +1,5 @@
 import { ExtensionState } from "@demo/demo-state.slint";
-import { ComposerMode, DetailPageMode, RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
+import { ReadingGeometry, ReadingViewport, ComposerMode, DetailPageMode, RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 export global State {
     in-out property <[ReactionRow]> reaction-kinds;
     in-out property <MessageRow> composer-reply;
@@ -12,7 +12,6 @@ export global State {
     in-out property <[AttachmentItem]> attachment-items;
     callback attach();
     callback paste-text();
-    in-out property <int> paste-text-serial;
     callback paste-attachment() -> bool;
     callback drop-attachment(string);
     callback remove-attachment(int);
@@ -20,8 +19,6 @@ export global State {
     callback send-attachments();
 
     in-out property <bool> history-virtual;
-    in-out property <length> virtual-history-height;
-    in-out property <length> plain-history-height;
     in-out property <float> device-scale: 1;
     pure callback avatar-picture(image, float, float) -> image;
     pure callback name-tint(string, color, bool) -> color;
@@ -37,18 +34,21 @@ export global State {
     in-out property <int> unread-conversations;
     in-out property <bool> unread-stale;
     in-out property <string> unread-divider;
+    in property <ReadingViewport> reading-viewport;
+    out property <ReadingGeometry> reading: {
+        y: self.history-y, at-bottom: self.following && self.reading-viewport.extent + self.history-y <= self.text-size * 1px,
+        visible-top: self.reading-viewport.visible-top, height: self.reading-viewport.height, pill-height: self.reading-viewport.pill-height,
+        active: self.window-active, modal: self.modal-open, dragging: self.reading-viewport.dragging,
+        interacting: self.history-interacting, narrow: self.narrow, conversation: self.show-conversation,
+    };
     callback read-state-changed();
-    changed list-y => { self.read-state-changed(); }
-    changed chats => { self.read-state-changed(); }
-    changed section => { self.read-state-changed(); }
-    changed window-active => { self.read-state-changed(); }
-    changed modal-open => { self.read-state-changed(); }
-    changed show-conversation => { self.read-state-changed(); }
+    changed reading => { self.read-state-changed(); }
 
     in-out property <int> section: 0;
     in-out property <ChatCategory> category: ChatCategory.all;
     callback filter-category();
     callback switch-chat(int);
+    callback text-input-focused() -> bool;
     callback focus-chat-list();
     callback focus-friend-list();
     public function browser-key(event: KeyEvent) -> EventResult {
@@ -116,7 +116,6 @@ export global State {
     in-out property <DetailPageMode> detail-page;
     in-out property <bool> detail-busy;
     in-out property <DetailAction> detail-running;
-    in-out property <bool> viewer-from-detail;
     in-out property <string> detail-error;
     in-out property <string> conversation-error;
     in-out property <string> friends-error;
@@ -153,23 +152,6 @@ export global State {
     out property <length> narrow-width: 740px;
     out property <length> conversation-min-width: self.narrow-width - self.rail-width - self.browser-width;
     out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
-    property <int> covered-content: self.window-modal-open || (self.detail-open && self.narrow) ? 2 : self.detail-open && self.profile-sheet ? 1 : self.narrow && self.show-conversation ? 3 : 0;
-    in-out property <bool> browser-focus-hidden;
-    property <int> previous-covered-content;
-    changed covered-content => {
-        let previous = self.previous-covered-content;
-        let browser-hidden = self.covered-content == 3 && self.previous-covered-content == 0 && self.browser-focus-hidden;
-        self.browser-focus-hidden = false;
-        self.previous-covered-content = self.covered-content;
-        if ExtensionState.modal-open || self.recovery-kind != RecoveryKind.none || self.detail-dialog != DetailAction.none { return; }
-        // Closing a modal back to the stack restores its recorded opener.
-        if previous == 2 && self.detail-open && !self.window-modal-open { return; }
-        if self.auth-open { self.focus-auth-start(); }
-        else if self.viewer-open { self.focus-viewer-close(); }
-        else if self.settings-open { self.focus-settings-close(); }
-        else if self.detail-open && self.profile-sheet { self.focus-profile-close(); }
-        else if browser-hidden { self.focus-composer(); }
-    }
     in-out property <string> profile-initial;
     in-out property <string> profile-name;
     in-out property <string> profile-id;
@@ -228,8 +210,6 @@ export global State {
     in-out property <bool> viewer-has-next;
     in-out property <string> viewer-save-status;
     in-out property <bool> viewer-saving;
-    in-out property <string> viewer-return-key;
-    in-out property <int> viewer-return-serial;
     out property <bool> window-modal-open: ExtensionState.modal-open || self.attachments-open || self.new-chat-open || self.auth-open || self.viewer-open || self.settings-open || self.recovery-kind != RecoveryKind.none || self.detail-dialog != DetailAction.none;
     out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && self.detail-open);
     callback viewer-step(int);
@@ -272,7 +252,6 @@ export global State {
     in-out property <bool> following: true;
     in-out property <int> new-count;
     in-out property <length> history-y;
-    in-out property <bool> history-dragging;
     in-out property <string> query;
     in-out property <length> list-y;
     in-out property <length> editor-y;
@@ -282,7 +261,6 @@ export global State {
     out property <bool> narrow: self.window-width < self.narrow-width;
     in-out property <length> window-width;
     in-out property <length> window-height;
-    in-out property <length> history-extent;
     callback browse(int);
     callback filter-friends();
     callback open-profile(string);
@@ -318,20 +296,20 @@ export global State {
     callback focus-after-layer();
     callback focus-reading-before-editor();
     public function show-viewer(key: string) { self.request-panel(PanelState.viewer); self.viewer-key = key; self.viewer-zoom = 1; self.reset-viewer(); self.focus-viewer-close(); }
-    public function close-viewer() { let from-detail = self.viewer-from-detail; self.request-panel(PanelState.none); if !from-detail { self.focus-history(); } self.viewer-return-key = self.viewer-key; self.viewer-return-serial += 1; self.viewer-key = ""; self.photo-closed(); }
+    public function close-viewer() { self.request-panel(PanelState.none); }
     public function account-ready() { self.request-panel(PanelState.none); self.show-conversation = false; self.focus-search(); }
     public function close-sign-in() { self.request-panel(PanelState.none); self.focus-sign-in-opener(); }
-    public function open-sign-in() { if self.sign-in-available { self.request-panel(PanelState.sign-in); self.focus-auth-start(); } }
+    public function open-sign-in() { if self.sign-in-available { self.request-panel(PanelState.sign-in); } }
     public function show-history(y: length, latest: bool) {
         self.following = latest;
         self.history-y = y;
-        if latest { self.history-jump(-self.history-extent); }
+        if latest { self.history-jump(-self.reading-viewport.extent); }
     }
     public function latest() {
         self.latest-request();
         self.following = true;
         self.new-count = 0;
-        self.history-jump(-self.history-extent);
+        self.history-jump(-self.reading-viewport.extent);
     }
     callback focus-search();
     callback focus-friend-search();
@@ -344,17 +322,16 @@ export global State {
     callback focus-viewer-close();
     public function reading-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
-        if self.browser-key(event) == accept { return accept; }
         if self.recovery-kind != RecoveryKind.none { return reject; }
         if event.text == Key.End { self.latest(); self.focus-history(); return accept; }
         if event.text == Key.UpArrow { self.history-scroll(self.text-size * 1.4px); }
         else if event.text == Key.DownArrow { self.history-scroll(-self.text-size * 1.4px); }
-        else if event.text == Key.PageUp { self.history-scroll(self.history-viewport-height * 0.9); }
-        else if event.text == Key.PageDown { self.history-scroll(-self.history-viewport-height * 0.9); }
+        else if event.text == Key.PageUp { self.history-scroll(self.reading.height * 0.9); }
+        else if event.text == Key.PageDown { self.history-scroll(-self.reading.height * 0.9); }
         else if event.text == Key.Home { self.history-jump(0px); }
         else { return reject; }
         if event.text == Key.Home {
-            self.following = self.history-can-follow && !self.history-dragging && self.history-extent + self.history-y <= self.text-size * 1px;
+            self.following = self.history-can-follow && !self.reading-viewport.dragging && self.reading-viewport.extent + self.history-y <= self.text-size * 1px;
             if self.following { self.new-count = 0; }
             self.history-scrolled();
         }
@@ -363,19 +340,11 @@ export global State {
     }
     callback focus-history();
     callback reset-viewer();
-    in-out property <length> history-viewport-height;
-    changed history-viewport-height => { self.read-state-changed(); }
-    in-out property <length> history-visible-top;
-    in-out property <length> history-pill-height;
-    changed history-pill-height => { self.read-state-changed(); }
     in-out property <string> older-status;
     in-out property <string> highlight-message;
     in-out property <bool> return-visible;
     in-out property <bool> history-can-follow: true;
     in-out property <bool> history-interacting;
-    changed history-interacting => { self.read-state-changed(); }
-    changed history-dragging => { self.read-state-changed(); }
-    changed history-visible-top => { self.read-state-changed(); }
     callback row-geometry(HistoryRowKind, string, length, length);
     callback history-scrolled();
     callback latest-request();

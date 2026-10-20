@@ -41,3 +41,11 @@ export struct StickerItem { index: int, picture: image }
 export struct ComposeFriend { id: string, name: string, initial: string, avatar: image, selected: bool }
 
 export struct AttachmentItem { name: string, size: string, photo: bool, picture: image, error: string }
+
+export struct ReadingViewport {
+    height: length, visible-top: length, pill-height: length, extent: length, dragging: bool,
+}
+export struct ReadingGeometry {
+    y: length, at-bottom: bool, visible-top: length, height: length, pill-height: length,
+    active: bool, modal: bool, dragging: bool, interacting: bool, narrow: bool, conversation: bool,
+}

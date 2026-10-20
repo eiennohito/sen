@@ -5,7 +5,6 @@ impl crate::Desktop {
             return;
         }
         ui.global::<State>().invoke_remember_detail_focus(false);
-        ui.global::<State>().set_viewer_from_detail(true);
         ui.global::<State>().set_viewer_has_previous(false);
         ui.global::<State>().set_viewer_has_next(false);
         let id = ui.global::<State>().get_profile_id();
