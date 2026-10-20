@@ -62,13 +62,10 @@ pub(crate) fn profile_failure(action: &line::backend::ProfileAction) -> &'static
 pub(crate) fn pairing_stage(stage: line::client::pairing::Stage) -> &'static str {
     use line::client::pairing::Stage;
     match stage {
-        Stage::Authenticated | Stage::Synthetic => SIGNED_IN,
-        Stage::WaitingKeyring | Stage::CreatingSession => PREPARING_SIGN_IN,
-        Stage::AwaitScan | Stage::CheckingCertificate | Stage::AwaitPin => WAITING_FOR_PHONE,
-        Stage::RequestCredentials
-        | Stage::UnwrappingKeys
-        | Stage::KeysVerified
-        | Stage::CheckingKeys => SIGNING_IN,
+        Stage::Authenticated => SIGNED_IN,
+        Stage::Preparing => PREPARING_SIGN_IN,
+        Stage::WaitingForPhone => WAITING_FOR_PHONE,
+        Stage::SigningIn => SIGNING_IN,
     }
 }
 
@@ -150,26 +147,9 @@ mod tests {
 
     #[test]
     fn pairing_status_follows_phone_approval() {
-        for stage in [Stage::WaitingKeyring, Stage::CreatingSession] {
-            assert_eq!(pairing_stage(stage), PREPARING_SIGN_IN);
-        }
-        for stage in [
-            Stage::AwaitScan,
-            Stage::CheckingCertificate,
-            Stage::AwaitPin,
-        ] {
-            assert_eq!(pairing_stage(stage), WAITING_FOR_PHONE);
-        }
-        for stage in [
-            Stage::RequestCredentials,
-            Stage::UnwrappingKeys,
-            Stage::CheckingKeys,
-            Stage::KeysVerified,
-        ] {
-            assert_eq!(pairing_stage(stage), SIGNING_IN);
-        }
-        for stage in [Stage::Authenticated, Stage::Synthetic] {
-            assert_eq!(pairing_stage(stage), SIGNED_IN);
-        }
+        assert_eq!(pairing_stage(Stage::Preparing), PREPARING_SIGN_IN);
+        assert_eq!(pairing_stage(Stage::WaitingForPhone), WAITING_FOR_PHONE);
+        assert_eq!(pairing_stage(Stage::SigningIn), SIGNING_IN);
+        assert_eq!(pairing_stage(Stage::Authenticated), SIGNED_IN);
     }
 }

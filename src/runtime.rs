@@ -20,9 +20,22 @@ enum Value {
     Bytes(Vec<u8>),
     Destructors(Vec<u32>),
 }
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum TypeKind {
+    Void,
+    Bool,
+    Int,
+    BigInt,
+    Float,
+    String,
+    WideString,
+    MemoryView,
+    Emval,
+    Class,
+}
 #[derive(Clone, Debug)]
 struct Type {
-    kind: &'static str,
+    kind: TypeKind,
     size: u32,
 }
 #[derive(Clone, Debug)]
@@ -203,15 +216,15 @@ fn std_string(c: &mut Caller<'_, Host>, bytes: &[u8]) -> Result<u32> {
 fn take_value(c: &Caller<'_, Host>, t: u32, p: u32) -> Result<Value> {
     let ty = c.data().types.get(&t).context("unregistered emval type")?;
     Ok(match ty.kind {
-        "memory_view" => Value::Bytes(read(c, u32_at(c, p + 4)?, u32_at(c, p)? as usize)?),
-        "int" | "bigint" => {
+        TypeKind::MemoryView => Value::Bytes(read(c, u32_at(c, p + 4)?, u32_at(c, p)? as usize)?),
+        TypeKind::Int | TypeKind::BigInt => {
             let bytes = read(c, p, ty.size as usize)?;
             let mut raw = [0; 8];
             raw[..bytes.len()].copy_from_slice(&bytes);
             Value::Number(u64::from_le_bytes(raw))
         }
-        "class" => Value::Number(u32_at(c, p)? as u64),
-        other => bail!("unsupported take_value type {other}"),
+        TypeKind::Class => Value::Number(u32_at(c, p)? as u64),
+        other => bail!("unsupported take_value type {other:?}"),
     })
 }
 fn emval_decref(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -> Result<()> {
@@ -280,7 +293,7 @@ fn register_class(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [Val]) -
         c.data_mut().types.insert(
             id,
             Type {
-                kind: "class",
+                kind: TypeKind::Class,
                 size: 4,
             },
         );
@@ -309,7 +322,7 @@ fn register_constructor(mut c: Caller<'_, Host>, input: &[Val], _output: &mut [V
     Ok(())
 }
 
-fn register_type(mut c: Caller<'_, Host>, id: u32, kind: &'static str, size: u32) -> Result<()> {
+fn register_type(mut c: Caller<'_, Host>, id: u32, kind: TypeKind, size: u32) -> Result<()> {
     c.data_mut().types.insert(id, Type { kind, size });
     Ok(())
 }
@@ -434,17 +447,17 @@ fn emval_as(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Resul
         .clone();
     let mut destructors = Vec::new();
     let value = match (ty.kind, val) {
-        ("string", Value::Bytes(b)) => {
+        (TypeKind::String, Value::Bytes(b)) => {
             let ptr = std_string(&mut c, &b)?;
             destructors.push(ptr);
             ptr as f64
         }
-        ("string", Value::String(s)) => {
+        (TypeKind::String, Value::String(s)) => {
             let ptr = std_string(&mut c, s.as_bytes())?;
             destructors.push(ptr);
             ptr as f64
         }
-        ("memory_view", Value::Bytes(b)) => {
+        (TypeKind::MemoryView, Value::Bytes(b)) => {
             let ptr = malloc(&mut c, b.len().max(1))?;
             write(&mut c, ptr, &b)?;
             let desc = malloc(&mut c, 8)?;
@@ -453,9 +466,9 @@ fn emval_as(mut c: Caller<'_, Host>, input: &[Val], output: &mut [Val]) -> Resul
             destructors.extend([ptr, desc]);
             desc as f64
         }
-        ("int" | "bigint" | "float", Value::Number(n)) => n as f64,
-        ("int" | "bigint", Value::Bytes(b)) => b.len() as f64,
-        ("emval", _) => p(0) as f64,
+        (TypeKind::Int | TypeKind::BigInt | TypeKind::Float, Value::Number(n)) => n as f64,
+        (TypeKind::Int | TypeKind::BigInt, Value::Bytes(b)) => b.len() as f64,
+        (TypeKind::Emval, _) => p(0) as f64,
         other => bail!("unsupported emval conversion {other:?}"),
     };
     let h = c.data_mut().put(Value::Destructors(destructors));
@@ -651,7 +664,7 @@ const FUNCTIONS: &[Function] = &[
     host_function!("d", &[I32, I32, I32], &[], |c, p, _| register_type(
         c,
         p[0].i32().unwrap() as u32,
-        "memory_view",
+        TypeKind::MemoryView,
         0
     )),
     host_function!("e", &[I32, I32, I32, I32], &[I32], emval_new),
@@ -663,7 +676,7 @@ const FUNCTIONS: &[Function] = &[
         register_type(
             c,
             p[0].i32().unwrap() as u32,
-            "int",
+            TypeKind::Int,
             p[2].i32().unwrap() as u32,
         )
     }),
@@ -687,7 +700,7 @@ const FUNCTIONS: &[Function] = &[
     host_function!("n", &[I32, I32, I32], &[], |c, p, _| register_type(
         c,
         p[0].i32().unwrap() as u32,
-        "wstring",
+        TypeKind::WideString,
         p[1].i32().unwrap() as u32
     )),
     host_function!("o", &[I32, I32, I32], &[I32], embedded_callback),
@@ -698,20 +711,20 @@ const FUNCTIONS: &[Function] = &[
     host_function!("t", &[I32, I32], &[], |c, p, _| register_type(
         c,
         p[0].i32().unwrap() as u32,
-        "string",
+        TypeKind::String,
         4
     )),
     host_function!("u", &[I32, I32, I32], &[], |c, p, _| register_type(
         c,
         p[0].i32().unwrap() as u32,
-        "float",
+        TypeKind::Float,
         p[2].i32().unwrap() as u32
     )),
     host_function!("v", &[I32, I32, I32, I64, I64], &[], |c, p, _| {
         register_type(
             c,
             p[0].i32().unwrap() as u32,
-            "bigint",
+            TypeKind::BigInt,
             p[2].i32().unwrap() as u32,
         )
     }),
@@ -730,21 +743,21 @@ const FUNCTIONS: &[Function] = &[
     host_function!("I", &[I32, I32], &[], |c, p, _| register_type(
         c,
         p[0].i32().unwrap() as u32,
-        "emval",
+        TypeKind::Emval,
         4
     )),
     host_function!("J", &[I32, I32, I32, I32, I32], &[], |c, p, _| {
         register_type(
             c,
             p[0].i32().unwrap() as u32,
-            "bool",
+            TypeKind::Bool,
             p[2].i32().unwrap() as u32,
         )
     }),
     host_function!("K", &[I32, I32], &[], |c, p, _| register_type(
         c,
         p[0].i32().unwrap() as u32,
-        "void",
+        TypeKind::Void,
         0
     )),
     host_function!("L", &[I32, I32, I32], &[], emval_set_property),
@@ -925,8 +938,13 @@ impl Runtime {
         let wire_type = |id| {
             let ty = self.store.data().types.get(&id).ok_or_else(changed)?;
             match ty.kind {
-                "bigint" => Ok(I64),
-                "int" | "bool" | "class" | "emval" | "string" | "memory_view" => Ok(I32),
+                TypeKind::BigInt => Ok(I64),
+                TypeKind::Int
+                | TypeKind::Bool
+                | TypeKind::Class
+                | TypeKind::Emval
+                | TypeKind::String
+                | TypeKind::MemoryView => Ok(I32),
                 _ => Err(changed()),
             }
         };
@@ -939,7 +957,7 @@ impl Runtime {
             .data()
             .types
             .get(&binding.return_type)
-            .is_some_and(|t| t.kind == "void")
+            .is_some_and(|t| t.kind == TypeKind::Void)
         {
             vec![]
         } else {
@@ -964,7 +982,7 @@ impl Runtime {
                         .data()
                         .types
                         .get(t)
-                        .filter(|t| t.kind == "emval")
+                        .filter(|t| t.kind == TypeKind::Emval)
                         .map(|_| i)
                 })
                 .collect();

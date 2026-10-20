@@ -1,18 +1,26 @@
 //! Account API shared by the desktop worker and read-only diagnostics.
-use super::error::SignInFailure;
-use super::*;
-use std::{collections::HashMap, sync::Arc};
-
 pub mod assets;
 #[cfg(test)]
 mod members_tests;
-#[cfg(test)]
-mod sticker_tests;
-
 pub mod read;
 pub mod rich;
+#[cfg(test)]
+mod send_tests;
+#[cfg(test)]
+mod sticker_tests;
 pub mod sync;
+#[cfg(test)]
+mod test_client;
+mod upload;
+
+use super::error::SignInFailure;
+use super::*;
+use crate::store::{
+    ChatId, ChatInput, Content, Friend, Member, MessageInput, MidKind, Reaction, ReactionKind,
+    ServerId, mid_kind,
+};
 use assets::{Asset, ImageCache};
+use std::{collections::HashMap, sync::Arc};
 
 pub struct ChatPage {
     pub chats: Vec<ChatInput>,
@@ -20,10 +28,6 @@ pub struct ChatPage {
     pub more: bool,
     pub cursor: Option<String>,
 }
-use crate::store::{
-    ChatId, ChatInput, Content, Friend, Member, MessageInput, MidKind, Reaction, ReactionKind,
-    ServerId, mid_kind,
-};
 
 fn member_identity(id: &str, contact: &Value, my_mid: &str) -> Option<Member> {
     let profile = if contact.is_null() {
@@ -1029,28 +1033,6 @@ pub fn reactions(value: &Value) -> Vec<Reaction> {
         .collect()
 }
 
-#[cfg(test)]
-mod protocol_tests {
-    use super::*;
-    #[test]
-    fn member_identity_uses_existing_contact_names_and_unknown_fallback() {
-        let known = member_identity(
-            "other",
-            &json!({"displayNameOverridden":"Alias","displayName":"Name","statusMessage":"Hello","picturePath":"/avatar"}),
-            "self",
-        ).unwrap();
-        assert_eq!(known.contact.name.as_deref(), Some("Alias"));
-        assert_eq!(known.contact.status, "Hello");
-        assert!(!known.is_self);
-        for contact in [Value::Null, json!({"displayName":"  "})] {
-            let member = member_identity("self", &contact, "self").unwrap();
-            assert_eq!(member.contact.name, None);
-            assert!(member.is_self);
-            assert!(member.contact.avatar.is_none());
-        }
-    }
-}
-
 #[derive(Clone, Debug)]
 pub struct ReadRange {
     pub chat: String,
@@ -1085,46 +1067,6 @@ fn parse_read_ranges(data: &Value) -> Vec<ReadRange> {
     }
     ranges
 }
-
-#[cfg(test)]
-mod read_tests {
-    use super::*;
-    #[test]
-    fn preserves_member_ranges_and_open_sentinel() {
-        let ranges = parse_read_ranges(
-            &json!([{"chatId":"group","ranges":{"member":[{"startMessageId":"4","endMessageId":"9"},{"startMessageId":"10","endMessageId":"1"}]}}]),
-        );
-        assert_eq!(ranges.len(), 2);
-        assert!(ranges[1].open_end);
-        assert!(!ranges[0].open_end);
-        assert_eq!(ranges[0].reader, "member");
-        assert_eq!(ranges[0].start, "4");
-        assert_eq!(ranges[0].end, "9");
-    }
-}
-
-#[cfg(test)]
-mod decrypted_metadata_tests {
-    use super::*;
-    #[test]
-    fn decrypted_replace_and_attachment_details_reach_rich_parser() {
-        let mut raw = json!({"contentType":0,"contentMetadata":null});
-        let body = json!({"text":"日😀[笑]","REPLACE":{"sticon":{"resources":[{"S":3,"E":6,"productId":"synthetic","sticonId":"1"}]}},"keyMaterial":"synthetic-key","fileName":"example.txt"});
-        merge_decrypted(&mut raw, &body);
-        let rich = rich::parse(&raw);
-        assert_eq!(rich.emoji.len(), 1);
-        assert_eq!(rich.emoji[0].fallback, "[笑]");
-        assert_eq!(raw["contentMetadata"]["ENC_KM"], "synthetic-key");
-        assert_eq!(raw["contentMetadata"]["FILE_NAME"], "example.txt");
-    }
-}
-
-mod upload;
-
-#[cfg(test)]
-mod send_tests;
-#[cfg(test)]
-mod test_client;
 
 fn load_chat(chat: &str, mut talk: impl FnMut(&str, Value) -> Result<Value>) -> Result<Value> {
     let response = talk(
@@ -1182,6 +1124,61 @@ fn attach_reply(message: &mut Value, reply: Option<&crate::store::ReplyReference
         message["relatedMessageId"] = json!(reply.message_id);
         message["messageRelationType"] = json!(3);
         message["relatedMessageServiceCode"] = json!(reply.service_code.unwrap_or(1));
+    }
+}
+
+#[cfg(test)]
+mod protocol_tests {
+    use super::*;
+    #[test]
+    fn member_identity_uses_existing_contact_names_and_unknown_fallback() {
+        let known = member_identity(
+            "other",
+            &json!({"displayNameOverridden":"Alias","displayName":"Name","statusMessage":"Hello","picturePath":"/avatar"}),
+            "self",
+        ).unwrap();
+        assert_eq!(known.contact.name.as_deref(), Some("Alias"));
+        assert_eq!(known.contact.status, "Hello");
+        assert!(!known.is_self);
+        for contact in [Value::Null, json!({"displayName":"  "})] {
+            let member = member_identity("self", &contact, "self").unwrap();
+            assert_eq!(member.contact.name, None);
+            assert!(member.is_self);
+            assert!(member.contact.avatar.is_none());
+        }
+    }
+}
+
+#[cfg(test)]
+mod read_tests {
+    use super::*;
+    #[test]
+    fn preserves_member_ranges_and_open_sentinel() {
+        let ranges = parse_read_ranges(
+            &json!([{"chatId":"group","ranges":{"member":[{"startMessageId":"4","endMessageId":"9"},{"startMessageId":"10","endMessageId":"1"}]}}]),
+        );
+        assert_eq!(ranges.len(), 2);
+        assert!(ranges[1].open_end);
+        assert!(!ranges[0].open_end);
+        assert_eq!(ranges[0].reader, "member");
+        assert_eq!(ranges[0].start, "4");
+        assert_eq!(ranges[0].end, "9");
+    }
+}
+
+#[cfg(test)]
+mod decrypted_metadata_tests {
+    use super::*;
+    #[test]
+    fn decrypted_replace_and_attachment_details_reach_rich_parser() {
+        let mut raw = json!({"contentType":0,"contentMetadata":null});
+        let body = json!({"text":"日😀[笑]","REPLACE":{"sticon":{"resources":[{"S":3,"E":6,"productId":"synthetic","sticonId":"1"}]}},"keyMaterial":"synthetic-key","fileName":"example.txt"});
+        merge_decrypted(&mut raw, &body);
+        let rich = rich::parse(&raw);
+        assert_eq!(rich.emoji.len(), 1);
+        assert_eq!(rich.emoji[0].fallback, "[笑]");
+        assert_eq!(raw["contentMetadata"]["ENC_KM"], "synthetic-key");
+        assert_eq!(raw["contentMetadata"]["FILE_NAME"], "example.txt");
     }
 }
 

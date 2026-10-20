@@ -559,7 +559,7 @@ impl Backend for FakeBackend {
                 return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)));
             }
         }
-        deliver(PairEvent::Stage(Stage::Synthetic));
+        deliver(PairEvent::Stage(Stage::Authenticated));
         if self.state.lock().unwrap().signed_out {
             let qr =
                 qrcodegen::QrCode::encode_text("offline-demo-sign-in", qrcodegen::QrCodeEcc::Low)
@@ -580,7 +580,7 @@ impl Backend for FakeBackend {
                     rgba,
                 },
             )));
-            deliver(PairEvent::Stage(Stage::AwaitScan));
+            deliver(PairEvent::Stage(Stage::WaitingForPhone));
             async_io::block_on(cancel.cancelled());
             return Err(Failure::SignedOut(SignOutReason::Unavailable(
                 crate::client::error::SignInFailure::Cancelled,

@@ -1515,7 +1515,7 @@ impl Engine {
                 };
                 self.connection(Connection::SigningIn);
                 self.emit(Delta::Pair(PairEvent::Stage(
-                    crate::client::pairing::Stage::WaitingKeyring,
+                    crate::client::pairing::Stage::Preparing,
                 )));
                 let inbox = self.inbox.clone();
                 let generation = self.generation.load(Ordering::SeqCst);

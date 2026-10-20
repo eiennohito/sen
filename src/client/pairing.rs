@@ -5,17 +5,10 @@ use crate::client::http::CancelToken;
 /// Protocol progress, independent of desktop wording.
 #[derive(Clone, Copy, Debug)]
 pub enum Stage {
-    WaitingKeyring,
+    Preparing,
+    WaitingForPhone,
+    SigningIn,
     Authenticated,
-    CreatingSession,
-    AwaitScan,
-    CheckingCertificate,
-    AwaitPin,
-    RequestCredentials,
-    UnwrappingKeys,
-    KeysVerified,
-    CheckingKeys,
-    Synthetic,
 }
 
 pub enum Event {
@@ -70,7 +63,7 @@ fn login_with(
 ) -> Result<()> {
     progress.check()?;
     ensure!(!state_path.exists(), "pairing session file already exists");
-    progress.set(Stage::CreatingSession)?;
+    progress.set(Stage::Preparing)?;
     let created = api.qr("createSession", json!({}), "", 0)?;
     let session = required(&created, "authSessionId")?.to_owned();
     let qr = api.qr("createQrCode", json!({"authSessionId":session}), "", 0)?;
@@ -78,7 +71,7 @@ fn login_with(
     let public = bytes_method(&mut api.rt, Call::Curve25519KeyGetPublicKey, key, &[])?;
     let link = callback(required(&qr, "callbackUrl")?, &public)?;
     progress.qr(qr::rgba(&link)?)?;
-    progress.set(Stage::AwaitScan)?;
+    progress.set(Stage::WaitingForPhone)?;
     let interval = qr["longPollingIntervalSec"]
         .as_u64()
         .unwrap_or(30)
@@ -112,9 +105,8 @@ fn login_with(
         }
     }
     ensure!(verified, error::SignInFailure::Phone);
-    progress.check()?;
     progress.scanned()?;
-    progress.set(Stage::CheckingCertificate)?;
+    progress.check()?;
     match api.qr(
         "verifyCertificate",
         json!({"authSessionId":session,"certificate":""}),
@@ -136,7 +128,7 @@ fn login_with(
                 "invalid verification PIN format"
             );
             progress.pin(pin)?;
-            progress.set(Stage::AwaitPin)?;
+            progress.check()?;
             api.qr(
                 "checkPinCodeVerified",
                 json!({"authSessionId":session}),
@@ -146,14 +138,13 @@ fn login_with(
             .map_err(error::phone_error)?;
         }
     }
-    progress.check()?;
-    progress.set(Stage::RequestCredentials)?;
+    progress.set(Stage::SigningIn)?;
     let result=api.qr("qrCodeLoginV2",json!({"authSessionId":session,"systemName":"CHROMEOS","modelName":"CHROME","autoLoginIsRequired":false}),"",0)?;
     let mut token = result["tokenV3IssueResult"].clone();
     if token["accessToken"].as_str().is_none_or(|s| s.is_empty()) {
         token = json!({"accessToken":required(&result,"authToken")?});
     }
-    progress.set(Stage::UnwrappingKeys)?;
+    progress.check()?;
     let keys = unwrap_keys(&mut api.rt, key, &result["metaData"])?;
     let mut state = Session {
         format: 1,
@@ -164,7 +155,7 @@ fn login_with(
         ..Default::default()
     };
     save_state(state_path, &state)?;
-    progress.set(Stage::KeysVerified)?;
+    progress.check()?;
     api.rt.destroy("Curve25519Key", key)?;
     api.state = state.clone();
     let profile = api.profile()?;
@@ -175,7 +166,7 @@ fn login_with(
     state.profile = serde_json::from_value(profile)?;
     api.state = state.clone();
     save_state(state_path, &state)?;
-    progress.set(Stage::CheckingKeys)?;
+    progress.check()?;
     validate_keys(api)?;
     progress.set(Stage::Authenticated)
 }
@@ -193,7 +184,12 @@ pub(crate) fn sign_in_validated<T>(
     let wasm = module.read()?;
     let mut api = Api::with_runtime(module.runtime(&wasm)?, &wasm, &module.version)?;
     api.http.activity = activity;
-    ui.set(Stage::WaitingKeyring)?;
+    ui.set(Stage::Preparing)?;
+    let parent = state
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let probe_parent = parent.to_owned();
     let probe_state = state.to_owned();
     let (send, receive) = async_channel::bounded(1);
     // Race prerequisite completion against cancellation without polling.
@@ -201,10 +197,7 @@ pub(crate) fn sign_in_validated<T>(
         let result = (|| -> Result<_> {
             let state = probe_state;
             // Fail local prerequisites before requesting a phone approval.
-            let parent = state
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .unwrap_or(Path::new("."));
+            let parent = probe_parent.as_path();
             let probe_directory = || -> Result<u128> {
                 private_directory(parent)?;
                 let stamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
@@ -233,10 +226,6 @@ pub(crate) fn sign_in_validated<T>(
         },
     ))?;
     ui.check()?;
-    let parent = state
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .unwrap_or(Path::new("."));
     let staged = state.with_extension(format!("sign-in-{stamp}.json"));
     login_with(&staged, &mut api, &ui)?;
     let validated = validate(&staged, api)?;
@@ -290,7 +279,7 @@ mod tests {
                 &CancelToken::new(),
                 |event| {
                     assert!(
-                        matches!(event, Event::Stage(Stage::WaitingKeyring)),
+                        matches!(event, Event::Stage(Stage::Preparing)),
                         "prerequisite failure requested a QR"
                     );
                 },
@@ -336,7 +325,8 @@ mod tests {
         };
         let root = std::env::temp_dir().join(format!("line-qr-poll-{}", std::process::id()));
         fs::create_dir_all(&root)?;
-        assert!(login_with(&root.join("session.json"), &mut api, &ui).is_err());
+        let error = login_with(&root.join("session.json"), &mut api, &ui).unwrap_err();
+        assert_eq!(error.to_string(), "sign-in cancelled");
         assert!(
             events
                 .borrow()
