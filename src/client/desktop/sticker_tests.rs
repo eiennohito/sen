@@ -70,7 +70,7 @@ fn sticker_language_matches_extension_supported_locales_and_fallback() {
 #[test]
 fn online_profile_keeps_region_from_get_profile() -> Result<()> {
     use super::test_client::client;
-    use crate::client::http::tests::server_responses;
+    use crate::client::http::test_support::server_responses;
     let api = Api::without_crypto()?;
     let (mut client, root) = client(api);
     let (transport, server) = server_responses(vec![

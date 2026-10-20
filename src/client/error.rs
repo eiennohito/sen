@@ -537,7 +537,7 @@ mod tests {
 
     #[test]
     fn second_119_ends_the_session() {
-        use crate::client::http::tests::server_responses;
+        use crate::client::http::test_support::server_responses;
         let (http, server) = server_responses(
             [
                 ("/api/test", json!({"code":10051,"data":{"code":119}})),
@@ -549,7 +549,7 @@ mod tests {
             ]
             .into_iter()
             .map(|(path, response)| {
-                let reply: super::super::http::tests::Reply = Box::new(move |body| {
+                let reply: super::super::http::test_support::Reply = Box::new(move |body| {
                     assert_eq!(
                         body,
                         if path == "/api/test" {

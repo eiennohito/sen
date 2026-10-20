@@ -1,7 +1,7 @@
 use super::test_client::client;
 use super::*;
 use crate::client::error::wire_fixture::{self, GROUP_KEY_ROTATED, KEY_ROTATED, SENDER_KEY_STALE};
-use crate::client::http::tests::{Reply, server_responses};
+use crate::client::http::test_support::{Reply, server_responses};
 
 #[test]
 fn rotated_peer_key_refetches_and_resends_once() -> Result<()> {

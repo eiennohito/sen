@@ -93,7 +93,32 @@ async fn timeout<T>(
     })
     .await
 }
-async fn expires(deadline: Instant, idle: Option<(Duration, &Mutex<Progress>)>) {
+#[derive(Clone, Default)]
+pub(in crate::client) enum Clock {
+    #[default]
+    Real,
+    #[cfg(test)]
+    Manual(Arc<test_support::Clock>),
+}
+impl Clock {
+    fn now(&self) -> Instant {
+        match self {
+            Self::Real => Instant::now(),
+            #[cfg(test)]
+            Self::Manual(clock) => clock.now(),
+        }
+    }
+    async fn sleep_until(&self, deadline: Instant) {
+        match self {
+            Self::Real => {
+                async_io::Timer::at(deadline).await;
+            }
+            #[cfg(test)]
+            Self::Manual(clock) => clock.sleep_until(deadline).await,
+        }
+    }
+}
+async fn expires(clock: &Clock, deadline: Instant, idle: Option<(Duration, &Mutex<Progress>)>) {
     loop {
         let next = idle.map_or(deadline, |(duration, activity)| {
             activity
@@ -102,13 +127,13 @@ async fn expires(deadline: Instant, idle: Option<(Duration, &Mutex<Progress>)>) 
                 .last
                 .map_or(deadline, |last| last + duration)
         });
-        async_io::Timer::at(next).await;
+        clock.sleep_until(next).await;
         if idle.is_none_or(|(duration, activity)| {
             activity
                 .lock()
                 .unwrap()
                 .last
-                .is_none_or(|last| last + duration <= Instant::now())
+                .is_none_or(|last| last + duration <= clock.now())
         }) {
             return;
         }
@@ -205,6 +230,7 @@ struct Payload {
     progress: Arc<Mutex<Progress>>,
     updates: async_channel::Sender<u64>,
     consumed: u64,
+    clock: Clock,
 }
 impl hyper::body::Body for Payload {
     type Data = Bytes;
@@ -220,7 +246,7 @@ impl hyper::body::Body for Payload {
         let bytes = self.bytes.split_to(n);
         self.consumed += n as u64;
         let _ = self.updates.try_send(self.consumed);
-        self.progress.lock().unwrap().last = Some(Instant::now());
+        self.progress.lock().unwrap().last = Some(self.clock.now());
         Poll::Ready(Some(Ok(hyper::body::Frame::data(bytes))))
     }
     fn is_end_stream(&self) -> bool {
@@ -283,7 +309,7 @@ impl Proxy {
 }
 
 #[derive(Clone)]
-pub(super) struct Transport {
+pub(crate) struct Transport {
     pub(in crate::client) client_version: String,
     base: String,
     runtime: &'static Runtime,
@@ -292,6 +318,7 @@ pub(super) struct Transport {
     pool: Pool,
     config: Config,
     pub(in crate::client) activity: super::NetworkActivity,
+    pub(in crate::client) clock: Clock,
 }
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
@@ -324,6 +351,7 @@ impl Transport {
             pool: Arc::default(),
             config: Config::default(),
             activity: Default::default(),
+            clock: Clock::Real,
         })
     }
     pub(super) fn assets(&self) -> Self {
@@ -417,10 +445,13 @@ impl Transport {
                 "http" => Box::new(tcp),
                 _ => anyhow::bail!("unsupported URL scheme"),
             };
-            let (sender, connection) =
-                hyper::client::conn::http1::handshake(glue::FuturesIo(io, activity.clone()))
-                    .await
-                    .map_err(|e| network(false, e))?;
+            let (sender, connection) = hyper::client::conn::http1::handshake(glue::FuturesIo(
+                io,
+                activity.clone(),
+                self.clock.clone(),
+            ))
+            .await
+            .map_err(|e| network(false, e))?;
             let driver = self.runtime.executor.spawn(async move {
                 let _ = connection.await;
             });
@@ -486,8 +517,9 @@ impl Transport {
             progress: activity.clone(),
             updates,
             consumed: 0,
+            clock: self.clock.clone(),
         })?;
-        let deadline = Instant::now() + duration;
+        let deadline = self.clock.now() + duration;
         let sent = std::cell::Cell::new(false);
         self.activity.record();
         let send = cancellable(
@@ -514,7 +546,7 @@ impl Transport {
                                 .map_err(|e| network(false, e))?;
                         }
                         // The IO activity belongs to this connection; reset it for this request.
-                        connection.activity.lock().unwrap().last = Some(Instant::now());
+                        connection.activity.lock().unwrap().last = Some(self.clock.now());
                         sent.set(true);
                         let response = connection.sender.try_send_request(request).await;
                         match response {
@@ -538,7 +570,12 @@ impl Transport {
                     unreachable!()
                 },
                 async {
-                    expires(deadline, idle.then_some((duration, activity.as_ref()))).await;
+                    expires(
+                        &self.clock,
+                        deadline,
+                        idle.then_some((duration, activity.as_ref())),
+                    )
+                    .await;
                     Err(failure(sent.get(), TransportError::Timeout))
                 },
             ),
@@ -579,6 +616,7 @@ impl Transport {
             idle: (stream || idle).then_some(duration),
             status: parts.status.as_u16(),
             headers: parts.headers,
+            clock: self.clock.clone(),
         })
     }
     pub(super) fn request(
@@ -758,6 +796,7 @@ pub(super) struct StreamReader {
     idle: Option<Duration>,
     status: u16,
     headers: HeaderMap,
+    clock: Clock,
 }
 impl StreamReader {
     pub(super) fn ping(&mut self) {
@@ -806,7 +845,7 @@ impl StreamReader {
         }
     }
     async fn chunk(&mut self) -> Result<()> {
-        let started = Instant::now();
+        let started = self.clock.now();
         let (deadline, upload_idle) = match self.deadline {
             ReadDeadline::Total(deadline) => (deadline, self.idle),
             ReadDeadline::Active(remaining) => (started + remaining, None),
@@ -823,6 +862,7 @@ impl StreamReader {
                 },
                 async {
                     expires(
+                        &self.clock,
                         deadline,
                         upload_idle
                             .zip(self.connection.as_ref())
@@ -835,7 +875,8 @@ impl StreamReader {
         )
         .await;
         if let ReadDeadline::Active(remaining) = &mut self.deadline {
-            *remaining = remaining.saturating_sub(started.elapsed());
+            let elapsed = self.clock.now() - started;
+            *remaining = remaining.saturating_sub(elapsed);
         }
         let frame = frame.inspect_err(|_| {
             self.connection.take();
@@ -895,7 +936,7 @@ fn read_error(error: anyhow::Error) -> io::Error {
 // adapter (copyright smol-rs contributors). All wrapped streams are Unpin.
 mod glue {
     use super::*;
-    pub(super) struct FuturesIo<T>(pub T, pub Activity);
+    pub(super) struct FuturesIo<T>(pub T, pub Activity, pub Clock);
     impl<T: AsyncRead + Unpin> hyper::rt::Read for FuturesIo<T> {
         fn poll_read(
             self: Pin<&mut Self>,
@@ -912,7 +953,7 @@ mod glue {
             match Pin::new(&mut this.0).poll_read(cx, slice) {
                 Poll::Ready(Ok(n)) => {
                     if n > 0 {
-                        this.1.lock().unwrap().last = Some(Instant::now());
+                        this.1.lock().unwrap().last = Some(this.2.now());
                     }
                     unsafe {
                         buf.advance(n);
@@ -948,87 +989,8 @@ mod glue {
     }
 }
 #[cfg(test)]
-pub(in crate::client) mod tests {
-    use super::*;
-    use std::{
-        io::{BufRead, BufReader, Write},
-        net::{TcpListener, TcpStream},
-        thread,
-    };
-    pub(in crate::client) fn local_server<T: Send + 'static>(
-        serve: impl FnOnce(TcpListener) -> T + Send + 'static,
-    ) -> (Transport, thread::JoinHandle<T>) {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let transport = Transport::local(
-            "9.8.7",
-            format!("http://{}", listener.local_addr().unwrap()),
-        );
-        (transport, thread::spawn(move || serve(listener)))
-    }
-    pub(in crate::client) fn accept(listener: &TcpListener) -> TcpStream {
-        let socket = listener.accept().unwrap().0;
-        socket
-            .set_read_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        socket
-            .set_write_timeout(Some(Duration::from_secs(5)))
-            .unwrap();
-        socket
-    }
-    pub(in crate::client) fn request_headers(
-        stream: &mut BufReader<TcpStream>,
-    ) -> Option<(String, Option<usize>)> {
-        let mut line = String::new();
-        if stream.read_line(&mut line).unwrap() == 0 {
-            return None;
-        }
-        let request = line.trim_end().to_owned();
-        let mut length = None;
-        loop {
-            line.clear();
-            assert!(stream.read_line(&mut line).unwrap() > 0);
-            if line == "\r\n" {
-                return Some((request, length));
-            }
-            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
-                length = Some(value.trim().parse().unwrap());
-            }
-        }
-    }
-    pub(in crate::client) fn request(
-        stream: &mut BufReader<TcpStream>,
-    ) -> Option<(String, Vec<u8>)> {
-        let (request, length) = request_headers(stream)?;
-        let mut body = vec![0; length.unwrap_or_default()];
-        stream.read_exact(&mut body).unwrap();
-        Some((request, body))
-    }
-    pub(in crate::client) fn read_request(stream: &mut BufReader<TcpStream>) -> bool {
-        let Some((request, body)) = request(stream) else {
-            return false;
-        };
-        assert!(request.starts_with("POST /api/"));
-        assert_eq!(body, b"{}");
-        true
-    }
-    pub(in crate::client) type Reply =
-        Box<dyn FnOnce(serde_json::Value) -> (u16, serde_json::Value) + Send>;
-    pub(in crate::client) fn server_responses(
-        steps: Vec<(&'static str, Reply)>,
-    ) -> (Transport, thread::JoinHandle<()>) {
-        local_server(move |listener| {
-            for (path, reply) in steps {
-                let mut socket = BufReader::new(accept(&listener));
-                let (request, body) = request(&mut socket).unwrap();
-                assert_eq!(request, format!("POST {path} HTTP/1.1"));
-                let (status, data) = reply(serde_json::from_slice(&body).unwrap());
-                let body = data.to_string();
-                write!(socket.get_mut(), "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len()).unwrap();
-            }
-        })
-    }
-}
-#[cfg(test)]
 mod regression_tests;
+#[cfg(test)]
+pub(crate) mod test_support;
 #[cfg(test)]
 mod tls_tests;

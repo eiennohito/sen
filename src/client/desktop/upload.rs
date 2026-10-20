@@ -160,7 +160,7 @@ fn upload(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::client::http::tests::{accept, local_server};
+    use crate::client::http::test_support::{accept, local_server};
     use std::io::{BufRead, BufReader, Read};
 
     #[test]

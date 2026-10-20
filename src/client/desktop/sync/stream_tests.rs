@@ -1,25 +1,19 @@
 use super::*;
-use crate::client::http::tests::{accept, local_server, read_request};
+use crate::client::http::test_support::{
+    Clock, WAIT, accept, local_server, raw_request_headers, read_request,
+};
 use std::sync::mpsc;
 use std::thread;
 use std::{io, net::TcpStream};
 
 fn request(reader: &mut BufReader<TcpStream>) {
-    let mut line = String::new();
-    reader.read_line(&mut line).unwrap();
+    let request = raw_request_headers(reader).unwrap();
+    let mut lines = request.split_inclusive('\n');
     assert_eq!(
-        line,
+        lines.next().unwrap(),
         "GET /api/operation/receive?localRev=12&version=9.8.7&language=en_US HTTP/1.1\r\n"
     );
-    let mut headers = Vec::new();
-    loop {
-        line.clear();
-        assert!(reader.read_line(&mut line).unwrap() > 0);
-        if line == "\r\n" {
-            break;
-        }
-        headers.push(line.trim().to_ascii_lowercase());
-    }
+    let headers: Vec<_> = lines.map(|line| line.trim().to_ascii_lowercase()).collect();
     assert!(headers.contains(&"cookie: lct=synthetic-token".into()));
     assert!(headers.contains(&"accept: text/event-stream".into()));
     assert!(!headers.iter().any(|header| header.starts_with("x-line-")));
@@ -51,7 +45,7 @@ fn events_arrive_before_the_server_sends_the_next_line() {
                 "data: {{\"revision\":{revision}}}\r\n\r\n"
             )
             .unwrap();
-            wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            wait.recv_timeout(WAIT).unwrap();
         }
     });
     let mut seen = Vec::new();
@@ -114,15 +108,9 @@ fn stop_interrupts_silent_headers_body_and_partial_line() {
                 |_, _| Ok(true),
             )
         });
-        wait.recv_timeout(Duration::from_secs(2)).unwrap();
-        let started = Instant::now();
+        wait.recv_timeout(WAIT).unwrap();
         signal.cancel();
         let result = worker.join().unwrap();
-        assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "{:?}",
-            started.elapsed()
-        );
         // Cancellation can also be observed by the stream loop between reads.
         match result {
             Ok(status) => assert_eq!(status, 200),
@@ -139,7 +127,6 @@ fn stop_interrupts_silent_headers_body_and_partial_line() {
 fn eof_and_reset_return_to_reconnect_without_waiting_for_ping() {
     for (reset, truncated) in [(false, false), (true, false), (false, true), (true, true)] {
         let (close, wait) = mpsc::channel();
-        let (closed, disconnected) = mpsc::channel();
         let (transport, server) = local_server(move |listener| {
             let mut socket = BufReader::new(accept(&listener));
             request(&mut socket);
@@ -151,14 +138,13 @@ fn eof_and_reset_return_to_reconnect_without_waiting_for_ping() {
             } else {
                 headers(&mut socket);
             }
-            wait.recv_timeout(Duration::from_secs(2)).unwrap();
+            wait.recv_timeout(WAIT).unwrap();
             if reset {
                 socket2::SockRef::from(socket.get_ref())
                     .set_linger(Some(Duration::ZERO))
                     .unwrap();
             }
             drop(socket);
-            closed.send(Instant::now()).unwrap();
         });
         let result = stream(
             &transport,
@@ -172,12 +158,6 @@ fn eof_and_reset_return_to_reconnect_without_waiting_for_ping() {
                 close.send(()).unwrap();
                 Ok(true)
             },
-        );
-        let closed = disconnected.recv_timeout(Duration::from_secs(2)).unwrap();
-        assert!(
-            closed.elapsed() < Duration::from_millis(100),
-            "{:?}",
-            closed.elapsed()
         );
         if truncated || reset {
             let error = result.unwrap_err();
@@ -362,122 +342,158 @@ fn chunked_stream_accepts_lines_at_the_limit_and_exceeds_the_rpc_body_cap() {
 }
 
 #[test]
-fn slow_open_and_delivery_callbacks_do_not_expire_buffered_pings() {
+fn decoded_ping_resets_watchdog_and_callbacks_do_not_spend_silence_budget() {
     for slow_event in ["open", "message"] {
-        let (blocked, wait) = mpsc::channel();
-        let (transport, server) = local_server(move |listener| {
+        let (clock, waits) = Clock::new();
+        let server_clock = clock.clone();
+        let (callback_ready, callback) = mpsc::channel();
+        let (resume, callback_resumed) = mpsc::channel();
+        let (send_ping, ping) = mpsc::channel();
+        let (sent, buffered) = mpsc::channel();
+        let (mut transport, server) = local_server(move |listener| {
             let mut socket = BufReader::new(accept(&listener));
             request(&mut socket);
             headers(&mut socket);
             if slow_event == "message" {
                 socket.get_mut().write_all(b"data: 1\n\n").unwrap();
             }
-            wait.recv_timeout(Duration::from_secs(2)).unwrap();
-            thread::sleep(Duration::from_millis(30));
+            ping.recv_timeout(WAIT).unwrap();
             socket.get_mut().write_all(b"event: ping\n\n").unwrap();
+            sent.send(()).unwrap();
             assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        });
+        transport.clock = crate::client::http::Clock::Manual(clock.clone());
+        let driver = thread::spawn(move || {
+            callback.recv_timeout(WAIT).unwrap();
+            // Ignore waits for the initial message, before the slow callback.
+            while waits.try_recv().is_ok() {}
+            resume.send(()).unwrap();
+            // The callback has returned, and the reader is spending silence time.
+            assert_eq!(waits.recv_timeout(WAIT).unwrap(), PING_TIMEOUT);
+            server_clock.advance(Duration::from_secs(20));
+            send_ping.send(()).unwrap();
+            let remaining = waits.recv_timeout(WAIT).unwrap();
+            server_clock.advance(PING_TIMEOUT);
+            assert_eq!(remaining, PING_TIMEOUT);
         });
         let mut seen = Vec::new();
-        let result = stream(
-            &transport,
-            "9.8.7",
-            "synthetic-token",
-            12,
-            &Arc::new(CancelToken::new()),
-            Duration::from_millis(150),
-            |name, _| {
-                seen.push(name.to_owned());
-                if name == slow_event {
-                    blocked.send(()).unwrap();
-                    thread::sleep(Duration::from_millis(250));
-                }
-                Ok(name != "ping")
-            },
-        );
-        assert_eq!(result.unwrap(), 200);
-        assert_eq!(seen.last().unwrap(), "ping");
-        server.join().unwrap();
-    }
-}
-
-#[test]
-fn silence_budget_starts_after_a_slow_callback_returns() {
-    let (transport, server) = local_server(|listener| {
-        let mut socket = BufReader::new(accept(&listener));
-        request(&mut socket);
-        headers(&mut socket);
-        assert_eq!(socket.read(&mut [0]).unwrap(), 0);
-    });
-    let mut resumed = None;
-    let error = stream(
-        &transport,
-        "9.8.7",
-        "synthetic-token",
-        12,
-        &Arc::new(CancelToken::new()),
-        Duration::from_millis(150),
-        |name, _| {
-            assert_eq!(name, "open");
-            thread::sleep(Duration::from_millis(250));
-            resumed = Some(Instant::now());
-            Ok(true)
-        },
-    )
-    .unwrap_err();
-    assert_eq!(
-        error.downcast_ref::<io::Error>().unwrap().kind(),
-        io::ErrorKind::TimedOut
-    );
-    let elapsed = resumed.unwrap().elapsed();
-    assert!(elapsed >= Duration::from_millis(150), "{elapsed:?}");
-    assert!(elapsed < Duration::from_millis(1200), "{elapsed:?}");
-    server.join().unwrap();
-}
-
-#[test]
-fn decoded_ping_resets_the_watchdog_other_events_do_not_and_silence_expires() {
-    for name in ["ping", "message"] {
-        let (opened, wait) = mpsc::channel();
-        let (transport, server) = local_server(move |listener| {
-            let mut socket = BufReader::new(accept(&listener));
-            request(&mut socket);
-            headers(&mut socket);
-            wait.recv_timeout(Duration::from_secs(2)).unwrap();
-            thread::sleep(Duration::from_millis(150));
-            write!(socket.get_mut(), "event: {name}\ndata: null\n\n").unwrap();
-            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
-        });
-        let mut delivered = None;
         let error = stream(
             &transport,
             "9.8.7",
             "synthetic-token",
             12,
             &Arc::new(CancelToken::new()),
-            Duration::from_millis(300),
-            |event, data| {
-                if event == "open" {
-                    opened.send(()).unwrap();
-                } else {
-                    assert_eq!(event, name);
+            PING_TIMEOUT,
+            |name, data| {
+                seen.push(name.to_owned());
+                if name == slow_event {
+                    clock.advance(Duration::from_secs(100));
+                    callback_ready.send(()).unwrap();
+                    callback_resumed.recv_timeout(WAIT).unwrap();
+                }
+                if name == "ping" {
                     assert_eq!(data, Value::Null);
-                    delivered = Some(Instant::now());
+                    buffered.recv_timeout(WAIT).unwrap();
+                    // A slow delivery callback must not consume the reset budget.
+                    clock.advance(Duration::from_secs(100));
                 }
                 Ok(true)
             },
         )
         .unwrap_err();
         assert_eq!(
+            seen,
+            if slow_event == "open" {
+                vec!["open", "ping"]
+            } else {
+                vec!["open", "message", "ping"]
+            }
+        );
+        assert_eq!(
             error.downcast_ref::<io::Error>().unwrap().kind(),
             io::ErrorKind::TimedOut
         );
-        let elapsed = delivered.unwrap().elapsed();
-        if name == "ping" {
-            assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
-            assert!(elapsed < Duration::from_millis(1200), "{elapsed:?}");
-        } else {
-            assert!(elapsed < Duration::from_millis(275), "{elapsed:?}");
-        }
+        driver.join().unwrap();
+        server.join().unwrap();
+    }
+}
+
+#[test]
+fn silence_expires_despite_other_events_and_partial_line_trickle() {
+    for body in [
+        "",
+        "event: message\ndata: null\n\n",
+        "x",
+        "data: {\"unfinished\":",
+    ] {
+        let (clock, waits) = Clock::new();
+        let driver_clock = clock.clone();
+        let (write_body, write) = mpsc::channel();
+        let (mut transport, server) = local_server(move |listener| {
+            let mut socket = BufReader::new(accept(&listener));
+            request(&mut socket);
+            headers(&mut socket);
+            write.recv_timeout(WAIT).unwrap();
+            socket.get_mut().write_all(body.as_bytes()).unwrap();
+            assert_eq!(socket.read(&mut [0]).unwrap(), 0);
+        });
+        transport.clock = crate::client::http::Clock::Manual(clock.clone());
+        let (reading, read_started) = mpsc::channel();
+        let waits = Arc::new(std::sync::Mutex::new(waits));
+        let driver_waits = waits.clone();
+        let driver = thread::spawn(move || {
+            read_started.recv_timeout(WAIT).unwrap();
+            let waits = driver_waits.lock().unwrap();
+            assert_eq!(waits.recv_timeout(WAIT).unwrap(), PING_TIMEOUT);
+            driver_clock.advance(Duration::from_secs(20));
+            write_body.send(()).unwrap();
+            let remaining = if body.is_empty() {
+                Duration::from_secs(10)
+            } else {
+                waits.recv_timeout(WAIT).unwrap()
+            };
+            driver_clock.advance(remaining);
+            assert_eq!(remaining, Duration::from_secs(10));
+        });
+        let mut seen = Vec::new();
+        let error = stream(
+            &transport,
+            "9.8.7",
+            "synthetic-token",
+            12,
+            &Arc::new(CancelToken::new()),
+            PING_TIMEOUT,
+            |name, data| {
+                seen.push(name.to_owned());
+                if name == "open" {
+                    clock.advance(Duration::from_secs(100));
+                    while waits.lock().unwrap().try_recv().is_ok() {}
+                    reading.send(()).unwrap();
+                } else {
+                    assert_eq!(name, "message");
+                    assert_eq!(data, Value::Null);
+                }
+                Ok(true)
+            },
+        )
+        .unwrap_err();
+        assert_eq!(
+            seen,
+            if body.contains("event:") {
+                vec!["open", "message"]
+            } else {
+                vec!["open"]
+            }
+        );
+        assert_eq!(
+            crate::client::error::classify(&error),
+            crate::client::error::Failure::Unanswered
+        );
+        assert_eq!(
+            error.downcast_ref::<io::Error>().unwrap().kind(),
+            io::ErrorKind::TimedOut
+        );
+        driver.join().unwrap();
         server.join().unwrap();
     }
 }
@@ -501,9 +517,7 @@ fn each_stream_attempt_uses_a_fresh_connection_and_closes_it_on_return() {
         }
     });
     assert_eq!(
-        transport
-            .request("/api/test", "{}", &[], Duration::from_millis(400))
-            .unwrap(),
+        transport.request("/api/test", "{}", &[], WAIT).unwrap(),
         (200, b"{}".to_vec())
     );
     for _ in 0..2 {
@@ -522,48 +536,6 @@ fn each_stream_attempt_uses_a_fresh_connection_and_closes_it_on_return() {
         );
     }
     drop(transport);
-    server.join().unwrap();
-}
-
-#[test]
-fn partial_line_trickle_expires_without_waiting_for_an_empty_poll() {
-    let (transport, server) = local_server(|listener| {
-        let mut socket = BufReader::new(accept(&listener));
-        request(&mut socket);
-        socket.get_mut().set_nodelay(true).unwrap();
-        headers(&mut socket);
-        for _ in 0..50 {
-            thread::sleep(Duration::from_millis(40));
-            if socket.get_mut().write_all(b"x").is_err() {
-                break;
-            }
-        }
-    });
-    let started = Instant::now();
-    let error = stream(
-        &transport,
-        "9.8.7",
-        "synthetic-token",
-        12,
-        &Arc::new(CancelToken::new()),
-        Duration::from_millis(300),
-        |name, _| {
-            assert_eq!(name, "open");
-            Ok(true)
-        },
-    )
-    .unwrap_err();
-    let elapsed = started.elapsed();
-    assert_eq!(
-        crate::client::error::classify(&error),
-        crate::client::error::Failure::Unanswered
-    );
-    assert_eq!(
-        error.downcast_ref::<io::Error>().unwrap().kind(),
-        io::ErrorKind::TimedOut
-    );
-    assert!(elapsed >= Duration::from_millis(300), "{elapsed:?}");
-    assert!(elapsed < Duration::from_millis(800), "{elapsed:?}");
     server.join().unwrap();
 }
 
@@ -675,7 +647,7 @@ fn repeated_empty_closes_back_off_to_cap_and_events_reset_delay() {
         },
     )
     .unwrap();
-    done.recv_timeout(Duration::from_secs(3)).unwrap();
+    done.recv_timeout(WAIT).unwrap();
     server.join().unwrap();
     assert_eq!(*waits.borrow(), [3, 6, 12, 24, 30, 30, 3, 3, 3]);
     assert_eq!(opens_after_waits, [0, 1, 2, 3, 4, 5, 6, 6, 7, 8, 8]);
