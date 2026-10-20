@@ -4,10 +4,10 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     global_callback!(ui, actions, on_read_state_changed, |ui, d| {
         d.observe_reading(&ui);
     });
-    callback!(ui, actions, on_more, |_ui, d| {
+    global_callback!(ui, actions, on_more, |_ui, d| {
         d.sender.send(Intent::MoreChats);
     });
-    callback!(ui, actions, on_retry_image, |ui, d, key| {
+    global_callback!(ui, actions, on_retry_image, |ui, d, key| {
         d.sender.send(Intent::RetryAsset(key.to_string()));
         ui.invoke_focus_history();
     });
@@ -33,7 +33,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             // The origin is kept below the top cover, which may have changed.
             d.history
                 .jump_to(key, offset - ui.global::<State>().get_history_visible_top());
-            ui.set_following(false);
+            ui.global::<State>().set_following(false);
             ui.global::<State>().set_return_visible(false);
             ui.global::<State>().set_highlight_message("".into());
             let intent = d.state.subscribe_window(Anchor::Key(key), 80, 80);
@@ -53,7 +53,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             d.history.requested_gaps.clear();
             let intent = d.state.subscribe_window(Anchor::Latest, 80, 0);
             d.sender.send(intent);
-            ui.set_following(true);
+            ui.global::<State>().set_following(true);
         }
     });
     global_callback!(

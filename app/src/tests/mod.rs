@@ -48,6 +48,7 @@ fn test_window() -> AppWindow {
         category: ChatCategory::All,
     };
     let runtime = Runtime {
+        window: Default::default(),
         desktop: Rc::new(RefCell::new(Some(desktop))),
         actions: Default::default(),
         draining: Default::default(),

@@ -13,7 +13,6 @@ component SettingsSections inherits FocusScope {
     property <length> row-height: max(36px, Tokens.small * 1.5 + 16px);
     preferred-height: (root.narrow ? 3 : 5) * root.row-height;
     accessible-role: tab-list; accessible-label: "Settings section";
-    accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
     key-pressed(event) => {
         if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.current = max(0, root.current - 1); return accept; }
         if event.text == Key.DownArrow || event.text == Key.RightArrow { root.current = min(4, root.current + 1); return accept; }
@@ -36,8 +35,6 @@ component SettingsSections inherits FocusScope {
 }
 
 export component Layers inherits Rectangle {
-    property <int> demo-reset: State.demo-reset-generation;
-    changed demo-reset => { root.settings-section = 0; root.pan-x = 0px; root.pan-y = 0px; }
     property <bool> cancel-confirm <=> State.auth-cancel-confirm;
     property <int> settings-section;
     property <int> message-text-size: State.text-size;
@@ -132,7 +129,7 @@ export component Layers inherits Rectangle {
                 settings-title := HorizontalLayout {
                     height: max(settings-heading.preferred-height, settings-close.height);
                     settings-heading := Text { text: "Settings"; font-size: Tokens.heading; font-weight: 700; vertical-alignment: center; }
-                    settings-close := IconButton { label: "Close settings"; focus-description: "Focused"; icon: @image-url("../assets/icons/close.svg"); activated => { State.close-settings(); } }
+                    settings-close := IconButton { label: "Close settings"; icon: @image-url("../assets/icons/close.svg"); activated => { State.close-settings(); } }
                 }
                 Rectangle {
                     settings-section := SettingsSections {
@@ -153,14 +150,13 @@ export component Layers inherits Rectangle {
                                 spacing: 12px;
                                 Text { text: "Message text size"; }
                                 text-size := ComboBox {
-                                    accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
                                     accessible-label: "Message text size";
                                     model: ["Small", "Default", "Large", "Extra large"];
                                     current-index: State.text-size <= 13 ? 0 : State.text-size <= 15 ? 1 : State.text-size <= 18 ? 2 : 3;
                                     selected(value) => { State.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; State.settings-changed(); }
                                 }
                                 if State.storage-error != "": Text { text: State.storage-error; wrap: word-wrap; color: Tokens.danger; }
-                                enter-sends := CheckBox { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
+                                enter-sends := CheckBox { text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
                             }
                             VerticalLayout { visible: root.settings-section == 1; height: self.visible ? self.preferred-height : 0px;
                                 spacing: 12px;
@@ -268,12 +264,12 @@ export component Layers inherits Rectangle {
                 }
             Rectangle { x: 0px; y: 0px; width: parent.width; height: 80px; background: @linear-gradient(180deg, #000000BB, #00000000); }
             HorizontalLayout { x: 16px; y: 12px; width: parent.width - 32px; height: 40px; spacing: 8px;
-                viewer-close := IconButton { label: "Close photo"; focus-description: "Focused"; icon: @image-url("../assets/icons/close.svg"); icon-color: white; activated => { State.close-viewer(); } }
+                viewer-close := IconButton { label: "Close photo"; icon: @image-url("../assets/icons/close.svg"); icon-color: white; activated => { State.close-viewer(); } }
                 Text { text: State.viewer-status; color: white; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
                 zoom-out := IconButton { label: "Zoom out"; icon: @image-url("../assets/icons/zoom-out.svg"); icon-color: white; enabled: State.viewer-zoom > 0.1; activated => { root.zoom(0.8, viewport.width / 2, viewport.height / 2); } }
                 zoom-in := IconButton { label: "Zoom in"; icon: @image-url("../assets/icons/zoom-in.svg"); icon-color: white; enabled: State.viewer-zoom < 24; activated => { root.zoom(1.25, viewport.width / 2, viewport.height / 2); } }
                 viewer-fit := IconButton { label: "Fit"; icon: @image-url("../assets/icons/fit.svg"); icon-color: white; activated => { root.fit-photo(); } }
-                original-size := IconButton { label: "Original size"; focus-description: "Focused"; icon: @image-url("../assets/icons/actual-size.svg"); icon-color: white; activated => { root.original-photo(); } }
+                original-size := IconButton { label: "Original size"; icon: @image-url("../assets/icons/actual-size.svg"); icon-color: white; activated => { root.original-photo(); } }
                 viewer-save := IconButton { label: "Save photo"; icon: @image-url("../assets/icons/save.svg"); icon-color: white; enabled: !State.viewer-saving && !State.viewer-loading && State.viewer-error == "" && State.viewer-image.width > 0; activated => { State.save-photo(); } }
             }
             viewer-previous := IconButton { x: 16px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Previous"; icon: @image-url("../assets/icons/previous.svg"); icon-color: white; visible: State.viewer-has-previous; enabled: self.visible; activated => { State.viewer-step(-1); State.focus-viewer-close(); } }
@@ -305,8 +301,8 @@ export component Layers inherits Rectangle {
                     Text { text: "The current sign-in attempt will stop."; wrap: word-wrap; }
                     HorizontalLayout {
                         alignment: end; spacing: 8px;
-                        keep-waiting := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Keep waiting"; clicked => { root.cancel-confirm = false; auth-back.focus(); } }
-                        confirm-cancel := Button { accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : ""; text: "Cancel sign-in"; primary: true; danger: true; clicked => { root.cancel-confirm = false; State.cancel-sign-in(); } }
+                        keep-waiting := Button { text: "Keep waiting"; clicked => { root.cancel-confirm = false; auth-back.focus(); } }
+                        confirm-cancel := Button { text: "Cancel sign-in"; primary: true; danger: true; clicked => { root.cancel-confirm = false; State.cancel-sign-in(); } }
                     }
                 }
             }

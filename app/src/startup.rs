@@ -65,60 +65,6 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
     let worker = dev.worker(real_worker);
     #[cfg(not(feature = "demo"))]
     let worker = real_worker();
-    let ui = window::create_app_window()?;
-    if let Some(warning) = instance.as_ref().and_then(|i| i.warning.as_ref()) {
-        ui.set_desktop_warning(warning.into());
-    }
-    ui.set_text_size(launch.text_size);
-    ui.global::<State>()
-        .set_automation_background(launch.automation);
-    if !launch.headless && !launch.automation {
-        use slint::winit_030::{
-            EventResult, WinitWindowAccessor,
-            winit::event::{Ime, WindowEvent},
-        };
-        let weak = ui.as_weak();
-        let drops = Rc::new(RefCell::new(Vec::<std::path::PathBuf>::new()));
-        let drop_timer = slint::Timer::default();
-        ui.window().on_winit_window_event(move |_, event| {
-            if let Some(ui) = weak.upgrade() {
-                match event {
-                    WindowEvent::DroppedFile(path) => {
-                        if ui.get_show_conversation() && !ui.global::<State>().get_modal_open() {
-                            drops.borrow_mut().push(path.clone());
-                            let drops = drops.clone();
-                            let weak = ui.as_weak();
-                            drop_timer.start(
-                                slint::TimerMode::SingleShot,
-                                std::time::Duration::from_millis(80),
-                                move || {
-                                    let uris = std::mem::take(&mut *drops.borrow_mut())
-                                        .iter()
-                                        .filter_map(|path| url::Url::from_file_path(path).ok())
-                                        .map(|uri| uri.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join("\n");
-                                    if let Some(ui) = weak.upgrade() {
-                                        ui.global::<State>().invoke_drop_attachment(uris.into());
-                                    }
-                                },
-                            );
-                        }
-                    }
-                    WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                        ui.global::<State>().set_device_scale(*scale_factor as f32);
-                    }
-                    WindowEvent::Focused(active) => ui.global::<State>().set_window_active(*active),
-                    WindowEvent::Ime(Ime::Preedit(text, _)) => ui.set_ime_active(!text.is_empty()),
-                    WindowEvent::Ime(Ime::Commit(_)) | WindowEvent::Ime(Ime::Disabled) => {
-                        ui.set_ime_active(false)
-                    }
-                    _ => {}
-                }
-            }
-            EventResult::Propagate
-        });
-    }
     let desktop = Desktop {
         clipboard_root,
         history: reading::Reading {
@@ -143,41 +89,45 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         query: String::new(),
         category: ChatCategory::All,
     };
-    ui.window().set_size(slint::LogicalSize::new(
-        launch.size.0 as f32,
-        launch.size.1 as f32,
-    ));
-    let weak = ui.as_weak();
-    ui.window().on_close_requested(move || {
-        if let Some(ui) = weak.upgrade()
-            && ui.global::<State>().get_background_mode()
-            && ui.global::<State>().get_tray_available()
-        {
-            let _ = ui.hide();
-            slint::CloseRequestResponse::KeepWindowShown
-        } else {
-            let _ = slint::quit_event_loop();
-            slint::CloseRequestResponse::HideWindow
-        }
-    });
-    desktop.presenter.install(&ui);
+    let current_window = Rc::new(RefCell::new(None));
     let desktop = Runtime {
+        window: Rc::downgrade(&current_window),
         desktop: Rc::new(RefCell::new(Some(desktop))),
         actions: ActionQueue::default(),
         draining: Default::default(),
     };
-    callbacks::install(&ui, desktop.clone());
-    let weak = ui.as_weak();
-    let d = desktop.clone();
     let worker = Rc::new(RefCell::new(worker));
+    let options = window::Options {
+        launch,
+        warning: instance
+            .as_ref()
+            .and_then(|i| i.warning.as_ref())
+            .map(|w| w.as_str().into())
+            .unwrap_or_default(),
+        color_scheme: slint::language::ColorScheme::Unknown,
+        #[cfg(feature = "demo")]
+        fake: dev.fake().cloned(),
+    };
+    #[cfg(feature = "demo")]
+    let options = window::Options {
+        color_scheme: dev.color_scheme(),
+        ..options
+    };
+    let ui = desktop.update(|d| window::install_window(d, desktop.clone(), &worker, &options))?;
+    current_window.replace(Some(ui.clone_strong()));
     #[cfg(feature = "demo")]
     if dev.stage(&ui, &desktop, &worker)? {
         return Ok(());
     }
     let w = worker.clone();
     worker.borrow().on_deltas(event_loop::wake);
+    let d = desktop.clone();
     event_loop::install(move || {
-        if let Some(ui) = weak.upgrade() {
+        let ui = d
+            .window
+            .upgrade()
+            .and_then(|window| window.borrow().as_ref().map(ComponentHandle::clone_strong));
+        if let Some(ui) = ui {
             if let Some(events) = &activations {
                 for e in events.try_iter() {
                     let _ = ui.show();
@@ -185,7 +135,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                         d.update(|d| {
                             d.open_chat(&ui, ChatId(chat));
                             d.render(&ui);
-                            ui.set_show_conversation(true);
+                            ui.global::<State>().set_show_conversation(true);
                         });
                     }
                 }
@@ -199,17 +149,20 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
             });
         }
     });
-    if !launch.headless {
+    if !options.launch.headless {
         ui.show()?;
+        drop(ui);
         slint::run_event_loop_until_quit()?;
-        ui.hide()?;
+        current_window.borrow().as_ref().unwrap().hide()?;
     }
+    let ui = current_window.borrow().as_ref().unwrap().clone_strong();
     desktop.update(|d| d.capture_draft(&ui));
     event_loop::clear();
     drop(worker);
     Ok(())
 }
 
+#[derive(Clone)]
 pub(crate) struct Launch {
     pub headless: bool,
     pub automation: bool,

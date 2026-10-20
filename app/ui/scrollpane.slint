@@ -1,8 +1,6 @@
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 export component Pane inherits Rectangle {
-    property <int> demo-reset: State.demo-reset-generation;
-    changed demo-reset => { seek-settle.stop(); hide.stop(); root.residual = 0px; root.seek-y = 0px; root.offset = 0px; root.previous-cover = root.cover-height; root.publish-area(); }
     in property <bool> virtual: false;
     in property <length> virtual-height;
     in property <length> full-height: -1px;

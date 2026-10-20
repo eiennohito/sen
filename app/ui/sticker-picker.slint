@@ -32,7 +32,7 @@ export component StickerPicker inherits Rectangle {
                     pack-focus := FocusScope {
                         property <bool> selected: i == State.sticker-package;
                         changed selected => { if self.selected && root.keyboard-selection { self.focus(); root.keyboard-selection = false; } }
-                        accessible-description: self.has-focus ? "Focused" : "";
+
                         Rectangle { background: transparent; border-radius: 8px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
                         accessible-role: tab; accessible-label: package-tab.name; accessible-item-selected: i == State.sticker-package;
                         accessible-action-default => { root.keyboard-selection = false; self.focus(); State.select-sticker-package(i); strip.reveal(i); }
@@ -57,7 +57,7 @@ export component StickerPicker inherits Rectangle {
                     x: mod(i, 4) * (parent.width / 4); y: floor(i / 4) * 76px; width: 72px; height: 72px; border-radius: 8px;
                     background: touch.has-hover ? Tokens.surface-hover : transparent;
                     Image { source: sticker.picture; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: "Sticker preview " + (i + 1); accessible-description: sticker.picture.width > 0 ? "Loaded" : "Loading"; }
-                    FocusScope { accessible-description: self.has-focus ? "Focused" : "";
+                    FocusScope {
                         Rectangle { background: transparent; border-radius: 8px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
                         accessible-role: button; accessible-label: "Send sticker " + (i + 1);
                         accessible-action-default => { State.send-sticker(sticker.index); root.close(); }

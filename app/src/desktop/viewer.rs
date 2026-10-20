@@ -1,23 +1,26 @@
 use crate::*;
 impl crate::Desktop {
     pub(crate) fn open_profile_photo(&mut self, ui: &AppWindow) {
-        if ui.get_profile_avatar().size().width == 0 {
+        if ui.global::<State>().get_profile_avatar().size().width == 0 {
             return;
         }
         ui.global::<State>().invoke_remember_detail_focus(false);
         ui.global::<State>().set_viewer_from_detail(true);
         ui.global::<State>().set_viewer_has_previous(false);
         ui.global::<State>().set_viewer_has_next(false);
-        let id = ui.get_profile_id();
+        let id = ui.global::<State>().get_profile_id();
         let asset = crate::presenter::detail::profile_avatar(&self.state, id.as_str())
             .and_then(|a| a.original());
-        ui.set_viewer_key(format!("profile:{id}").into());
+        ui.global::<State>()
+            .set_viewer_key(format!("profile:{id}").into());
         ui.invoke_reset_viewer();
-        ui.set_viewer_image(ui.get_profile_avatar());
-        ui.global::<State>().set_viewer_name(ui.get_profile_name());
-        ui.set_viewer_loading(asset.is_some());
-        ui.set_viewer_error("".into());
-        ui.set_viewer_status(
+        ui.global::<State>()
+            .set_viewer_image(ui.global::<State>().get_profile_avatar());
+        ui.global::<State>()
+            .set_viewer_name(ui.global::<State>().get_profile_name());
+        ui.global::<State>().set_viewer_loading(asset.is_some());
+        ui.global::<State>().set_viewer_error("".into());
+        ui.global::<State>().set_viewer_status(
             if asset.is_some() {
                 "Loading original…"
             } else {
@@ -63,13 +66,14 @@ impl crate::Desktop {
             self.viewer_source = None;
             self.viewer_asset = Some(asset.key());
             if let Some(preview) = self.presenter.images.get(key) {
-                ui.set_viewer_image(preview.clone());
+                ui.global::<State>().set_viewer_image(preview.clone());
             }
-            ui.set_viewer_status("Preview · loading original…".into());
-            ui.set_viewer_loading(true);
-            ui.set_viewer_error("".into());
-            if !ui.get_viewer_open() {
-                ui.invoke_show_viewer(key.into());
+            ui.global::<State>()
+                .set_viewer_status("Preview · loading original…".into());
+            ui.global::<State>().set_viewer_loading(true);
+            ui.global::<State>().set_viewer_error("".into());
+            if !ui.global::<State>().get_viewer_open() {
+                ui.global::<State>().invoke_show_viewer(key.into());
             }
             self.sender.send(Intent::Original(asset));
         }

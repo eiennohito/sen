@@ -1,11 +1,9 @@
-export struct FeedbackRect { x: length, y: length, width: length, height: length }
 export enum DeliveryState { sent, pending, read, rejected }
 export enum RecoveryKind { none, edit, unsend }
 export enum RecoveryAction { cancel, replace, append, unsend }
 export enum DetailAction { none, rename, add, mute, leave, member-chat }
 export enum ChatCategory { all, friends, groups }
 export enum HistoryRowKind { message, gap, unread }
-export enum DemoAutomation { reset }
 export enum PanelState { none, settings, detail, viewer, sign-in }
 export enum ConnectionState { local, connecting, online, offline, signed-out, fatal, signing-in }
 export struct RichRun { text: string, break-before: bool, url: string, link-start: bool, link-first: bool, link-id: int, link-width: float, positioned: bool, natural-width: float, line-width: float, image-key: string, picture: image, has-picture: bool, emoji: bool, thumbnail: bool, contain: bool, thumbnail-text: string, newline: bool, x: float, y: float, measured-width: float, measured-height: float, available: float }

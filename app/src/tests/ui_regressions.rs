@@ -27,8 +27,8 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
         presenter.images.insert(asset.key(), image.clone());
         presenter.patch_asset(&ui, &state, &asset.key());
         assert!(state.chats.is_empty());
-        assert_eq!(ui.get_chat_title(), "Friend");
-        let friends = ui.get_friends();
+        assert_eq!(ui.global::<State>().get_chat_title(), "Friend");
+        let friends = ui.global::<State>().get_friends();
         let friend_row = friends.iter().find(|r| r.id == "friend").unwrap();
         assert_eq!(friend_row.avatar_key, asset.key());
         assert_eq!(friend_row.avatar, image);
@@ -53,7 +53,7 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
             },
         );
         presenter.present(&ui, &state, "", ChatCategory::All);
-        let chat = ui.get_chats().row_data(0).unwrap();
+        let chat = ui.global::<State>().get_chats().row_data(0).unwrap();
         assert_eq!(chat.avatar_key, asset.key());
         assert_eq!(chat.avatar, image);
         assert_eq!(ui.global::<State>().get_chat_avatar(), chat.avatar);
@@ -126,7 +126,7 @@ fn gap_before_unread_message_keeps_its_geometry() {
                 }
             });
         presenter.present(&ui, &state, "", ChatCategory::All);
-        ui.set_show_conversation(true);
+        ui.global::<State>().set_show_conversation(true);
         ui.global::<State>().set_history_virtual(true);
         ui.show().unwrap();
         snapshot::render(&window, (980, 720)).unwrap();

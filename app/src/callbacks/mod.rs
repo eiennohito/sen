@@ -1,19 +1,7 @@
-macro_rules! callback {($ui:ident, $actions:ident, $name:ident, |$u:ident,$d:ident $(,$arg:ident)*| $body:block)=>{{
-        let weak=$ui.as_weak(); let actions=$actions.clone();
-        $ui.$name(move |$($arg),*| {let weak=weak.clone(); actions.push(move |$d|{if let Some($u)=weak.upgrade() {$body}});});
-    }};}
 macro_rules! global_callback {($ui:ident, $actions:ident, $name:ident $(, [$($capture:ident),*])?, |$u:ident,$d:ident $(,$arg:ident)*| $body:block $(=> $result:expr)?)=>{{
         let weak=$ui.as_weak(); let actions=$actions.clone();
         $ui.global::<State>().$name(move |$($arg),*| {let weak=weak.clone(); $($(let $capture = $capture.clone();)*)? actions.push(move |$d|{if let Some($u)=weak.upgrade() {$body}}); $($result)? });
     }};}
-macro_rules! focus_bridge {
-    ($ui:ident, $actions:ident, $on:ident,$invoke:ident) => {
-        global_callback!($ui, $actions, $on, |ui, _d| {
-            ui.$invoke();
-        });
-    };
-}
-
 pub(crate) mod attachments;
 mod browser;
 mod composer;

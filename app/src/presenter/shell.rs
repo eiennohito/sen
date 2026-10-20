@@ -16,10 +16,14 @@ impl Presenter {
         )));
         state.set_preparing_sign_in_text(text::PREPARING_SIGN_IN.into());
         state.set_signed_in_text(text::SIGNED_IN.into());
-        ui.set_chats(ModelRc::new(self.chats.clone()));
-        ui.set_messages(ModelRc::new(self.messages.clone()));
-        ui.set_friends(ModelRc::new(self.friends.clone()));
-        ui.set_members(ModelRc::new(self.members.clone()));
+        ui.global::<State>()
+            .set_chats(ModelRc::new(self.chats.clone()));
+        ui.global::<State>()
+            .set_messages(ModelRc::new(self.messages.clone()));
+        ui.global::<State>()
+            .set_friends(ModelRc::new(self.friends.clone()));
+        ui.global::<State>()
+            .set_members(ModelRc::new(self.members.clone()));
     }
     pub(super) fn present_errors(&mut self, ui: &AppWindow, state: &AppState) -> String {
         let g = ui.global::<State>();
@@ -81,11 +85,11 @@ impl Presenter {
             Panel::Viewer => PanelState::Viewer,
             Panel::SignIn => PanelState::SignIn,
         });
-        ui.set_has_chat(state.selected.is_some());
+        ui.global::<State>().set_has_chat(state.selected.is_some());
         ui.global::<State>().set_window_sub(state.window_sub as i32);
         ui.global::<State>()
             .set_window_loading(state.window_loading);
-        ui.set_storage_error(
+        ui.global::<State>().set_storage_error(
             state
                 .error
                 .map(crate::text::storage_failure)
@@ -98,7 +102,8 @@ impl Presenter {
             .set_has_account(!state.profile.mid.is_empty());
         ui.global::<State>()
             .set_account_mid(state.profile.mid.clone().into());
-        ui.set_account_name(state.profile.display_name.as_str().into());
+        ui.global::<State>()
+            .set_account_name(state.profile.display_name.as_str().into());
         ui.global::<State>().set_connection(match state.connection {
             Connection::Local => ConnectionState::Local,
             Connection::Connecting { .. } => ConnectionState::Connecting,
@@ -108,7 +113,7 @@ impl Presenter {
             Connection::Fatal => ConnectionState::Fatal,
             Connection::SigningIn => ConnectionState::SigningIn,
         });
-        ui.set_connection_status(
+        ui.global::<State>().set_connection_status(
             match &state.connection {
                 Connection::Local => "Cached conversations",
                 Connection::Online => "Connected",
@@ -122,7 +127,7 @@ impl Presenter {
         );
         ui.global::<State>()
             .set_send_pending(state.submitting.is_some());
-        ui.set_send_reason(
+        ui.global::<State>().set_send_reason(
             if state.connection == Connection::Online {
                 ""
             } else {

@@ -122,8 +122,9 @@ impl Presenter {
         }
     }
     pub(super) fn present_draft(&mut self, ui: &AppWindow, state: &AppState) {
-        if ui.get_draft().as_str() != state.composer {
-            ui.set_draft(state.composer.clone().into());
+        if ui.global::<State>().get_draft().as_str() != state.composer {
+            ui.global::<State>()
+                .set_draft(state.composer.clone().into());
         }
     }
 }

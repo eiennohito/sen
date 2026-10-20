@@ -8,7 +8,7 @@ export component Button inherits Rectangle {
     out property <bool> has-focus: focus.has-focus;
     callback clicked();
     forward-focus: focus;
-    accessible-role: button; accessible-label: root.text; accessible-enabled: root.enabled; accessible-description: root.has-focus ? "Focused" : "";
+    accessible-role: button; accessible-label: root.text; accessible-enabled: root.enabled;
     accessible-action-default => { if root.enabled { root.clicked(); } }
     horizontal-stretch: 0;
     preferred-width: label.preferred-width + 32px;

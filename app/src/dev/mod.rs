@@ -6,14 +6,50 @@ mod demo_data;
 #[cfg(feature = "ui-debug")]
 mod latency;
 
-pub(crate) fn install_window(ui: &AppWindow) {
+pub(crate) fn install_focus(ui: &AppWindow) {
     focus::install_demo(ui);
-    let weak = ui.as_weak();
-    ui.global::<State>().on_demo_event(move |kind| {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_demo_event(kind);
-        }
-    });
+    #[cfg(feature = "ui-debug")]
+    {
+        let weak = ui.as_weak();
+        ui.global::<ExtensionState>().on_focused_control(move || {
+            use i_slint_core::item_tree::ParentItemTraversalMode;
+            use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
+            let Some(ui) = weak.upgrade() else {
+                return "{}".into();
+            };
+            let window = WindowInner::from_pub(ui.window());
+            let popup = window.active_popups().last().and_then(|popup| {
+                use i_slint_core::window::PopupWindowLocation;
+                let PopupWindowLocation::ChildWindow(position) = &popup.location else {
+                    return None;
+                };
+                Some(serde_json::json!({
+                    "x": position.x, "y": position.y,
+                }))
+            });
+            let mut item = window.focus_item.borrow().upgrade();
+            while let Some(current) = item {
+                let label = current
+                    .accessible_string_property(AccessibleStringProperty::Label)
+                    .unwrap_or_default();
+                if current.is_accessible() && !label.is_empty() {
+                    let geometry = current.geometry();
+                    let position = current.map_to_window(geometry.origin);
+                    return serde_json::json!({
+                        "label": label.as_str(),
+                        "role": format!("{:?}", current.accessible_role()),
+                        "x": position.x, "y": position.y,
+                        "width": geometry.size.width, "height": geometry.size.height,
+                        "popup": popup,
+                    })
+                    .to_string()
+                    .into();
+                }
+                item = current.parent_item(ParentItemTraversalMode::FindAllParents);
+            }
+            serde_json::json!({"popup": popup}).to_string().into()
+        });
+    }
 }
 
 pub(crate) struct Session {
@@ -66,6 +102,16 @@ impl Session {
             },
         ))
     }
+    pub(crate) fn fake(&self) -> Option<&FakeBackend> {
+        self.fake.as_ref()
+    }
+    pub(crate) fn color_scheme(&self) -> slint::language::ColorScheme {
+        if self.args.dark {
+            slint::language::ColorScheme::Dark
+        } else {
+            slint::language::ColorScheme::Unknown
+        }
+    }
     pub(crate) fn worker(&self, real: impl FnOnce() -> Worker) -> Worker {
         self.fake
             .as_ref()
@@ -79,19 +125,6 @@ impl Session {
         worker: &Rc<RefCell<Worker>>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
         let args = self.args;
-        if let Some(fake) = &self.fake {
-            demo::prepare(ui, args.dark);
-            desktop.update(|d| d.destination = demo::destination());
-            demo::install(
-                ui,
-                desktop.clone(),
-                fake.clone(),
-                #[cfg(feature = "ui-debug")]
-                worker.clone(),
-                #[cfg(feature = "ui-debug")]
-                args.text_size,
-            );
-        }
         if self.snapshot.is_some() {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while desktop.update(|d| {

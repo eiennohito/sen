@@ -1,4 +1,6 @@
-import { RecoveryKind, RecoveryAction, ChatCategory, PanelState, ChatRow, MemberRow, FriendRow, MessageRow } from "types.slint";
+import { DemoExtension } from "@demo/demo-app.slint";
+import { ExtensionState } from "@demo/demo-state.slint";
+export * from "@demo/demo-api.slint";
 import { Attachments } from "attachments.slint";
 import { NewChat } from "new-chat.slint";
 export { State } from "state.slint";
@@ -8,7 +10,7 @@ import { Tokens } from "tokens.slint";
 import { TextMetrics, RichMetric } from "text-metrics.slint";
 export { RichMetric } from "text-metrics.slint";
 
-export { DeliveryState, RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, DemoAutomation, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow, ReactorRow, MessageKind, LinkRow, RichRun } from "types.slint";
+export { DeliveryState, RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, ReactionRow, ReactorRow, MessageKind, LinkRow, RichRun } from "types.slint";
 import { Rail } from "rail.slint";
 import { Friends } from "friends.slint";
 import { Chats } from "chats.slint";
@@ -16,165 +18,47 @@ import { Conversation } from "conversation.slint";
 import { Layers } from "layers.slint";
 import { RecoveryDialog } from "recovery-dialog.slint";
 import { ConnectionNotice } from "connection-notice.slint";
-import { DemoScenarios } from "demo-scenarios.slint";
 
 export component AppWindow inherits Window {
-    if State.demo-reset-enabled: demo-reset-marker := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: State.demo-instance; accessible-value: State.demo-instance + ":" + State.demo-reset-generation; }
-    public function preview-dark(dark: bool) { Tokens.preview-dark(dark); }
-    rich-metrics := TextMetrics {}
+
     public function measure-rich(content: string, size: float) -> RichMetric { return rich-metrics.measure(content, size); }
-    in-out property <string> desktop-warning <=> State.desktop-warning;
-    in-out property <string> connection-status <=> State.connection-status;
-    public function go-back() { if State.narrow && root.show-conversation && !State.modal-open { root.show-conversation = false; if root.section == 1 { root.focus-friend-search(); } else { root.focus-search(); } } }
-    in-out property <int> section <=> State.section;
-    in-out property <[FriendRow]> friends <=> State.friends;
-    in-out property <string> friend-query <=> State.friend-query;
-    in-out property <bool> groups-expanded <=> State.groups-expanded;
-    in-out property <bool> friends-expanded <=> State.friends-expanded;
-    out property <bool> member-profile <=> State.member-profile;
-    in-out property <[MemberRow]> members <=> State.members;
-    in-out property <string> member-query <=> State.member-query;
-    in-out property <bool> chat-group <=> State.chat-group;
-    in-out property <int> member-count <=> State.member-count;
-    callback open-members(); callback filter-members(); callback open-member(string);
+    public function go-back() { if State.narrow && State.show-conversation && !State.modal-open { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } } }
     public function back-to-members() { layers.back-to-members(); }
-    out property <bool> detail-open <=> State.detail-open;
-    in-out property <string> profile-name <=> State.profile-name;
-    in-out property <string> profile-id <=> State.profile-id;
-    in-out property <string> profile-status <=> State.profile-status;
-    in-out property <bool> profile-group <=> State.profile-group;
-    in-out property <image> profile-avatar <=> State.profile-avatar;
-    in-out property <bool> profile-available <=> State.profile-available;
-    in-out property <ChatCategory> category <=> State.category;
-    callback filter-category(); callback switch-chat(int);
-    callback browse(int); callback refresh-friends(); callback filter-friends();
-    callback open-profile(string); callback start-friend-chat();
-    public function close-profile() { State.pop-detail(true); }
-    in-out property <bool> ime-active <=> State.ime-active;
-    public function focus-composer() { if root.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
+
+    public function focus-composer() { if State.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
     public function focus-reading-before-editor() { conversation.focus-reading-before-editor(); }
-    title: State.title-override != "" ? State.title-override : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
+    title: ExtensionState.title-override != "" ? ExtensionState.title-override : State.unread-conversations > 0 && !State.unread-stale ? "LINE (" + State.unread-conversations + ")" : "LINE";
     icon: @image-url("../assets/icon.svg");
     forward-focus: shell;
     preferred-width: 980px; preferred-height: 720px;
     min-width: 360px; min-height: 520px;
     background: Tokens.background;
     default-font-size: Tokens.base;
-    in-out property <int> text-size <=> State.text-size;
-    in-out property <[ChatRow]> chats <=> State.chats;
-    in-out property <[MessageRow]> messages <=> State.messages;
-    in-out property <int> selected-chat <=> State.selected-chat;
-    in-out property <string> chat-title <=> State.chat-title;
-    in-out property <string> chat-subtitle <=> State.chat-subtitle;
-    in-out property <string> draft <=> State.draft;
-    in-out property <bool> enter-sends <=> State.enter-sends;
-    in-out property <int> editor-caret <=> State.editor-caret;
-    in-out property <int> editor-anchor <=> State.editor-anchor;
-    in-out property <string> unsend-feedback-id <=> State.unsend-feedback-id;
-    in-out property <RecoveryKind> recovery-kind <=> State.recovery-kind;
-    in-out property <string> recovery-id <=> State.recovery-id;
-    in-out property <string> recovery-focus-id <=> State.recovery-focus-id;
-    in-out property <RecoveryKind> recovery-focus-action <=> State.recovery-focus-action;
-    callback retry-message(string);
-    callback resolve-recovery(RecoveryAction);
-    callback quit();
     public function restore-editor(anchor: int, caret: int) { conversation.restore-editor(anchor, caret); }
-    out property <bool> can-send <=> State.can-send;
-    in-out property <string> send-reason <=> State.send-reason;
-    out property <bool> viewer-open <=> State.viewer-open;
-    in-out property <image> viewer-image <=> State.viewer-image;
-    in-out property <string> viewer-status <=> State.viewer-status;
-    in-out property <string> viewer-error <=> State.viewer-error;
-    in-out property <bool> viewer-loading <=> State.viewer-loading;
-    in-out property <string> viewer-key <=> State.viewer-key;
-    callback open-photo(string); callback photo-closed();
-    public function show-viewer(key: string) { State.request-panel(PanelState.viewer); root.viewer-key = key; State.viewer-zoom = 1; State.reset-viewer(); State.focus-viewer-close(); }
-    public function close-viewer() { let from-detail = State.viewer-from-detail; State.request-panel(PanelState.none); if !from-detail { State.focus-history(); } State.viewer-return-key = root.viewer-key; State.viewer-return-serial += 1; root.viewer-key = ""; root.photo-closed(); }
-    out property <bool> auth-busy <=> State.auth-busy;
-    in-out property <bool> auth-cancelling <=> State.auth-cancelling;
-    in-out property <image> auth-qr <=> State.auth-qr;
-    in-out property <string> auth-pin <=> State.auth-pin;
-    in-out property <string> auth-stage <=> State.auth-stage;
-    in-out property <string> auth-error <=> State.auth-error;
-    callback start-sign-in(); callback cancel-sign-in();
-    public function account-ready() { State.request-panel(PanelState.none); root.show-conversation = false; State.focus-search(); }
-    public function close-settings() { State.request-panel(PanelState.none); State.focus-settings-opener(); }
-    public function close-sign-in() { State.request-panel(PanelState.none); State.focus-sign-in-opener(); }
-    public function open-sign-in() { if State.sign-in-available { State.request-panel(PanelState.sign-in); State.focus-auth-start(); } }
 
-    in-out property <bool> demo <=> State.demo;
-    in-out property <bool> more-chats <=> State.more-chats;
-    in-out property <bool> has-chat <=> State.has-chat;
-    in-out property <string> storage-error <=> State.storage-error;
-    in-out property <string> account-name <=> State.account-name;
-    in-out property <bool> show-conversation <=> State.show-conversation;
-    in-out property <bool> following <=> State.following;
-    in-out property <int> new-count <=> State.new-count;
-    in-out property <length> history-y <=> State.history-y;
-    out property <bool> history-dragging <=> State.history-dragging;
-    in-out property <string> query <=> State.query;
-    in-out property <int> result-focus <=> State.result-focus;
-    callback select-chat(int);
-    callback search-changed(string);
-    callback draft-edited();
-    callback retry-image(string); callback more(); callback send();
-    callback settings-changed(); callback recover-message(string); callback demo-event(int);
-    public function show-history(y: length, latest: bool) {
-        root.following = latest;
-        root.history-y = y;
-        if latest { conversation.jump(-State.history-extent); }
-    }
-    public function latest() {
-        State.latest-request();
-        root.following = true;
-        root.new-count = 0;
-        conversation.jump(-State.history-extent);
-    }
-    shell := FocusScope {
-        enabled: !State.new-chat-open && !State.attachments-open;
-        focus-on-tab-navigation: false;
-        key-pressed(event) => { if scenarios.handle-key(event) == accept { return accept; } if State.browser-key(event) == accept { return accept; } if !root.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
-        y: 0px;
-        width: 100%; height: root.height;
-        visible: !State.auth-open && !root.viewer-open && !(State.narrow && root.detail-open);
-        rail := Rail { x: 0px; y: State.narrow ? parent.height - 48px : 0px; width: State.narrow ? parent.width : State.rail-width; height: State.narrow ? 48px : parent.height; visible: !State.narrow || !root.show-conversation; }
-        browser := Rectangle {
-            x: State.narrow ? 0px : State.rail-width; y: 0px;
-            height: parent.height - (State.narrow ? 48px : 0px);
-            visible: (!State.narrow || !State.show-conversation);
-            width: !self.visible ? 0px : State.narrow ? State.window-width : State.browser-width;
-            horizontal-stretch: 0;
-            background: Tokens.alternate-background; clip: true;
- friends-surface := Friends {}
- chats-surface := Chats {}
-}
-
-        conversation := Conversation { x: State.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!State.profile-sheet && root.detail-open ? State.panel-width : 0px)); height: parent.height; visible: (State.has-account || State.has-chat) && (!State.narrow || root.show-conversation) && !(root.detail-open && State.profile-sheet); }
-    }
-    property <length> token-base: root.text-size * 1px;
+    property <length> token-base: State.text-size * 1px;
     changed token-base => { Tokens.base = root.token-base; }
     property <length> state-window-width: root.width;
     changed state-window-width => {
-        State.browser-focus-hidden = State.window-width >= State.narrow-width && root.width < State.narrow-width && root.show-conversation && (rail.has-focus || (root.section == 1 ? friends-surface.has-focus : chats-surface.has-focus));
+        State.browser-focus-hidden = State.window-width >= State.narrow-width && root.width < State.narrow-width && State.show-conversation && (rail.has-focus || (State.section == 1 ? friends-surface.has-focus : chats-surface.has-focus));
         State.window-width = root.width; State.window-height = root.height;
     }
     changed height => { State.window-height = root.height; }
-    init => { State.window-width = root.width; State.window-height = root.height; Tokens.base = root.text-size * 1px; }
-    out property <length> chat-list-height: chats-surface.viewport-height;
+    init => { State.window-width = root.width; State.window-height = root.height; Tokens.base = State.text-size * 1px; }
     public function reveal-chat(index: int) { chats-surface.reveal(index); }
     public function focus-cycle-end() {
-        if root.detail-open { layers.focus-profile-last(); }
-        else if !State.narrow || root.show-conversation { conversation.focus-last(); }
-        else if root.section == 1 { friends-surface.focus-list(); }
+        if State.detail-open { layers.focus-profile-last(); }
+        else if !State.narrow || State.show-conversation { conversation.focus-last(); }
+        else if State.section == 1 { friends-surface.focus-list(); }
         else { chats-surface.focus-list(); }
     }
     public function focus-after-browser() {
-        if root.detail-open && State.profile-sheet { if State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
-        else if State.narrow && !root.show-conversation { rail.focus-navigation(); }
+        if State.detail-open && State.profile-sheet { if State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
+        else if State.narrow && !State.show-conversation { rail.focus-navigation(); }
         else { conversation.focus-first(); }
     }
     public function focus-after-conversation() {
-        if root.detail-open { layers.focus-profile(); }
+        if State.detail-open { layers.focus-profile(); }
         else if State.narrow { conversation.focus-first(); }
         else { rail.focus-navigation(); }
     }
@@ -182,7 +66,7 @@ export component AppWindow inherits Window {
         if State.profile-sheet && State.connection-actions-enabled { auth-notice.focus-action(); }
         else if State.narrow { layers.focus-profile-last(); }
         else if !State.profile-sheet { conversation.focus-last(); }
-        else if root.section == 1 { friends-surface.focus-list(); }
+        else if State.section == 1 { friends-surface.focus-list(); }
         else { chats-surface.focus-list(); }
     }
     public function focus-after-layer() {
@@ -198,43 +82,59 @@ export component AppWindow inherits Window {
     public function focus-profile-close() { layers.focus-profile-close(); }
     public function focus-auth-start() { layers.focus-auth(); }
     public function focus-viewer-close() { layers.focus-viewer(); }
-    public function focus-history() { if root.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-history(); } }
+    public function focus-history() { if State.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-history(); } }
     public function focus-connection-first() { auth-notice.focus-first(); }
     public function focus-sign-in-opener() { auth-notice.focus-action(); }
     public function reset-viewer() { layers.reset-viewer(); }
     public function history-scroll(delta: length) { conversation.scroll(delta); }
     public function history-jump(y: length) { conversation.jump(y); }
-    in-out property <string> internal-error;
-    in-out property <bool> internal-error-seen;
-    Text { width: 1px; height: 1px; text: ""; accessible-description: root.internal-error-seen ? "Internal error: see log" : ""; }
-    if root.internal-error != "": Rectangle {
-        x: 16px; y: 16px; width: parent.width - 32px; height: 48px;
-        background: Tokens.background; border-width: 1px; border-color: Tokens.danger;
-        Text { text: root.internal-error; color: Tokens.danger; vertical-alignment: center; }
-    }
-    layers := Layers {}
-    NewChat { width: parent.width; height: parent.height; }
-    auth-notice := ConnectionNotice {
-        x: State.connection-area-x; y: State.connection-area-y;
-        width: State.connection-area-width;
-        visible: State.connection-feedback-visible;
-        scenarios-key(event) => { scenarios.handle-key(event) }
-        leave(back) => {
-            if root.detail-open && State.profile-sheet {
-                if !back { layers.focus-profile(); }
-                else if State.narrow { layers.focus-profile-last(); }
-                else if root.section == 1 { friends-surface.focus-list(); }
-                else { chats-surface.focus-list(); }
-            } else if !State.narrow || root.show-conversation {
-                if back { conversation.focus-header(); } else { conversation.focus-history(); }
-            } else if root.section == 1 {
-                if back { friends-surface.focus-search-last(); } else { friends-surface.focus-list(); }
-            } else {
-                if back { chats-surface.focus-search-last(); } else { chats-surface.focus-list(); }
+
+    extension := DemoExtension {
+        width: root.width; height: root.height;
+        shell := FocusScope {
+            enabled: !State.new-chat-open && !State.attachments-open;
+            focus-on-tab-navigation: false;
+            key-pressed(event) => { if State.browser-key(event) == accept { return accept; } if !State.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
+            y: 0px;
+            width: 100%; height: root.height;
+            visible: !State.auth-open && !State.viewer-open && !(State.narrow && State.detail-open);
+            rail := Rail { x: 0px; y: State.narrow ? parent.height - 48px : 0px; width: State.narrow ? parent.width : State.rail-width; height: State.narrow ? 48px : parent.height; visible: !State.narrow || !State.show-conversation; }
+            browser := Rectangle {
+                x: State.narrow ? 0px : State.rail-width; y: 0px;
+                height: parent.height - (State.narrow ? 48px : 0px);
+                visible: (!State.narrow || !State.show-conversation);
+                width: !self.visible ? 0px : State.narrow ? State.window-width : State.browser-width;
+                horizontal-stretch: 0;
+                background: Tokens.alternate-background; clip: true;
+                friends-surface := Friends {}
+                chats-surface := Chats {}
+            }
+
+            conversation := Conversation { x: State.narrow ? 0px : browser.x + browser.width; width: max(0px, parent.width - self.x - (!State.profile-sheet && State.detail-open ? State.panel-width : 0px)); height: parent.height; visible: (State.has-account || State.has-chat) && (!State.narrow || State.show-conversation) && !(State.detail-open && State.profile-sheet); }
+        }
+        layers := Layers {}
+        NewChat { width: parent.width; height: parent.height; }
+        auth-notice := ConnectionNotice {
+            x: State.connection-area-x; y: State.connection-area-y;
+            width: State.connection-area-width;
+            visible: State.connection-feedback-visible;
+            leave(back) => {
+                if State.detail-open && State.profile-sheet {
+                    if !back { layers.focus-profile(); }
+                    else if State.narrow { layers.focus-profile-last(); }
+                    else if State.section == 1 { friends-surface.focus-list(); }
+                    else { chats-surface.focus-list(); }
+                } else if !State.narrow || State.show-conversation {
+                    if back { conversation.focus-header(); } else { conversation.focus-history(); }
+                } else if State.section == 1 {
+                    if back { friends-surface.focus-search-last(); } else { friends-surface.focus-list(); }
+                } else {
+                    if back { chats-surface.focus-search-last(); } else { chats-surface.focus-list(); }
+                }
             }
         }
+        Attachments { }
+        RecoveryDialog { }
     }
-    Attachments { }
-    RecoveryDialog { }
-    scenarios := DemoScenarios { width: root.width; height: root.height; scenario-selected => { shell.focus(); } }
+    rich-metrics := TextMetrics {}
 }

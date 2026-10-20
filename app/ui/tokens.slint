@@ -15,7 +15,6 @@ export global Tokens {
     out property <length> message-avatar: 32px;
     out property <length> message-gap: 5px;
     in-out property <bool> dark: Palette.color-scheme == ColorScheme.dark || (Palette.color-scheme == ColorScheme.unknown && Palette.background == #1C1C1C);
-    public function preview-dark(value: bool) { Palette.color-scheme = value ? ColorScheme.dark : ColorScheme.light; }
     out property <color> bg: dark ? #1E1F22 : #FFFFFF;
     out property <color> surface: dark ? #26272B : #F5F6F7;
     out property <color> surface-2: dark ? #32343A : #EDEEF0;

@@ -2753,6 +2753,7 @@ dependencies = [
  "chrono",
  "i-slint-backend-selector",
  "i-slint-backend-testing",
+ "i-slint-core",
  "image",
  "line",
  "line-desktop-ui",

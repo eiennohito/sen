@@ -20,8 +20,6 @@ component RailButton inherits Rectangle {
 }
 
 export component Rail inherits Rectangle {
-    property <int> demo-reset: State.demo-reset-generation;
-    changed demo-reset => { root.cursor = 0; }
     background: Tokens.surface;
     out property <bool> has-focus: rail-focus.has-focus;
     public function focus-navigation() { rail-focus.focus(); }
@@ -32,7 +30,7 @@ export component Rail inherits Rectangle {
         else if index == 3 && State.has-account { State.open-profile(State.account-mid); }
     }
     rail-focus := FocusScope {
-        accessible-role: button; accessible-label: "Navigation"; accessible-description: self.has-focus ? "Focused navigation" : "";
+        accessible-role: button; accessible-label: "Navigation";
         key-pressed(event) => {
             if State.browser-key(event) == accept { return accept; }
             if State.ime-active { return reject; }

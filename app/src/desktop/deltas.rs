@@ -17,18 +17,19 @@ impl Desktop {
             self.render(ui);
         }
         if let Some((anchor, caret)) = editor {
-            if ui.get_draft().as_str() != self.state.composer {
-                ui.set_draft(self.state.composer.clone().into());
+            if ui.global::<State>().get_draft().as_str() != self.state.composer {
+                ui.global::<State>()
+                    .set_draft(self.state.composer.clone().into());
             }
             self.shown_composer = self.state.composer.clone();
             ui.invoke_restore_editor(anchor, caret);
         }
         if window && self.history.latest_requested && self.state.reaches_end {
             self.history.latest_requested = false;
-            ui.set_following(true);
-            ui.invoke_latest();
-        } else if window && !self.history.opening_history && ui.get_following() {
-            ui.invoke_latest();
+            ui.global::<State>().set_following(true);
+            ui.global::<State>().invoke_latest();
+        } else if window && !self.history.opening_history && ui.global::<State>().get_following() {
+            ui.global::<State>().invoke_latest();
         }
     }
     pub(crate) fn apply(&mut self, ui: &AppWindow, d: Delta) -> (bool, bool, Option<(i32, i32)>) {
@@ -141,7 +142,7 @@ impl Desktop {
             // A delayed selection draft must not replace text entered since
             // the selection was rendered.
             if self.state.selected.as_ref() == Some(chat)
-                && ui.get_draft().as_str() != self.shown_composer
+                && ui.global::<State>().get_draft().as_str() != self.shown_composer
             {
                 return (false, false, None);
             }
@@ -160,41 +161,46 @@ impl Desktop {
                 use line::backend::PairEvent;
                 match event {
                     PairEvent::Stage(stage) => {
-                        ui.set_auth_stage(text::pairing_stage(*stage).into());
+                        ui.global::<State>()
+                            .set_auth_stage(text::pairing_stage(*stage).into());
                         if matches!(stage, line::client::pairing::Stage::RequestCredentials) {
-                            ui.set_auth_pin("".into());
+                            ui.global::<State>().set_auth_pin("".into());
                         }
                     }
                     PairEvent::Qr(p) => {
-                        ui.set_auth_stage(text::WAITING_FOR_PHONE.into());
+                        ui.global::<State>()
+                            .set_auth_stage(text::WAITING_FOR_PHONE.into());
                         ui.global::<State>().set_auth_prerequisite_missing(false);
-                        ui.set_auth_qr(slint::Image::from_rgba8(
+                        ui.global::<State>().set_auth_qr(slint::Image::from_rgba8(
                             slint::SharedPixelBuffer::clone_from_slice(&p.rgba, p.width, p.height),
                         ));
                     }
-                    PairEvent::Pin(pin) => ui.set_auth_pin(pin.into()),
-                    PairEvent::Scanned => ui.set_auth_stage(text::WAITING_FOR_PHONE.into()),
+                    PairEvent::Pin(pin) => ui.global::<State>().set_auth_pin(pin.into()),
+                    PairEvent::Scanned => ui
+                        .global::<State>()
+                        .set_auth_stage(text::WAITING_FOR_PHONE.into()),
                 }
             }
             Delta::PairFailed { reason } => {
                 let cancelled = matches!(reason, line::client::error::SignInFailure::Cancelled);
                 ui.global::<State>()
                     .set_auth_prerequisite_missing(reason.is_prerequisite());
-                ui.set_auth_cancelling(false);
-                ui.set_auth_qr(slint::Image::default());
-                ui.set_auth_pin("".into());
+                ui.global::<State>().set_auth_cancelling(false);
+                ui.global::<State>().set_auth_qr(slint::Image::default());
+                ui.global::<State>().set_auth_pin("".into());
                 if cancelled {
                     self.state.panel = Panel::Chats;
                     self.state.detail.clear();
                 }
-                ui.set_auth_error(text::sign_in_failure(reason).into());
+                ui.global::<State>()
+                    .set_auth_error(text::sign_in_failure(reason).into());
             }
             Delta::Connection(Connection::Online) => {
                 ui.global::<State>().set_session_cause("".into());
-                ui.set_auth_error("".into());
-                ui.set_auth_qr(slint::Image::default());
-                ui.set_auth_pin("".into());
-                ui.set_auth_cancelling(false);
+                ui.global::<State>().set_auth_error("".into());
+                ui.global::<State>().set_auth_qr(slint::Image::default());
+                ui.global::<State>().set_auth_pin("".into());
+                ui.global::<State>().set_auth_cancelling(false);
                 if self.state.panel == Panel::SignIn {
                     self.state.panel = Panel::Chats;
                     self.state.detail.clear();
@@ -210,8 +216,9 @@ impl Desktop {
                 self.presenter.failures.insert(key.clone(), *failure);
                 self.presenter.patch_asset(ui, &self.state, key);
                 if self.viewer_asset.as_ref() == Some(key) {
-                    ui.set_viewer_loading(false);
-                    ui.set_viewer_error(text::image_text(*failure).into());
+                    ui.global::<State>().set_viewer_loading(false);
+                    ui.global::<State>()
+                        .set_viewer_error(text::image_text(*failure).into());
                 }
             }
             Delta::File { name, bytes } => {
@@ -241,9 +248,10 @@ impl Desktop {
                 );
                 self.presenter.patch_asset(ui, &self.state, key);
                 if self.viewer_asset.as_ref() == Some(key) {
-                    ui.set_viewer_image(self.presenter.images[key].clone());
-                    ui.set_viewer_loading(false);
-                    ui.set_viewer_status(
+                    ui.global::<State>()
+                        .set_viewer_image(self.presenter.images[key].clone());
+                    ui.global::<State>().set_viewer_loading(false);
+                    ui.global::<State>().set_viewer_status(
                         format!(
                             "{} · {} × {}",
                             ui.global::<State>().get_viewer_name(),
@@ -269,8 +277,8 @@ impl Desktop {
                 self.open_chat(ui, id.clone());
                 self.reveal = Some(id.clone());
                 self.state.panel = Panel::Chats;
-                ui.set_section(0);
-                ui.set_show_conversation(true);
+                ui.global::<State>().set_section(0);
+                ui.global::<State>().set_show_conversation(true);
                 ui.invoke_focus_composer();
             }
             Err(error) => {
@@ -295,8 +303,8 @@ impl Desktop {
             n.service.withdraw_notifications();
         }
         self.background.preferences(ui, &prefs.desktop);
-        ui.set_text_size(prefs.text_size);
-        ui.set_enter_sends(prefs.enter_sends);
+        ui.global::<State>().set_text_size(prefs.text_size);
+        ui.global::<State>().set_enter_sends(prefs.enter_sends);
         let s = ui.global::<State>();
         let p = &prefs.desktop;
         s.set_background_mode(p.background);
@@ -325,20 +333,24 @@ impl Desktop {
             }
             Delta::UnsendFailed(key) => {
                 if self.state.messages.contains_key(key) {
-                    ui.set_unsend_feedback_id(key.0.to_string().into());
+                    ui.global::<State>()
+                        .set_unsend_feedback_id(key.0.to_string().into());
                 }
             }
             #[cfg(feature = "ui-debug")]
             Delta::InternalError(kind) => dev::automation::internal_error(ui, kind),
             Delta::Notify(m) => {
-                if self.state.selected.as_ref() == Some(&m.chat_id) && !ui.get_following() {
-                    ui.set_new_count(ui.get_new_count() + 1);
+                if self.state.selected.as_ref() == Some(&m.chat_id)
+                    && !ui.global::<State>().get_following()
+                {
+                    ui.global::<State>()
+                        .set_new_count(ui.global::<State>().get_new_count() + 1);
                 }
                 if let Some(notifications) = &self.notifications {
                     notifications.incoming(ui, &self.state, m);
                 }
             }
-            Delta::MoreChats(more) => ui.set_more_chats(*more),
+            Delta::MoreChats(more) => ui.global::<State>().set_more_chats(*more),
             Delta::AssetEvicted { key } => self.assets.evicted(key),
             _ => {}
         }

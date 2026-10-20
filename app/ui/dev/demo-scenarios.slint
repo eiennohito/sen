@@ -1,7 +1,8 @@
+import { DemoAutomation } from "demo-state.slint";
+import { ExtensionState } from "demo-state.slint";
 import { Button, ScrollView } from "std-widgets.slint";
-import { DemoAutomation } from "types.slint";
-import { State } from "state.slint";
-import { Tokens } from "tokens.slint";
+import { State } from "../state.slint";
+import { Tokens } from "../tokens.slint";
 
 struct Scenario { text: string, label: string, kind: int }
 
@@ -20,13 +21,13 @@ export component DemoScenarios inherits Rectangle {
     }
     // Keyboard navigation can scroll to the final scenario. Reopen at the first row.
     public function open() -> bool {
-        if State.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; State.remember-demo-focus(); State.demo-scenarios-open = true; scenario-scroll.content-y = 0px; close.focus(); return true; }
+        if ExtensionState.demo && !State.modal-open { root.reset-focus(); root.media-menu = false; ExtensionState.remember-demo-focus(); ExtensionState.demo-scenarios-open = true; scenario-scroll.content-y = 0px; close.focus(); return true; }
         return false;
     }
-    public function dismiss() { root.reset-focus(); State.demo-scenarios-open = false; root.media-menu = false; State.restore-demo-focus(); }
+    public function dismiss() { root.reset-focus(); ExtensionState.demo-scenarios-open = false; root.media-menu = false; ExtensionState.restore-demo-focus(); }
     // A fixture may replace the previously focused message or button.
     callback run(int);
-    run(kind) => { root.dismiss(); root.scenario-selected(); State.demo-event(kind); }
+    run(kind) => { root.dismiss(); root.scenario-selected(); ExtensionState.demo-event(kind); }
     property <[[Scenario]]> scenarios: [
         [{text:"History",label:"Long history",kind:0},{text:"Arrivals",label:"Receive 3",kind:1}],
         [{text:"Media",label:"Media failures",kind:-1}],
@@ -47,7 +48,7 @@ export component DemoScenarios inherits Rectangle {
     property <int> last-focus-request;
     property <bool> last-scenario-focused;
     dialog := Rectangle {
-        visible: State.demo-scenarios-open;
+        visible: ExtensionState.demo-scenarios-open;
         width: root.width; height: root.height;
         Rectangle {
             background: Tokens.foreground.with-alpha(0.32);
@@ -73,22 +74,22 @@ export component DemoScenarios inherits Rectangle {
                 VerticalLayout {
                     padding: 16px; spacing: 12px;
                     Text { text: "Demo scenarios"; font-size: Tokens.heading; color: Tokens.foreground; }
-                    close := Button { text: "Close demo scenarios"; accessible-description: self.has-focus ? "Focused" : ""; clicked => { root.dismiss(); } }
+                    close := Button { text: "Close demo scenarios"; clicked => { root.dismiss(); } }
                     scenario-scroll := ScrollView {
                         horizontal-scrollbar-policy: always-off;
                         VerticalLayout {
                             padding-right: 12px; spacing: 8px; alignment: start;
-                            if State.automation-background && !root.media-menu: HorizontalLayout { spacing: 8px;
+                            if ExtensionState.automation-background && !root.media-menu: HorizontalLayout { spacing: 8px;
                                 Rectangle { height: 32px; background: Tokens.surface-2;
-                                    TextInput { text <=> State.attachment-injection-paths; accessible-label: "Attachment paths"; single-line: true; color: Tokens.text; font-size: Tokens.small; }
+                                    TextInput { text <=> ExtensionState.attachment-injection-paths; accessible-label: "Attachment paths"; single-line: true; color: Tokens.text; font-size: Tokens.small; }
                                 }
                                 Rectangle { width: 140px; height: 32px; background: Tokens.surface-2;
                                     Text { text: "Preview attachments"; color: Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
-                                    TouchArea { accessible-role: button; accessible-label: "Preview attachments"; clicked => { root.dismiss(); State.inject-attachments(State.attachment-injection-paths); } }
+                                    TouchArea { accessible-role: button; accessible-label: "Preview attachments"; clicked => { root.dismiss(); ExtensionState.inject-attachments(ExtensionState.attachment-injection-paths); } }
                                 }
                             }
-                            if State.demo-reset-enabled && !root.media-menu: Button { text: "Reset demo"; clicked => { root.dismiss(); State.demo-automation(DemoAutomation.reset); } }
-                            demo-marker := Text { text: "Synthetic interaction scenarios"; accessible-value: State.demo-instance; accessible-description: "Reset generation " + State.demo-reset-generation; color: Tokens.secondary; font-size: Tokens.small; }
+                            if ExtensionState.demo-reset-enabled && !root.media-menu: Button { text: "Reset demo"; clicked => { root.dismiss(); ExtensionState.demo-automation(DemoAutomation.reset); } }
+                            demo-marker := Text { text: "Synthetic interaction scenarios"; accessible-value: ExtensionState.demo-instance; accessible-description: "Reset generation " + ExtensionState.demo-reset-generation; color: Tokens.secondary; font-size: Tokens.small; }
                             VerticalLayout {
                                 visible: !root.media-menu; height: self.visible ? self.preferred-height : 0px;
                                 spacing: 8px; alignment: start;
@@ -97,12 +98,11 @@ export component DemoScenarios inherits Rectangle {
                                     HorizontalLayout {
                                         for scenario in row: Button {
                                             text: scenario.text; accessible-label: scenario.label;
-                                            accessible-description: self.has-focus ? "Focused" : "";
                                             horizontal-stretch: row.length == 1 ? 1 : 0;
                                             property <int> first-request: root.first-focus-request;
-                                            changed first-request => { if scenario.kind == 0 && State.demo-scenarios-open && !root.media-menu { self.focus(); } }
+                                            changed first-request => { if scenario.kind == 0 && ExtensionState.demo-scenarios-open && !root.media-menu { self.focus(); } }
                                             property <int> focus-request: root.last-focus-request;
-                                            changed focus-request => { if self.focus-request > 0 && State.demo-scenarios-open && scenario.kind == 17 { self.focus(); } }
+                                            changed focus-request => { if self.focus-request > 0 && ExtensionState.demo-scenarios-open && scenario.kind == 17 { self.focus(); } }
                                             changed has-focus => { if scenario.kind == 0 { root.first-scenario-focused = self.has-focus; } if scenario.kind == 17 { root.last-scenario-focused = self.has-focus; } }
                                             clicked => { if scenario.kind == -1 { root.media-focus-last = 0; root.media-last-focused = false; root.media-menu = true; close.focus(); } else { root.run(scenario.kind); } }
                                         }
@@ -112,13 +112,13 @@ export component DemoScenarios inherits Rectangle {
                             if root.media-menu: Rectangle {
                                 height: media-options.preferred-height;
                                 property <int> focus-last: root.media-focus-last;
-                                changed focus-last => { if self.focus-last > 0 && State.demo-scenarios-open && root.media-menu { media-last.focus(); } }
+                                changed focus-last => { if self.focus-last > 0 && ExtensionState.demo-scenarios-open && root.media-menu { media-last.focus(); } }
                                 media-options := VerticalLayout {
                                     spacing: 8px; alignment: start;
                                     Button { text: "Back to scenarios"; clicked => { root.media-menu = false; close.focus(); } }
                                     for label[index] in ["Media timeout", "Media network", "Media 404", "Media 403", "Media 500", "Media unsupported sender", "Media rejected path", "Media too large", "Media decode failure"]: Button { text: label; clicked => { root.run(20 + index); } }
                                     media-last := Button {
-                                        text: "Media cancelled"; accessible-description: self.has-focus ? "Focused" : "";
+                                        text: "Media cancelled";
                                         changed has-focus => { root.media-last-focused = self.has-focus; }
                                         clicked => { root.run(29); }
                                     }

@@ -57,12 +57,12 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let captured = events.clone();
         let weak = ui.as_weak();
-        ui.on_demo_event(move |kind| {
+        ui.global::<ExtensionState>().on_demo_event(move |kind| {
             assert!(
                 !weak
                     .upgrade()
                     .unwrap()
-                    .global::<State>()
+                    .global::<ExtensionState>()
                     .get_demo_scenarios_open()
             );
             captured.borrow_mut().push(kind);
@@ -78,12 +78,12 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
         for (width, height) in [(980., 720.), (760., 600.), (360., 520.)] {
             ui.window().set_size(slint::LogicalSize::new(width, height));
             ui.invoke_focus_search();
-            ui.set_demo(false);
+            ui.global::<ExtensionState>().set_demo(false);
             key("\u{f70f}"); // F12 is unavailable in account windows.
-            assert!(!ui.global::<State>().get_demo_scenarios_open());
-            ui.set_demo(true);
+            assert!(!ui.global::<ExtensionState>().get_demo_scenarios_open());
+            ui.global::<ExtensionState>().set_demo(true);
             key("\u{f70f}");
-            assert!(ui.global::<State>().get_demo_scenarios_open());
+            assert!(ui.global::<ExtensionState>().get_demo_scenarios_open());
             assert!(ui.global::<State>().get_modal_open());
             // Reverse Tab wraps to the final action; forward Tab returns to Close.
             ui.window().dispatch_event(WindowEvent::KeyPressed {
@@ -105,13 +105,13 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
                 key("\n");
                 if index == 2 {
                     // Media failures has a separate bounded scenario list.
-                    assert!(ui.global::<State>().get_demo_scenarios_open());
+                    assert!(ui.global::<ExtensionState>().get_demo_scenarios_open());
                     key("\t"); // Back
                     key("\t"); // First failure fixture
                     key("\n");
                 }
                 assert!(
-                    !ui.global::<State>().get_demo_scenarios_open(),
+                    !ui.global::<ExtensionState>().get_demo_scenarios_open(),
                     "scenario index {index}"
                 );
                 assert!(!ui.global::<State>().get_modal_open());
@@ -125,13 +125,13 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             );
             ui.invoke_focus_search();
             key("\u{f70f}");
-            assert!(ui.global::<State>().get_demo_scenarios_open());
+            assert!(ui.global::<ExtensionState>().get_demo_scenarios_open());
             key("\u{1b}");
             assert!(!ui.global::<State>().get_modal_open());
             // Escape restores the actual search target, with no intervening click.
             key("x");
-            assert_eq!(ui.get_query(), "x");
-            ui.set_query("".into());
+            assert_eq!(ui.global::<State>().get_query(), "x");
+            ui.global::<State>().set_query("".into());
         }
         ui.hide().unwrap();
     })
@@ -146,7 +146,8 @@ fn escape_busy_sign_in_requires_a_decision() {
         let ui = test_window();
         let cancelled = Rc::new(std::cell::Cell::new(0));
         let count = cancelled.clone();
-        ui.on_cancel_sign_in(move || count.set(count.get() + 1));
+        ui.global::<State>()
+            .on_cancel_sign_in(move || count.set(count.get() + 1));
         ui.global::<State>().set_panel(PanelState::SignIn);
         ui.global::<State>()
             .set_connection(ConnectionState::SigningIn);
@@ -161,7 +162,7 @@ fn escape_busy_sign_in_requires_a_decision() {
         key("\u{1b}");
         assert!(ui.global::<State>().get_auth_cancel_confirm());
         assert_eq!(cancelled.get(), 0);
-        assert!(ui.get_auth_busy());
+        assert!(ui.global::<State>().get_auth_busy());
         key("\n"); // Default action keeps waiting.
         assert!(!ui.global::<State>().get_auth_cancel_confirm());
         assert_eq!(cancelled.get(), 0);
@@ -181,25 +182,27 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
         let ui = test_window();
-        ui.set_demo(true);
-        ui.set_has_chat(true);
-        ui.set_show_conversation(true);
-        ui.set_chat_title("Preview conversation".into());
-        ui.set_profile_name("Preview contact".into());
-        ui.set_profile_available(true);
-        ui.set_messages(ModelRc::from(Rc::new(VecModel::from(vec![MessageRow {
-            body: "日本語の履歴 🐈\nThe reading surface stays usable.".into(),
-            id: "synthetic-profile-message".into(),
-            ..Default::default()
-        }]))));
+        ui.global::<State>().set_has_chat(true);
+        ui.global::<State>().set_show_conversation(true);
+        ui.global::<State>()
+            .set_chat_title("Preview conversation".into());
+        ui.global::<State>()
+            .set_profile_name("Preview contact".into());
+        ui.global::<State>().set_profile_available(true);
+        ui.global::<State>()
+            .set_messages(ModelRc::from(Rc::new(VecModel::from(vec![MessageRow {
+                body: "日本語の履歴 🐈\nThe reading surface stays usable.".into(),
+                id: "synthetic-profile-message".into(),
+                ..Default::default()
+            }]))));
         let draft = "日本語の下書き 🐈";
         ui.global::<State>().set_connection(ConnectionState::Online);
-        ui.set_draft(draft.into());
-        assert!(ui.get_can_send());
-        ui.set_draft("".into());
-        assert!(!ui.get_can_send());
-        ui.set_draft(draft.into()); // Programmatic restoration emits no typing event.
-        assert!(ui.get_can_send());
+        ui.global::<State>().set_draft(draft.into());
+        assert!(ui.global::<State>().get_can_send());
+        ui.global::<State>().set_draft("".into());
+        assert!(!ui.global::<State>().get_can_send());
+        ui.global::<State>().set_draft(draft.into()); // Programmatic restoration emits no typing event.
+        assert!(ui.global::<State>().get_can_send());
         ui.show().unwrap();
         ui.global::<State>().set_detail_depth(1);
         ui.global::<State>().set_panel(PanelState::Detail);
@@ -211,18 +214,18 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
                 ui.global::<State>().get_history_width() >= 300.,
                 "profile left an unusable reading width at {width}"
             );
-            assert_eq!(ui.get_draft(), draft);
-            assert!(ui.get_detail_open());
+            assert_eq!(ui.global::<State>().get_draft(), draft);
+            assert!(ui.global::<State>().get_detail_open());
         }
-        ui.invoke_close_profile();
-        assert!(!ui.get_detail_open());
-        assert_eq!(ui.get_draft(), draft);
+        ui.global::<State>().invoke_close_profile();
+        assert!(!ui.global::<State>().get_detail_open());
+        assert_eq!(ui.global::<State>().get_draft(), draft);
         ui.global::<State>().set_detail_depth(1);
         ui.global::<State>().set_panel(PanelState::Detail);
         ui.global::<State>().set_detail_depth(2);
         ui.global::<State>().set_detail_page(0);
         ui.invoke_focus_profile_close();
-        assert!(ui.get_member_profile());
+        assert!(ui.global::<State>().get_member_profile());
         use slint::private_unstable_api::re_exports::WindowInner;
         let focused = WindowInner::from_pub(ui.window())
             .focus_item

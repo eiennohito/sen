@@ -518,17 +518,18 @@ impl DeltaSender {
         true
     }
 }
+#[cfg_attr(not(feature = "demo"), derive(Default))]
 pub struct WorkerOptions {
     pub timing: Timing,
     /// Project output on its publishing worker, before enqueueing or waking the UI.
     #[cfg(feature = "demo")]
     pub project: Arc<dyn Fn(Delta) -> Delta + Send + Sync>,
 }
+#[cfg(feature = "demo")]
 impl Default for WorkerOptions {
     fn default() -> Self {
         Self {
             timing: Timing::default(),
-            #[cfg(feature = "demo")]
             project: Arc::new(|delta| delta),
         }
     }

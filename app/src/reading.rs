@@ -249,6 +249,8 @@ pub(crate) fn return_anchor(
 mod tests {
     use super::*;
     use crate::ChatCategory;
+    use crate::State;
+    use slint::ComponentHandle;
 
     #[test]
     fn exposing_hidden_incoming_events_clears_the_chat_badge() {
@@ -303,7 +305,8 @@ mod tests {
             presenter.install(&ui);
             presenter.present(&ui, &state, "", ChatCategory::All);
             assert!(
-                ui.get_chats()
+                ui.global::<State>()
+                    .get_chats()
                     .iter()
                     .any(|row| row.id == "alice" && row.unread == 1)
             );
@@ -332,7 +335,12 @@ mod tests {
                 );
             }
             presenter.present(&ui, &state, "", ChatCategory::All);
-            let row = ui.get_chats().iter().find(|row| row.id == "alice").unwrap();
+            let row = ui
+                .global::<State>()
+                .get_chats()
+                .iter()
+                .find(|row| row.id == "alice")
+                .unwrap();
             assert_eq!(row.unread, 0);
             assert!(!row.unread_unknown);
         })

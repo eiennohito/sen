@@ -42,7 +42,7 @@ export component Members inherits FocusScope {
         if State.detail-error != "": Text { text: State.detail-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
         list := FocusScope {
             accessible-role: AccessibleRole.list; accessible-label: "Group members";
-            accessible-description: self.has-focus && self.enabled && self.visible ? "Focused" : "";
+
             key-pressed(event) => {
                 if State.ime-active { return reject; }
                 if event.text == Key.UpArrow { root.selected = max(0, root.selected - 1); root.reveal(); return accept; }

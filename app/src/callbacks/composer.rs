@@ -59,36 +59,36 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             });
         }
     });
-    callback!(ui, actions, on_draft_edited, |ui, d| {
+    global_callback!(ui, actions, on_draft_edited, |ui, d| {
         d.capture_draft(&ui);
     });
-    callback!(ui, actions, on_send, |ui, d| {
-        d.state.composer = ui.get_draft().to_string();
+    global_callback!(ui, actions, on_send, |ui, d| {
+        d.state.composer = ui.global::<State>().get_draft().to_string();
         if let Some(intent) = d.state.submit() {
             d.sender.send(intent);
             d.render(&ui);
         }
     });
-    callback!(ui, actions, on_retry_message, |_ui, d, id| {
+    global_callback!(ui, actions, on_retry_message, |_ui, d, id| {
         let Some(key) = super::message_key(&id) else {
             return;
         };
         d.sender.send(Intent::Retry(key));
     });
-    callback!(ui, actions, on_resolve_recovery, |ui, d, action| {
-        let id = ui.get_recovery_id();
+    global_callback!(ui, actions, on_resolve_recovery, |ui, d, action| {
+        let id = ui.global::<State>().get_recovery_id();
         let Some(key) = super::message_key(&id) else {
             return;
         };
-        let kind = ui.get_recovery_kind();
-        ui.set_recovery_kind(RecoveryKind::None);
+        let kind = ui.global::<State>().get_recovery_kind();
+        ui.global::<State>().set_recovery_kind(RecoveryKind::None);
         if action == RecoveryAction::Cancel || kind == RecoveryKind::Unsend {
             ui.invoke_focus_history();
-            ui.set_recovery_focus_id(id.clone());
-            ui.set_recovery_focus_action(kind);
+            ui.global::<State>().set_recovery_focus_id(id.clone());
+            ui.global::<State>().set_recovery_focus_action(kind);
         }
         if action == RecoveryAction::Unsend {
-            ui.set_unsend_feedback_id("".into());
+            ui.global::<State>().set_unsend_feedback_id("".into());
             d.sender.send(Intent::Unsend(key));
         }
         if action == RecoveryAction::Replace {
@@ -99,22 +99,24 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             let Some(m) = d.state.messages.get(&key) else {
                 return;
             };
-            d.state.composer = format!("{}\n{}", ui.get_draft(), m.body.as_text());
-            ui.set_draft(d.state.composer.clone().into());
+            d.state.composer =
+                format!("{}\n{}", ui.global::<State>().get_draft(), m.body.as_text());
+            ui.global::<State>()
+                .set_draft(d.state.composer.clone().into());
             d.capture_draft(&ui);
             ui.invoke_restore_editor(d.state.composer.len() as i32, d.state.composer.len() as i32);
             ui.invoke_focus_composer();
         }
     });
-    callback!(ui, actions, on_recover_message, |ui, d, id| {
+    global_callback!(ui, actions, on_recover_message, |ui, d, id| {
         let Some(key) = super::message_key(&id) else {
             return;
         };
-        if ui.get_draft().is_empty() {
+        if ui.global::<State>().get_draft().is_empty() {
             d.sender.send(Intent::Copy(key));
         } else {
-            ui.set_recovery_id(id);
-            ui.set_recovery_kind(RecoveryKind::Edit);
+            ui.global::<State>().set_recovery_id(id);
+            ui.global::<State>().set_recovery_kind(RecoveryKind::Edit);
         }
     });
     global_callback!(ui, actions, on_discard_message, |_ui, d, id| {
