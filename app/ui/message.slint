@@ -1,5 +1,4 @@
-import { RecoveryKind } from "globals.slint";
-import { ComposerState, ContentState, ConversationState, DetailState, ShellState, ViewerState } from "globals.slint";
+import { RecoveryKind, ComposerState, ContentState, ConversationState, DetailState, ShellState, ViewerState } from "globals.slint";
 import { Pressable, FocusRing, Button } from "button.slint";
 import { DeliveryState, HistoryRowKind, MessageRow, MessageKind, RunPosition } from "types.slint";
 import { ReactionChip } from "reaction-chip.slint";
@@ -63,8 +62,8 @@ export component Message inherits TouchArea {
         bubble-background.border-bottom-right-radius: root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.first ? 4px : 16px;
         time-gutter: Tokens.time * 4.8; bubble-surface: Tokens.outgoing-bubble; body-color: Tokens.outgoing-foreground;
         reaction-x: min(0px, message-bubble.width - 216px);
-        time-slot.x: root.bubble-x - time-slot.width - 4px;
-        message-actions.x: (root.shows-time ? time-slot.x : root.bubble-x) - message-actions.width - 4px;
+        time-slot.x: root.bubble-x - time-slot.width - Tokens.space-1;
+        message-actions.x: (root.shows-time ? time-slot.x : root.bubble-x) - message-actions.width - Tokens.space-1;
     } ]
     property <length> bubble-limit: max(Tokens.bubble-min, min(Tokens.bubble-max, root.width - root.avatar-gutter - root.time-gutter - Tokens.space-6 - Tokens.space-4 - Tokens.space-1));
     property <bool> shows-time: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last;
@@ -315,7 +314,7 @@ export component Message inherits TouchArea {
     // Time appears once at the end of a run, beside the
     // bubble. Time and status use their content width without adding a row.
     time-slot := Rectangle {
-        visible: !root.system-item; x: root.bubble-x + message-bubble.width + 4px;
+        visible: !root.system-item; x: root.bubble-x + message-bubble.width + Tokens.space-1;
         y: root.bubble-bottom - self.height; width: root.shows-time ? time-content.preferred-width : 0px;
         height: max(16px, Tokens.time * 1.4);
         time-content := HorizontalLayout {
@@ -334,7 +333,7 @@ export component Message inherits TouchArea {
         }
     }
     message-actions := Rectangle {
-        x: (root.shows-time ? time-slot.x + time-slot.width : root.bubble-x + message-bubble.width) + 4px; y: root.bubble-bottom - self.height;
+        x: (root.shows-time ? time-slot.x + time-slot.width : root.bubble-x + message-bubble.width) + Tokens.space-1; y: root.bubble-bottom - self.height;
         width: 58px; height: 28px;
         react-button := IconButton {
             key-event(event) => {
