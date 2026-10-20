@@ -1,6 +1,7 @@
 import { ExtensionState } from "@demo/demo-state.slint";
 import { ReadingGeometry, ReadingViewport, ComposerMode, DetailPageMode, RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 export global State {
+    in-out property <bool> keyboard-navigation;
     in-out property <[ReactionRow]> reaction-kinds;
     in-out property <MessageRow> composer-reply;
     callback reply(string);

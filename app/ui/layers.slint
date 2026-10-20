@@ -254,7 +254,7 @@ export component Layers inherits Rectangle {
                 visible: State.detail-dialog == DetailAction.rename; height: self.visible ? 36px : 0px;
                 border-radius: 8px; background: Tokens.surface-2;
                 rename-value := TextInput { x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name"; }
-                FocusRing { outset: 4px; focused: rename-value.has-focus; }
+                FocusRing { outset: 4px; text-entry: true; focused: rename-value.has-focus; }
             }
             if State.detail-dialog == DetailAction.leave: Text { text: "You will no longer receive messages in this group."; wrap: word-wrap; }
             HorizontalLayout { alignment: end; spacing: 8px;

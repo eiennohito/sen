@@ -1,4 +1,4 @@
-import { Pressable } from "button.slint";
+import { Pressable, FocusRing } from "button.slint";
 import { RichRun } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -55,6 +55,7 @@ export component RichFlow inherits Rectangle {
                 visible: run.link-first;
                 accessible-label: "Open link " + run.url; accessible-description: run.url;
                 activated => { State.open-link(run.url); }
+                FocusRing { focused: parent.has-focus; border-radius: 0px; border-color: Tokens.accent; }
             }
             TouchArea {
                 mouse-cursor: pointer;

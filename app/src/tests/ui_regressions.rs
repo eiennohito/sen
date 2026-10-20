@@ -1,6 +1,226 @@
 use super::*;
 
 #[test]
+fn keyboard_rings_follow_buttons_and_whole_friend_rows() {
+    std::thread::spawn(|| {
+        use i_slint_backend_testing::ElementHandle;
+        use i_slint_core::{
+            item_tree::{ItemRc, ParentItemTraversalMode},
+            items::{BasicBorderRectangle, Clip},
+        };
+        use slint::platform::{Key, PointerEventButton, WindowEvent};
+        use slint::private_unstable_api::re_exports::WindowInner;
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = test_window();
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(980., 720.));
+        let g = ui.global::<State>();
+        let weak = ui.as_weak();
+        g.on_open_new_chat(move || {
+            weak.upgrade()
+                .unwrap()
+                .global::<State>()
+                .set_new_chat_open(true)
+        });
+        g.set_new_chat_friends(
+            Rc::new(VecModel::from(vec![ComposeFriend {
+                id: "friend".into(),
+                name: "Friend".into(),
+                ..Default::default()
+            }]))
+            .into(),
+        );
+        let toggled = Rc::new(std::cell::Cell::new(0));
+        let recorded = toggled.clone();
+        g.on_new_chat_toggle(move |id| {
+            assert_eq!(id, "friend");
+            recorded.set(recorded.get() + 1);
+        });
+        let control = |label| {
+            ElementHandle::find_by_accessible_label(&ui, label)
+                .find(|item| {
+                    item.accessible_role() != Some(i_slint_backend_testing::AccessibleRole::Text)
+                })
+                .unwrap()
+        };
+        let key = |text: slint::SharedString| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        };
+        let rings = || {
+            slint::platform::update_timers_and_animations();
+            let mut borders = Vec::new();
+            ItemRc::new_root(WindowInner::from_pub(ui.window()).component()).visit_descendants(
+                |item| {
+                    if item.is_visible()
+                        && let Some(rect) = item.downcast::<BasicBorderRectangle>()
+                    {
+                        let rect = rect.as_pin_ref();
+                        if rect.border_width().get() > 0. {
+                            borders.push(item.clone());
+                        }
+                    }
+                    std::ops::ControlFlow::<()>::Continue(())
+                },
+            );
+            borders
+        };
+        let surrounds = |label, baseline: &[ItemRc]| {
+            let element = control(label);
+            let p = element.absolute_position();
+            let s = element.size();
+            rings()
+                .iter()
+                .filter(|item| !baseline.contains(item))
+                .any(|item| {
+                    let origin = item.map_to_window(Default::default());
+                    let size = item.geometry().size;
+                    origin.x <= p.x
+                        && origin.y <= p.y
+                        && origin.x + size.width >= p.x + s.width
+                        && origin.y + size.height >= p.y + s.height
+                })
+        };
+        control("New chat").mock_single_click(PointerEventButton::Left);
+        control("Friend").mock_single_click(PointerEventButton::Left);
+        let row_baseline = rings();
+        control("Find friends for new chat").mock_single_click(PointerEventButton::Left);
+        assert!(
+            surrounds("Find friends for new chat", &row_baseline),
+            "clicked text field has no border"
+        );
+        let field_baseline = rings();
+        assert_eq!(
+            field_baseline
+                .iter()
+                .filter(|item| !row_baseline.contains(item))
+                .count(),
+            1
+        );
+        key("f".into());
+        assert_eq!(rings(), field_baseline, "typing added a ring after a click");
+        key(Key::Backspace.into());
+        key(Key::Escape.into());
+        control("New chat").mock_single_click(PointerEventButton::Left);
+        let dialog_baseline = rings();
+        key(Key::Escape.into());
+        control("Find a conversation").mock_single_click(PointerEventButton::Left);
+        let main_baseline = rings();
+        ui.invoke_focus_search();
+        key(Key::Tab.into());
+        key(Key::Tab.into());
+        assert_eq!(focus_label(&ui), "New chat");
+        assert!(surrounds("New chat", &main_baseline));
+        key(Key::Return.into());
+        assert!(
+            surrounds("Find friends for new chat", &row_baseline),
+            "keyboard opening lost the ring"
+        );
+        key(Key::Escape.into());
+        assert!(
+            surrounds("Find a conversation", &row_baseline),
+            "keyboard dismissal lost the ring"
+        );
+        control("New chat").mock_single_click(PointerEventButton::Left);
+        assert_eq!(rings(), dialog_baseline, "pointer opening left a ring");
+        key(Key::Tab.into());
+        assert_eq!(focus_label(&ui), "Friend");
+        let row = ElementHandle::find_by_element_type_name(&ui, "ListRow")
+            .next()
+            .unwrap();
+        assert!(
+            control("Friend").size().width >= row.size().width,
+            "checkbox remained an inner stop"
+        );
+        assert!(
+            surrounds("Friend", &dialog_baseline),
+            "friend row did not ring as a whole"
+        );
+        for ring in rings()
+            .iter()
+            .filter(|item| !dialog_baseline.contains(item))
+        {
+            let bounds = ring.geometry().size;
+            let p = ring.map_to_window(Default::default());
+            let mut ancestor = ring.parent_item(ParentItemTraversalMode::StopAtPopups);
+            let mut clipped = false;
+            while let Some(item) = ancestor {
+                if let Some(clip) = item.downcast::<Clip>()
+                    && clip.as_pin_ref().clip()
+                {
+                    clipped = true;
+                    let origin = item.map_to_window(Default::default());
+                    let size = item.geometry().size;
+                    assert!(
+                        p.x >= origin.x
+                            && p.y >= origin.y
+                            && p.x + bounds.width <= origin.x + size.width
+                            && p.y + bounds.height <= origin.y + size.height,
+                        "row ring extends outside its clip"
+                    );
+                }
+                ancestor = item.parent_item(ParentItemTraversalMode::StopAtPopups);
+            }
+            assert!(clipped, "row ring has no Pane clip");
+        }
+        control("Friend").mock_single_click(PointerEventButton::Left);
+        assert_eq!(rings(), row_baseline, "pointer row selection left a ring");
+        for modifier in [
+            Key::Shift,
+            Key::ShiftR,
+            Key::Control,
+            Key::ControlR,
+            Key::Alt,
+            Key::AltGr,
+            Key::Meta,
+            Key::MetaR,
+            Key::CapsLock,
+        ] {
+            ui.window().dispatch_event(WindowEvent::KeyPressed {
+                text: modifier.into(),
+            });
+            assert_eq!(
+                rings(),
+                row_baseline,
+                "modifier alone added a ring: {modifier:?}"
+            );
+            if matches!(
+                modifier,
+                Key::Control | Key::ControlR | Key::Meta | Key::MetaR
+            ) {
+                key("c".into());
+                assert_eq!(rings(), row_baseline, "chord added a ring: {modifier:?}");
+            }
+            ui.window().dispatch_event(WindowEvent::KeyReleased {
+                text: modifier.into(),
+            });
+            assert_eq!(rings(), row_baseline);
+        }
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Alt.into(),
+        });
+        key(Key::LeftArrow.into());
+        ui.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Alt.into(),
+        });
+        assert!(
+            surrounds("Friend", &row_baseline),
+            "Alt+arrow did not enable rings"
+        );
+        toggled.set(0);
+        key(" ".into());
+        key(Key::Return.into());
+        assert_eq!(toggled.get(), 2);
+        key(Key::Tab.into());
+        assert_eq!(focus_label(&ui), "Cancel", "row gained an inner Tab stop");
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
 fn new_contact_header_uses_friends_cached_avatar_before_send() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
