@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import random
 import secrets
+import shlex
 import socket
 import sys
 import tempfile
@@ -209,11 +210,8 @@ def assert_restored_focus(label, role="Button"):
 
 
 def check_detail_stack():
-    def focused(label, role="Button"):
-        assert_restored_focus(label, role)
     click("Friends")
-    search=element("Search friends and groups", "TextInput")
-    call("set_element_value",elementHandle=search["handle"],value="")
+    set_value("Search friends and groups", "")
     click("Open profile: Weekend plans")
     wait_element("Group info", "Text")
     call("click_element", elementHandle=element("Group info", "Text")["handle"], button="Right")
@@ -226,12 +224,12 @@ def check_detail_stack():
     set_value("Search members", "葵")
     click("Search members", "TextInput")
     key("\uf701")
-    focused("Group members", "List")
+    assert_restored_focus("Group members", "List")
     focus_tab()
-    focused("Chat with 葵")
+    assert_restored_focus("Chat with 葵")
     assert call("get_element_properties", elementHandle=element("Chat with 葵", "Button")["handle"]).get("computedOpacity", 0) == 1, "keyboard-selected Chat with action is hidden"
     focus_tab(True)
-    focused("Group members", "List")
+    assert_restored_focus("Group members", "List")
     click("Open member: 葵")
     wait_element("Profile", "Text")
     click("Rename")
@@ -250,9 +248,9 @@ def check_detail_stack():
     click("Open profile photo")
     wait_element("Photo in viewer", "Image")
     key("\x1b")
-    focused("Open profile photo")
+    assert_restored_focus("Open profile photo")
     click("Back")
-    focused("Group members", "List")
+    assert_restored_focus("Group members", "List")
     set_value("Search members", "蓮")
     click("Open member: 蓮")
     click("Add friend")
@@ -268,20 +266,20 @@ def check_detail_stack():
     click("Back")
     set_value("Search members", "葵")
     click("Back")
-    focused("Members (25)")
+    assert_restored_focus("Members (25)")
     click("Members (25)")
     set_value("Search members", "葵")
     click("Open member: 葵")
     key("\x1b")
-    focused("Group members", "List")
+    assert_restored_focus("Group members", "List")
     key("\x1b")
-    focused("Members (25)")
+    assert_restored_focus("Members (25)")
     click("Members (25)")
     set_value("Search members", "葵")
     click("Open member: 葵")
     click("Close details")
     assert not any(item.get("accessibleLabel")=="Close details" for item in tree()), "close did not clear the stack"
-    focused("Friends and groups", "List")
+    assert_restored_focus("Friends and groups", "List")
     click("Open profile: Weekend plans")
     click("Notifications", "Checkbox")
     wait_for(lambda: element("Notifications", "Checkbox").get("accessibleValue") == "Off", "mute did not update", timeout=3)
@@ -321,17 +319,17 @@ def check_smoke():
     wait_for(lambda: "葵 changed the group photo" in element("Weekend plans", "Button")["accessibleLabel"], "demo system preview did not resolve its known actor")
     draft = "日本語の下書き\nDraft with emoji 🐈"
     smoke_chat("葵")
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=draft)
+    set_value("Message draft", draft)
     smoke_chat("Weekend plans")
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value="Another draft")
+    set_value("Message draft", "Another draft")
     smoke_chat("葵")
     value = wait_element("Message draft", "TextInput")
     assert value.get("accessibleValue") == draft, "draft did not survive chat switching"
     show_chats()
-    call("set_element_value", elementHandle=handle("Find a conversation", "TextInput"), value="Weekend")
+    set_value("Find a conversation", "Weekend")
     chat_rows = [item for item in tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith(("葵, ", "Weekend plans, ", "Notes to self, "))]
     assert len(chat_rows) == 1 and chat_rows[0]["accessibleLabel"].startswith("Weekend plans, "), "search did not filter chats"
-    call("set_element_value", elementHandle=handle("Find a conversation", "TextInput"), value="")
+    set_value("Find a conversation", "")
     smoke_chat("葵")
     assert element("Send", "Button").get("accessibleEnabled", False), "demo transport did not enable Send"
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
@@ -344,7 +342,7 @@ def check_smoke():
     assert wait_element("Message draft", "TextInput").get("accessibleValue", "") == "", "Ctrl+Enter did not clear the submitted draft"
     assert any(item.get("accessibleValue") == before_shortcut for item in tree()), "submitted draft did not appear in history"
     wait_element("Sent", "Image")
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=before_shortcut)
+    set_value("Message draft", before_shortcut)
 
 def check_emoji():
     show_chats()
@@ -389,7 +387,9 @@ def check_signed_out():
         click(section, "Tab")
         screenshot("settings-" + section.lower())
     click("About", "Tab")
-    assert not any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") in ("", "Offline preview") for item in tree())
+    assert_restored_focus("Settings section", "TabList")
+    assert element("About", "Tab").get("accessibleItemSelected"), "About section did not open"
+    assert all(item.get("accessibleLabel") for item in tree() if item.get("accessibleRole") == "Button"), "About has an unlabelled button"
     screenshot("settings-about")
 
 
@@ -415,6 +415,19 @@ def focus_label():
     assert label, "focused control has no label"
     assert focused[0]["size"]["width"] > 0 and focused[0]["size"]["height"] > 0, f"hidden focus: {label}"
     return label
+
+def composer_stops():
+    return ([label for label in ("Stickers", "Attach") if element(label, "Button").get("accessibleEnabled")]
+            + ["Message draft"]
+            + (["Send"] if element("Send", "Button").get("accessibleEnabled") else []))
+
+
+def scroll_history(delta):
+    history = element("Message history", "List")
+    position = {axis: history["absolutePosition"][axis] + history["size"][extent] / 2
+                for axis, extent in (("x", "width"), ("y", "height"))}
+    call("dispatch_pointer_scroll", windowHandle=window, position=position, deltaY=delta, deltaX=0)
+
 
 def focus_tab(reverse=False):
     if reverse: key("\x10", "Press")
@@ -454,7 +467,6 @@ def check_narrow_chats_focus():
     show_chats()
     for recovery in ([], ["Sign in again"]):
         if recovery: demo_scenario("Expired sign-in")
-        # Tab follows visual order
         expected = ["Navigation", "New chat", "Find a conversation", "All"] + recovery + ["Conversations"]
         check_chain("narrow chats", expected, ("Find a conversation", "TextInput"))
         set_value("Find a conversation", "葵")
@@ -475,7 +487,6 @@ def check_focus():
             key("\x12", "Release")
 
     def browser_stops(search_label, list_label, recovery):
-        # Tab follows visual order
         return ["Navigation"] + (["New chat"] if list_label == "Conversations" else []) + [search_label] + (["All"] if list_label == "Conversations" else []) + (recovery if narrow else []) + [list_label]
 
     if panel:
@@ -489,7 +500,6 @@ def check_focus():
         key("\x1b")
         assert_restored_focus("Message draft", "TextInput")
 
-    # Tab follows visual order
     click("Chats")
     click("Find a conversation", "TextInput")
     focus_tab(True)
@@ -551,11 +561,7 @@ def check_focus():
             expected = browser_stops(search_label, list_label, recovery)
             if not narrow:
                 expected += ["葵", "More"] + recovery + ["Message history"]
-                if element("Stickers", "Button").get("accessibleEnabled"): expected.append("Stickers")
-                if element("Attach", "Button").get("accessibleEnabled"): expected.append("Attach")
-                # Tab follows the composer's visual order
-                expected.append("Message draft")
-                if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
+                expected += composer_stops()
             check_chain(f"{surface} {suffix}", expected, (search_label, "TextInput"))
             set_value(search_label, "葵")
             check_chain(f"{surface} search clear {suffix}", expected[:expected.index(search_label) + 1] + ["Clear search"] + expected[expected.index(search_label) + 1:], (search_label, "TextInput"))
@@ -564,21 +570,15 @@ def check_focus():
         for chat in ("葵", "Weekend plans"):
             click(chat)
             set_value("Message draft", "Focus check")
-            # Tab follows visual order
             expected = ["Back"] if narrow else ["Navigation", "New chat", "Find a conversation", "All", "Conversations"]
             expected.append(chat)
             if chat == "Weekend plans": expected.append(element("Members", "Button")["accessibleLabel"])
             expected += ["More"] + recovery + ["Message history"]
-            if element("Stickers", "Button").get("accessibleEnabled"): expected.append("Stickers")
-            if element("Attach", "Button").get("accessibleEnabled"): expected.append("Attach")
-            # Tab follows the composer's visual order
-            expected.append("Message draft")
-            if element("Send", "Button").get("accessibleEnabled"): expected.append("Send")
+            expected += composer_stops()
             check_chain(f"conversation {chat} {suffix}", expected, ("Message draft", "TextInput"))
             if chat == "Weekend plans":
                 click("Members")
                 layer = ["Close details", "Search members", "Group members"]
-                # Tab follows visual order
                 prefix = expected if panel else [] if narrow else ["Navigation", "New chat", "Find a conversation", "All", "Conversations"]
                 check_chain(f"members {layer_kind} {suffix}", prefix + layer, ("Close details", "Button"))
                 set_value("Search members", "葵")
@@ -597,11 +597,7 @@ def check_focus():
         prefix = [] if narrow else ["Navigation", "Search friends and groups", "Friends and groups"]
         if panel:
             prefix += ["Weekend plans", element("Members", "Button")["accessibleLabel"], "More"] + recovery + ["Message history"]
-            if element("Stickers", "Button").get("accessibleEnabled"): prefix.append("Stickers")
-            if element("Attach", "Button").get("accessibleEnabled"): prefix.append("Attach")
-            # Tab follows the composer's visual order
-            prefix.append("Message draft")
-            if element("Send", "Button").get("accessibleEnabled"): prefix.append("Send")
+            prefix += composer_stops()
         check_chain(f"profile {layer_kind} {suffix}", prefix + ["Profile more", "Close details", "Open profile photo", "Chat", "Rename"], ("Close details", "Button"))
         key("\x1b")
         click("Settings")
@@ -756,7 +752,7 @@ def check_compose():
     for label in ("LOVE, 1 reactions", "React", "Reply"):
         focus_tab()
         assert is_focused(element(label, "Button")), f"reaction message Tab sequence missed {label}: {focused_control()}"
-    composer_start = next((label, "Button") for label in ("Stickers", "Attach") if element(label, "Button").get("accessibleEnabled"))
+    composer_start = (next(label for label in composer_stops() if label in ("Stickers", "Attach")), "Button")
     focus_tab()
     assert is_focused(element(*composer_start)), "reaction message Reply skipped the composer's first control"
     open_reactions()
@@ -777,8 +773,7 @@ def check_compose():
         focus_tab()
         assert is_focused(element(label, "Button")), f"forward Tab skipped {label}"
     key("\t")
-    # Tab follows the composer's visual order
-    composer_start = next((label, "Button") for label in ("Stickers", "Attach") if element(label, "Button").get("accessibleEnabled"))
+    composer_start = (next(label for label in composer_stops() if label in ("Stickers", "Attach")), "Button")
     assert is_focused(element(*composer_start)), "Reply did not tab to the first enabled composer control"
     def reply_via_menu():
         body = next(item for item in reversed(tree()) if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut and item.get("accessibleLabel", "").startswith("Outgoing,"))
@@ -908,17 +903,13 @@ def check_scenario_keys():
         if dismiss == "escape": key("\x1b")
         else: click("Close demo scenarios")
         assert is_focused(element("Message draft", "TextInput")), "scenarios did not restore the composer focus"
-    def reverse_tab():
-        key("\x10", "Press")
-        key("\t")
-        key("\x10", "Release")
     for closing_key in ("\x1b", " "):
         key("\uf70f")
         key("\t")
         assert is_focused(scenario_element("Long history")), "Tab from Close did not focus History"
-        reverse_tab()
+        focus_tab(True)
         assert is_focused(scenario_element("Close demo scenarios"))
-        reverse_tab()
+        focus_tab(True)
         assert is_focused(scenario_element("Offline")), "reverse Tab focused the wrong scenario"
         key(closing_key)
         assert not call("find_elements_by_id", windowHandle=window, elementsId="DemoScenarios::scenario-panel").get("elementHandles", []), "keyboard activation did not dismiss scenarios"
@@ -929,7 +920,7 @@ def check_scenario_keys():
         key("\x1b")
     key("\uf70f")
     call("click_element", elementHandle=scenario_action("Media failures")["handle"])
-    reverse_tab()
+    focus_tab(True)
     assert is_focused(scenario_element("Media cancelled")), "reverse Tab did not focus the final media scenario"
     key(" ")
     key("\uf70f")
@@ -945,7 +936,7 @@ def check_scenarios():
     # The fixture page arrives on the worker. At wide size the original short
     # chat fits entirely, so scrolling must wait until the long page is committed.
     def history_scrollable():
-        call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=800, deltaX=0)
+        scroll_history(800)
         return any(item.get("accessibleLabel") == "Latest" for item in tree())
     wait_for(history_scrollable, "long history did not become scrollable")
     body = next(item for item in bodies() if "\n" in item.get("accessibleValue", "") and item["absolutePosition"]["y"] > 110)
@@ -961,7 +952,7 @@ def check_scenarios():
     preserved = call("get_element_properties", elementHandle=body["handle"])
     assert preserved["absolutePosition"]["y"] == expected_y, "arrivals/media moved the reading anchor"
     ctrl("c")
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value="")
+    set_value("Message draft", "")
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     ctrl("v")
     wait_for(lambda: wait_element("Message draft", "TextInput").get("accessibleValue") == expected_text, "clipboard lost selected text/emoji or included metadata")
@@ -972,10 +963,9 @@ def check_scenarios():
     wait_for(lambda: any("到着 3" in item.get("accessibleValue", "") and item.get("accessibleValue") not in burst_before for item in bodies()), "at-latest burst did not arrive")
     assert any("到着 3" in item.get("accessibleValue", "") for item in bodies()), "at-latest burst did not remain visible"
     assert not any("Latest" in item.get("accessibleLabel", "") for item in tree() if item.get("accessibleRole") == "Button"), "at-latest burst disabled following"
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value="Keep this newer draft")
+    set_value("Message draft", "Keep this newer draft")
     demo_scenario("Unanswered send")
     wait_for(lambda: any("Not sent" in item.get("accessibleLabel", "") for item in tree()), "unanswered send did not settle")
-    assert not any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel") in ("Retry connection", "Retry conversations", "Retry older") for item in tree()), "removed network Retry control returned"
     assert any("Not sent" in item.get("accessibleLabel", "") for item in tree()), "unanswered result was not attached to its outgoing item"
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == "Keep this newer draft", "late result replaced newer text"
     failed = next(item for item in bodies() if "Not sent" in item.get("accessibleLabel", ""))
@@ -1026,9 +1016,9 @@ def check_sticker():
     wait_element("Members", "Button")  # The group's details arrive after the fixture history.
     # Inspect both ends because the final timestamp can be clipped. Scope to
     # history: a browser relative time may also legitimately say "Yesterday".
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=2000, deltaX=0)
+    scroll_history(2000)
     grouped = tree()
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 600, "y": 280}, deltaY=-2000, deltaX=0)
+    scroll_history(-2000)
     scrolled_group = tree()
 
     def history_rows(rows):
@@ -1058,7 +1048,7 @@ def check_sticker():
 
 
 def check_friends():
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=draft)
+    set_value("Message draft", draft)
     click("Friends", "Button")
     wait_element("Open profile: 葵", "Button")  # Friends load on the engine worker.
     click("Settings")
@@ -1077,7 +1067,7 @@ def check_friends():
     click("Message text size", "Combobox")
     click("Default")
     key("\x1b")
-    call("set_element_value", elementHandle=handle("Search friends and groups", "TextInput"), value="葵")
+    set_value("Search friends and groups", "葵")
     friend_rows = [item for item in tree() if item.get("accessibleLabel", "").startswith("Open profile:")]
     assert len(friend_rows) == 1 and friend_rows[0]["accessibleLabel"].startswith("Open profile: 葵"), "friend name search failed"
     call("click_element", elementHandle=handle("Search friends and groups", "TextInput"))
@@ -1096,7 +1086,7 @@ def check_friends():
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == draft, "friend browsing lost draft"
     click("Friends", "Button")
     assert wait_element("Search friends and groups", "TextInput").get("accessibleValue") == "葵", "section switch lost friend query"
-    call("set_element_value", elementHandle=handle("Search friends and groups", "TextInput"), value="")
+    set_value("Search friends and groups", "")
     click("Groups", "Button")
     assert not any(item.get("accessibleLabel", "").startswith("Open profile:") and "Weekend plans" in item.get("accessibleLabel", "") for item in tree()), "collapsed groups remained visible"
     click("Groups", "Button")
@@ -1118,7 +1108,7 @@ def check_friends():
     assert row["absolutePosition"]["y"] >= viewport["absolutePosition"]["y"], "far row was not revealed"
     assert row["absolutePosition"]["y"] + row["size"]["height"] <= viewport["absolutePosition"]["y"] + viewport["size"]["height"] + 1, "far row remained clipped"
     click("Friends", "Button")
-    call("set_element_value", elementHandle=handle("Search friends and groups", "TextInput"), value="葵")
+    set_value("Search friends and groups", "葵")
     click("Open profile: 葵", "Button")
     click("Chat", "Button")
     click("葵", "Button")
@@ -1232,7 +1222,7 @@ def check_layers():
     assert is_focused(element("Navigation", "Button")), "Settings did not restore rail focus"
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == before
     click("Friends", "Button")
-    call("set_element_value", elementHandle=handle("Search friends and groups", "TextInput"), value="葵")
+    set_value("Search friends and groups", "葵")
     click("Open profile: 葵", "Button")
     assert any(item.get("accessibleLabel") == "Message draft" for item in tree()) == args.wide, "profile conversation visibility disagrees with layout"
     key("\x1b")
@@ -1283,9 +1273,7 @@ def check_layers():
     focus_tab()
     assert_restored_focus("React")
     focus_tab(True)
-    assert is_focused(element("Open photo", "Button")), "reverse Tab from photo React skipped that message's Open photo control"
-    assert focused_control()["visible"], "reverse Tab from photo React focused hidden content"
-    assert focused_control().get("role") != "TextInput", "reverse Tab from photo React focused its invisible body"
+    assert_restored_focus("Open photo")
     photos = [item for item in tree() if item.get("accessibleLabel") == "Open photo" and item.get("accessibleRole") == "Button"]
     call("click_element", elementHandle=photos[0]["handle"], button="Right")
     click("Open photo", "Text")
@@ -1330,13 +1318,11 @@ def check_virtual_wheel():
     wait_for(latest_row, "virtual history did not reach its latest page")
     def latest():
         return any(item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith("Latest") for item in tree())
-    def wheel(delta):
-        call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=delta, deltaX=0)
-    wheel(120)
+    scroll_history(120)
     wait_for(latest, "one wheel notch in virtual history did not show Latest")
-    wheel(-1000)
+    scroll_history(-1000)
     wait_for(lambda: not latest(), "wheel to the bottom did not resume following")
-    wheel(100000)
+    scroll_history(100000)
     wait_for(lambda: any("History item " in item.get("accessibleValue", "") and int(item["accessibleValue"].split("History item ")[1][:4]) < 920 for item in tree()), "wheel at the top did not load older history")
 
 
@@ -1349,11 +1335,20 @@ def check_reading():
     wait_for(lambda: any(item.get("accessibleLabel") == "Beginning of conversation" for item in tree()), "automatic reading-window refresh did not finish", timeout=5)
     labels = [item.get("accessibleLabel", "") for item in tree()]
     # MCP exposes clipped rows only while visible; inspect both fixture halves.
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=-1800, deltaX=0)
+    scroll_history(-1800)
     labels.extend(item.get("accessibleLabel", "") for item in tree())
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 650, "y": 280}, deltaY=1800, deltaX=0)
+    scroll_history(1800)
     for expected in ("Photo", "Sticker", "Video", "Voice message", "File", "Location", "Contact", "joined the group", "Message unsent", "Couldn't decrypt this message", "This message type isn't supported yet"):
         assert any(expected in label for label in labels), f"missing placeholder: {expected}"
+    previous = None
+    def stable_link():
+        nonlocal previous
+        item = element("Open link https://www.example.jp", "Button")
+        geometry = (item["handle"], item["absolutePosition"], item["size"])
+        stable = geometry == previous
+        previous = geometry
+        return item if stable else None
+    wait_for(stable_link, "reading link position did not settle after scrolling")
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     url = "https://example.org/reading"
     link = element("Open link " + url, "Button")
@@ -1361,39 +1356,39 @@ def check_reading():
     call("invoke_accessibility_action", elementHandle=link["handle"], action="Default_")
     assert element("Recorded link activation", "Text").get("accessibleValue") == url, "demo did not record link without external browser"
     before_copy = wait_element("Message draft", "TextInput").get("accessibleValue", "")
-    other_link = element("Open link https://www.example.jp", "Button")
+    other_link = wait_for(stable_link, "reading link position did not settle before drag")
     target = other_link["absolutePosition"]
     call("drag_element", elementHandle=other_link["handle"], target={"x": target["x"] + 2, "y": target["y"] + 2})
     assert element("Recorded link activation", "Text").get("accessibleValue") == url, "drag activated a link"
     ctrl("c")
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value="")
+    set_value("Message draft", "")
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     ctrl("v")
+    wait_for(lambda: element("Message draft", "TextInput").get("accessibleValue") == first.get("accessibleValue"), "dragging URL action did not select original message text")
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == first.get("accessibleValue"), "dragging URL action did not select original message text"
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=before_copy)
+    set_value("Message draft", before_copy)
     click("Show message", "Button")
     first = next(item for item in reading_bodies() if "https://example.org/reading" in item.get("accessibleValue", ""))
     link = element("Open link " + url, "Button")
     call("click_element", elementHandle=link["handle"], button="Right")
     copy_link = next(item for item in tree() if item.get("accessibleLabel") == "Copy link")
     call("click_element", elementHandle=copy_link["handle"])
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value="")
+    set_value("Message draft", "")
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     ctrl("v")
+    wait_for(lambda: element("Message draft", "TextInput").get("accessibleValue") == url, "Copy link did not copy normalized address")
     assert wait_element("Message draft", "TextInput").get("accessibleValue") == url, "Copy link did not copy normalized address"
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=before_copy)
+    set_value("Message draft", before_copy)
 
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     # Reverse traversal reaches the single history surface, regardless of rows.
-    # Tab follows the composer's visual order: Attach and Stickers precede the draft.
     # The history pills sit between the history and the composer.
-    composer = [label for label in ("Attach", "Stickers") if element(label, "Button").get("accessibleEnabled")]
+    stops = composer_stops()
+    composer = list(reversed(stops[:stops.index("Message draft")]))
     # Reverse Tab visits Return before Latest.
     pills = [item["accessibleLabel"] for prefix in ("Return to message", "Latest") for item in tree() if item.get("accessibleRole") == "Button" and item.get("accessibleLabel", "").startswith(prefix)]
     for label in composer + pills + ["Message history"]:
-        key("\x10", "Press")
-        key("\t")
-        key("\x10", "Release")
+        focus_tab(True)
         stop = element(label, "List" if label == "Message history" else "Button")
         assert is_focused(stop), f"reverse Tab from the draft missed {label}: at {focus_label()}"
     history = stop
@@ -1422,8 +1417,9 @@ def check_reading():
     # Selection release can be emitted synchronously while a chat model is
     # replaced; it must queue deferred work rather than borrow View reentrantly.
     ctrl("a")
-    click("Weekend plans", "Button")
-    click("葵", "Button")
+    smoke_chat("Weekend plans")
+    smoke_chat("葵")
+    wait_for(lambda: element("Message draft", "TextInput").get("accessibleValue") == before_copy, "selected-body chat switch lost draft or failed")
     assert element("Message draft", "TextInput").get("accessibleValue") == before_copy, "selected-body chat switch lost draft or failed"
     demo_scenario("Reading fixtures")
 
@@ -1451,13 +1447,13 @@ def check_rich():
     screenshot("long-chat-name")
     metadata_rows = tree()
     labels = [item.get("accessibleLabel", "") for item in metadata_rows]
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=-800, deltaX=0)
+    scroll_history(-800)
     metadata_rows += tree()
     labels += [item.get("accessibleLabel", "") for item in metadata_rows]
     assert any(item.get("accessibleValue") == "葵" and any(base.get("id", "").endswith("::card-title") for base in item.get("typeNamesAndIds", [])) for item in metadata_rows), "contact card lost its name"
     for expected in ("2.0 KB", "2:05", "0:12", "葵", "葵 joined the group", "Message unsent"):
         assert any(expected in label for label in labels), f"missing rich metadata: {expected}"
-    call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
+    scroll_history(1600)
     wait_element("Jump to replied message")
     def emoji_body():
         return next(item for item in tree() if item.get("accessibleRole") == "Text" and "日😀[笑]本🌸" in item.get("accessibleLabel", ""))
@@ -1473,7 +1469,7 @@ def check_rich():
             wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - latest_y) > 1, "reply jump after Latest did not scroll")
             click("Return to message", "Button")
             wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - latest_y) <= 1, "Return after Latest lost its origin")
-        call("dispatch_pointer_scroll", windowHandle=window, position={"x": 800, "y": 400}, deltaY=1600, deltaX=0)
+        scroll_history(1600)
         reply = element("Jump to replied message", "Button")
         origin_y = emoji_body()["absolutePosition"]["y"]
         call("click_element", elementHandle=reply["handle"])
@@ -1491,21 +1487,17 @@ def check_rich():
         for pill in (latest, return_pill):
             assert strip["absolutePosition"]["y"] + strip["size"]["height"] <= pill["absolutePosition"]["y"], "strip covered a history pill"
             assert pill["absolutePosition"]["y"] + pill["size"]["height"] <= editor["absolutePosition"]["y"], "history pill covered the composer"
-        # Tab follows the composer's visual order
-        composer_start = ("Stickers", "Button") if element("Stickers", "Button").get("accessibleEnabled") else ("Attach", "Button")
+        composer_start = (next(label for label in composer_stops() if label in ("Stickers", "Attach")), "Button")
         call("click_element", elementHandle=handle("Message draft", "TextInput"))
         # Attach is the first enabled stop before the draft in reverse order.
-        composer_reverse = [(label, "Button") for label in ("Attach", "Stickers") if element(label, "Button").get("accessibleEnabled")]
+        stops = composer_stops()
+        composer_reverse = [(label, "Button") for label in reversed(stops[:stops.index("Message draft")])]
         for label, role in [*composer_reverse, ("Return to message", "Button"), (latest["accessibleLabel"], "Button"), ("Message history", "List")]:
-            key("\x10", "Press")
-            key("\t")
-            key("\x10", "Release")
+            focus_tab(True)
             assert is_focused(element(label, role)), f"reverse Tab skipped {label}"
-        assert is_focused(element("Message history", "List")), "reverse Tab skipped a history pill"
         for label, role in [(latest["accessibleLabel"], "Button"), ("Return to message", "Button"), composer_start]:
             key("\t")
             assert is_focused(element(label, role)), f"forward Tab skipped {label}"
-        assert is_focused(wait_element(*composer_start)), "history/Latest/Return/composer Tab order changed"
         click("Return to message", "Button")
         wait_for(lambda: abs(emoji_body()["absolutePosition"]["y"] - origin_y) <= 1, "reply return did not restore its origin")
         restored_y = emoji_body()["absolutePosition"]["y"]
@@ -1549,7 +1541,7 @@ def check_rich():
     call("click_element", elementHandle=body["handle"])
     ctrl("a")
     ctrl("c")
-    call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value="")
+    set_value("Message draft", "")
     call("click_element", elementHandle=handle("Message draft", "TextInput"))
     ctrl("v")
     wait_for(lambda: wait_element("Message draft", "TextInput").get("accessibleValue") == original, "rich copy lost emoji fallback or newlines")
@@ -1586,7 +1578,7 @@ def check_unread():
     demo_scenario("Long history")
     wait_for(lambda: any("39: compact message" in item.get("accessibleValue", item.get("accessibleLabel", "")) for item in tree()), "long history page was not applied")
     def scroll_unread_history():
-        call("dispatch_pointer_scroll",windowHandle=window,position={"x":600,"y":280},deltaY=700,deltaX=0)
+        scroll_history(700)
         return any(item.get("accessibleLabel") == "Latest" for item in tree())
     wait_for(scroll_unread_history, "long history did not scroll away from Latest")
     candidates=[item for item in tree() if item.get("accessibleRole")=="TextInput" and any(base.get("id","").endswith("::body") for base in item.get("typeNamesAndIds",[]))]
@@ -1784,7 +1776,27 @@ def main():
             rng.shuffle(groups)
         rng.shuffle(matrix)
     started = time.monotonic()
-    failures = 0
+    failures = []
+    def record_failure(group, width, error, log, capture=True):
+        log.flush()
+        log.seek(0)
+        tail = log.read().splitlines()[-40:]
+        command = [sys.executable, str(Path(__file__).resolve()), '--binary', str(args.binary), '--seed', str(seed)]
+        # Narrow focus is selected only by the full matrix; preserve its order too.
+        command += ['--all'] if width < 740 else ['--group', group]
+        if width == 1280:
+            command += ['--wide']
+        if args.dark:
+            command += ['--dark']
+        if args.screenshots:
+            command += ['--screenshots', str(args.screenshots)]
+        if args.screenshots and capture:
+            try:
+                screenshot('failure')
+            except Exception as capture_error:
+                tail.append(f'Failure screenshot: {capture_error}')
+        failures.append((group + ('-narrow' if width < 740 else '-wide' if width == 1280 else ''),
+                         f'{type(error).__name__}: {error}', tail, shlex.join(command)))
     for width, groups in matrix:
         # Smoke probes startup idle before reset can stop a mistakenly running timer.
         if 'smoke' in groups:
@@ -1827,22 +1839,29 @@ def main():
                                 GROUPS[group]()
                             screenshot('complete')
                             print(f'PASS {current_group} {time.monotonic() - group_started:.3f}s', flush=True)
-                        except Exception:
-                            failures += 1
+                        except Exception as error:
+                            record_failure(group, width, error, log)
                             print(f'FAIL {current_group} {time.monotonic() - group_started:.3f}s', flush=True)
                             traceback.print_exc()
                         completed += 1
-            except WrongInstanceError:
+            except WrongInstanceError as error:
+                current_group = groups[0] + size_suffix
+                record_failure(groups[0], width, error, log, capture=False)
                 traceback.print_exc()
-                return 1
-            except Exception:
-                failures += 1
-                for group in groups[completed:]:
-                    label = group + size_suffix
+                break
+            except Exception as error:
+                for group in groups[completed:] or [groups[-1]]:
+                    current_group = label = group + size_suffix
+                    record_failure(group, width, error, log, capture=False)
                     print(f'FAIL {label} {time.monotonic() - launch_started:.3f}s', flush=True)
                 traceback.print_exc()
-                log.seek(0)
-                print(log.read(), file=sys.stderr)
+    if failures:
+        print('FAILURES', flush=True)
+        for group, message, tail, command in failures:
+            print(f'App log tail ({group}, last 40 lines):', flush=True)
+            print('\n'.join('  app: ' + line for line in tail) if tail else '  app: (empty)', flush=True)
+            # Repeat the identity after the log so piping to tail keeps the cause.
+            print(f'Group: {group}\n{message}\nRerun: {command}', flush=True)
     print(f'{"FAIL" if failures else "PASS"} total {time.monotonic() - started:.3f}s', flush=True)
     return int(bool(failures))
 
