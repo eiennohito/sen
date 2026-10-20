@@ -3,6 +3,7 @@ use serde_json::Value;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OperationType {
+    UpdateProfile,
     AddContact,
     SendMessage,
     ReceiveMessage,
@@ -24,6 +25,7 @@ pub enum OperationType {
 impl From<i64> for OperationType {
     fn from(value: i64) -> Self {
         match value {
+            1 => Self::UpdateProfile,
             4 => Self::AddContact,
             25 => Self::SendMessage,
             26 => Self::ReceiveMessage,

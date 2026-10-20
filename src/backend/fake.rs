@@ -43,6 +43,8 @@ struct FakeState {
     failures: Vec<(FakeRpc, Failure)>,
     friends: Option<Vec<crate::store::Friend>>,
     contacts: std::collections::BTreeMap<String, Friend>,
+    display_name: Option<String>,
+    status_message: String,
     offline: bool,
     signed_out: bool,
     sign_in_failure: Option<crate::client::error::SignInFailure>,
@@ -792,6 +794,12 @@ impl Backend for FakeBackend {
     fn profile_action(&mut self, action: &ProfileAction, _seq: u32) -> Result<()> {
         self.rpc(FakeRpc::Action(action.clone()))?;
         match action {
+            ProfileAction::EditName { name } => {
+                self.state.lock().unwrap().display_name = Some(name.clone())
+            }
+            ProfileAction::EditStatus { status } => {
+                self.state.lock().unwrap().status_message.clone_from(status)
+            }
             ProfileAction::Rename { mid, name } | ProfileAction::AddFriend { mid, chat: name } => {
                 let Some(mut f) = self.contact(mid)? else {
                     return Ok(());
@@ -849,20 +857,18 @@ impl Backend for FakeBackend {
         if self.state.lock().unwrap().signed_out {
             return Err(Failure::SignedOut(SignOutReason::AuthenticationFailed));
         }
+        let state = self.state.lock().unwrap();
         Ok(Profile {
-            mid: self
-                .state
-                .lock()
-                .unwrap()
-                .config
-                .mid
+            mid: state.config.mid.clone().unwrap_or_else(|| "self".into()),
+            display_name: state
+                .display_name
                 .clone()
-                .unwrap_or_else(|| "self".into()),
-            display_name: "Offline preview".into(),
+                .unwrap_or_else(|| "Offline preview".into()),
+            status_message: state.status_message.clone(),
             picture_path: Some("/self-photo".into()),
-            ..Default::default()
         })
     }
+
     fn chats(&mut self, _cursor: Option<String>) -> Result<ChatPage> {
         self.rpc(FakeRpc::Chats)?;
         let s = self.state.lock().unwrap();

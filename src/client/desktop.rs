@@ -412,6 +412,16 @@ impl Client {
             0,
         )
     }
+    pub fn update_profile_attribute(
+        &mut self,
+        attribute: u32,
+        value: &str,
+        seq: u32,
+    ) -> Result<()> {
+        self.talk("updateProfileAttributes", json!([seq, {"profileAttributes": {attribute.to_string(): {"value": value, "meta": {}}}}]))?;
+        Ok(())
+    }
+
     pub fn rename_contact(&mut self, mid: &str, name: &str, seq: u32) -> Result<()> {
         self.talk("updateContactSetting", json!([seq, mid, 2, name]))?;
         Ok(())

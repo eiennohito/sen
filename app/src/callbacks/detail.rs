@@ -2,6 +2,11 @@ use crate::DetailState as G;
 use crate::*;
 
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
+    global_callback!(ui, actions, G, on_open_detail_dialog, |ui, d, kind| {
+        d.state.action_error = None;
+        ui.global::<G>().set_detail_error("".into());
+        ui.global::<G>().set_detail_dialog(kind);
+    });
     global_callback!(ui, actions, G, on_profile_photo, |ui, d| {
         d.open_profile_photo(&ui);
     });
@@ -28,7 +33,22 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         let Some(page) = d.state.detail_page().cloned() else {
             return;
         };
+        if matches!(kind, DetailAction::EditName | DetailAction::EditStatus)
+            && !g.invoke_profile_edit_valid(kind, value.clone())
+        {
+            return;
+        }
         let action = match (kind, page) {
+            (DetailAction::EditName, DetailPage::Profile(mid)) if d.state.profile_own(&mid) => {
+                ProfileAction::EditName {
+                    name: value.trim().to_owned(),
+                }
+            }
+            (DetailAction::EditStatus, DetailPage::Profile(mid)) if d.state.profile_own(&mid) => {
+                ProfileAction::EditStatus {
+                    status: value.to_string(),
+                }
+            }
             (DetailAction::Rename, DetailPage::Profile(mid)) => ProfileAction::Rename {
                 mid,
                 name: value.to_string(),

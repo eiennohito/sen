@@ -185,3 +185,5 @@ pub(crate) fn green_image() -> slint::Image {
         1,
     ))
 }
+
+mod profile;

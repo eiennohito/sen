@@ -120,7 +120,7 @@ export component Layers inherits Rectangle {
         visible: DetailState.detail-open && !AuthState.auth-open && !ViewerState.viewer-open; background: Tokens.background;
         TouchArea { scroll-event(event) => { accept } }
         border-width: 1px; border-color: Tokens.border;
-        detail := Detail { open-dialog(kind) => { DetailState.detail-dialog = kind;  } }
+        detail := Detail { }
     }
     Dialog {
         visible: SettingsState.settings-open && !SettingsState.logout-open && !AuthState.auth-open && !ViewerState.viewer-open;
@@ -289,7 +289,7 @@ export component Layers inherits Rectangle {
         visible: DetailState.detail-open && !AuthState.auth-open && !ViewerState.viewer-open && DetailState.detail-dialog != DetailAction.none;
         dismissed => { DetailState.detail-dialog = DetailAction.none; detail.focus-action(); }
         dialog-content := VerticalLayout { padding: 24px; spacing: 16px;
-            HorizontalLayout { dialog-title := Text { text: DetailState.detail-dialog == DetailAction.rename ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
+            HorizontalLayout { dialog-title := Text { text: DetailState.detail-dialog == DetailAction.leave ? "Leave group?" : DetailState.action-text(DetailState.detail-dialog, DetailAction.none); font-size: Tokens.heading; }
                 dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { DetailState.detail-dialog = DetailAction.none; detail.focus-action(); } }
             }
             if DetailState.detail-dialog == DetailAction.rename: VerticalLayout { spacing: 16px;
@@ -301,6 +301,25 @@ export component Layers inherits Rectangle {
                 HorizontalLayout { alignment: end; spacing: 8px;
                     Button { text: "Cancel"; clicked => { DetailState.detail-dialog = DetailAction.none; detail.focus-action(); } }
                     Button { text: "Save"; primary: true; clicked => { DetailState.detail-action(DetailAction.rename, rename-value.text); DetailState.detail-dialog = DetailAction.none; detail.focus-first(); } }
+                }
+            }
+            if DetailState.detail-dialog == DetailAction.edit-name || DetailState.detail-dialog == DetailAction.edit-status: profile-editor := VerticalLayout { spacing: 12px;
+                property <DetailAction> action: DetailState.detail-dialog;
+                function save() { if !DetailState.detail-busy && DetailState.profile-edit-valid(self.action, profile-value.text) { DetailState.detail-action(self.action, profile-value.text); } }
+                Rectangle {
+                    height: 36px; border-radius: 8px; background: Tokens.surface-2;
+                    profile-value := TextInput { text: DetailState.profile-name; init => { self.focus(); } enabled: !DetailState.detail-busy; x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name";
+                        edited => { self.text = DetailState.profile-edit-value(DetailState.detail-dialog, self.text); }
+                        accepted => { profile-editor.save(); }
+                        states [ status when DetailState.detail-dialog == DetailAction.edit-status: { text: DetailState.profile-status; accessible-label: "Status message"; } ]
+                    }
+                    FocusRing { outset: 4px; text-entry: true; focused: profile-value.has-focus; }
+                }
+                Text { text: "(" + DetailState.profile-edit-count(profile-value.text) + "/" + DetailState.profile-edit-limit(DetailState.detail-dialog) + ")"; color: Tokens.secondary; horizontal-alignment: right; }
+                if DetailState.detail-error != "": Text { text: DetailState.detail-error; color: Tokens.danger; wrap: word-wrap; }
+                HorizontalLayout { alignment: end; spacing: 8px;
+                    Button { text: "Cancel"; clicked => { DetailState.detail-dialog = DetailAction.none; detail.focus-action(); } }
+                    Button { text: "Save"; primary: true; enabled: !DetailState.detail-busy && DetailState.profile-edit-valid(DetailState.detail-dialog, profile-value.text); clicked => { profile-editor.save(); } }
                 }
             }
             if DetailState.detail-dialog == DetailAction.leave: VerticalLayout { spacing: 16px;

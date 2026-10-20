@@ -350,6 +350,11 @@ impl AppState {
                     (None, _) => true,
                     (
                         Some(DetailPage::Profile(id)),
+                        crate::backend::ProfileAction::EditName { .. }
+                        | crate::backend::ProfileAction::EditStatus { .. },
+                    ) => self.profile_own(id),
+                    (
+                        Some(DetailPage::Profile(id)),
                         crate::backend::ProfileAction::Rename { mid, .. }
                         | crate::backend::ProfileAction::AddFriend { mid, .. },
                     ) => id == mid,

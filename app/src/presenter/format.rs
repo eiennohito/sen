@@ -8,6 +8,8 @@ pub(crate) fn install(ui: &AppWindow) {
     detail.on_action_text(|action, running| {
         let (idle, busy) = match action {
             DetailAction::Rename => ("Rename", "Renaming…"),
+            DetailAction::EditName => ("Edit name", "Saving…"),
+            DetailAction::EditStatus => ("Edit status message", "Saving…"),
             DetailAction::Add => ("Add friend", "Adding…"),
             DetailAction::Leave => ("Leave group", "Leaving…"),
             DetailAction::Mute => ("Notifications", "Updating…"),
@@ -15,6 +17,23 @@ pub(crate) fn install(ui: &AppWindow) {
             DetailAction::None => ("", ""),
         };
         if action == running { busy } else { idle }.into()
+    });
+    detail.on_profile_edit_limit(profile_edit_limit);
+    detail.on_profile_edit_count(|value| value.encode_utf16().count() as i32);
+    detail.on_profile_edit_valid(|action, value| {
+        (action != DetailAction::EditName || !value.trim().is_empty())
+            && value.encode_utf16().count() <= profile_edit_limit(action) as usize
+    });
+    detail.on_profile_edit_value(|action, value| {
+        let mut count = 0;
+        value
+            .chars()
+            .take_while(|c| {
+                count += c.len_utf16();
+                count <= profile_edit_limit(action) as usize
+            })
+            .collect::<String>()
+            .into()
     });
     auth.on_status_text(|pin, stage, busy, phase| {
         if !pin.is_empty() {
@@ -39,6 +58,13 @@ pub(crate) fn install(ui: &AppWindow) {
         }
         .into()
     });
+}
+
+fn profile_edit_limit(action: DetailAction) -> i32 {
+    match action {
+        DetailAction::EditStatus => 500,
+        _ => 20,
+    }
 }
 
 pub struct EmojiView {
