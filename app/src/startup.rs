@@ -119,7 +119,7 @@ pub(crate) fn start(
                     let _ = ui.show();
                     if let desktop_env::desktop_integration::Activation::OpenChat(chat) = e {
                         d.update(|d| {
-                            d.show_chat(&ui, ChatId(chat));
+                            d.open_conversation(&ui, ChatId(chat));
                         });
                     }
                 }

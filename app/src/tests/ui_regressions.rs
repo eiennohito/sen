@@ -11,7 +11,8 @@ fn keyboard_rings_follow_buttons_and_whole_friend_rows() {
         use slint::platform::{Key, PointerEventButton, WindowEvent};
         use slint::private_unstable_api::re_exports::WindowInner;
         i_slint_backend_testing::init_no_event_loop();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         ui.show().unwrap();
         ui.window().set_size(slint::LogicalSize::new(980., 720.));
         let weak = ui.as_weak();
@@ -231,7 +232,8 @@ fn keyboard_rings_follow_buttons_and_whole_friend_rows() {
 fn new_contact_header_uses_friends_cached_avatar_before_send() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
         let asset = line::client::desktop::assets::Asset::avatar("/friend").unwrap();
@@ -434,7 +436,8 @@ fn copy_message_preserves_the_selected_text() {
     std::thread::spawn(|| {
         use i_slint_backend_testing::ElementHandle;
         i_slint_backend_testing::init_no_event_loop();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
         let mut state = AppState::default();

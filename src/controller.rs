@@ -203,10 +203,6 @@ impl AppState {
             self.composer.clear();
             self.composer_reply = None;
         }
-        if self.selected.as_ref() != Some(&chat) {
-            self.detail.clear();
-            self.panel = Panel::Chats;
-        }
         self.window_sub += 1;
         self.window_anchor = Anchor::Unread;
         self.selected = Some(chat.clone());
@@ -508,12 +504,16 @@ mod content_model_tests {
         assert!(members[0].is_self);
     }
     #[test]
-    fn selecting_from_detail_uses_chats_and_waits_for_matching_window() {
+    fn selecting_keeps_navigation_and_waits_for_matching_window() {
         let mut state = AppState::default();
         state.push_detail(DetailPage::Profile("member".into()));
+        state.panel = Panel::Settings;
         state.select(ChatId("chat".into()));
-        assert_eq!(state.panel, Panel::Chats);
-        assert!(state.detail.is_empty());
+        assert_eq!(state.panel, Panel::Settings);
+        assert_eq!(
+            state.detail_page(),
+            Some(&DetailPage::Profile("member".into()))
+        );
         assert!(state.window_loading);
         state.apply(Delta::Window {
             sub: state.window_sub,

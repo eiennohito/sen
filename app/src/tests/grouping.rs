@@ -94,7 +94,8 @@ fn grouping_uses_identity_time_and_delivery() {
 fn own_member_uses_account_profile_and_keeps_you_note() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
-        let ui = test_window();
+        let (ui, _runtime, _worker) =
+            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
         let mut state = AppState::default();
