@@ -36,7 +36,7 @@ flowchart LR
 
 `Store::open` uses bundled SQLite, WAL mode, `synchronous=NORMAL` and foreign
 keys. The desktop account database is
-`$XDG_DATA_HOME/line-desktop/accounts/<sha256-of-own-mid>/store.sqlite3`.
+`$XDG_DATA_HOME/sen/<mid>/store.sqlite3`.
 Directory creation requests mode 0700. The database is not encrypted.
 `SCHEMA_VERSION` is 13; a different SQLite `user_version` causes the database,
 WAL and shared-memory files to be removed and the schema recreated. This
@@ -172,15 +172,15 @@ in with a saved previous state. Account-scoped intents use `account_allows`;
 local sends can queue while waiting for profile validation.
 
 Startup opens the local store before backend initialization. In account mode,
-an explicit MID or the non-secret `accounts/last-mid` selects the database;
+an explicit MID or the non-secret `auth/last-account` selects the database;
 without either, startup uses an in-memory store. The engine publishes cached
 profile, contacts, preferences, chats and last-chat window before probing the
 session. Chat unread freshness is marked stale while not Online.
 
 `Client::from_api` requires an access token and a nonempty saved `profile.mid`.
 `online_profile` rejects a different MID. Successful profile validation selects
-the MID-hashed account store, saves the profile and atomically replaces
-`last-mid`. First-account work from the in-memory store is persisted when that
+the account store named by its validated plain MID, saves the profile and atomically replaces
+`auth/last-account`. First-account work from the in-memory store is persisted when that
 account has no existing database.
 
 Native sign-in exposes four progress stages: Preparing, WaitingForPhone, SigningIn
@@ -250,7 +250,7 @@ pending `slint::invoke_from_event_loop` callback. The callback drains the delta
 FIFO and applies the batch immediately, including during pointer interaction.
 There is no periodic delta-drain timer or deferred pointer-down queue.
 
-`FakeBackend` is available for unit tests and the `line/demo` feature.
+`FakeBackend` is available for unit tests and the `sen/demo` feature.
 Integration tests enable it through a self dev-dependency. Desktop `demo`
 enables demo/snapshot paths, and `ui-debug` implies `demo`. The integration
 flows in `tests/core_flows.rs` exercise store, worker and controller together,

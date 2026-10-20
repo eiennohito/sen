@@ -165,18 +165,18 @@ impl Desktop {
                 g.set_session_cause(text::sign_out_reason(reason).into());
             }
             Delta::Pair(event) => {
-                use line::backend::PairEvent;
+                use sen::backend::PairEvent;
                 match event {
                     PairEvent::Stage(stage) => {
                         g.set_auth_phase(
-                            if matches!(stage, line::client::pairing::Stage::Authenticated) {
+                            if matches!(stage, sen::client::pairing::Stage::Authenticated) {
                                 AuthPhase::SignedIn
                             } else {
                                 AuthPhase::Pairing
                             },
                         );
                         g.set_auth_stage(text::pairing_stage(*stage).into());
-                        if matches!(stage, line::client::pairing::Stage::SigningIn) {
+                        if matches!(stage, sen::client::pairing::Stage::SigningIn) {
                             g.set_auth_pin("".into());
                         }
                     }
@@ -190,7 +190,7 @@ impl Desktop {
                 }
             }
             Delta::PairFailed { reason } => {
-                let cancelled = matches!(reason, line::client::error::SignInFailure::Cancelled);
+                let cancelled = matches!(reason, sen::client::error::SignInFailure::Cancelled);
                 g.set_auth_prerequisite_missing(reason.is_prerequisite());
                 g.set_auth_phase(AuthPhase::Preparing);
                 g.set_auth_qr(slint::Image::default());
@@ -263,7 +263,7 @@ impl Desktop {
                 self.open_conversation(ui, id.clone());
             }
             Err(error) => {
-                g.set_new_chat_uncertain(matches!(error, line::engine::CreateFailure::Uncertain));
+                g.set_new_chat_uncertain(matches!(error, sen::engine::CreateFailure::Uncertain));
                 g.set_new_chat_error(text::create_failure(error).into());
             }
         }
@@ -288,15 +288,11 @@ impl Desktop {
         g.set_autostart(p.autostart);
         g.set_notifications_enabled(p.notifications);
         g.set_notification_preview(match p.preview {
-            line::store::NotificationPreview::NameAndText => {
-                line_desktop_ui::NotificationPreview::NameAndText
+            sen::store::NotificationPreview::NameAndText => {
+                sen_ui::NotificationPreview::NameAndText
             }
-            line::store::NotificationPreview::NameOnly => {
-                line_desktop_ui::NotificationPreview::NameOnly
-            }
-            line::store::NotificationPreview::NewMessage => {
-                line_desktop_ui::NotificationPreview::NewMessage
-            }
+            sen::store::NotificationPreview::NameOnly => sen_ui::NotificationPreview::NameOnly,
+            sen::store::NotificationPreview::NewMessage => sen_ui::NotificationPreview::NewMessage,
         });
         g.set_notification_sound(p.sound);
         g.set_notification_mention_exception(p.mention_exception);

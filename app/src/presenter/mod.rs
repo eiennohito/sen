@@ -15,13 +15,13 @@ pub(crate) mod system_events;
 use crate::*;
 pub(crate) use assets::Images;
 use assets::{asset_key, content_assets};
-use line::client::desktop::{
-    assets::{Asset, Failure},
-    rich::emoji_spans,
-};
 use messages::compact_text;
 use model::KeyedModel;
 use search::Query;
+use sen::client::desktop::{
+    assets::{Asset, Failure},
+    rich::emoji_spans,
+};
 pub(crate) mod model;
 #[derive(Default)]
 pub struct Presenter {
@@ -74,12 +74,12 @@ impl Presenter {
         let mut chat_list_error = String::new();
         let mut detail_error = String::new();
         let detail_id = state.detail.last().map(|page| match page {
-            line::controller::DetailPage::Profile(id) => id.as_str(),
-            line::controller::DetailPage::GroupInfo(id)
-            | line::controller::DetailPage::Members(id) => id.0.as_str(),
+            sen::controller::DetailPage::Profile(id) => id.as_str(),
+            sen::controller::DetailPage::GroupInfo(id)
+            | sen::controller::DetailPage::Members(id) => id.0.as_str(),
         });
         for (request, failure) in &state.refresh_failures {
-            use line::{client::error::Failure, engine::Refresh};
+            use sen::{client::error::Failure, engine::Refresh};
             let message = if matches!(request, Refresh::Session) {
                 match failure {
                     Failure::Refused(_) | Failure::Bug(_) => {

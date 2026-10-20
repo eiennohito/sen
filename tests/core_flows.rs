@@ -1,14 +1,14 @@
 #[path = "flows/blocked.rs"]
 mod blocked;
-use line::client::error::{Refusal, SignOutReason};
-use line::{
+use sen::client::error::{Refusal, SignOutReason};
+use sen::{
     backend::{Failure, FakeBackend, FakeRpc, LiveOp, Op},
     engine::{Connection, Delta, Intent, StoreLocation, Worker},
     store::{ChatId, Delivery, Key, Prefs, Reaction, ReactionKind},
 };
 use std::time::Duration;
 
-use line::{engine::harness::App, test_support::TempDir};
+use sen::{engine::harness::App, test_support::TempDir};
 #[test]
 fn send_switch_return_with_stale_page() {
     let fake = FakeBackend::canned();
@@ -200,8 +200,8 @@ fn send_failures_preserve_delivery_and_retry_identity() {
     app.body_key("Hello! 日本語も使えます。");
     fake.fail_rpc(
         FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(line::client::error::Refusal::Server(
-            line::client::error::ServerRefusal::Gateway(13),
+        Failure::Refused(sen::client::error::Refusal::Server(
+            sen::client::error::ServerRefusal::Gateway(13),
         )),
     );
     app.send(Intent::Send {
@@ -217,8 +217,8 @@ fn send_failures_preserve_delivery_and_retry_identity() {
     app.until(|s| s.messages[&key].delivery == Delivery::Sent);
     fake.fail_rpc(
         FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(line::client::error::Refusal::Server(
-            line::client::error::ServerRefusal::Gateway(13),
+        Failure::Refused(sen::client::error::Refusal::Server(
+            sen::client::error::ServerRefusal::Gateway(13),
         )),
     );
     app.send(Intent::Send {
@@ -373,7 +373,7 @@ fn send_failures_preserve_delivery_and_retry_identity() {
 
 #[test]
 fn opening_unread_chat_centers_the_window_on_the_divider() {
-    use line::store::{Anchor, ChatInput, ServerId};
+    use sen::store::{Anchor, ChatInput, ServerId};
     let fake = FakeBackend::canned();
     fake.set_page(
         ChatId("alice".into()),
@@ -409,7 +409,7 @@ fn opening_unread_chat_centers_the_window_on_the_divider() {
 
 #[test]
 fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
-    use line::{
+    use sen::{
         backend::{Failure, FakeRpc},
         store::{ChatInput, ServerId},
     };
@@ -423,8 +423,8 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
         (FakeRpc::Chats, Failure::Unanswered),
         (
             FakeRpc::Read(chat.clone()),
-            Failure::Refused(line::client::error::Refusal::Server(
-                line::client::error::ServerRefusal::Gateway(13),
+            Failure::Refused(sen::client::error::Refusal::Server(
+                sen::client::error::ServerRefusal::Gateway(13),
             )),
         ),
     ];
@@ -473,8 +473,7 @@ fn rpc_failures_retry_the_intent_without_flapping_the_connection() {
 
 #[test]
 fn first_identity_keeps_local_work_and_sends_pending() {
-    use line::store::{Draft, Store};
-    use sha2::{Digest, Sha256};
+    use sen::store::{Draft, Store};
     let temp = TempDir::new("line-first-identity");
     let root = temp.0.clone();
     let fake = FakeBackend::canned();
@@ -518,7 +517,7 @@ fn first_identity_keeps_local_work_and_sends_pending() {
             .any(|m| m.body.as_text() == "before identity" && m.delivery == Delivery::Sent)
     });
     drop(app);
-    let store = Store::open(&root.join(format!("{:x}", Sha256::digest("self")))).unwrap();
+    let store = Store::open(&root.join("self")).unwrap();
     let draft = store.load_draft(&ChatId("alice".into())).unwrap().unwrap();
     assert_eq!(
         (draft.text.as_str(), draft.cursor, draft.anchor),
@@ -627,8 +626,8 @@ fn traced_reactions_replace_remove_and_refresh_quietly() {
 
 #[test]
 fn unsend_success_echo_and_failure_keep_the_same_row() {
-    use line::backend::{Failure, FakeRpc};
-    use line::store::ServerId;
+    use sen::backend::{Failure, FakeRpc};
+    use sen::store::ServerId;
     let fake = FakeBackend::canned();
     fake.set_page(
         ChatId("alice".into()),
@@ -640,8 +639,8 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
     let key = app.body_key("own confirmed");
     fake.fail_rpc(
         FakeRpc::Unsend(ServerId::new("11").unwrap()),
-        Failure::Refused(line::client::error::Refusal::Server(
-            line::client::error::ServerRefusal::Gateway(13),
+        Failure::Refused(sen::client::error::Refusal::Server(
+            sen::client::error::ServerRefusal::Gateway(13),
         )),
     );
     app.send(Intent::Unsend(key));
@@ -679,7 +678,7 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
 
 #[test]
 fn contact_actions_report_failure_then_update_in_place() {
-    use line::{
+    use sen::{
         backend::ProfileAction,
         store::{ContactProfile, Friend},
     };
@@ -805,7 +804,7 @@ fn contact_actions_report_failure_then_update_in_place() {
 
 #[test]
 fn compose_reaction_set_cancel_and_failure_revert() {
-    use line::backend::{Failure, FakeRpc};
+    use sen::backend::{Failure, FakeRpc};
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -830,7 +829,7 @@ fn compose_reaction_set_cancel_and_failure_revert() {
 
 #[test]
 fn compose_sticker_send_echo_dedup_and_recovery() {
-    use line::store::Content;
+    use sen::store::Content;
     let fake = FakeBackend::canned();
     fake.echo_first(true);
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
@@ -860,8 +859,8 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
     );
     fake.fail_rpc(
         FakeRpc::Send(ChatId("alice".into())),
-        Failure::Refused(line::client::error::Refusal::Server(
-            line::client::error::ServerRefusal::Gateway(13),
+        Failure::Refused(sen::client::error::Refusal::Server(
+            sen::client::error::ServerRefusal::Gateway(13),
         )),
     );
     let other = app.state.sticker_packages[1].stickers[0].clone();
@@ -896,7 +895,7 @@ fn compose_sticker_send_echo_dedup_and_recovery() {
 
 #[test]
 fn first_message_creates_a_friend_chat() {
-    use line::{backend::FakeRpc, store::Friend};
+    use sen::{backend::FakeRpc, store::Friend};
     let fake = FakeBackend::canned();
     fake.set_friends(vec![Friend {
         id: "new-friend".into(),
@@ -997,7 +996,7 @@ fn signed_out_account_intents_never_reach_the_backend() {
 
 #[test]
 fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
-    use line::client::error::SignInFailure;
+    use sen::client::error::SignInFailure;
     let fake = FakeBackend::signed_out();
     let reason = SignInFailure::CryptoModule("/missing/crypto.wasm".into());
     fake.fail_open(Some(reason.clone()));
@@ -1005,7 +1004,7 @@ fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
     let mut app = App::from_worker(Worker::start(
         StoreLocation::Memory,
         move || opener.open(),
-        line::engine::WorkerOptions::default(),
+        sen::engine::WorkerOptions::default(),
     ));
     let failure = |app: &mut App| {
         let Delta::PairFailed { reason } = app.until_delta(
@@ -1024,7 +1023,7 @@ fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
     app.until_delta(
         |d| {
             assert!(!matches!(d, Delta::PairFailed { .. }));
-            matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_)))
+            matches!(d, Delta::Pair(sen::backend::PairEvent::Qr(_)))
         },
         Duration::from_secs(3),
     );
@@ -1034,7 +1033,7 @@ fn backend_open_failure_completes_sign_in_and_retries_after_repair() {
 
 #[test]
 fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
-    use line::client::error::SignInFailure;
+    use sen::client::error::SignInFailure;
     use std::sync::mpsc;
     let fake = FakeBackend::signed_out();
     let (started, waiting) = mpsc::channel();
@@ -1050,7 +1049,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
             resume.recv().unwrap();
             fake.open()
         },
-        line::engine::WorkerOptions::default(),
+        sen::engine::WorkerOptions::default(),
     ));
     app.until_delta(
         |d| {
@@ -1068,7 +1067,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
     app.worker.sender.cancel_sign_in();
     let Delta::PairFailed { reason } = app.until_delta(
         |d| {
-            assert!(!matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_))));
+            assert!(!matches!(d, Delta::Pair(sen::backend::PairEvent::Qr(_))));
             matches!(d, Delta::PairFailed { .. })
         },
         Duration::from_secs(1),
@@ -1086,7 +1085,7 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
                 !matches!(d, Delta::PairFailed { .. }),
                 "late result escaped its generation"
             );
-            matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_)))
+            matches!(d, Delta::Pair(sen::backend::PairEvent::Qr(_)))
         },
         Duration::from_secs(3),
     );
@@ -1095,13 +1094,13 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
 
 #[test]
 fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
-    use line::{client::error::SignInFailure, store::Store};
+    use sen::{client::error::SignInFailure, store::Store};
     let temp = TempDir::new("line-panicking-open");
     Store::open(&temp.0)
         .unwrap()
         .set_account(
             "self",
-            line::store::Profile {
+            sen::store::Profile {
                 mid: "self".into(),
                 ..Default::default()
             },
@@ -1115,7 +1114,7 @@ fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
             open_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             panic!("synthetic network worker crash");
         },
-        line::engine::WorkerOptions::default(),
+        sen::engine::WorkerOptions::default(),
     ));
     app.until(|state| {
         state.connection
@@ -1126,7 +1125,7 @@ fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
     assert!(
         !app.state
             .refresh_failures
-            .contains_key(&line::engine::Refresh::Session)
+            .contains_key(&sen::engine::Refresh::Session)
     );
     assert_eq!(app.state.profile.mid, "self");
     for _ in 0..2 {
@@ -1144,7 +1143,7 @@ fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
 
 #[test]
 fn failed_probe_during_sign_in_restores_a_signed_out_account() {
-    use line::{client::error::SignInFailure, store::Store};
+    use sen::{client::error::SignInFailure, store::Store};
     use std::sync::mpsc;
     for failure in [
         Failure::Bug("probe failed".into()),
@@ -1155,7 +1154,7 @@ fn failed_probe_during_sign_in_restores_a_signed_out_account() {
             .unwrap()
             .set_account(
                 "self",
-                line::store::Profile {
+                sen::store::Profile {
                     mid: "self".into(),
                     ..Default::default()
                 },
@@ -1189,7 +1188,7 @@ fn failed_probe_during_sign_in_restores_a_signed_out_account() {
         // Cancel presents the restored account and exposes a lingering Opening state.
         app.send(Intent::SignIn);
         app.until_delta(
-            |d| matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_))),
+            |d| matches!(d, Delta::Pair(sen::backend::PairEvent::Qr(_))),
             Duration::from_secs(3),
         );
         app.worker.sender.cancel_sign_in();
@@ -1215,7 +1214,7 @@ fn failed_probe_during_sign_in_restores_a_signed_out_account() {
 
 #[test]
 fn attachments_preserve_order_progress_and_retry_identity() {
-    use line::{attachments::Attachment, store::Content};
+    use sen::{attachments::Attachment, store::Content};
     let temp = TempDir::new("line-attachments-flow");
     let root = temp.0.clone();
     std::fs::create_dir_all(&root).unwrap();
@@ -1233,8 +1232,8 @@ fn attachments_preserve_order_progress_and_retry_identity() {
     fake.configure(|s| s.upload_delay = Duration::from_millis(80));
     fake.fail_rpc(
         FakeRpc::Upload("Second.txt".into()),
-        Failure::Refused(line::client::error::Refusal::Server(
-            line::client::error::ServerRefusal::Gateway(13),
+        Failure::Refused(sen::client::error::Refusal::Server(
+            sen::client::error::ServerRefusal::Gateway(13),
         )),
     );
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
@@ -1287,7 +1286,7 @@ fn attachments_preserve_order_progress_and_retry_identity() {
 
 #[test]
 fn text_send_completes_while_upload_is_blocked() {
-    use line::attachments::Attachment;
+    use sen::attachments::Attachment;
     let temp = TempDir::new("line-upload-blocked");
     let root = temp.0.clone();
     std::fs::create_dir_all(&root).unwrap();
@@ -1333,24 +1332,26 @@ fn text_send_completes_while_upload_is_blocked() {
 
 #[test]
 fn attachment_send_success_after_sign_in_still_confirms_the_row() {
-    use line::{attachments::Attachment, store::Store};
+    use sen::{attachments::Attachment, store::Store};
     let temp = TempDir::new("line-send-sign-in");
     let root = temp.0.clone();
     std::fs::create_dir_all(&root).unwrap();
-    let path = root.join("clipboard.txt");
-    std::fs::write(&path, b"attachment").unwrap();
+    let clipboard = root.join("clipboard-attachments");
+    std::fs::create_dir_all(&clipboard).unwrap();
+    let path = clipboard.join("clipboard.txt");
     let fake = FakeBackend::canned();
     let (entered, release) = fake.block_send();
     let mut app = App::new(
         fake.clone(),
         StoreLocation::Account {
-            root: root.join("accounts"),
+            root: root.clone(),
             mid: Some("self".into()),
         },
     );
     app.online();
     app.select("alice");
     app.body_key("Hello! 日本語も使えます。");
+    std::fs::write(&path, b"attachment").unwrap();
     let mut item = Attachment::prepare(&path).unwrap();
     item.clipboard = true;
     app.send(Intent::SendAttachments {
@@ -1374,13 +1375,7 @@ fn attachment_send_success_after_sign_in_still_confirms_the_row() {
         .key;
     app.send(Intent::SignIn);
     app.until(|s| s.connection == Connection::SigningIn);
-    use sha2::{Digest, Sha256};
-    let store = Store::open(
-        &root
-            .join("accounts")
-            .join(format!("{:x}", Sha256::digest("self"))),
-    )
-    .unwrap();
+    let store = Store::open(&root.join("self")).unwrap();
     assert_eq!(store.message(key).unwrap().delivery, Delivery::Pending);
     release.send(()).unwrap();
     // Sign-in runs behind the send on the FIFO network queue. Its failure is a barrier
@@ -1402,7 +1397,7 @@ fn attachment_send_success_after_sign_in_still_confirms_the_row() {
 
 #[test]
 fn expired_session_does_not_resume_an_upload_after_a_stream_success() {
-    use line::{
+    use sen::{
         attachments::Attachment,
         backend::{Failure, FakeRpc},
     };
@@ -1471,7 +1466,7 @@ fn expired_session_does_not_resume_an_upload_after_a_stream_success() {
 
 #[test]
 fn restart_recovers_pending_row_without_sending() {
-    use line::{
+    use sen::{
         backend::FakeRpc,
         store::{Content, LocalId, Store},
     };
@@ -1514,7 +1509,7 @@ fn restart_recovers_pending_row_without_sending() {
 
 #[test]
 fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
-    use line::store::{Draft, ReplyReference};
+    use sen::store::{Draft, ReplyReference};
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Memory);
     app.online();
@@ -1562,14 +1557,14 @@ fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
     });
     app.until(|s| {
         s.messages.values().any(|m| {
-            matches!(m.body, line::store::Content::Sticker { .. }) && m.delivery == Delivery::Sent
+            matches!(m.body, sen::store::Content::Sticker { .. }) && m.delivery == Delivery::Sent
         })
     });
     let sent = app
         .state
         .messages
         .values()
-        .find(|m| matches!(m.body, line::store::Content::Sticker { .. }))
+        .find(|m| matches!(m.body, sen::store::Content::Sticker { .. }))
         .unwrap();
     assert_eq!(sent.reply.as_deref(), Some(&target));
     app.until(|s| s.composer_reply.is_none());
@@ -1587,7 +1582,7 @@ fn reply_draft_survives_chat_switch_and_attaches_to_text_and_sticker() {
 fn rich_parse_discards_a_malformed_reply_before_publication() {
     let fake = FakeBackend::canned();
     let mut message = FakeBackend::message("alice", 91002, "Body with a malformed reply", false);
-    message.reply = line::client::desktop::rich::parse(&serde_json::json!({
+    message.reply = sen::client::desktop::rich::parse(&serde_json::json!({
         "messageRelationType": 3, "relatedMessageId": "01"
     }))
     .reply
@@ -1603,12 +1598,12 @@ fn rich_parse_discards_a_malformed_reply_before_publication() {
 
 #[test]
 fn missing_reply_original_loads_from_the_server_and_opens_in_history() {
-    use line::store::{Anchor, PageKind, ReplyReference, ServerId};
+    use sen::store::{Anchor, PageKind, ReplyReference, ServerId};
     let fake = FakeBackend::canned();
     let original = FakeBackend::message("alice", 91001, "Original outside local history", false);
     let mut reply = FakeBackend::message("alice", 91002, "Reply to an older message", false);
     reply.reply = Some(Box::new(ReplyReference {
-        message_id: line::store::ServerId::new("91001").unwrap(),
+        message_id: sen::store::ServerId::new("91001").unwrap(),
         service_code: Some(1),
     }));
     fake.set_page(ChatId("alice".into()), vec![reply.clone()]);
@@ -1644,7 +1639,7 @@ fn missing_reply_original_loads_from_the_server_and_opens_in_history() {
 
 #[test]
 fn chat_list_pagination_survives_live_operations() {
-    use line::backend::{Backend, ChatPage};
+    use sen::backend::{Backend, ChatPage};
     let fake = FakeBackend::canned();
     let mut source = fake.clone();
     let chats = source.chats(None).unwrap().chats;
@@ -1749,7 +1744,7 @@ fn receipt_updates_the_existing_row_in_place() {
 
 #[test]
 fn restart_restores_unread_history_anchor_and_drafts_together() {
-    use line::store::{ChatInput, Draft, ServerId};
+    use sen::store::{ChatInput, Draft, ServerId};
     let temp = TempDir::new("line-anchor-draft");
     let fake = FakeBackend::canned();
     fake.set_page(
@@ -1804,7 +1799,7 @@ fn restart_restores_unread_history_anchor_and_drafts_together() {
 
 #[test]
 fn raw_live_operations_refresh_contacts_and_groups() {
-    use line::store::{Friend, Member};
+    use sen::store::{Friend, Member};
     use serde_json::json;
     for kind in [4, 49, 41, 121, 122, 128, 127] {
         let fake = FakeBackend::canned();
@@ -1858,7 +1853,7 @@ fn raw_live_operations_refresh_contacts_and_groups() {
 
 #[test]
 fn unusable_saved_session_allows_start_to_pair() {
-    use line::client::error::SignInFailure;
+    use sen::client::error::SignInFailure;
     let fake = FakeBackend::signed_out();
     fake.fail_open(Some(SignInFailure::SavedSession));
     let opener = fake.clone();
@@ -1880,7 +1875,7 @@ fn unusable_saved_session_allows_start_to_pair() {
                 !matches!(d, Delta::PairFailed { .. }),
                 "broken saved session blocked pairing"
             );
-            matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_)))
+            matches!(d, Delta::Pair(sen::backend::PairEvent::Qr(_)))
         },
         Duration::from_secs(5),
     );
@@ -1924,7 +1919,7 @@ fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
             matches!(
                 d,
                 Delta::PairFailed {
-                    reason: line::client::error::SignInFailure::Cancelled
+                    reason: sen::client::error::SignInFailure::Cancelled
                 }
             )
         },
@@ -1945,7 +1940,7 @@ fn start_and_cancel_before_probe_still_uses_valid_saved_session() {
 
 #[test]
 fn committed_write_clears_storage_banner_and_sending_still_works() {
-    use line::engine::StorageFailure;
+    use sen::engine::StorageFailure;
     let mut app = App::new(FakeBackend::canned(), StoreLocation::Memory);
     app.online();
     app.select("alice");
@@ -1978,14 +1973,14 @@ fn committed_write_clears_storage_banner_and_sending_still_works() {
 #[test]
 fn chat_preview_resolves_system_actor_before_opening_conversation() {
     let fake = FakeBackend::canned();
-    fake.set_contact(line::store::Friend {
+    fake.set_contact(sen::store::Friend {
         id: "preview-actor".into(),
         name: Some("葵".into()),
         ..Default::default()
     });
     let mut preview = FakeBackend::message("alice", 99001, "", false);
     // The event actor is distinct from the envelope sender, as in the demo seed.
-    preview.body = line::store::Content::System {
+    preview.body = sen::store::Content::System {
         kind: Some("C_PI".into()),
         params: Some("preview-actor".into()),
         text: None,
@@ -2009,7 +2004,7 @@ fn chat_preview_resolves_system_actor_before_opening_conversation() {
 
 #[test]
 fn shutdown_saves_the_final_queued_draft() {
-    use line::store::{Draft, Store};
+    use sen::store::{Draft, Store};
     use std::{sync::mpsc, thread};
     let temp = TempDir::new("line-stop-draft");
     let mut app = App::new(
@@ -2047,7 +2042,7 @@ fn shutdown_saves_the_final_queued_draft() {
 
 #[test]
 fn fencing_a_draft_keeps_saved_preferences() {
-    use line::store::{Draft, Store};
+    use sen::store::{Draft, Store};
     let temp = TempDir::new("fence-prefs");
     let mut app = App::new(
         FakeBackend::canned(),
@@ -2108,7 +2103,7 @@ fn retry_while_send_echo_arrives_does_not_send_again() {
         reply: None,
     });
     let key = app.body_key("racing echo");
-    entered.recv_timeout(line::engine::harness::WAIT).unwrap();
+    entered.recv_timeout(sen::engine::harness::WAIT).unwrap();
     app.send(Intent::Retry(key));
     let mut echo = FakeBackend::message("alice", 901, "racing echo", true);
     echo.request_seq = app.state.messages[&key].request_seq;

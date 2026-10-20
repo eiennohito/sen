@@ -1,4 +1,4 @@
-use line::{backend::*, client::http::CancelToken, store::*};
+use sen::{backend::*, client::http::CancelToken, store::*};
 use std::sync::{Arc, mpsc};
 use std::time::Duration;
 
@@ -48,7 +48,7 @@ impl Blocked {
     }
 }
 impl Backend for Blocked {
-    fn set_network_activity(&mut self, activity: line::client::NetworkActivity) {
+    fn set_network_activity(&mut self, activity: sen::client::NetworkActivity) {
         self.fake.set_network_activity(activity);
     }
     fn finish_attachment(
@@ -59,7 +59,7 @@ impl Backend for Blocked {
     ) -> Result<MessageInput> {
         self.fake.finish_attachment(chat, uploaded, seq)
     }
-    fn contact(&mut self, mid: &str) -> Result<Option<line::store::Friend>> {
+    fn contact(&mut self, mid: &str) -> Result<Option<sen::store::Friend>> {
         self.fake.contact(mid)
     }
     fn notice(&mut self, mid: &str) -> Result<serde_json::Value> {
@@ -68,17 +68,17 @@ impl Backend for Blocked {
     fn full_chat(&mut self, chat: &ChatId) -> Result<serde_json::Value> {
         self.fake.full_chat(chat)
     }
-    fn profile_action(&mut self, action: &line::backend::ProfileAction, seq: u32) -> Result<()> {
+    fn profile_action(&mut self, action: &sen::backend::ProfileAction, seq: u32) -> Result<()> {
         self.fake.profile_action(action, seq)
     }
 
     fn sign_in(&mut self, c: Arc<CancelToken>, d: PairDeliver) -> Result<()> {
         self.fake.sign_in(c, d)
     }
-    fn friends(&mut self) -> Result<Vec<line::store::Friend>> {
+    fn friends(&mut self) -> Result<Vec<sen::store::Friend>> {
         self.fake.friends()
     }
-    fn members(&mut self, c: &ChatId) -> Result<Vec<line::store::Member>> {
+    fn members(&mut self, c: &ChatId) -> Result<Vec<sen::store::Member>> {
         self.fake.members(c)
     }
     fn start_assets(&mut self, s: Arc<CancelToken>, d: Deliver) -> Result<()> {
@@ -93,17 +93,17 @@ impl Backend for Blocked {
     fn cached_media(
         &mut self,
         mid: &str,
-        asset: &line::client::desktop::assets::Asset,
-        purpose: line::client::desktop::assets::Purpose,
-    ) -> Result<Option<line::client::desktop::assets::Payload>> {
+        asset: &sen::client::desktop::assets::Asset,
+        purpose: sen::client::desktop::assets::Purpose,
+    ) -> Result<Option<sen::client::desktop::assets::Payload>> {
         self.fake.cached_media(mid, asset, purpose)
     }
     fn prepare_attachment(
         &mut self,
         chat: ChatId,
-        item: line::attachments::Attachment,
+        item: sen::attachments::Attachment,
         seq: u32,
-    ) -> Result<line::backend::UploadJob> {
+    ) -> Result<sen::backend::UploadJob> {
         self.fake.prepare_attachment(chat, item, seq)
     }
     fn profile(&mut self) -> Result<Profile> {
@@ -129,7 +129,7 @@ impl Backend for Blocked {
         c: &ChatId,
         t: &str,
         s: u32,
-        reply: Option<&line::store::ReplyReference>,
+        reply: Option<&sen::store::ReplyReference>,
     ) -> Result<MessageInput> {
         self.wait(&FakeRpc::Send(c.clone()));
         self.fake.send(c, t, s, reply)
@@ -137,15 +137,15 @@ impl Backend for Blocked {
     fn react(&mut self, id: &ServerId, kind: Option<u32>, seq: u32) -> Result<()> {
         self.fake.react(id, kind, seq)
     }
-    fn sticker_packages(&mut self) -> Result<Vec<line::store::StickerPackage>> {
+    fn sticker_packages(&mut self) -> Result<Vec<sen::store::StickerPackage>> {
         self.fake.sticker_packages()
     }
     fn send_sticker(
         &mut self,
         chat: &ChatId,
-        sticker: &line::store::Content,
+        sticker: &sen::store::Content,
         seq: u32,
-        reply: Option<&line::store::ReplyReference>,
+        reply: Option<&sen::store::ReplyReference>,
     ) -> Result<MessageInput> {
         self.fake.send_sticker(chat, sticker, seq, reply)
     }
@@ -169,7 +169,7 @@ impl Backend for Blocked {
     ) -> Result<Box<dyn FnOnce() + Send>> {
         self.fake.stream(r, s, d)
     }
-    fn decode(&mut self, r: line::client::operation::RawOperation) -> Result<LiveOp> {
+    fn decode(&mut self, r: sen::client::operation::RawOperation) -> Result<LiveOp> {
         self.fake.decode(r)
     }
     fn refresh_token(&mut self) -> Result<()> {

@@ -448,7 +448,7 @@ impl ImageCache {
         &self.directory
     }
     pub fn new(root: &Path, account: &str) -> Result<Self> {
-        let directory = root.join(format!("{:x}", Sha256::digest(account.as_bytes())));
+        let directory = crate::locations::account_directory(root, account)?;
         super::super::private_directory(&directory)?;
         let mut cache = Self {
             directory,
@@ -979,6 +979,8 @@ mod tests {
         let root = root();
         let asset = Asset::avatar("/profile-picture").unwrap();
         let mut cache = ImageCache::new(root.path(), "synthetic")?;
+        assert_eq!(cache.directory(), root.path().join("synthetic"));
+        assert!(ImageCache::new(root.path(), "../bad").is_err());
         let first = cache.store(&asset, &png([25, 70, 200, 255]))?;
         cache = ImageCache::new(root.path(), "synthetic")?;
         assert_eq!(cache.read(&asset)?, Some(first.clone()));

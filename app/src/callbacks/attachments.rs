@@ -1,7 +1,7 @@
 //! Selection and local preparation. Only the dialog's Send callback enqueues uploads.
 use crate::AttachmentState as G;
 use crate::*;
-use line::attachments::Attachment;
+use sen::attachments::Attachment;
 use std::{
     path::PathBuf,
     sync::atomic::{AtomicU64, Ordering},

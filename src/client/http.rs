@@ -216,7 +216,7 @@ impl Runtime {
         let executor = Arc::new(Executor::new());
         let ex = executor.clone();
         std::thread::Builder::new()
-            .name("line-http".into())
+            .name("sen-http".into())
             .spawn(move || async_io::block_on(ex.run(future::pending::<()>())))?;
         Ok(RUNTIME.get_or_init(|| Self { executor }))
     }

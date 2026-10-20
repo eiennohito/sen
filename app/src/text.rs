@@ -1,5 +1,5 @@
 //! User-facing wording for typed library outcomes.
-use line::client::{desktop::assets::Failure, error::Refusal};
+use sen::client::{desktop::assets::Failure, error::Refusal};
 
 pub(crate) fn image_text(failure: Failure) -> &'static str {
     match failure {
@@ -19,13 +19,13 @@ pub(crate) fn image_text(failure: Failure) -> &'static str {
 
 pub(crate) fn rejection(reason: &Refusal) -> String {
     match reason {
-        Refusal::Server(line::client::error::ServerRefusal::Http(code)) => {
+        Refusal::Server(sen::client::error::ServerRefusal::Http(code)) => {
             return format!("HTTP {code}");
         }
-        Refusal::Server(line::client::error::ServerRefusal::Gateway(code)) => {
+        Refusal::Server(sen::client::error::ServerRefusal::Gateway(code)) => {
             return format!("gateway code {code}");
         }
-        Refusal::Server(line::client::error::ServerRefusal::Talk(code)) => {
+        Refusal::Server(sen::client::error::ServerRefusal::Talk(code)) => {
             return format!("server code {code}");
         }
         Refusal::SignedOut => "signed out",
@@ -37,8 +37,8 @@ pub(crate) fn rejection(reason: &Refusal) -> String {
     .into()
 }
 
-pub(crate) fn create_failure(failure: &line::engine::CreateFailure) -> &str {
-    use line::engine::CreateFailure;
+pub(crate) fn create_failure(failure: &sen::engine::CreateFailure) -> &str {
+    use sen::engine::CreateFailure;
     match failure {
         CreateFailure::InvalidSelection => "Select at least two friends to create a group.",
         CreateFailure::Local => "Couldn't create group. Try again.",
@@ -49,8 +49,8 @@ pub(crate) fn create_failure(failure: &line::engine::CreateFailure) -> &str {
     }
 }
 
-pub(crate) fn profile_failure(action: &line::backend::ProfileAction) -> &'static str {
-    use line::backend::ProfileAction;
+pub(crate) fn profile_failure(action: &sen::backend::ProfileAction) -> &'static str {
+    use sen::backend::ProfileAction;
     match action {
         ProfileAction::Rename { .. } => "Couldn't rename.",
         ProfileAction::AddFriend { .. } => "Couldn't add friend.",
@@ -59,8 +59,8 @@ pub(crate) fn profile_failure(action: &line::backend::ProfileAction) -> &'static
     }
 }
 
-pub(crate) fn pairing_stage(stage: line::client::pairing::Stage) -> &'static str {
-    use line::client::pairing::Stage;
+pub(crate) fn pairing_stage(stage: sen::client::pairing::Stage) -> &'static str {
+    use sen::client::pairing::Stage;
     match stage {
         Stage::Authenticated => SIGNED_IN,
         Stage::Preparing => PREPARING_SIGN_IN,
@@ -75,8 +75,8 @@ pub(crate) const WAITING_FOR_PHONE: &str = "Waiting for your phone…";
 pub(crate) const PREPARING_SIGN_IN: &str = "Preparing sign-in…";
 pub(crate) const CANCELLING_SIGN_IN: &str = "Cancelling sign-in…";
 
-pub fn storage_failure(reason: line::engine::StorageFailure) -> &'static str {
-    use line::engine::StorageFailure::*;
+pub fn storage_failure(reason: sen::engine::StorageFailure) -> &'static str {
+    use sen::engine::StorageFailure::*;
     match reason {
         Full => "Can't save messages: disk is full. New messages are shown but won't be kept.",
         ReadOnly => {
@@ -88,8 +88,8 @@ pub fn storage_failure(reason: line::engine::StorageFailure) -> &'static str {
         Io => "Can't save messages: disk I/O failed. New messages are shown but won't be kept.",
     }
 }
-pub fn sign_in_failure(reason: &line::client::error::SignInFailure) -> String {
-    use line::client::error::SignInFailure::*;
+pub fn sign_in_failure(reason: &sen::client::error::SignInFailure) -> String {
+    use sen::client::error::SignInFailure::*;
     match reason {
         CryptoModule(path) => format!("Can't load the LINE crypto module at {}. Check LINE for Chrome or the developer override.", path.display()),
         ExtensionMissing => "Install LINE for Chrome — this app uses its crypto module. Searched Chrome and Chromium profiles under $XDG_CONFIG_HOME (default $HOME/.config).".into(),
@@ -111,8 +111,8 @@ pub fn sign_in_failure(reason: &line::client::error::SignInFailure) -> String {
 
 pub(crate) const LINK_FAILURE: &str = "Couldn't open link";
 
-pub fn sign_out_reason(reason: &line::client::error::SignOutReason) -> String {
-    use line::client::error::SignOutReason::*;
+pub fn sign_out_reason(reason: &sen::client::error::SignOutReason) -> String {
+    use sen::client::error::SignOutReason::*;
     match reason {
         Unavailable(reason) => sign_in_failure(reason),
         NoSession => "Sign in to connect to LINE.".into(),

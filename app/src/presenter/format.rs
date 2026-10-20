@@ -42,11 +42,11 @@ pub(crate) fn install(ui: &AppWindow) {
 }
 
 pub struct EmojiView {
-    pub span: line::store::InlineEmoji,
+    pub span: sen::store::InlineEmoji,
     pub image_key: String,
 }
 impl EmojiView {
-    pub(crate) fn new(span: line::store::InlineEmoji) -> Self {
+    pub(crate) fn new(span: sen::store::InlineEmoji) -> Self {
         let image_key = Asset::inline_emoji(&span)
             .map(|a| a.key())
             .unwrap_or_default();

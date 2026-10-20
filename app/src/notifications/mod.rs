@@ -138,7 +138,7 @@ mod tests {
     #[test]
     fn queued_notification_opens_preserve_both_persisted_drafts() {
         std::thread::spawn(|| {
-            let worker = crate::tests::test_worker(line::backend::FakeBackend::canned());
+            let worker = crate::tests::test_worker(sen::backend::FakeBackend::canned());
             let _window = crate::snapshot::install().unwrap();
             let ui = crate::window::create_app_window().unwrap();
             let chat_a = ChatId("alice".into());

@@ -1,6 +1,6 @@
 //! Original demo content, supplied as decoded RPC rows and backend assets.
 use super::*;
-use line::client::desktop::{
+use sen::client::desktop::{
     assets::{Asset, Pixels},
     rich::RichContent,
 };
@@ -445,7 +445,7 @@ pub fn seed(fake: &FakeBackend) {
     let mut friends = chats
         .iter()
         .enumerate()
-        .map(|(i, c)| line::store::Friend {
+        .map(|(i, c)| sen::store::Friend {
             profile: Default::default(),
             id: c.id.0.clone(),
             name: Some(c.title.clone()),
@@ -461,7 +461,7 @@ pub fn seed(fake: &FakeBackend) {
             member_count: c.member_count.map(|n| n as usize),
         })
         .collect::<Vec<_>>();
-    friends.push(line::store::Friend {
+    friends.push(sen::store::Friend {
         profile: Default::default(),
         id: "new-friend".into(),
         name: Some("新しい友だち 🌸".into()),
@@ -472,9 +472,9 @@ pub fn seed(fake: &FakeBackend) {
     });
     fake.set_friends(friends);
     let members = (0..26)
-        .map(|i| line::store::Member {
+        .map(|i| sen::store::Member {
             is_self: i == 0,
-            contact: line::store::Friend {
+            contact: sen::store::Friend {
                 profile: ContactProfile {
                     relation: Some(if i == 1 { 0 } else { 2 }),
                     invited: i == 25,
@@ -649,7 +649,7 @@ pub fn previews(fake: &FakeBackend) {
         for span in &emoji {
             let asset = Asset::inline_emoji(span).unwrap();
             if i == 4 {
-                fake.set_asset_failure(&asset, line::client::desktop::assets::Failure::Http(404));
+                fake.set_asset_failure(&asset, sen::client::desktop::assets::Failure::Http(404));
             } else {
                 let image = avatar(0).to_rgba8().unwrap();
                 fake.set_image(
@@ -722,8 +722,7 @@ pub fn previews(fake: &FakeBackend) {
                 serde_json::to_value(image_asset(fake, &chat, photo(content_type == 7))).unwrap();
             if i == 4 {
                 asset["failure"] =
-                    serde_json::to_value(line::client::desktop::assets::Failure::Http(404))
-                        .unwrap();
+                    serde_json::to_value(sen::client::desktop::assets::Failure::Http(404)).unwrap();
             }
             *super::image_mut(&mut row.body) = Some(serde_json::from_value(asset).unwrap());
         }

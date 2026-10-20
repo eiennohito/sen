@@ -22,7 +22,7 @@ pub(crate) fn save_bytes(
 }
 fn save_dialog(bytes: &[u8], name: &str, title: &str) -> Result<Option<PathBuf>, String> {
     #[cfg(test)]
-    if std::env::var("LINE_DESKTOP_TEST_BUS").as_deref() != Ok("1") {
+    if std::env::var("SEN_TEST_BUS").as_deref() != Ok("1") {
         return Err("tests require a private dbus-run-session".into());
     }
     #[cfg(feature = "demo")]
@@ -45,7 +45,7 @@ fn save_dialog(bytes: &[u8], name: &str, title: &str) -> Result<Option<PathBuf>,
             return Ok(Some(path));
         }
         Ok(None) => return Ok(None),
-        Err(error) => line::reporting::log("export", "downloads-fallback", error.as_ref()),
+        Err(error) => sen::reporting::log("export", "downloads-fallback", error.as_ref()),
     }
     write_unique(&downloads_directory()?, name, bytes).map(Some)
 }
@@ -93,7 +93,7 @@ fn downloads_directory() -> Result<PathBuf, String> {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute())
         .ok_or("Home folder is unavailable.")?;
-    let config = line::locations::Locations::config_home().map_err(|e| e.to_string())?;
+    let config = sen::locations::Locations::config_home().map_err(|e| e.to_string())?;
     if let Ok(contents) = fs::read_to_string(config.join("user-dirs.dirs")) {
         for line in contents.lines() {
             if let Some(value) = line.trim().strip_prefix("XDG_DOWNLOAD_DIR=") {
@@ -137,7 +137,7 @@ mod tests {
     use super::*;
     #[test]
     fn photo_exports_preserve_bytes_and_use_private_unique_names() {
-        let root = line::test_support::TempDir::new("export");
+        let root = sen::test_support::TempDir::new("export");
         let mut jpeg = std::io::Cursor::new(Vec::new());
         image::RgbImage::new(3, 2)
             .write_to(&mut jpeg, image::ImageFormat::Jpeg)
@@ -206,7 +206,7 @@ mod portal_tests {
     #[test]
     #[ignore = "requires a private dbus-run-session"]
     fn file_and_photo_exports_use_their_own_chooser_titles() {
-        assert_eq!(std::env::var("LINE_DESKTOP_TEST_BUS").as_deref(), Ok("1"));
+        assert_eq!(std::env::var("SEN_TEST_BUS").as_deref(), Ok("1"));
         std::thread::spawn(|| {
             let (titles, requests) = mpsc::channel();
             let server = zbus::blocking::connection::Builder::session()
@@ -229,7 +229,7 @@ mod portal_tests {
                     .unwrap(),
                 ("Save file".to_owned(), "閃 attachment".to_owned())
             );
-            let root = line::test_support::TempDir::new("export-photo");
+            let root = sen::test_support::TempDir::new("export-photo");
             let source = root.0.join("photo.png");
             fs::write(&source, b"original bytes").unwrap();
             crate::viewer::save_photo(&ui, Some(source.clone()));

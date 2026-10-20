@@ -4,7 +4,7 @@ use super::*;
 fn grouping_uses_identity_time_and_delivery() {
     std::thread::spawn(|| {
         use chrono::TimeZone;
-        use line_desktop_ui::RunPosition::{First, Last, Single};
+        use sen_ui::RunPosition::{First, Last, Single};
         let midnight = chrono::Local
             .with_ymd_and_hms(2026, 10, 16, 0, 0, 0)
             .single()
@@ -37,7 +37,7 @@ fn grouping_uses_identity_time_and_delivery() {
             }
             state.gaps = gap
                 .into_iter()
-                .map(|after| line::store::Gap {
+                .map(|after| sen::store::Gap {
                     after,
                     before: None,
                 })
@@ -66,7 +66,7 @@ fn grouping_uses_identity_time_and_delivery() {
         for delivery in [
             Delivery::Pending,
             Delivery::Rejected {
-                reason: line::backend::Refusal::FileMissing,
+                reason: sen::backend::Refusal::FileMissing,
             },
         ] {
             source[4].delivery = delivery;
@@ -98,7 +98,7 @@ fn own_member_uses_account_profile_and_keeps_you_note() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
         let (ui, _runtime, _worker) =
-            test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
         let mut state = AppState::default();
@@ -145,7 +145,7 @@ fn room_detail_uses_member_names_for_uppercase_wire_mid() {
         let mut presenter = presenter::Presenter::default();
         presenter.install(&ui);
         let mut state = AppState::default();
-        state.push_detail(line::controller::DetailPage::GroupInfo(ChatId(
+        state.push_detail(sen::controller::DetailPage::GroupInfo(ChatId(
             "R00000000000000000000000000000001".into(),
         )));
         for (name, is_self, invited) in [
@@ -159,7 +159,7 @@ fn room_detail_uses_member_names_for_uppercase_wire_mid() {
                 contact: Friend {
                     id: name.into(),
                     name: Some(name.into()),
-                    profile: line::store::ContactProfile {
+                    profile: sen::store::ContactProfile {
                         invited,
                         ..Default::default()
                     },

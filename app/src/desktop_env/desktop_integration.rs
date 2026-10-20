@@ -8,10 +8,10 @@ use std::{
 };
 use zbus::{blocking::Connection, zvariant::OwnedValue};
 
-pub const APP_ID: &str = "org.lineclient.Desktop";
-pub const DESKTOP_FILE: &str = "org.lineclient.Desktop.desktop";
-pub const APPLICATION_URI: &str = "application://org.lineclient.Desktop.desktop";
-pub const OBJECT: &str = "/org/lineclient/Desktop";
+pub const APP_ID: &str = "org.senclient.Sen";
+pub const DESKTOP_FILE: &str = "org.senclient.Sen.desktop";
+pub const APPLICATION_URI: &str = "application://org.senclient.Sen.desktop";
+pub const OBJECT: &str = "/org/senclient/Sen";
 #[derive(Debug, Clone)]
 pub enum Activation {
     Show,
@@ -59,6 +59,15 @@ pub enum Launch {
     Forwarded,
 }
 impl Instance {
+    // remove after the first release
+    pub fn old_app_notice(&self) -> Option<&'static str> {
+        let connection = self._connection.as_ref()?;
+        old_app_notice(|name| {
+            Ok(zbus::blocking::fdo::DBusProxy::new(connection)?
+                .name_has_owner(name.try_into().unwrap())?)
+        })
+    }
+
     pub fn take_events(&self) -> mpsc::Receiver<Activation> {
         let (_, empty) = mpsc::channel();
         self.events.replace(empty)
@@ -94,7 +103,7 @@ impl Instance {
                                     &(HashMap::<String, OwnedValue>::new(),),
                                 )
                             {
-                                line::reporting::log("desktop", "activate-existing", &error);
+                                sen::reporting::log("desktop", "activate-existing", &error);
                             }
                             Ok(None)
                         }
@@ -111,13 +120,13 @@ impl Instance {
             })),
             Ok(None) => Ok(Launch::Forwarded),
             Err(error) => {
-                line::reporting::log("desktop", "activation-unavailable", &error);
+                sen::reporting::log("desktop", "activation-unavailable", &error);
                 let lock = match std::env::var_os("XDG_RUNTIME_DIR") {
-                    Some(dir) => match lock_file(&PathBuf::from(dir).join("line-desktop.lock")) {
+                    Some(dir) => match lock_file(&PathBuf::from(dir).join("sen-desktop.lock")) {
                         Ok(Some(file)) => Some(file),
                         Ok(None) => return Ok(Launch::Forwarded),
                         Err(error) => {
-                            line::reporting::log("desktop", "lock-unavailable", &error);
+                            sen::reporting::log("desktop", "lock-unavailable", &error);
                             None
                         }
                     },
@@ -182,11 +191,37 @@ mod tests {
     }
     #[test]
     fn lock_excludes_second_writer_and_releases() {
-        let root = line::test_support::TempDir::new("lock");
+        let root = sen::test_support::TempDir::new("lock");
         let path = root.0.join("instance.lock");
         let first = lock_file(&path).unwrap().unwrap();
         assert!(lock_file(&path).unwrap().is_none());
         drop(first);
         assert!(lock_file(&path).unwrap().is_some());
     }
+}
+
+// remove after the first release
+fn old_app_notice(check: impl FnOnce(&str) -> zbus::Result<bool>) -> Option<&'static str> {
+    match check("org.lineclient.Desktop") {
+        Ok(true) => Some("Quit line-desktop first, then reopen Sen to connect to your account."),
+        Ok(false) => None,
+        Err(error) => {
+            sen::reporting::log("desktop", "old-app-check", &error);
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn old_app_blocks_account_start_until_next_launch() {
+    let notice = old_app_notice(|name| {
+        assert_eq!(name, "org.lineclient.Desktop");
+        Ok(true)
+    })
+    .unwrap();
+    assert!(notice.contains("Quit line-desktop first"));
+    assert!(notice.contains("reopen Sen"));
+    assert!(old_app_notice(|_| Ok(false)).is_none());
+    assert!(old_app_notice(|_| Err(zbus::Error::Failure("no bus".into()))).is_none());
 }

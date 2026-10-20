@@ -6,7 +6,7 @@ fn emoji_message() -> StoredMessage {
     m.outgoing = true;
     let spans = body
         .match_indices("[笑]")
-        .map(|(start, text)| line::store::InlineEmoji {
+        .map(|(start, text)| sen::store::InlineEmoji {
             start_utf16: body[..start].encode_utf16().count(),
             end_utf16: body[..start + text.len()].encode_utf16().count(),
             start_byte: start,
@@ -120,7 +120,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
         }
         let mut m = message("");
         m.body = content;
-        let asset = line::client::desktop::assets::Asset::avatar("/synthetic").unwrap();
+        let asset = sen::client::desktop::assets::Asset::avatar("/synthetic").unwrap();
         let media_key = asset.key();
         match &mut m.body {
             Content::Photo { asset: a, .. } | Content::Sticker { asset: a, .. } => *a = Some(asset),
@@ -148,7 +148,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
                 .iter()
                 .any(|r| r.thumbnail)
         );
-        images.failed(media_key, line::client::desktop::assets::Failure::Decode);
+        images.failed(media_key, sen::client::desktop::assets::Failure::Decode);
         rich_content::preview::set(&mut row, &view.body, None, &images);
         assert_eq!(row.preview, text);
         assert!(!row.preview_runs.row_data(0).unwrap().has_picture);
@@ -232,11 +232,11 @@ pub(crate) fn label_cases() -> [(Content, &'static str, &'static str); 9] {
 fn photo_previews_and_reply_quotes_load_the_small_disk_variant() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
-        let fake = line::backend::FakeBackend::canned();
-        let asset = line::backend::FakeBackend::asset(true);
+        let fake = sen::backend::FakeBackend::canned();
+        let asset = sen::backend::FakeBackend::asset(true);
         let path = fake.set_image(
             &asset,
-            line::client::desktop::assets::Pixels {
+            sen::client::desktop::assets::Pixels {
                 width: 384,
                 height: 256,
                 rgba: [20, 30, 40, 255].repeat(384 * 256),
@@ -260,10 +260,10 @@ fn photo_previews_and_reply_quotes_load_the_small_disk_variant() {
         let ui = window::create_app_window().unwrap();
         presenter.install(&ui);
         let mut state = AppState::default();
-        let id = line::store::ServerId::new("42").unwrap();
+        let id = sen::store::ServerId::new("42").unwrap();
         target.server_id = Some(id.clone());
         state.messages.insert(target.key, target.clone());
-        state.composer_reply = Some(line::store::ReplyReference {
+        state.composer_reply = Some(sen::store::ReplyReference {
             message_id: id,
             service_code: None,
         });

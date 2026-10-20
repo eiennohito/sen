@@ -6,7 +6,7 @@ pub(crate) fn message(text: &str) -> StoredMessage {
         server_id: None,
         local_id: None,
         request_seq: None,
-        sort: line::store::Cursor {
+        sort: sen::store::Cursor {
             sort_ts: 1,
             sort_id: "1".into(),
         },
@@ -24,7 +24,7 @@ pub(crate) fn message(text: &str) -> StoredMessage {
     }
 }
 pub(crate) fn test_window(
-    backend: line::backend::FakeBackend,
+    backend: sen::backend::FakeBackend,
     seed: impl FnOnce(&mut Desktop, &Worker, &AppWindow),
 ) -> (AppWindow, Runtime, Worker) {
     let worker = test_worker(backend);
@@ -65,20 +65,20 @@ fn search(ui: &AppWindow) -> i_slint_backend_testing::ElementHandle {
 
 pub(crate) fn image_file(image: &slint::Image) -> std::path::PathBuf {
     thread_local! {
-        static FIXTURES: line::backend::FakeBackend = line::backend::FakeBackend::canned();
+        static FIXTURES: sen::backend::FakeBackend = sen::backend::FakeBackend::canned();
     }
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let pixels = image.to_rgba8().unwrap();
     FIXTURES.with(|fake| {
         fake.set_image(
-            &line::client::desktop::assets::Asset::avatar(&format!(
+            &sen::client::desktop::assets::Asset::avatar(&format!(
                 "/fixture-{}",
                 NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             ))
             .unwrap()
             .original()
             .unwrap(),
-            line::client::desktop::assets::Pixels {
+            sen::client::desktop::assets::Pixels {
                 width: pixels.width(),
                 height: pixels.height(),
                 rgba: pixels.as_bytes().to_vec(),
@@ -107,7 +107,7 @@ pub(crate) fn desktop(sender: Sender) -> Desktop {
     }
 }
 
-pub(crate) fn test_worker(backend: line::backend::FakeBackend) -> Worker {
+pub(crate) fn test_worker(backend: sen::backend::FakeBackend) -> Worker {
     let mut backend = Some(backend);
     Worker::start(
         StoreLocation::Memory,

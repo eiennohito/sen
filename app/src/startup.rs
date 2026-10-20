@@ -1,7 +1,7 @@
 use crate::*;
 
 pub(crate) fn start(
-    locations: line::locations::Locations,
+    locations: sen::locations::Locations,
     client_version: Option<String>,
     wasm_override: Option<std::path::PathBuf>,
     #[cfg(feature = "demo")] dev_args: dev::demo::Args,
@@ -24,16 +24,21 @@ pub(crate) fn start(
     } else {
         None
     };
+    if let Some(message) = instance.as_ref().and_then(|i| i.old_app_notice()) {
+        #[cfg(feature = "demo")]
+        select_platform()?;
+        let ui = window::create_app_window()?;
+        ui.global::<ShellState>().set_startup_notice(message.into());
+        ui.run()?;
+        return Ok(());
+    }
     let activations = instance.as_ref().map(|i| i.take_events());
     let assets = assets::Assets::default();
-    let clipboard_root = locations
-        .session
-        .parent()
-        .unwrap()
-        .join("clipboard-attachments");
+    copy_first_start(&locations);
+    let clipboard_root = locations.data.join("clipboard-attachments");
     let fonts = locations.fonts();
     let real_worker = || {
-        let root = locations.session.parent().unwrap().join("accounts");
+        let root = locations.data.clone();
         Worker::start(
             StoreLocation::Account { root, mid: None },
             move || {
@@ -44,7 +49,7 @@ pub(crate) fn start(
                     client_version.clone(),
                 )
             },
-            line::engine::WorkerOptions::default(),
+            sen::engine::WorkerOptions::default(),
         )
     };
     #[cfg(feature = "demo")]
@@ -148,4 +153,27 @@ pub(crate) fn select_platform() -> Result<(), slint::PlatformError> {
         .backend_name("winit".into())
         .renderer_name("software".into())
         .select()
+}
+
+fn copy_first_start(locations: &sen::locations::Locations) {
+    if let Err(error) = locations.copy_first_start() {
+        sen::reporting::log("auth-copy", "first-start", error.as_ref());
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn auth_copy_io_failure_does_not_abort_startup() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/tmp");
+    let root = root.join(format!("startup-copy-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("line-desktop/session.json")).unwrap();
+    let locations = sen::locations::Locations {
+        data: root.join("sen"),
+        session: root.join("sen/auth/session.json"),
+        cache: root.join("cache"),
+        config_home: root.join("config"),
+    };
+    copy_first_start(&locations);
+    assert!(!locations.session.exists());
+    std::fs::remove_dir_all(root).unwrap();
 }

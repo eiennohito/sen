@@ -1,18 +1,18 @@
-# LINE desktop handoff
+# 閃 desktop handoff
 
 ## Architecture
 
-- `line` (root crate): `src/runtime.rs` hosts the original WASM;
+- `sen` (root crate): `src/runtime.rs` hosts the original WASM;
   `src/crypto_module.rs` discovers and validates the installed module;
   `src/client/` implements pairing, signing, RPC, SSE and media;
   `src/backend/` provides LineBackend and the feature-gated FakeBackend.
 - `src/engine.rs` schedules work on a store thread that alone owns SQLite.
-  A separate `line-net` thread owns the backend, WASM runtime and RPC work.
+  A separate `sen-net` thread owns the backend, WASM runtime and RPC work.
   SSE, asset fetchers and uploads have separate workers. Results return to
   the engine before FIFO deltas reach `src/controller.rs` on the UI thread.
-- `line-desktop` (`app/`) owns startup, callbacks and presentation.
+- `sen-desktop` (`app/`) owns startup, callbacks and presentation.
   `app/src/presenter.rs` updates keyed Slint models from controller state.
-  `line-desktop-ui` (`ui/`) compiles the Slint sources in `app/ui/`.
+  `sen-ui` (`ui/`) compiles the Slint sources in `app/ui/`.
   Winit uses the software renderer.
 
 Transport is hyper HTTP/1 with async-io and verified rustls/WebPKI TLS.
@@ -28,7 +28,8 @@ versioning. Required interfaces are checked before sign-in. `--wasm` and
 selected by default.
 
 Account history, drafts, preferences and outbox use an unencrypted, MID-scoped
-SQLite database under `$XDG_DATA_HOME/line-desktop/accounts/`. Session credentials
+SQLite database at `$XDG_DATA_HOME/sen/<mid>/store.sqlite3`. The last account
+is plain MID text at `sen/auth/last-account`. Session credentials
 are sealed with a desktop Secret Service key; media caches are private files.
 The `demo` feature enables synthetic backends and snapshots with in-memory SQLite.
 `ui-debug` includes `demo` and loopback MCP; normal builds omit both.
@@ -36,13 +37,13 @@ The `demo` feature enables synthetic backends and snapshots with in-memory SQLit
 ## Build and checks
 
 ```sh
-cargo build --offline --release -p line-desktop
+cargo build --offline --release -p sen-desktop
 cargo fmt --all -- --check
 cargo test --offline --workspace
 cargo clippy --offline --workspace --all-targets -- -D warnings
-cargo build --offline --release -p line-desktop --features demo
-target/release/line-desktop --demo --snapshot /tmp/line-ui.ppm
-cargo build --offline --release -p line-desktop --features ui-debug
+cargo build --offline --release -p sen-desktop --features demo
+target/release/sen --demo --snapshot /tmp/line-ui.ppm
+cargo build --offline --release -p sen-desktop --features ui-debug
 python3 tools/check-ui-mcp.py --all
 ```
 
@@ -62,8 +63,8 @@ Open issues are tracked in [docs/issues.md](docs/issues.md). See
 Do not run the default app, `--check-live`, pairing, sends,
 read markers, or server preference changes without a new device-slot assignment.
 Preserve `artifacts/auth/session.json` and all encrypted local state. App
-defaults use `$XDG_DATA_HOME/line-desktop/session.json`
-(fallback `$HOME/.local/share/line-desktop/session.json`). Crypto comes from the newest installed LINE extension under `$XDG_CONFIG_HOME` (default `$HOME/.config`), at its version directory’s `static/js/ltsm.wasm`. Historical
+defaults use `$XDG_DATA_HOME/sen/auth/session.json`
+(fallback `$HOME/.local/share/sen/auth/session.json`). Crypto comes from the newest installed LINE extension under `$XDG_CONFIG_HOME` (default `$HOME/.config`), at its version directory’s `static/js/ltsm.wasm`. Historical
 live results below do not prove current authorization.
 
 
@@ -90,7 +91,7 @@ The explicitly selected repo session `artifacts/auth/session.json` contains
 **real access/refresh credentials and wrapped
 keys**, in plaintext form (usable only with the plaintext-file development store). It is mode 0600, and its newly created parent directory is mode 0700.
 Sealed sessions are only readable with their key in the desktop keyring: do not
-delete `line-desktop` keyring items.
+delete `sen` keyring items.
 Preserve it. Do not dump it, put it into prompts/logs, commit it, or copy its
 contents into documentation. HAR files under `dumps/` are sensitive too.
 
@@ -144,9 +145,9 @@ Chrome secondary-device slot and requires an explicit device-slot assignment.
 
 Colour emoji: run `python3 tools/fetch_emoji_font.py` for the pinned Noto Color
 Emoji 2.057 and OFL licence in `fonts/` (gitignored). The UI launcher requires
-verified copies and sets `LINE_EMOJI_FONT` in its private demo environment.
+verified copies and sets `SEN_EMOJI_FONT` in its private demo environment.
 `tools/install-desktop.py` installs both files alongside user data. The render
 regression reads `fonts/NotoColorEmoji.ttf` directly from the checkout, ignoring
-`LINE_EMOJI_FONT` and the user data directory. It skips with the missing path and
+`SEN_EMOJI_FONT` and the user data directory. It skips with the missing path and
 fetch command if that file is absent; no CI download is required.
 Rebase both `third_party/` patches on every Slint upgrade.

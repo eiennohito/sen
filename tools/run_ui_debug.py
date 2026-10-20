@@ -34,13 +34,13 @@ def launch_demo(binary, port, arguments=(), log=None):
                 'WINIT_UNIX_BACKEND', 'SLINT_BACKEND', 'XMODIFIERS', 'GTK_IM_MODULE', 'QT_IM_MODULE'):
         environment.pop(key, None)
     font_files = list(fetch_emoji_font.verified_files())
-    environment['LINE_EMOJI_FONT'] = str(font_files[0])
+    environment['SEN_EMOJI_FONT'] = str(font_files[0])
     token = secrets.token_hex(24)
-    environment.update(LINE_UI_INSTANCE=token, LINE_DESKTOP_CREDENTIALS='plaintext-file',
+    environment.update(SEN_UI_INSTANCE=token, SEN_CREDENTIALS='plaintext-file',
                        SLINT_SCALE_FACTOR='1', SLINT_BACKEND='headless-software',
                        SLINT_MCP_PORT=str(port))
     with tempfile.TemporaryDirectory(dir=UI_TEMP, prefix='d-') as directory:
-        environment['LINE_DEMO_DIRECTORY'] = directory
+        environment['SEN_DEMO_DIRECTORY'] = directory
         environment['TMPDIR'] = directory
         for name in ('XDG_RUNTIME_DIR', 'XDG_CONFIG_HOME', 'XDG_DATA_HOME',
                      'XDG_CACHE_HOME', 'XDG_STATE_HOME'):
@@ -97,7 +97,7 @@ def main():
     parser.add_argument('--log', type=Path)
     parser.add_argument('arguments', nargs=argparse.REMAINDER)
     args = parser.parse_args()
-    binary = args.binary or ROOT / 'target' / ('debug' if args.profile == 'dev' else args.profile) / 'line-desktop'
+    binary = args.binary or ROOT / 'target' / ('debug' if args.profile == 'dev' else args.profile) / 'sen'
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
     with args.log.open('w') if args.log else contextlib.nullcontext() as log:
         try:

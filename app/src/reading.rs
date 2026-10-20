@@ -1,10 +1,10 @@
 //! Reading decisions use logical content coordinates, independent of Slint.
-use line::{
+use sen::{
     controller::AppState,
     engine::{Connection, Intent},
     store::*,
 };
-use line_desktop_ui::ReadingGeometry;
+use sen_ui::ReadingGeometry;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
@@ -120,7 +120,7 @@ pub(crate) fn exposure(
         let tail_visible = rows
             .iter()
             .rev()
-            .find(|m| line::system_events::displayable(&m.body))
+            .find(|m| sen::system_events::displayable(&m.body))
             .is_none_or(|m| {
                 reading
                     .geometry
@@ -242,8 +242,8 @@ mod tests {
     #[test]
     fn exposing_hidden_incoming_events_clears_the_chat_badge() {
         std::thread::spawn(|| {
-            use line::backend::FakeBackend;
-            use line_desktop_ui::ReadingGeometry;
+            use sen::backend::FakeBackend;
+            use sen_ui::ReadingGeometry;
             use slint::Model;
             let fake = FakeBackend::canned();
             let chat = ChatId("alice".into());

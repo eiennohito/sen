@@ -2,7 +2,7 @@ use std::path::PathBuf;
 
 fn path(fonts: &std::path::Path) -> Option<PathBuf> {
     #[cfg(any(debug_assertions, feature = "ui-debug"))]
-    if let Some(path) = std::env::var_os("LINE_EMOJI_FONT") {
+    if let Some(path) = std::env::var_os("SEN_EMOJI_FONT") {
         return Some(path.into());
     }
     Some(fonts.join("NotoColorEmoji.ttf"))
@@ -14,7 +14,7 @@ pub(crate) fn load(fonts: &std::path::Path) {
         .and_then(std::fs::read);
     match result {
         Ok(data) => register(data),
-        Err(error) => line::reporting::log("emoji-font", "system-fallback", &error),
+        Err(error) => sen::reporting::log("emoji-font", "system-fallback", &error),
     }
 }
 
@@ -26,7 +26,7 @@ fn register(data: Vec<u8>) {
     let mut collection = shared_collection();
     let registered = collection.register_fonts(Blob::new(std::sync::Arc::new(data)), None);
     if registered.is_empty() {
-        line::reporting::log(
+        sen::reporting::log(
             "emoji-font",
             "system-fallback",
             &std::io::Error::new(std::io::ErrorKind::InvalidData, "no fonts registered"),

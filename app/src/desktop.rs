@@ -140,7 +140,7 @@ impl Desktop {
                 text: self.state.composer.clone(),
                 cursor: ui.global::<ComposerState>().get_editor_caret() as usize,
                 anchor: ui.global::<ComposerState>().get_editor_anchor() as usize,
-                updated: line::engine::now_ms(),
+                updated: sen::engine::now_ms(),
             };
             if let Some(item) = self.state.chats.get_mut(chat) {
                 item.draft = Some(draft.clone());
@@ -174,7 +174,7 @@ mod tests {
 
     fn chat_open_positions_unread_divider(source: &'static str) {
         std::thread::spawn(move || {
-            let fake = line::backend::FakeBackend::canned();
+            let fake = sen::backend::FakeBackend::canned();
             let chat = ChatId("unread-profile".into());
             fake.add_chat(ChatInput {
                 id: chat.clone(),
@@ -187,7 +187,7 @@ mod tests {
                 chat.clone(),
                 (8101..=8106)
                     .map(|id| {
-                        line::backend::FakeBackend::message(
+                        sen::backend::FakeBackend::message(
                             "unread-profile",
                             id,
                             "Incoming message",
@@ -281,7 +281,7 @@ mod tests {
         std::thread::spawn(|| {
             let _window = crate::snapshot::install().unwrap();
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |d, _, ui| {
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |d, _, ui| {
                     d.state.friends.push(Friend {
                         id: "weekend".into(),
                         group: true,
@@ -312,7 +312,7 @@ mod tests {
             use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
             let _window = crate::snapshot::install().unwrap();
             let (ui, runtime, worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             runtime.update(|d| {
                 d.state.panel = Panel::Settings;
                 ui.global::<ShellState>().set_section(Section::Friends);
@@ -355,7 +355,7 @@ mod tests {
             let _window = crate::snapshot::install().unwrap();
             let chat = ChatId("weekend".into());
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |d, _, ui| {
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |d, _, ui| {
                     ui.show().unwrap();
                     ui.window().set_size(slint::LogicalSize::new(1440., 900.));
                     d.state.selected = Some(chat.clone());
@@ -446,7 +446,7 @@ mod tests {
             });
             slint::platform::set_platform(Box::new(Backend(window.clone()))).unwrap();
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             runtime.update(|desktop| {
                 desktop.state.connection = Connection::Online;
                 assert!(!ui.window().is_visible());
@@ -476,7 +476,7 @@ mod tests {
         std::thread::spawn(|| {
             let _window = crate::snapshot::install().unwrap();
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             runtime.update(|d| {
                 d.state.panel = Panel::Settings;
                 d.state.push_detail(DetailPage::Profile("alice".into()));
@@ -511,7 +511,7 @@ mod tests {
             use i_slint_backend_testing::ElementHandle;
             let _window = crate::snapshot::install().unwrap();
             let (ui, runtime, worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, worker, _| {
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, worker, _| {
                     while !matches!(
                         worker
                             .deltas
@@ -532,7 +532,7 @@ mod tests {
                 }));
                 desktop
                     .state
-                    .push_detail(line::controller::DetailPage::Profile("self".into()));
+                    .push_detail(sen::controller::DetailPage::Profile("self".into()));
                 let avatar = desktop
                     .state
                     .contact("self")
@@ -604,10 +604,10 @@ mod tests {
         std::thread::spawn(|| {
             let _window = crate::snapshot::install().unwrap();
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             runtime.update(|desktop| {
                 let avatar =
-                    line::client::desktop::assets::Asset::avatar("/visible-avatar").unwrap();
+                    sen::client::desktop::assets::Asset::avatar("/visible-avatar").unwrap();
                 assert!(desktop.assets.request(&avatar));
                 let (dirty, window, editor) =
                     desktop.apply(&ui, Delta::AssetEvicted { key: avatar.key() });
@@ -628,7 +628,7 @@ mod tests {
         std::thread::spawn(|| {
             let _window = crate::snapshot::install().unwrap();
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             runtime.update(|desktop| {
                 desktop.state.select(ChatId("empty".into()));
                 desktop.apply(
@@ -658,9 +658,9 @@ mod tests {
         std::thread::spawn(|| {
             let _window = crate::snapshot::install().unwrap();
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             runtime.update(|desktop| {
-                let avatar = line::client::desktop::assets::Asset::avatar("/own-photo").unwrap();
+                let avatar = sen::client::desktop::assets::Asset::avatar("/own-photo").unwrap();
                 desktop.state.apply(Delta::Profile(Profile {
                     mid: "self".into(),
                     display_name: "Me".into(),
@@ -717,7 +717,7 @@ mod tests {
         std::thread::spawn(|| {
             let _window = crate::snapshot::install().unwrap();
             let (ui, runtime, _worker) =
-                crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+                crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
             runtime.update(|desktop| {
                 ui.global::<DetailState>().set_profile_id("missing".into());
                 ui.global::<DetailState>()
@@ -747,12 +747,12 @@ fn failed_cancel_restores_sign_in_back_action() {
     std::thread::spawn(|| {
         let platform = crate::snapshot::install().unwrap();
         let (ui, runtime, _worker) =
-            crate::tests::test_window(line::backend::FakeBackend::canned(), |_, _, _| {});
+            crate::tests::test_window(sen::backend::FakeBackend::canned(), |_, _, _| {});
         runtime.update(|d| {
             ui.show().unwrap();
             for delta in [
                 Delta::PairFailed {
-                    reason: line::client::error::SignInFailure::Network,
+                    reason: sen::client::error::SignInFailure::Network,
                 },
                 Delta::Connection(Connection::Online),
             ] {

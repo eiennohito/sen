@@ -1,6 +1,6 @@
 //! Pure message attention decisions. Callers supply authoritative unread state.
 
-use line::store::NotificationPreview;
+use sen::store::NotificationPreview;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Preferences {

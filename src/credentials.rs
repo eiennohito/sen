@@ -4,7 +4,7 @@
 //! Secret Service (org.freedesktop.secrets), one item per sealed file.
 //! Keyring storage refuses plaintext files; sealed files are never downgraded.
 //!
-//! `LINE_DESKTOP_CREDENTIALS=plaintext-file` is the development store for
+//! `SEN_CREDENTIALS=plaintext-file` is the development store for
 //! agent and debug instances without a keyring (e.g. the private D-Bus session
 //! of `tools/run_ui_debug.py`): it keeps the mode-0600 plaintext file and
 //! refuses sealed files.
@@ -19,7 +19,7 @@ use serde_json::{Value, json};
 use std::{fs, path::Path};
 
 const FORMAT: &str = "line-desktop-sealed-session";
-const ENVIRONMENT: &str = "LINE_DESKTOP_CREDENTIALS";
+const ENVIRONMENT: &str = "SEN_CREDENTIALS";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Store {
@@ -41,8 +41,8 @@ impl Store {
 
 /// Where sealing keys are kept. The Secret Service in production; a map in tests.
 trait Keys {
-    fn get(&self, id: &str) -> Result<Option<[u8; 32]>>;
-    fn put(&self, id: &str, key: &[u8; 32]) -> Result<()>;
+    fn get(&self, application: &str, id: &str) -> Result<Option<[u8; 32]>>;
+    fn put(&self, application: &str, id: &str, key: &[u8; 32]) -> Result<()>;
 }
 
 pub fn load(path: &Path) -> Result<Value> {
@@ -115,8 +115,7 @@ fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Resu
     );
     let sealed = match existing_id {
         Some(id) => {
-            let key = keys
-                .get(&id)
+            let key = session_key(keys, &id)
                 .context(SignInFailure::Keyring)?
                 .context(SignInFailure::SessionKeyMissing)?;
             seal(&id, &key, &plain)?
@@ -129,6 +128,20 @@ fn save_with(path: &Path, state: &Value, store: Store, keys: &impl Keys) -> Resu
     private_write(path, &sealed).context(SignInFailure::SessionIo)
 }
 
+fn session_key(keys: &impl Keys, id: &str) -> Result<Option<[u8; 32]>> {
+    if let Some(key) = keys.get("sen", id)? {
+        return Ok(Some(key));
+    }
+    // remove after the first release
+    if let Some(key) = keys.get("line-desktop", id)? {
+        if let Err(error) = keys.put("sen", id, &key) {
+            crate::reporting::log("key-copy", "first-start", error.as_ref());
+        }
+        return Ok(Some(key));
+    }
+    Ok(None)
+}
+
 fn new_key(keys: &impl Keys) -> Result<(String, [u8; 32])> {
     let mut random = [0u8; 48];
     crate::fill_random(&mut random)?;
@@ -137,7 +150,7 @@ fn new_key(keys: &impl Keys) -> Result<(String, [u8; 32])> {
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let key: [u8; 32] = random[16..].try_into().unwrap();
-    keys.put(&id, &key).context(SignInFailure::Keyring)?;
+    keys.put("sen", &id, &key).context(SignInFailure::Keyring)?;
     Ok((id, key))
 }
 fn aad(id: &str) -> Vec<u8> {
@@ -180,8 +193,7 @@ fn open(envelope: &Value, keys: &impl Keys) -> Result<Value> {
             .as_str()
             .context("sealed session ciphertext")?,
     )?;
-    let key = keys
-        .get(id)
+    let key = session_key(keys, id)
         .context(SignInFailure::Keyring)?
         .context(SignInFailure::SessionKeyMissing)?;
     let plain = Aes256Gcm::new((&key).into())
@@ -210,10 +222,10 @@ mod secret_service {
         }
     }
     impl Keys for Keyring {
-        fn get(&self, _: &str) -> Result<Option<[u8; 32]>> {
+        fn get(&self, _: &str, _: &str) -> Result<Option<[u8; 32]>> {
             bail!("tests must not use the desktop keyring")
         }
-        fn put(&self, _: &str, _: &[u8; 32]) -> Result<()> {
+        fn put(&self, _: &str, _: &str, _: &[u8; 32]) -> Result<()> {
             bail!("tests must not use the desktop keyring")
         }
     }

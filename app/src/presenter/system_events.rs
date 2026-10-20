@@ -1,7 +1,7 @@
-use line::{controller::AppState, store::Content, system_events::Event};
+use sen::{controller::AppState, store::Content, system_events::Event};
 
 pub(crate) fn text(content: &Content, state: &AppState, sender: &str) -> Option<String> {
-    line::system_events::parse(content)
+    sen::system_events::parse(content)
         .map(|event| event_text(&event, sender, |mid| name(state, mid)))
 }
 
@@ -55,7 +55,7 @@ fn event_text(event: &Event<'_>, sender: &str, name: impl Fn(&str) -> String) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use line::store::Friend;
+    use sen::store::Friend;
 
     #[test]
     fn extension_events_resolve_argument_groups_and_unknown_events_stay_hidden() {

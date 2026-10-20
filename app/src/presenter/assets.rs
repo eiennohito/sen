@@ -21,7 +21,7 @@ impl Images {
             .paths
             .borrow()
             .get(key)
-            .map(|path| line::client::desktop::assets::small_path(path))?;
+            .map(|path| sen::client::desktop::assets::small_path(path))?;
         if path.is_file() {
             return slint::Image::load_from_path(&path).ok();
         }

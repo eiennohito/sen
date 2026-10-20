@@ -1,12 +1,12 @@
 # Build iteration
 
-Use `cargo build --profile fast --offline -p line-desktop` for local work.
+Use `cargo build --profile fast --offline -p sen-desktop` for local work.
 `fast` inherits release, enables incremental compilation, and sets opt-level 0
-for `line-desktop` and `line-desktop-ui`. Dependencies, including the software
+for `sen-desktop` and `sen-ui`. Dependencies, including the software
 renderer, protocol adapter and crypto, remain optimised. Use `release` for the
 release gates, crypto benchmarks and any timing-sensitive work.
 
-The generated modules belong to `ui/` (`line-desktop-ui`); the app re-exports
+The generated modules belong to `ui/` (`sen-ui`); the app re-exports
 its public API so Rust-only app edits reuse the compiled UI. Slint edits still
 rebuild it. Sources stay in `app/ui/` to preserve imports and icon paths.
 The UI build script tracks that directory and `app/assets/`, including additions;
@@ -22,9 +22,9 @@ should map the `demo` library to that directory too.
 For MCP iteration, build once and pass that binary explicitly:
 
 ```sh
-cargo build --profile fast --offline -p line-desktop --features ui-debug
-python3 tools/check-ui-mcp.py --group rich --binary target/fast/line-desktop
-python3 tools/check-ui-mcp.py --all --binary target/fast/line-desktop
+cargo build --profile fast --offline -p sen-desktop --features ui-debug
+python3 tools/check-ui-mcp.py --group rich --binary target/fast/sen
+python3 tools/check-ui-mcp.py --all --binary target/fast/sen
 ```
 
 The check command builds nothing. It owns headless demos and temporary XDG data
