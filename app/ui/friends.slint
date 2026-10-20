@@ -4,7 +4,6 @@ import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Pane } from "scrollpane.slint";
 import { SearchField } from "search-field.slint";
-
 export component Friends inherits Rectangle {
     out property <bool> has-focus: friend-search.contains-focus || list-focus.has-focus;
     visible: State.section == 1;
@@ -70,11 +69,10 @@ export component Friends inherits Rectangle {
                     spacing: 0px;
                     for friend[i] in State.friends: Rectangle {
                         width: friend-list.visible-width; height: State.friend-row-height;
-                        background: row-touch.has-hover ? Tokens.surface-hover : transparent;
+                        states [ hovered when row-touch.has-hover: { background: Tokens.surface-hover; in-out { animate background { duration: 100ms; } } } ]
                         border-width: (list-focus.has-focus || friend-search.has-focus) && State.friend-result == i ? 2px : 0px;
                         border-color: Tokens.accent; border-radius: 8px;
-                        accessible-role: button;
-                        accessible-label: friend.header ? friend.name : "Open profile: " + friend.name;
+                        accessible-role: button; accessible-label: friend.header ? friend.name : "Open profile: " + friend.name;
                         accessible-expandable: friend.header;
                         accessible-expanded: friend.header && (friend.group ? State.groups-expanded : State.friends-expanded);
                         accessible-action-default => { State.friend-result = i; root.activate(); }
@@ -92,5 +90,4 @@ export component Friends inherits Rectangle {
         }
     }
     if State.friends.length == 0: EmptyState { signed-out: !State.has-account; y: 100px; height: max(0px, parent.height - 100px); text: State.friend-query != "" ? "No results" : "No friends yet"; icon: State.friend-query == "" ? @image-url("../assets/icons/friends.svg") : @image-url("../assets/icons/search.svg"); }
-
 }

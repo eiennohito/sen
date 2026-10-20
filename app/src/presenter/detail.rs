@@ -37,25 +37,19 @@ impl Presenter {
                 .unwrap_or(detail_error)
                 .into(),
         );
-        g.set_chat_left(
-            state
-                .selected
-                .as_ref()
-                .is_some_and(|id| state.chats.get(id).is_some_and(|c| c.chat.left)),
-        );
         if let Some(page) = state.detail_page() {
             use line::controller::DetailPage;
             let (id, kind) = match page {
-                DetailPage::Profile(id) => (id.as_str(), 0),
-                DetailPage::GroupInfo(id) => (id.0.as_str(), 1),
-                DetailPage::Members(id) => (id.0.as_str(), 2),
+                DetailPage::Profile(id) => (id.as_str(), DetailPageMode::Profile),
+                DetailPage::GroupInfo(id) => (id.0.as_str(), DetailPageMode::Group),
+                DetailPage::Members(id) => (id.0.as_str(), DetailPageMode::Members),
             };
             g.set_detail_page(kind);
             let room = ChatId(id.into()).is_room();
             let own = state.profile_own(id);
             let f = state.contact(id);
             let c = state.chats.get(&ChatId(id.into())).map(|c| &c.chat);
-            let name = if kind != 0 {
+            let name = if kind != DetailPageMode::Profile {
                 c.map(|c| c.title.as_str())
                     .filter(|name| !name.is_empty())
                     .or_else(|| f.and_then(|f| f.name.as_deref()))
@@ -72,21 +66,21 @@ impl Presenter {
                 .map(|m| text::member_name(m.contact.name.as_deref()))
                 .collect::<Vec<_>>()
                 .join(", ");
-            let name = if kind != 0 && room && !room_title.is_empty() {
+            let name = if kind != DetailPageMode::Profile && room && !room_title.is_empty() {
                 room_title.as_str()
             } else {
                 name
             };
             let status = f.map(|f| f.status.as_str()).unwrap_or("");
-            let friend = kind == 0 && state.profile_friend(id);
+            let friend = kind == DetailPageMode::Profile && state.profile_friend(id);
             g.set_profile_id(id.into());
             g.set_profile_name(name.into());
             g.set_profile_status(status.into());
             g.set_profile_initial(name_initial(name));
             g.set_profile_own(own);
             g.set_profile_friend(friend);
-            g.set_profile_addable(kind == 0 && state.profile_addable(id));
-            g.set_profile_available(kind == 0 && state.profile_available(id));
+            g.set_profile_addable(kind == DetailPageMode::Profile && state.profile_addable(id));
+            g.set_profile_available(kind == DetailPageMode::Profile && state.profile_available(id));
             g.set_profile_original(
                 f.and_then(|f| {
                     let original = f.profile.original_name.as_deref()?;

@@ -1,3 +1,6 @@
+export enum PreviewMode { incoming, outgoing, draft }
+export enum ComposerMode { idle, unavailable, left, offline, ready }
+export enum DetailPageMode { profile, group, members }
 export enum DeliveryState { sent, pending, read, rejected }
 export enum RecoveryKind { none, edit, unsend }
 export enum RecoveryAction { cancel, replace, append, unsend }
@@ -10,20 +13,19 @@ export struct RichRun { text: string, break-before: bool, url: string, link-star
 export enum RunPosition { single, first, middle, last }
 export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
 export struct LinkRow { label: string, url: string }
-export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, draft: bool, draft-preview: string, failed: bool, muted: bool, outgoing-preview: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, activity: string, time: string, avatar: image, avatar-key: string }
+export struct ChatRow { unread: int, unread-unknown: bool, member-count: int, preview-mode: PreviewMode, draft-preview: string, failed: bool, muted: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, activity: string, time: string, avatar: image, avatar-key: string }
 export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, status-runs: [RichRun], group: bool, avatar: image, avatar-key: string }
 export struct ReactorRow { id: string, name: string, initial: string, avatar-key: string, avatar: image }
 export struct ReactionRow { id: int, label: string, glyph: string, count: int, own: bool, reactors: [ReactorRow], image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
     row-kind: HistoryRowKind,
     uploading: bool, upload-progress: float, file-missing: bool, local-media: bool,
-    own-reaction: int, can-react: bool, reaction-count: int,
-    can-unsend: bool,
+    own-reaction: int, can-react: bool, can-unsend: bool, reaction-count: int,
     file-failed: bool, file-failure: string, file-error: string, file-retryable: bool,
     skip-badge: bool, has-inline-emoji: bool, rich-fallback: bool,
     rich-runs: [RichRun], reply-id: string, reply-sender: string, reply-preview: string, reply-sender-id: string, reply-image-key: string, reply-picture: image, reply-has-picture: bool, detail: string,
     kind: MessageKind, links: [LinkRow], accessible-label: string,
-    id: string, delivered-time: string, sticker: bool, photo: bool, sort-key: string, body: string, time: string, outgoing: bool,
+    id: string, delivered-time: string, sort-key: string, body: string, time: string, outgoing: bool,
     sender-id: string, sender-name: string, sender-initial: string, sender-key: string, sender-avatar: image, has-sender-avatar: bool,
     run-position: RunPosition, day-label: string, clock: string,
     image-key: string, picture: image, has-picture: bool, image-failed: bool, image-error: string, image-retryable: bool,

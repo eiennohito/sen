@@ -13,7 +13,7 @@ component Action inherits Rectangle {
     width: self.preferred-width;
     height: 32px;
     border-radius: 8px;
-    background: touch.has-hover ? Tokens.surface-hover : Tokens.surface-2;
+    background: Tokens.surface-2; states [ hovered when touch.has-hover: { background: Tokens.surface-hover; in-out { animate background { duration: 100ms; } } } ]
     border-width: focus.has-focus ? 2px : 0px;
     border-color: focus.has-focus ? Tokens.accent : Tokens.action-border;
     opacity: root.enabled ? 1 : 0.45;

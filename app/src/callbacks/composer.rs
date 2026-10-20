@@ -61,6 +61,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     });
     global_callback!(ui, actions, on_draft_edited, |ui, d| {
         d.capture_draft(&ui);
+        d.presenter.present_draft(&ui, &d.state);
     });
     global_callback!(ui, actions, on_send, |ui, d| {
         d.state.composer = ui.global::<State>().get_draft().to_string();

@@ -1,5 +1,5 @@
 import { ExtensionState } from "@demo/demo-state.slint";
-import { RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
+import { ComposerMode, DetailPageMode, RecoveryKind, RecoveryAction, DetailAction, ChatCategory, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, PanelState, ConnectionState, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 export global State {
     in-out property <[ReactionRow]> reaction-kinds;
     in-out property <MessageRow> composer-reply;
@@ -113,7 +113,7 @@ export global State {
     callback profile-photo();
     in-out property <int> detail-depth;
     changed detail-depth => { if self.detail-depth == 0 { self.detail-dialog = DetailAction.none; } }
-    in-out property <int> detail-page;
+    in-out property <DetailPageMode> detail-page;
     in-out property <bool> detail-busy;
     in-out property <DetailAction> detail-running;
     in-out property <bool> viewer-from-detail;
@@ -135,11 +135,10 @@ export global State {
     in-out property <bool> group-writable;
     in-out property <int> group-count;
     in-out property <int> invitee-count;
-    in-out property <bool> chat-left;
     in-out property <DetailAction> detail-dialog;
 
-    out property <bool> members-open: self.detail-page == 2;
-    out property <bool> member-profile: self.detail-page == 0 && self.detail-depth > 1;
+    out property <bool> members-open: self.detail-page == DetailPageMode.members;
+    out property <bool> member-profile: self.detail-page == DetailPageMode.profile && self.detail-depth > 1;
     in-out property <[MemberRow]> members;
     in-out property <string> member-query;
     in-out property <bool> chat-group;
@@ -198,9 +197,7 @@ export global State {
     callback retry-message(string);
     callback resolve-recovery(RecoveryAction);
     callback quit();
-    in-out property <bool> send-pending;
-    pure callback has-text(string) -> bool;
-    out property <bool> can-send: self.connected && !self.chat-left && self.has-chat && !self.send-pending && self.has-text(self.draft);
+    in-out property <ComposerMode> composer-mode;
     out property <length> chat-row-height: max(68px, self.text-size * 2.8px + 20px);
     in-out property <bool> background-mode;
     in-out property <bool> tray-available;

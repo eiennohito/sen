@@ -8,9 +8,7 @@ import { Button } from "button.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { RichFlow } from "rich-flow.slint";
-
 enum MessageAction { react, select-text, copy-selection, copy-message }
-
 component MessageMenu inherits Rectangle {
     in property <MessageRow> message;
     in property <bool> text-actions;
@@ -28,21 +26,19 @@ component MessageMenu inherits Rectangle {
             if root.text-actions && root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
             if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = RecoveryKind.unsend; } }
             for link in (root.text-actions && !root.rich ? root.message.links : []): MenuItem { title: "Open link " + link.url; activated => { State.open-link(link.url); } }
-            if root.text-actions && !root.rich && root.message.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
+            if root.text-actions && !root.rich && root.message.kind == MessageKind.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
         }
         Rectangle { width: 100%; height: 100%; @children }
     }
 }
-
 component TextAction inherits Rectangle {
     in property <string> text;
-    in property <string> action-label: root.text;
-    in property <bool> enabled: true;
+    in property <string> action-label: root.text; in property <bool> enabled: true;
     in property <bool> focus-on-click: true;
     callback clicked();
     width: label.preferred-width + 8px; height: max(24px, Tokens.small * 1.5);
     horizontal-stretch: 0;
-    background: touch.has-hover ? Tokens.alternate-background : transparent;
+    background: touch.has-hover ? Tokens.alternate-background : transparent; animate background { duration: 100ms; }
     opacity: root.enabled ? 1 : 0.45;
     label := Text { text: root.text; color: Tokens.accent-strong; font-size: Tokens.small; vertical-alignment: center; horizontal-alignment: center; }
     action-focus := FocusScope {
@@ -54,23 +50,31 @@ component TextAction inherits Rectangle {
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { if root.focus-on-click { action-focus.focus(); } root.clicked(); } }
     public function focus-action() { action-focus.focus(); }
 }
-
 export component Message inherits TouchArea {
     in property <MessageRow> message;
     in property <length> origin-y;
     property <bool> card: root.message.kind == MessageKind.video || root.message.kind == MessageKind.voice || root.message.kind == MessageKind.file || root.message.kind == MessageKind.contact || root.message.kind == MessageKind.location || root.message.kind == MessageKind.undecryptable;
-    property <length> bubble-limit: max(Tokens.bubble-min, min(Tokens.bubble-max, root.width - (!root.message.outgoing && root.message.sender-name != "" ? Tokens.message-avatar + Tokens.message-gap : 0px) - (root.message.outgoing ? Tokens.time * 4.8 : Tokens.time * 3.8) - Tokens.space-6 - Tokens.space-4 - Tokens.space-1));
+    property <length> avatar-gutter: !root.message.outgoing && root.message.sender-name != "" ? Tokens.message-avatar + Tokens.message-gap : 0px;
+    property <length> time-gutter: Tokens.time * 3.8; property <color> bubble-surface: Tokens.surface-2;
+    property <length> reaction-x;
+    property <color> body-color: Tokens.foreground;
+    states [ outgoing when root.message.outgoing: {
+        bubble-background.border-top-left-radius: 16px; bubble-background.border-bottom-left-radius: 16px;
+        bubble-background.border-top-right-radius: root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.last ? 4px : 16px;
+        bubble-background.border-bottom-right-radius: root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.first ? 4px : 16px;
+        time-gutter: Tokens.time * 4.8; bubble-surface: Tokens.outgoing-bubble; body-color: Tokens.outgoing-foreground;
+        reaction-x: min(0px, message-bubble.width - 216px);
+        time-slot.x: root.bubble-x - time-slot.width - 4px;
+        message-actions.x: (root.shows-time ? time-slot.x : root.bubble-x) - message-actions.width - 4px;
+    } ]
+    property <length> bubble-limit: max(Tokens.bubble-min, min(Tokens.bubble-max, root.width - root.avatar-gutter - root.time-gutter - Tokens.space-6 - Tokens.space-4 - Tokens.space-1));
     property <bool> shows-time: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last;
     property <length> bubble-x: message-content.x + message-column.x + message-bubble.x;
     property <length> bubble-bottom: message-content.y + message-column.y + message-bubble.y + message-bubble.height;
-    property <bool> selecting-rich: false;
-    property <bool> rich-focused: false;
-    property <bool> card-focused: false;
-    property <bool> rich-fallback: false;
+    property <bool> selecting-rich: false; property <bool> rich-focused: false;
+    property <bool> card-focused: false; property <bool> rich-fallback: false;
     property <float> rich-width;
     property <bool> showing-rich: root.message.rich-runs.length > 0 && !root.selecting-rich && !root.rich-fallback;
-    function copy-message() { State.copy-text(root.message.body); }
-
     property <bool> system-item: root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn;
     property <length> anchor-top: root.origin-y + root.y + (root.system-item ? (root.message.day-label != "" ? 27px : 0px) + (root.message.id == State.unread-divider ? 31px : 0px) : message-content.y + message-column.y + message-bubble.y);
     property <length> anchor-height: max(1px, root.height - (root.anchor-top - root.origin-y - root.y));
@@ -90,22 +94,20 @@ export component Message inherits TouchArea {
                         padding-top: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.first ? 12px : 2px;
                         if root.message.id == State.unread-divider: Text { text: "Unread messages"; color: Tokens.accent-strong; font-size: Tokens.small; horizontal-alignment: center; height: 28px; }
                         if root.message.day-label != "": HorizontalLayout { alignment: center; DatePill { text: root.message.day-label; } }
-                        if root.system-item: HorizontalLayout { alignment: center; DatePill { text: root.message.body; max-width: root.width - 24px; background: (State.highlight-message == root.message.id) ? Tokens.bubble-selection : Tokens.surface-2; } }
+                        if root.system-item: HorizontalLayout { alignment: center; DatePill { text: root.message.body; max-width: root.width - 24px; background: Tokens.surface-2; states [ highlighted when State.highlight-message == root.message.id: { background: Tokens.bubble-selection; in-out { animate background { duration: 120ms; } } } ] } }
                         message-content := HorizontalLayout {
-                        visible: !root.system-item;
-                        height: root.system-item ? 0px : self.preferred-height;
+                        visible: !root.system-item; height: self.visible ? self.preferred-height : 0px;
                         spacing: Tokens.message-gap;
                         if root.message.outgoing: Rectangle { min-width: 24px; horizontal-stretch: 1; }
-                        if !root.message.outgoing && root.message.sender-name != "": VerticalLayout {
+                        if !root.message.outgoing && root.message.sender-name != "": sender-gutter := VerticalLayout {
                             width: Tokens.message-avatar; spacing: 0px; alignment: end;
                             Avatar { width: Tokens.message-avatar; height: Tokens.message-avatar; visible: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last; identity: root.message.sender-id; initial: root.message.sender-initial; picture: root.message.sender-avatar; label: root.message.sender-name + " avatar"; TouchArea { accessible-role: button; accessible-label: "Profile: " + root.message.sender-name; accessible-action-default => { State.open-member(root.message.sender-id); } clicked => { State.open-member(root.message.sender-id); } } }
                         }
                         message-column := VerticalLayout {
                             horizontal-stretch: 0;
-                            min-width: min(root.bubble-limit, root.message.image-key != "" || root.message.photo ? 200px : 24px);
-                            preferred-width: root.card ? min(300px, root.bubble-limit) : root.message.image-key != "" || root.message.photo ? min(340px, root.bubble-limit) : min(root.bubble-limit, (root.showing-rich ? (root.rich-width > 0 ? root.rich-width * 1px : Tokens.bubble-max) : body-measure.preferred-width) + 24px);
-                            max-width: root.bubble-limit;
-                            spacing: 3px;
+                            min-width: min(root.bubble-limit, root.message.image-key != "" || root.message.kind == MessageKind.photo ? 200px : 24px);
+                            preferred-width: root.card ? min(300px, root.bubble-limit) : root.message.image-key != "" || root.message.kind == MessageKind.photo ? min(340px, root.bubble-limit) : min(root.bubble-limit, text-body.preferred-width + 24px);
+                            max-width: root.bubble-limit; spacing: 3px;
                             if (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.first) && !root.message.outgoing && root.message.sender-name != "": Text {
                                 text: root.message.sender-name; accessible-label: "Sender: " + root.message.sender-name;
                                 color: Tokens.secondary; font-size: Tokens.small; overflow: elide;
@@ -113,7 +115,7 @@ export component Message inherits TouchArea {
                             }
                             message-bubble := MessageMenu {
                                     reactions := PopupWindow {
-                                        x: root.message.outgoing ? min(0px, message-bubble.width - 216px) : 0px; y: -48px;
+                                        x: root.reaction-x; y: -48px;
                                         width: 216px; height: 44px;
                                         Rectangle { background: Tokens.bg; border-radius: 20px; border-width: 1px; border-color: Tokens.border;
                                             FocusScope {
@@ -135,32 +137,30 @@ export component Message inherits TouchArea {
                                             }
                                         }
                                     }
-
                                 message: root.message;
                                 text-actions: false; rich: false;
                                 action(kind) => {
                                     if kind == MessageAction.react { reactions.show(); }
                                     else if kind == MessageAction.select-text { root.selecting-rich = true; body.focus(); }
                                     else if kind == MessageAction.copy-selection { body.copy(); }
-                                    else { root.copy-message(); }
+                                    else { State.copy-text(root.message.body); }
                                 }
-
                                 property <bool> selected: body.has-focus || root.card-focused || root.rich-focused || (State.highlight-message == root.message.id);
-                                Rectangle { width: 100%; height: 100%;
-                                background: parent.selected ? Tokens.bubble-selection : root.message.sticker || root.message.photo ? transparent : root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface-2;
-                                border-width: parent.selected ? 2px : 0px;
-                                border-color: parent.selected ? Tokens.bubble-selection-border : Tokens.border;
-                                border-top-left-radius: !root.message.outgoing && (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.last) ? 4px : 16px;
-                                border-bottom-left-radius: !root.message.outgoing && (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.first) ? 4px : 16px;
-                                border-top-right-radius: root.message.outgoing && (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.last) ? 4px : 16px;
-                                border-bottom-right-radius: root.message.outgoing && (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.first) ? 4px : 16px;
+                                bubble-background := Rectangle { width: 100%; height: 100%;
+                                background: root.bubble-surface; border-color: Tokens.border;
+                                border-top-left-radius: (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.last) ? 4px : 16px;
+                                border-bottom-left-radius: (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.first) ? 4px : 16px;
+                                border-top-right-radius: 16px; border-bottom-right-radius: 16px;
+                                states [
+                                    selected when message-bubble.selected: { background: Tokens.bubble-selection; border-width: 2px; border-color: Tokens.bubble-selection-border; in-out { animate background { duration: 120ms; } } }
+                                    media when root.message.kind == MessageKind.sticker || root.message.kind == MessageKind.photo: { background: transparent; }
+                                ]
                                 }
                                 height: bubble-content.preferred-height;
-                                body-measure := Text { visible: false; text: root.showing-rich ? "" : root.message.body; font-size: Tokens.base; wrap: word-wrap; }
                                 bubble-content := VerticalLayout {
                                     padding-top: 8px; padding-bottom: 8px; padding-left: 12px; padding-right: 12px; spacing: 6px; alignment: start;
                                     if root.message.reply-id != "": ReplyQuote {
-                                        surface: root.message.outgoing ? Tokens.outgoing-bubble : Tokens.surface-2;
+                                        surface: root.bubble-surface;
                                         sender: root.message.reply-sender; sender-id: root.message.reply-sender-id; preview: root.message.reply-preview;
                                         picture: root.message.reply-picture; has-picture: root.message.reply-has-picture;
                                         quote-focus := FocusScope {
@@ -171,51 +171,45 @@ export component Message inherits TouchArea {
                                         }
                                         TouchArea { mouse-cursor: pointer; clicked => { quote-focus.focus(); State.jump-message(root.message.reply-id); } }
                                     }
-                                    if root.message.rich-runs.length > 0 && !root.selecting-rich: MessageMenu {
-                                        visible: !root.rich-fallback;
-                                        height: self.visible ? rich-flow.height : 0px;
-                                        message: root.message;
-                                        text-actions: true; rich: true;
+                                    text-body := MessageMenu {
+                                        message: root.message; text-actions: true; rich: false;
                                         action(kind) => { message-bubble.action(kind); }
-
-                                        rich-focus := FocusScope {
-                                            accessible-role: text; accessible-label: root.message.accessible-label; accessible-value: root.message.body; accessible-description: root.message.accessible-label;
-                                            changed has-focus => { root.rich-focused = self.has-focus; }
-                                            accessible-action-default => { self.focus(); }
-                                            key-pressed(event) => {
-                                                if State.ime-active { return reject; }
-                                                if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else { State.focus-composer(); } return accept; }
-                                                return State.reading-key(event);
+                                        body-measure := Text { visible: false; text: root.message.body; font-size: Tokens.base; wrap: word-wrap; }
+                                        visible: root.message.kind != MessageKind.photo && !root.card && root.message.body != "" && (root.message.kind != MessageKind.sticker || root.message.image-key == "");
+                                        height: self.visible ? body.preferred-height : 0px; preferred-width: body-measure.preferred-width;
+                                        states [ rich when root.showing-rich: {
+                                            height: rich-flow.height; rich: true; rich-body.visible: true; body.visible: false;
+                                            preferred-width: root.rich-width > 0 ? root.rich-width * 1px : Tokens.bubble-max;
+                                        } ]
+                                        rich-body := Rectangle {
+                                            visible: false;
+                                            rich-focus := FocusScope {
+                                                accessible-role: text; accessible-label: root.message.accessible-label; accessible-value: root.message.body; accessible-description: root.message.accessible-label;
+                                                changed has-focus => { root.rich-focused = self.has-focus; }
+                                                accessible-action-default => { self.focus(); }
+                                                key-pressed(event) => {
+                                                    if State.ime-active { return reject; }
+                                                    if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else { State.focus-composer(); } return accept; }
+                                                    return State.reading-key(event);
+                                                }
+                                            }
+                                            TouchArea {
+                                                clicked => { rich-focus.focus(); }
+                                                pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { text-body.show({ x: self.mouse-x, y: self.mouse-y }); } }
+                                            }
+                                            rich-flow := RichFlow {
+                                                text-color: root.body-color; runs: root.message.rich-runs; width: parent.width;
+                                                natural-width(width) => { root.rich-width = width; }
+                                                fallback(failed) => { root.rich-fallback = failed; }
+                                                select-text => { if !root.message.has-inline-emoji { root.selecting-rich = true; body.focus(); body.select-all(); } }
                                             }
                                         }
-                                        TouchArea {
-                                            clicked => { rich-focus.focus(); }
-                                            pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { parent.show({ x: self.mouse-x, y: self.mouse-y }); } }
-                                        }
-                                        rich-flow := RichFlow {
-                                            text-color: root.message.outgoing ? Tokens.outgoing-foreground : Tokens.foreground; runs: root.message.rich-runs; width: parent.width;
-                                            natural-width(width) => { root.rich-width = width; }
-                                            fallback(failed) => { root.rich-fallback = failed; }
-                                            select-text => { if !root.message.has-inline-emoji { root.selecting-rich = true; body.focus(); body.select-all(); } }
-                                        }
-                                    }
-                                    if root.selecting-rich: Button { text: root.message.has-inline-emoji ? "Show emoji" : "Show message"; clicked => { root.selecting-rich = false; } }
-                                    MessageMenu {
-                                        visible: !root.message.photo && !root.card && root.message.body != "" && (!root.message.sticker || root.message.image-key == "") && (root.message.rich-runs.length == 0 || root.selecting-rich || root.rich-fallback);
-                                        height: self.visible ? body.preferred-height : 0px;
-                                        message: root.message;
-                                        text-actions: true; rich: false;
-                                        action(kind) => { message-bubble.action(kind); }
-
                                         body := TextInput {
-                                            text: root.showing-rich ? "" : root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
-                                            wrap: body-measure.min-width > self.width ? char-wrap : word-wrap; color: root.message.outgoing ? Tokens.outgoing-foreground : Tokens.foreground;
-                                            font-size: Tokens.base;
-                                            height: root.showing-rich ? 0px : self.preferred-height;
-                                            accessible-label: root.message.accessible-label;
-                                            selection-background-color: Tokens.message-selection;
+                                            text: root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
+                                            wrap: body-measure.min-width > self.width ? char-wrap : word-wrap; color: root.body-color;
+                                            font-size: Tokens.base; height: self.preferred-height;
+                                            accessible-label: root.message.accessible-label; selection-background-color: Tokens.message-selection;
                                             selection-foreground-color: Tokens.message-selection-foreground;
-                                            // Explicit surface traversal is the click-only equivalent on Slint 1.18.
                                             key-pressed(event) => {
                                                 if State.ime-active { return reject; }
                                                 if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else if !State.following && State.has-chat { State.focus-reading-before-editor(); } else { State.focus-composer(); } return accept; }
@@ -223,16 +217,15 @@ export component Message inherits TouchArea {
                                                 reject
                                             }
                                             changed has-focus => { if !self.has-focus && State.history-interacting { State.history-interacting = false;  } }
-                                            changed anchor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else {  } }
-                                            changed cursor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } else {  } }
+                                            changed anchor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } }
+                                            changed cursor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } }
                                         }
                                     }
+                                    if root.selecting-rich: Button { text: root.message.has-inline-emoji ? "Show emoji" : "Show message"; clicked => { root.selecting-rich = false; } }
                                     if root.card: HorizontalLayout {
                                         spacing: 12px; height: max(48px, card-title.preferred-height + card-meta.preferred-height + 4px);
                                         Rectangle { width: 40px; height: 40px; border-radius: 8px; background: Tokens.bg.with-alpha(0.6);
-                                            Image { x: 10px; y: 10px; width: 20px; height: 20px; colorize: Tokens.text;
-                                                source: root.message.kind == MessageKind.video ? @image-url("../assets/icons/video.svg") : root.message.kind == MessageKind.voice ? @image-url("../assets/icons/voice.svg") : root.message.kind == MessageKind.file ? @image-url("../assets/icons/file.svg") : root.message.kind == MessageKind.contact ? @image-url("../assets/icons/contact.svg") : root.message.kind == MessageKind.location ? @image-url("../assets/icons/location.svg") : root.message.kind == MessageKind.undecryptable ? @image-url("../assets/icons/lock.svg") : @image-url("../assets/icons/unknown.svg");
-                                            }
+                                            Image { x: 10px; y: 10px; width: 20px; height: 20px; colorize: Tokens.text; source: root.message.kind == MessageKind.video ? @image-url("../assets/icons/video.svg") : root.message.kind == MessageKind.voice ? @image-url("../assets/icons/voice.svg") : root.message.kind == MessageKind.file ? @image-url("../assets/icons/file.svg") : root.message.kind == MessageKind.contact ? @image-url("../assets/icons/contact.svg") : root.message.kind == MessageKind.location ? @image-url("../assets/icons/location.svg") : root.message.kind == MessageKind.undecryptable ? @image-url("../assets/icons/lock.svg") : @image-url("../assets/icons/unknown.svg"); }
                                         }
                                         VerticalLayout { spacing: 4px; alignment: center;
                                             card-title := TextInput { changed has-focus => { root.card-focused = self.has-focus; } read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { State.focus-history(); } else if root.message.can-react { react-button.focus-button(); } else { State.focus-composer(); } return accept; } State.reading-key(event) } }
@@ -245,7 +238,6 @@ export component Message inherits TouchArea {
                                         detail-measure := Text { visible: false; text: root.message.detail; font-size: Tokens.small; wrap: word-wrap; }
                                         detail := Text { x: 0px; y: 0px; width: parent.width; text: root.message.detail; font-size: Tokens.small; color: Tokens.secondary; wrap: detail-measure.min-width > self.width ? char-wrap : word-wrap; }
                                     }
-
                                     if root.message.uploading && root.card: Rectangle { height: 3px; background: Tokens.surface-2;
                                         accessible-role: text; accessible-label: "Uploading " + round(root.message.upload-progress * 100) + "%";
                                         Rectangle { x: 0px; y: 0px; height: 100%; width: parent.width * root.message.upload-progress; background: Tokens.accent; }
@@ -256,14 +248,14 @@ export component Message inherits TouchArea {
                                         save-measure := Text { visible: false; text: State.file-save-status; font-size: Tokens.small; wrap: word-wrap; }
                                         saved := Text { x: 0px; y: 0px; width: parent.width; text: State.file-save-status; font-size: Tokens.small; color: Tokens.secondary; wrap: save-measure.min-width > self.width ? char-wrap : word-wrap; }
                                     }
-                                    if root.message.image-key != "" || root.message.photo: Rectangle {
+                                    if root.message.image-key != "" || root.message.kind == MessageKind.photo: Rectangle {
                                         // Geometry does not change when a thumbnail arrives or fails.
-                                        height: root.message.sticker ? 120px : 180px;
+                                        height: root.message.kind == MessageKind.sticker ? 120px : 180px;
                                         border-radius: 12px; clip: true;
-                                        Image { source: root.message.picture; width: 100%; height: 100%; image-fit: contain; visible: root.message.has-picture; accessible-role: image; accessible-label: root.message.photo ? "Photo preview" : root.message.sticker ? "Sticker" : "Message image"; }
+                                        Image { source: root.message.picture; width: 100%; height: 100%; image-fit: contain; visible: root.message.has-picture; accessible-role: image; accessible-label: root.message.kind == MessageKind.photo ? "Photo preview" : root.message.kind == MessageKind.sticker ? "Sticker" : "Message image"; }
                                         // Software clips are rectangular: cover the four outside corners
                                         // at the contained image's actual bounds, without touching cached pixels.
-                                        if root.message.photo && root.message.has-picture: Rectangle {
+                                        if root.message.kind == MessageKind.photo && root.message.has-picture: Rectangle {
                                             width: min(parent.width, parent.height * root.message.picture.width / max(1, root.message.picture.height));
                                             height: min(parent.height, parent.width * root.message.picture.height / max(1, root.message.picture.width));
                                             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
@@ -272,13 +264,12 @@ export component Message inherits TouchArea {
                                             Image { x: parent.width - 12px; y: parent.height - 12px; width: 12px; height: 12px; source: @image-url("../assets/photo-corner-2.svg"); colorize: Tokens.bg; }
                                             Image { x: 0px; y: parent.height - 12px; width: 12px; height: 12px; source: @image-url("../assets/photo-corner-3.svg"); colorize: Tokens.bg; }
                                         }
-                                        if root.message.photo && root.message.has-picture: FocusScope {
+                                        if root.message.kind == MessageKind.photo && root.message.has-picture: FocusScope {
                                             accessible-role: button; accessible-label: "Open photo";
                                             accessible-action-default => { State.open-photo(root.message.image-key); }
                                             TouchArea { mouse-cursor: pointer; clicked => { parent.focus(); State.open-photo(root.message.image-key); } }
                                             key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-photo(root.message.image-key); return accept; } reject }
                                             Rectangle { visible: parent.has-focus; border-width: 2px; border-color: Tokens.accent; background: transparent; }
-
                                             property <int> return-serial: State.viewer-return-serial;
                                             changed return-serial => { if !State.viewer-open && State.viewer-return-key == root.message.image-key { self.focus(); } }
                                         }
@@ -292,7 +283,7 @@ export component Message inherits TouchArea {
                                         }
                                         if !root.message.has-picture: VerticalLayout {
                                             padding: 8px; spacing: 8px; alignment: center;
-                                            Text { text: root.message.image-failed ? root.message.image-error : root.message.sticker ? root.message.body : root.message.image-key == "" ? "Photo unavailable" : "Loading image…"; color: root.message.sticker && !root.message.image-failed ? Tokens.foreground : Tokens.secondary; horizontal-alignment: center; wrap: word-wrap; }
+                                            Text { text: root.message.image-failed ? root.message.image-error : root.message.kind == MessageKind.sticker ? root.message.body : root.message.image-key == "" ? "Photo unavailable" : "Loading image…"; color: !root.message.image-failed && root.message.kind == MessageKind.sticker ? Tokens.foreground : Tokens.secondary; horizontal-alignment: center; wrap: word-wrap; }
                                             if root.message.image-failed && root.message.image-retryable: HorizontalLayout { alignment: center; TextAction { text: "Retry"; action-label: "Retry image"; clicked => { State.retry-image(root.message.image-key); } } }
                                         }
                                     }
@@ -304,8 +295,7 @@ export component Message inherits TouchArea {
                                 spacing: 8px; alignment: start;
                                 Text { text: root.message.delivery-detail; wrap: word-wrap; min-width: 0px; horizontal-stretch: 1; color: Tokens.danger; font-size: Tokens.small; vertical-alignment: center; }
                                 TextAction {
-                                    text: root.message.file-missing ? "File missing" : "Retry";
-                                    focus-on-click: false;
+                                    text: root.message.file-missing ? "File missing" : "Retry"; focus-on-click: false;
                                     enabled: State.connected && !root.message.file-missing;
                                     clicked => { State.retry-message(root.message.id); }
                                 }
@@ -322,26 +312,26 @@ export component Message inherits TouchArea {
     // Time appears once at the end of a run, beside the
     // bubble. Time and status use their content width without adding a row.
     time-slot := Rectangle {
-        visible: !root.system-item;
-        x: root.message.outgoing ? root.bubble-x - self.width - 4px : root.bubble-x + message-bubble.width + 4px;
-        y: root.bubble-bottom - self.height;
-        width: root.shows-time ? time-content.preferred-width : 0px;
+        visible: !root.system-item; x: root.bubble-x + message-bubble.width + 4px;
+        y: root.bubble-bottom - self.height; width: root.shows-time ? time-content.preferred-width : 0px;
         height: max(16px, Tokens.time * 1.4);
         time-content := HorizontalLayout {
             height: max(16px, Tokens.time * 1.4); spacing: 2px;
-            Text { text: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.clock : ""; accessible-label: (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last) ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
+            Text { text: root.shows-time ? root.message.clock : ""; accessible-label: root.shows-time ? root.message.time : ""; color: Tokens.secondary; font-size: Tokens.time; }
             if root.message.outgoing && (root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last): Image {
                 width: 16px; height: 16px;
-                source: root.message.delivery == DeliveryState.pending ? @image-url("../assets/icons/clock.svg") : root.message.delivery == DeliveryState.read ? @image-url("../assets/icons/check-double.svg") : root.message.delivery == DeliveryState.rejected ? @image-url("../assets/icons/error.svg") : @image-url("../assets/icons/check.svg");
-                accessible-role: image;
-                accessible-label: root.message.delivery == DeliveryState.pending ? "Sending" : root.message.delivery == DeliveryState.sent ? "Sent" : root.message.delivery == DeliveryState.read ? "Read" : "Not sent";
-                colorize: root.message.delivery == DeliveryState.rejected ? Tokens.danger : root.message.delivery == DeliveryState.read ? Tokens.accent-strong : Tokens.secondary;
+                source: @image-url("../assets/icons/check.svg"); accessible-role: image;
+                accessible-label: "Sent"; colorize: Tokens.secondary;
+                states [
+                    pending when root.message.delivery == DeliveryState.pending: { source: @image-url("../assets/icons/clock.svg"); accessible-label: "Sending"; }
+                    read when root.message.delivery == DeliveryState.read: { source: @image-url("../assets/icons/check-double.svg"); accessible-label: "Read"; colorize: Tokens.accent-strong; }
+                    rejected when root.message.delivery == DeliveryState.rejected: { source: @image-url("../assets/icons/error.svg"); accessible-label: "Not sent"; colorize: Tokens.danger; }
+                ]
             }
         }
     }
-    Rectangle {
-        x: root.message.outgoing ? (root.shows-time ? time-slot.x : root.bubble-x) - self.width - 4px : (root.shows-time ? time-slot.x + time-slot.width : root.bubble-x + message-bubble.width) + 4px;
-        y: root.bubble-bottom - self.height;
+    message-actions := Rectangle {
+        x: (root.shows-time ? time-slot.x + time-slot.width : root.bubble-x + message-bubble.width) + 4px; y: root.bubble-bottom - self.height;
         width: 58px; height: 28px;
         reply-button := IconButton {
             x: 30px; y: 0px; width: 28px; height: 28px; label: "Reply"; icon: @image-url("../assets/icons/reply.svg");

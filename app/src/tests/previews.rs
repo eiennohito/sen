@@ -30,17 +30,27 @@ fn preview_conversion_keeps_spans_text_fallback_and_prefix() {
     let view = emoji_message();
     let mut message = message_row(&emoji_message(), None, &presenter::Images::default());
     rich_content::links::decorate_message(&mut message);
-    let mut row = ChatRow::default();
-    rich_content::preview::set(
-        &mut row,
-        &view.body,
-        view.outgoing,
-        None,
+    let row = presenter::chats::chat_row(
+        presenter::ChatInputs {
+            item: ChatListItem {
+                chat: ChatInput::default(),
+                preview: Some(view),
+                unread_count: 0,
+                activity_ms: 0,
+                failed_count: 0,
+                draft: None,
+            },
+            title: String::new(),
+            avatar: None,
+            system_text: None,
+            offline: false,
+            index: 0,
+            text_size: 15,
+        },
         &presenter::Images::default(),
-        15,
     );
     assert_eq!(row.preview, "日😀[笑] again [笑] end");
-    assert!(row.outgoing_preview);
+    assert_eq!(row.preview_mode, PreviewMode::Outgoing);
     assert!(message.accessible_label.ends_with(message.body.as_str()));
     assert_eq!(row.preview_runs.iter().filter(|r| r.emoji).count(), 2);
     assert_eq!(
@@ -124,7 +134,7 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
         let images = presenter::Images::default();
         let view = m;
         let mut row = ChatRow::default();
-        rich_content::preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
+        rich_content::preview::set(&mut row, &view.body, None, &images, 15);
         assert_eq!(row.preview, text);
         if kind == MessageKind::File {
             assert_eq!(row.preview_runs.row_count(), 0);
@@ -140,14 +150,14 @@ fn media_preview_missing_or_failed_has_the_same_text_and_no_retry() {
             1,
         ));
         images.insert(media_key.clone(), picture);
-        rich_content::preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
+        rich_content::preview::set(&mut row, &view.body, None, &images, 15);
         assert!(
             rich_content::preview::layout(&row.preview_runs, "", 100., 1., measure)
                 .iter()
                 .any(|r| r.thumbnail)
         );
         images.failed(media_key, line::client::desktop::assets::Failure::Decode);
-        rich_content::preview::set(&mut row, &view.body, view.outgoing, None, &images, 15);
+        rich_content::preview::set(&mut row, &view.body, None, &images, 15);
         assert_eq!(row.preview, text);
         assert!(!row.preview_runs.row_data(0).unwrap().has_picture);
     }
@@ -232,14 +242,7 @@ fn content_labels_agree_across_rows_previews_and_accessibility() {
         let mut m = message("");
         m.body = content;
         let mut chat = ChatRow::default();
-        rich_content::preview::set(
-            &mut chat,
-            &m.body,
-            m.outgoing,
-            None,
-            &presenter::Images::default(),
-            15,
-        );
+        rich_content::preview::set(&mut chat, &m.body, None, &presenter::Images::default(), 15);
         let mut row = message_row(&m, None, &presenter::Images::default());
         rich_content::links::decorate_message(&mut row);
         assert_eq!(kind_label(&m.body).1, compact);

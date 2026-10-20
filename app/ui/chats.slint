@@ -1,3 +1,4 @@
+import { PreviewMode } from "types.slint";
 import { ChatCategory } from "types.slint";
 import { ListRow, RowText } from "list-row.slint";
 import { EmptyState } from "empty-state.slint";
@@ -8,7 +9,6 @@ import { Tokens } from "tokens.slint";
 import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 import { SearchField } from "search-field.slint";
-
 export component Chats inherits Rectangle {
     property <[{kind: ChatCategory, label: string}]> categories: [{kind: ChatCategory.all, label: "All"}, {kind: ChatCategory.friends, label: "Friends"}, {kind: ChatCategory.groups, label: "Groups"}];
     visible: State.section == 0;
@@ -41,8 +41,7 @@ export component Chats inherits Rectangle {
                 HorizontalLayout {
                     search := SearchField {
                         text <=> State.query;
-                        placeholder-text: "Find a conversation";
-                        label: "Find a conversation";
+                        placeholder-text: "Find a conversation"; label: "Find a conversation";
                         clear => { State.query = ""; State.search-changed(""); State.list-y = State.search-list-y; State.result-focus = -1; State.searching = false; State.focus-search(); }
                         edited(query) => {
                             if query != "" && !State.searching { State.search-list-y = State.list-y; State.searching = true; }
@@ -66,7 +65,6 @@ export component Chats inherits Rectangle {
                 chips-focus := FocusScope {
                     property <int> cursor: State.category == ChatCategory.all ? 0 : State.category == ChatCategory.friends ? 1 : 2;
                     accessible-role: button; accessible-label: root.categories[self.cursor].label;
-
                     key-pressed(event) => {
                         if State.ime-active { return reject; }
                         if event.text == Key.Tab { if event.modifiers.shift { search.focus-last(); } else { new-chat-button.focus-button(); } return accept; }
@@ -78,12 +76,13 @@ export component Chats inherits Rectangle {
                     spacing: 4px;
                     for c[i] in root.categories: Rectangle {
                         height: 28px; border-radius: 14px;
-                        background: State.category == c.kind ? Tokens.text : Tokens.surface-2;
+                        background: Tokens.surface-2;
+                        states [ selected when State.category == c.kind: { background: Tokens.text; category-label.color: Tokens.bg; } ]
                         border-width: chips-focus.has-focus && chips-focus.cursor == i ? 2px : 0px; border-color: (chips-focus.has-focus && chips-focus.cursor == i) || State.category == c.kind ? Tokens.accent : Tokens.border;
                         accessible-role: button; accessible-label: c.label;
                         accessible-item-selectable: true; accessible-item-selected: State.category == c.kind;
                         accessible-action-default => { chips-focus.cursor = i; chips-focus.focus(); State.category = c.kind; State.filter-category(); }
-                        RowText { text: c.label; color: State.category == c.kind ? Tokens.bg : Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
+                        category-label := RowText { text: c.label; color: Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
                         TouchArea { mouse-cursor: pointer; clicked => { chips-focus.cursor = i; chips-focus.focus(); State.category = c.kind; State.filter-category(); } }
                     }
                 }
@@ -91,7 +90,6 @@ export component Chats inherits Rectangle {
                 if State.chat-list-error != "": Text { text: State.chat-list-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
                 list-focus := FocusScope {
                     accessible-role: list; accessible-label: "Conversations";
-
                     key-pressed(event) => {
                         if State.browser-key(event) == accept { return accept; }
                         if State.ime-active { return reject; }
@@ -105,48 +103,42 @@ export component Chats inherits Rectangle {
                 chat-list := Pane {
                     connection-feedback: State.narrow && !State.show-conversation && State.section == 0 && !(State.detail-open && State.profile-sheet);
                     offset <=> State.list-y;
-                virtual: true;
-                virtual-height: chat-view.content-height;
+                virtual: true; virtual-height: chat-view.content-height;
                 chat-view := ListView {
                     width: parent.width; height: parent.height;
                     content-y <=> State.list-y;
-                    content-width: self.width;
-                    vertical-scrollbar-policy: always-off;
-                    horizontal-scrollbar-policy: always-off;
-                    accessible-role: none;
+                    content-width: self.width; vertical-scrollbar-policy: always-off;
+                    horizontal-scrollbar-policy: always-off; accessible-role: none;
 for chat[i] in State.chats: ListRow {
                         width: chat-list.visible-width; height: State.chat-row-height;
                         border-radius: 8px; clip: true;
-                        background: chat.index == State.selected-chat ? Tokens.selection : row-touch.has-hover ? Tokens.chat-hover : transparent;
-                        border-width: (list-focus.has-focus || search.has-focus) && i == State.result-focus ? 2px : 0px;
-                        border-color: Tokens.accent;
+                        states [
+                            selected when chat.index == State.selected-chat: { background: Tokens.selection; }
+                            hovered when row-touch.has-hover: { background: Tokens.chat-hover; in-out { animate background { duration: 100ms; } } }
+                        ]
+                        border-width: (list-focus.has-focus || search.has-focus) && i == State.result-focus ? 2px : 0px; border-color: Tokens.accent;
                         identity: chat.id; initial: chat.initial; avatar: chat.avatar; title: chat.title; time: chat.time; muted: chat.muted;
-                        subtitle: chat.draft ? "Draft: " + chat.draft-preview : chat.preview;
-                        prefix: !chat.draft && chat.outgoing-preview ? "You: " : "";
-                        subtitle-runs: chat.draft ? [] : chat.preview-runs;
+                        preview-mode: chat.preview-mode; draft-preview: chat.draft-preview;
+                        subtitle: chat.preview; subtitle-runs: chat.preview-runs;
                         trailing-width: markers.width + Tokens.space-1;
                         show-preview: i * State.chat-row-height + State.list-y + State.chat-row-height >= 0px && i * State.chat-row-height + State.list-y <= chat-list.visible-height;
                             markers := HorizontalLayout {
-                                x: parent.width - self.width - Tokens.space-3; y: Tokens.space-2 + Tokens.base * 1.5 + 2px; spacing: 4px; width: (chat.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
-                                if !chat.failed && (chat.unread > 0 || chat.unread-unknown): Rectangle { width: chat.unread-unknown ? 8px : 32px; height: chat.unread-unknown ? 8px : 20px; border-radius: self.height / 2; background: chat.muted ? Tokens.secondary : Tokens.accent; RowText { visible: !chat.unread-unknown; text: chat.unread > 999 ? "999+" : "" + chat.unread; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
-                                if chat.draft: Image { source: @image-url("../assets/icons/draft.svg"); colorize: Tokens.accent; width: 16px; height: 16px; accessible-role: image; accessible-label: "Draft"; }
+                                x: parent.width - self.width - Tokens.space-3; y: Tokens.space-2 + Tokens.base * 1.5 + 2px; spacing: 4px; width: (chat.preview-mode == PreviewMode.draft ? 20px : 0px) + (chat.failed ? 20px : 0px) + (chat.muted ? 20px : 0px) + (chat.unread > 0 || chat.unread-unknown ? 36px : 0px); height: 20px;
+                                if !chat.failed && (chat.unread > 0 || chat.unread-unknown): Rectangle { width: 32px; height: 20px; states [ unknown when chat.unread-unknown: { width: 8px; height: 8px; unread-label.visible: false; } ] border-radius: self.height / 2; background: chat.muted ? Tokens.secondary : Tokens.accent; unread-label := RowText { text: chat.unread > 999 ? "999+" : "" + chat.unread; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
+                                if chat.preview-mode == PreviewMode.draft: Image { source: @image-url("../assets/icons/draft.svg"); colorize: Tokens.accent; width: 16px; height: 16px; accessible-role: image; accessible-label: "Draft"; }
                                 if chat.failed: Image { source: @image-url("../assets/icons/error.svg"); colorize: Tokens.danger; width: 16px; height: 16px; accessible-role: image; accessible-label: "Send failed"; }
-
                             }
-                        accessible-role: button;
-                        accessible-item-selectable: true;
+                        accessible-role: button; accessible-item-selectable: true;
                         accessible-item-selected: chat.index == State.selected-chat;
-                        accessible-label: chat.title + (chat.time != "" ? ", " + chat.time : "") + ", " + (chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview) + (chat.unread-unknown ? ", Unread count unavailable" : chat.unread > 0 ? ", " + chat.unread + " unread" : "") + (chat.failed ? ", Send failed" : "") + (chat.muted ? ", Muted" : "");
+                        accessible-label: chat.title + (chat.time != "" ? ", " + chat.time : "") + ", " + self.preview + (chat.unread-unknown ? ", Unread count unavailable" : chat.unread > 0 ? ", " + chat.unread + " unread" : "") + (chat.failed ? ", Send failed" : "") + (chat.muted ? ", Muted" : "");
                         accessible-action-default => { State.result-focus = i; root.open-result(); }
                         row-touch := TouchArea {
                             clicked => { State.result-focus = i; root.open-result(); } }
                     }
                 }
-
                 }
                 }
                 if State.more-chats: Button { text: "Load more"; clicked => { State.more(); } }
-
             }
     if State.chats.length == 0: EmptyState { signed-out: !State.has-account; y: 160px; height: max(0px, parent.height - 160px); text: State.query == "" ? "No conversations yet" : "No results"; icon: State.query == "" ? @image-url("../assets/icons/chats.svg") : @image-url("../assets/icons/search.svg"); }
     public function focus-search() { search.focus(); }

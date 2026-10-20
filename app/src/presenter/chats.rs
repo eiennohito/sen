@@ -94,7 +94,7 @@ impl Presenter {
     }
 }
 
-pub(super) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
+pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
     let mut row = ChatRow {
         id: inputs.item.chat.id.0.clone().into(),
         index: inputs.index as i32,
@@ -102,11 +102,6 @@ pub(super) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         initial: name_initial(&inputs.title),
         unread: inputs.item.unread_count as i32,
         failed: inputs.item.failed_count > 0,
-        draft: inputs
-            .item
-            .draft
-            .as_ref()
-            .is_some_and(|d| !d.text.is_empty()),
         draft_preview: inputs
             .item
             .draft
@@ -125,7 +120,6 @@ pub(super) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         rich_content::preview::set(
             &mut row,
             &m.body,
-            m.outgoing,
             inputs.system_text.as_deref(),
             images,
             inputs.text_size,
@@ -134,6 +128,18 @@ pub(super) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         row.time = "New".into();
         row.preview = "No messages yet".into();
     }
+    row.preview_mode = if inputs
+        .item
+        .draft
+        .as_ref()
+        .is_some_and(|d| !d.text.is_empty())
+    {
+        PreviewMode::Draft
+    } else if inputs.item.preview.as_ref().is_some_and(|m| m.outgoing) {
+        PreviewMode::Outgoing
+    } else {
+        PreviewMode::Incoming
+    };
     if let Some(asset) = inputs.avatar.as_ref() {
         row.avatar_key = asset.key().into();
         if let Some(image) = images.get(row.avatar_key.as_str()) {

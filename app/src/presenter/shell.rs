@@ -127,6 +127,5 @@ impl Presenter {
             Connection::Fatal => ConnectionState::Fatal,
             Connection::SigningIn => ConnectionState::SigningIn,
         });
-        g.set_send_pending(state.submitting.is_some());
     }
 }

@@ -47,14 +47,14 @@ struct MessageInputs {
     reply_text: Option<String>,
 }
 #[derive(Clone, PartialEq)]
-struct ChatInputs {
-    item: ChatListItem,
-    title: String,
-    avatar: Option<Asset>,
-    system_text: Option<String>,
-    offline: bool,
-    index: usize,
-    text_size: i32,
+pub(crate) struct ChatInputs {
+    pub(crate) item: ChatListItem,
+    pub(crate) title: String,
+    pub(crate) avatar: Option<Asset>,
+    pub(crate) system_text: Option<String>,
+    pub(crate) offline: bool,
+    pub(crate) index: usize,
+    pub(crate) text_size: i32,
 }
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum RowKey {

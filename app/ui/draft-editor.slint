@@ -1,10 +1,12 @@
+import { ComposerMode } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Pane } from "scrollpane.slint";
-
 // Thin native TextInput wrapper: keep native IME, selection and clipboard
 // behavior while exposing the pinned Slint byte-offset selection API.
 export component DraftEditor inherits Rectangle {
+    in property <string> placeholder: "Message";
+    in property <bool> read-only; in property <bool> enabled: true;
     min-height: Tokens.base * 1.4 + 16px;
     forward-focus: input;
     out property <int> caret: input.cursor-position-byte-offset;
@@ -27,7 +29,7 @@ export component DraftEditor inherits Rectangle {
     Text {
         x: 12px; y: 8px; width: parent.width - 24px;
         visible: State.draft == "" && !State.ime-active && !input.has-focus;
-        text: State.chat-left ? "You left this group." : "Message"; font-size: Tokens.base; color: Tokens.placeholder;
+        text: root.placeholder; font-size: Tokens.base; color: Tokens.placeholder;
         accessible-role: none;
     }
     editor-pane := Pane {
@@ -38,15 +40,12 @@ export component DraftEditor inherits Rectangle {
             x: 0px; y: 0px; width: editor-pane.visible-width;
             height: max(self.preferred-height, root.height - 16px);
             text <=> State.draft;
-            enabled: State.has-chat;
-            read-only: State.chat-left;
-            accessible-label: "Message draft";
-            accessible-placeholder-text: State.chat-left ? "You left this group." : "Message";
+            enabled: root.enabled; read-only: root.read-only;
+            accessible-label: "Message draft"; accessible-placeholder-text: root.placeholder;
             accessible-description: "Message draft";
             single-line: false; wrap: word-wrap;
             font-size: Tokens.base; color: Tokens.foreground;
-            selection-background-color: Tokens.selection;
-            selection-foreground-color: Tokens.selection-foreground;
+            selection-background-color: Tokens.selection; selection-foreground-color: Tokens.selection-foreground;
             page-height: root.height - 16px;
             edited => { State.draft-edited(); }
             cursor-position-changed(pos) => {
@@ -63,7 +62,7 @@ export component DraftEditor inherits Rectangle {
                 if event.modifiers.control && (event.text == "v" || event.text == "V") && !State.modal-open && State.paste-attachment() { return accept; }
                 if event.text == Key.Tab && event.modifiers.shift { State.focus-reading-before-editor(); return accept; }
                 if event.text == Key.Return && !event.modifiers.alt && !event.modifiers.meta && !event.modifiers.shift && (event.modifiers.control || State.enter-sends) {
-                    if !State.modal-open && State.can-send && !event.repeat { State.send(); }
+                    if !State.modal-open && State.composer-mode == ComposerMode.ready && !event.repeat { State.send(); }
                     return accept;
                 }
                 reject
