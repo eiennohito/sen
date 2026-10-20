@@ -94,6 +94,9 @@ if not args.destdir:
     for candidates, arguments in (
         (("update-desktop-database",), [str(launcher.parent)]),
         (("kbuildsycoca6", "kbuildsycoca5"), ["--noincremental"]),
+        # dbus-broker reads service files only at start or reload; until then
+        # DBusActivatable launches fail with "The name is not activatable".
+        (("busctl",), ["--user", "call", "org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus", "ReloadConfig"]),
     ):
         executable = next((path for name in candidates if (path := shutil.which(name))), None)
         if executable:
