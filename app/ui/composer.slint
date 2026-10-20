@@ -6,6 +6,7 @@ import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { DraftEditor } from "draft-editor.slint";
 export component Composer inherits Rectangle {
+    public function paste-text() { composer.paste-text(); }
     property <length> reply-height: State.composer-reply.reply-id != "" ? max(44px, Tokens.small * 2.8 + 12px) : 0px;
     height: root.reply-height + max(52px, min(Tokens.base * 8.4 + 32px, draft-measure.preferred-height + 32px));
     property <length> button-inset: max(0px, (composer.min-height - sticker-button.height) / 2);

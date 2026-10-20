@@ -561,6 +561,7 @@ pub(crate) fn stage(
         desktop.update(|d| {
             d.state.panel = Panel::Settings;
             d.render(ui);
+            ui.invoke_focus_settings_close();
         });
     }
     if scene == "reply-review"

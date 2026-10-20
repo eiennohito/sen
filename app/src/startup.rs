@@ -144,6 +144,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
             d.update(|d| d.apply_batch(&ui, deltas));
             d.update(|d| {
                 d.background.drain(&ui);
+                // Unread and connection deltas can change exposure without changing reading geometry.
                 d.observe_reading(&ui);
                 d.drain_notifications(&ui);
             });

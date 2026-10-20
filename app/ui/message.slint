@@ -26,7 +26,7 @@ component MessageMenu inherits Rectangle {
             if root.text-actions && root.message.recoverable: MenuItem { title: "Copy to composer"; activated => { State.recover-message(root.message.id); } }
             if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { State.recovery-id = root.message.id; State.recovery-kind = RecoveryKind.unsend; } }
             for link in (root.text-actions && !root.rich ? root.message.links : []): MenuItem { title: "Open link " + link.url; activated => { State.open-link(link.url); } }
-            if root.text-actions && !root.rich && root.message.kind == MessageKind.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
+            if !root.rich && root.message.kind == MessageKind.photo: MenuItem { title: "Open photo"; activated => { State.open-photo(root.message.image-key); } }
         }
         Rectangle { width: 100%; height: 100%; @children }
     }
@@ -216,9 +216,8 @@ export component Message inherits TouchArea {
                                                 if State.reading-key(event) == accept { return accept; }
                                                 reject
                                             }
-                                            changed has-focus => { if !self.has-focus && State.history-interacting { State.history-interacting = false;  } }
-                                            changed anchor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } }
-                                            changed cursor-position-byte-offset => { State.history-interacting = self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset; if State.history-interacting { State.following = false; State.history-scrolled(); } }
+                                            property <bool> selecting: self.has-focus && self.anchor-position-byte-offset != self.cursor-position-byte-offset;
+                                            changed selecting => { State.history-interacting = self.selecting; if self.selecting { State.following = false; State.history-scrolled(); } }
                                         }
                                     }
                                     if root.selecting-rich: Button { text: root.message.has-inline-emoji ? "Show emoji" : "Show message"; clicked => { root.selecting-rich = false; } }
@@ -266,12 +265,12 @@ export component Message inherits TouchArea {
                                         }
                                         if root.message.kind == MessageKind.photo && root.message.has-picture: FocusScope {
                                             accessible-role: button; accessible-label: "Open photo";
-                                            accessible-action-default => { State.open-photo(root.message.image-key); }
-                                            TouchArea { mouse-cursor: pointer; clicked => { parent.focus(); State.open-photo(root.message.image-key); } }
+                                            property <bool> viewer-open: State.viewer-open;
+                                            changed viewer-open => { if !self.viewer-open && root.message.image-key == State.viewer-key { self.focus(); } }
+                                            accessible-action-default => { self.focus(); State.open-photo(root.message.image-key); }
+                                            TouchArea { mouse-cursor: pointer; pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { message-bubble.show({x: self.mouse-x, y: self.mouse-y}); } } clicked => { parent.focus(); State.open-photo(root.message.image-key); } }
                                             key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.open-photo(root.message.image-key); return accept; } reject }
                                             Rectangle { visible: parent.has-focus; border-width: 2px; border-color: Tokens.accent; background: transparent; }
-                                            property <int> return-serial: State.viewer-return-serial;
-                                            changed return-serial => { if !State.viewer-open && State.viewer-return-key == root.message.image-key { self.focus(); } }
                                         }
                                         if root.message.uploading: Rectangle {
                                             width: root.message.has-picture ? min(parent.width, parent.height * root.message.picture.width / max(1, root.message.picture.height)) : parent.width;

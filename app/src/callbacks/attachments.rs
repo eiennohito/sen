@@ -216,8 +216,7 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
         if d.state.selected == selected.lock().unwrap().chat
             && !ui.global::<State>().get_modal_open()
         {
-            let global = ui.global::<State>();
-            global.set_paste_text_serial(global.get_paste_text_serial() + 1);
+            ui.invoke_paste_text();
         }
     });
     let selected = selection.clone();

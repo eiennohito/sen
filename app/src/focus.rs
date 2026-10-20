@@ -3,6 +3,19 @@ use crate::*;
 use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
 
 pub(crate) fn install(ui: &AppWindow) {
+    let weak = ui.as_weak();
+    ui.global::<State>().on_text_input_focused(move || {
+        weak.upgrade().is_some_and(|ui| {
+            WindowInner::from_pub(ui.window())
+                .focus_item
+                .borrow()
+                .upgrade()
+                .is_some_and(|item| {
+                    item.downcast::<slint::private_unstable_api::re_exports::TextInput>()
+                        .is_some_and(|input| !input.as_pin_ref().read_only())
+                })
+        })
+    });
     let saved = Rc::new(RefCell::new(Vec::new()));
     let record = saved.clone();
     let weak = ui.as_weak();

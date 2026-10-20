@@ -16,7 +16,6 @@ export component Members inherits FocusScope {
     capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
     key-pressed(event) => {
         if State.ime-active { return reject; }
-        if State.browser-key(event) == accept { return accept; }
         if event.text == Key.Escape { State.pop-detail(false); return accept; }
         if event.text == Key.Tab {
 

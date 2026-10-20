@@ -40,7 +40,7 @@ export component Pane inherits Rectangle {
     in-out property <length> content-y <=> root.offset;
     out property <length> visible-width: max(0px, root.width - 12px);
     property <bool> scrolling;
-    changed offset => { root.scrolling = true; hide.running = true; hide.restart(); if root.virtual { root.scrolled(); } }
+    changed offset => { root.scrolling = true; hide.running = true; hide.restart(); if root.virtual && !root.seek-pending { root.scrolled(); } }
     hide := Timer { interval: 1s; running: false; triggered => { self.running = false; root.scrolling = false; } }
     clip: true;
     property <length> seek-y;
@@ -48,13 +48,14 @@ export component Pane inherits Rectangle {
     seek-settle := Timer {
         interval: 0ms;
         running: root.seek-pending;
-        triggered => { root.seek-pending = false; root.offset = max(-root.extent, min(0px, root.seek-y)); }
+        triggered => { root.offset = max(-root.extent, min(0px, root.seek-y)); root.seek-pending = false; }
     }
+    public function user-scroll() { root.seek-pending = false; root.scrolled(); }
     public function jump(y: length) {
         root.residual = 0px;
         root.seek-y = max(-root.extent, min(0px, y));
-        root.offset = root.seek-y;
         if root.virtual { root.seek-pending = true; }
+        root.offset = root.seek-y;
     }
     public function scroll(delta: length) {
         if root.residual > 0px {

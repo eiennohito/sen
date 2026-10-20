@@ -2,9 +2,7 @@ use crate::*;
 
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     global_callback!(ui, actions, on_request_panel, |ui, d, panel| {
-        let restore_avatar = panel == PanelState::None
-            && matches!(d.state.panel, Panel::Viewer)
-            && ui.global::<State>().get_viewer_from_detail();
+        let restore_viewer = panel != PanelState::Viewer && matches!(d.state.panel, Panel::Viewer);
         d.state.panel = match panel {
             PanelState::None => {
                 if !d.state.detail.is_empty() && matches!(d.state.panel, Panel::Viewer) {
@@ -21,9 +19,17 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             PanelState::SignIn => Panel::SignIn,
         };
         d.render(&ui);
-        if restore_avatar {
-            ui.global::<State>().set_viewer_from_detail(false);
-            ui.global::<State>().invoke_finish_detail_restore(false);
+        if restore_viewer {
+            if ui
+                .global::<State>()
+                .get_viewer_key()
+                .starts_with("profile:")
+            {
+                ui.global::<State>().invoke_finish_detail_restore(false);
+            } else {
+                ui.invoke_focus_history();
+            }
+            ui.global::<State>().invoke_photo_closed();
         }
         match panel {
             PanelState::Settings => ui.invoke_focus_settings_close(),

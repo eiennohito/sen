@@ -72,7 +72,6 @@ export component Detail inherits FocusScope {
     key-pressed(event) => {
         if State.ime-active { return reject; }
         if event.text == Key.Escape { State.pop-detail(false); return accept; }
-        if State.browser-key(event) == accept { return accept; }
         if event.text == Key.Tab {
             if event.modifiers.shift && (State.detail-depth > 1 ? back.has-focus : State.detail-page == DetailPageMode.profile ? more.has-focus : close.has-focus) { State.focus-before-layer(); return accept; }
             if !event.modifiers.shift {

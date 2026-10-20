@@ -146,7 +146,7 @@ impl Desktop {
 mod tests {
     use super::*;
 
-    fn desktop(worker: &Worker) -> Desktop {
+    pub(super) fn desktop(worker: &Worker) -> Desktop {
         Desktop {
             clipboard_root: std::env::temp_dir(),
             history: Default::default(),
@@ -320,4 +320,42 @@ mod tests {
         .join()
         .unwrap();
     }
+}
+
+#[cfg(all(test, feature = "demo"))]
+#[test]
+fn demo_settings_scene_focuses_close() {
+    std::thread::spawn(|| {
+        use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
+        let window = crate::snapshot::install().unwrap();
+        let ui = crate::window::create_app_window().unwrap();
+        let worker = line::engine::Worker::start(
+            line::engine::StoreLocation::Memory,
+            || Ok(line::backend::FakeBackend::canned()),
+            Default::default(),
+        );
+        let runtime = crate::Runtime {
+            window: Default::default(),
+            desktop: std::rc::Rc::new(std::cell::RefCell::new(Some(tests::desktop(&worker)))),
+            actions: Default::default(),
+            draining: Default::default(),
+        };
+        ui.show().unwrap();
+        crate::snapshot::render(&window, (980, 720)).unwrap();
+        ui.invoke_focus_search();
+        crate::dev::demo::stage(&ui, &runtime, None, "settings", false);
+        crate::snapshot::render(&window, (980, 720)).unwrap();
+        let item = WindowInner::from_pub(ui.window())
+            .focus_item
+            .borrow()
+            .upgrade()
+            .unwrap();
+        assert_eq!(
+            item.accessible_string_property(AccessibleStringProperty::Label)
+                .unwrap(),
+            "Close settings"
+        );
+    })
+    .join()
+    .unwrap();
 }

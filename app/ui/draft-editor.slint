@@ -5,6 +5,7 @@ import { Pane } from "scrollpane.slint";
 // Thin native TextInput wrapper: keep native IME, selection and clipboard
 // behavior while exposing the pinned Slint byte-offset selection API.
 export component DraftEditor inherits Rectangle {
+    public function paste-text() { input.paste(); }
     in property <string> placeholder: "Message";
     in property <bool> read-only; in property <bool> enabled: true;
     min-height: Tokens.base * 1.4 + 16px;
@@ -16,8 +17,6 @@ export component DraftEditor inherits Rectangle {
         State.editor-anchor = input.anchor-position-byte-offset;
         State.editor-caret = input.cursor-position-byte-offset;
     }
-    property <int> paste-request: State.paste-text-serial;
-    changed paste-request => { input.paste(); }
     out property <bool> has-focus: input.has-focus;
     public function focus-editor() { input.focus(); input.set-selection-offsets(State.editor-anchor, State.editor-caret); }
     // Native TextInput collapses selection on FocusOut. Preserve the user's
@@ -57,7 +56,6 @@ export component DraftEditor inherits Rectangle {
                 }
             }
             key-pressed(event) => {
-                if State.browser-key(event) == accept { return accept; }
                 if State.ime-active { return reject; }
                 if event.modifiers.control && (event.text == "v" || event.text == "V") && !State.modal-open && State.paste-attachment() { return accept; }
                 if event.text == Key.Tab && event.modifiers.shift { State.focus-reading-before-editor(); return accept; }

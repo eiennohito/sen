@@ -4,6 +4,7 @@ use line::{
     engine::{Connection, Intent},
     store::*,
 };
+use line_desktop_ui::ReadingGeometry;
 use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Default)]
@@ -47,28 +48,13 @@ impl Reading {
     }
 }
 
-#[derive(Clone, Copy, Default)]
-pub(crate) struct Geometry {
-    pub y: f32,
-    pub at_bottom: bool,
-    pub visible_top: f32,
-    pub height: f32,
-    pub pill_height: f32,
-    pub active: bool,
-    pub modal: bool,
-    pub dragging: bool,
-    pub interacting: bool,
-    pub narrow: bool,
-    pub conversation: bool,
-}
-
 #[derive(Default)]
 pub(crate) struct Effects {
     pub intents: Vec<Intent>,
     pub show: Option<(f32, bool)>,
 }
 
-pub(crate) fn observe(reading: &mut Reading, state: &AppState, view: Geometry) -> Effects {
+pub(crate) fn observe(reading: &mut Reading, state: &AppState, view: ReadingGeometry) -> Effects {
     let mut effects = Effects::default();
     let top = -view.y + view.visible_top;
     let bottom = -view.y + view.height;
@@ -104,7 +90,11 @@ pub(crate) fn observe(reading: &mut Reading, state: &AppState, view: Geometry) -
     effects
 }
 
-pub(crate) fn exposure(reading: &mut Reading, state: &AppState, view: Geometry) -> Vec<Intent> {
+pub(crate) fn exposure(
+    reading: &mut Reading,
+    state: &AppState,
+    view: ReadingGeometry,
+) -> Vec<Intent> {
     let mut intents = Vec::new();
     if view.active
         && !view.modal
@@ -192,7 +182,7 @@ pub(crate) fn restore(reading: &mut Reading) -> Option<f32> {
 pub(crate) fn page_older(
     reading: &mut Reading,
     state: &mut AppState,
-    view: Geometry,
+    view: ReadingGeometry,
 ) -> Vec<Intent> {
     let mut intents = Vec::new();
     if view.y >= -30.
@@ -229,7 +219,7 @@ pub(crate) fn page_older(
 pub(crate) fn return_anchor(
     reading: &Reading,
     rows: Vec<&StoredMessage>,
-    view: Geometry,
+    view: ReadingGeometry,
 ) -> Option<(Key, f32)> {
     let top = -view.y + view.visible_top;
     rows.into_iter().find_map(|m| {
@@ -258,6 +248,7 @@ mod tests {
                 backend::FakeBackend,
                 engine::{StoreLocation, Worker},
             };
+            use line_desktop_ui::ReadingGeometry;
             use slint::Model;
             let fake = FakeBackend::canned();
             let chat = ChatId("alice".into());
@@ -312,7 +303,7 @@ mod tests {
             let intents = exposure(
                 &mut Reading::default(),
                 &state,
-                Geometry {
+                ReadingGeometry {
                     active: true,
                     height: 400.,
                     at_bottom: true,
@@ -401,28 +392,28 @@ mod tests {
             geometry: [(Key(1), (20., 30.)), (Key(2), (70., 30.))].into(),
             ..Default::default()
         };
-        let mut view = Geometry {
+        let mut view = ReadingGeometry {
             height: 100.,
             pill_height: 10.,
             ..Default::default()
         };
-        assert!(exposure(&mut reading, &state, view).is_empty());
+        assert!(exposure(&mut reading, &state, view.clone()).is_empty());
         view.active = true;
-        let intents = exposure(&mut reading, &state, view);
+        let intents = exposure(&mut reading, &state, view.clone());
         assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.as_str() == "9"));
-        assert!(exposure(&mut reading, &state, view).is_empty());
+        assert!(exposure(&mut reading, &state, view.clone()).is_empty());
         view.pill_height = 0.;
         state.messages.get_mut(&Key(2)).unwrap().outgoing = true;
-        assert!(exposure(&mut reading, &state, view).is_empty());
+        assert!(exposure(&mut reading, &state, view.clone()).is_empty());
         state.messages.get_mut(&Key(2)).unwrap().outgoing = false;
         state.messages.get_mut(&Key(2)).unwrap().delivery = Delivery::Pending;
-        assert!(exposure(&mut reading, &state, view).is_empty());
+        assert!(exposure(&mut reading, &state, view.clone()).is_empty());
         state.messages.get_mut(&Key(2)).unwrap().delivery = Delivery::Sent;
         view.modal = true;
-        assert!(exposure(&mut reading, &state, view).is_empty());
+        assert!(exposure(&mut reading, &state, view.clone()).is_empty());
         view.modal = false;
-        let intents = exposure(&mut reading, &state, view);
+        let intents = exposure(&mut reading, &state, view.clone());
         assert!(matches!(intents.as_slice(), [Intent::MarkRead { id, .. }] if id.as_str() == "10"));
-        assert!(exposure(&mut reading, &state, view).is_empty());
+        assert!(exposure(&mut reading, &state, view.clone()).is_empty());
     }
 }

@@ -1,4 +1,4 @@
-import { RecoveryKind } from "types.slint";
+import { ReadingViewport, RecoveryKind } from "types.slint";
 import { EmptyState } from "empty-state.slint";
 import { DatePill } from "history-pill.slint";
 import { Avatar } from "avatar.slint";
@@ -29,7 +29,6 @@ component HistoryPill inherits Rectangle {
         accessible-action-default => { root.activated(); }
         key-pressed(event) => {
             if State.ime-active { return reject; }
-            if State.browser-key(event) == accept { return accept; }
             if event.text == Key.Tab { root.traversed(event.modifiers.shift); return accept; }
             if event.text == Key.Return || event.text == " " { root.activated(); return accept; }
             reject
@@ -38,6 +37,9 @@ component HistoryPill inherits Rectangle {
     touch := TouchArea { enabled: root.enabled; mouse-cursor: pointer; clicked => { root.activated(); } }
 }
 export component Conversation inherits Rectangle {
+    public function paste-text() { composer-surface.paste-text(); }
+    property <length> virtual-history-height;
+    property <length> plain-history-height;
     property <bool> loading-delayed;
     property <int> window-sub: State.window-sub;
     changed window-sub => { root.loading-delayed = false; loading-timer.restart(); }
@@ -113,7 +115,6 @@ export component Conversation inherits Rectangle {
                 accessible-description: "Scrollable message history";
                 key-pressed(event) => {
                     if State.ime-active { return reject; }
-                    if State.browser-key(event) == accept { return accept; }
                     if State.recovery-kind != RecoveryKind.none { return reject; }
                     if event.text == Key.Tab { if event.modifiers.shift { if State.connection-actions-enabled { State.focus-sign-in-opener(); } else { more-button.focus-button(); } } else { if !State.has-chat { State.focus-after-conversation(); } else if root.latest-visible { latest-button.focus-pill(); } else if State.return-visible { return-button.focus-pill(); } else { State.focus-composer(); } } return accept; }
                     if event.text == Key.UpArrow { history.scroll(Tokens.base * 1.4); history.scrolled(); return accept; }
@@ -128,16 +129,16 @@ export component Conversation inherits Rectangle {
               history := Pane {
                 connection-feedback: (!State.narrow || State.show-conversation) && !(State.detail-open && State.profile-sheet);
                 focus-requested => { history-focus.focus(); }
-                changed extent => { State.history-extent = self.extent; if State.following && !self.dragging { self.jump(-self.extent); } }
-                changed dragging => { State.history-dragging = self.dragging; }
+                changed extent => { if State.following && !self.dragging { self.jump(-self.extent); } }
                 offset <=> State.history-y;
                 vertical-stretch: 1;
-                scrolled => { State.following = State.history-can-follow && self.visible-top == self.inset && !State.history-dragging && State.history-extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } State.history-scrolled(); }
-                virtual: State.history-virtual; full-height: State.plain-history-height;
-                virtual-height: State.virtual-history-height;
+                scrolled => { State.following = State.history-can-follow && self.visible-top == self.inset && !self.dragging && self.extent + State.history-y <= State.text-size * 1px; if State.following { State.new-count = 0; } State.history-scrolled(); }
+                virtual: State.history-virtual; full-height: root.plain-history-height;
+                virtual-height: root.virtual-history-height;
                 if State.history-virtual: history-view := ListView {
+                    scrolled => { history.user-scroll(); }
                     width: parent.width; height: parent.height;
-                    changed content-height => { State.virtual-history-height = self.content-height; }
+                    changed content-height => { root.virtual-history-height = self.content-height; }
                     content-y <=> State.history-y;
                     content-width: self.width; vertical-scrollbar-policy: always-off;
                     horizontal-scrollbar-policy: always-off; accessible-role: none;
@@ -159,8 +160,8 @@ export component Conversation inherits Rectangle {
                 }
                 if !State.history-virtual: VerticalLayout {
                     width: parent.width; height: self.preferred-height;
-                    changed preferred-height => { State.plain-history-height = self.preferred-height; }
-                    init => { State.plain-history-height = self.preferred-height; }
+                    changed preferred-height => { root.plain-history-height = self.preferred-height; }
+                    init => { root.plain-history-height = self.preferred-height; }
                     padding: 16px; spacing: 0px;
                     padding-bottom: 16px + root.pill-height;
                     Rectangle {
@@ -230,11 +231,9 @@ composer-surface := Composer { }
     public function focus-reading-before-editor() { if State.return-visible { return-button.focus-pill(); } else if root.latest-visible { latest-button.focus-pill(); } else { history-focus.focus(); } }
     public function scroll(delta: length) { history.scroll(delta); history.scrolled(); }
     public function jump(y: length) { history.jump(y); }
-    property <length> viewport-height: history.visible-height;
-    changed viewport-height => { State.history-viewport-height = root.viewport-height; }
-    property <length> visible-top: history.visible-top;
-    changed visible-top => { State.history-visible-top = root.visible-top; }
+    property <ReadingViewport> reading-viewport: { height: history.visible-height, visible-top: history.visible-top, pill-height: root.pill-height, extent: history.extent, dragging: history.dragging };
+    changed reading-viewport => { State.reading-viewport = root.reading-viewport; }
+    init => { State.reading-viewport = root.reading-viewport; }
     // Pills plus the 8 px gap below them remain outside read exposure.
     property <length> pill-height: root.latest-visible || State.return-visible ? history-surface.height - history-pills.y : 0px;
-    changed pill-height => { State.history-pill-height = root.pill-height; }
 }

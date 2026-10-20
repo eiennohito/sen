@@ -26,13 +26,12 @@ export component Rail inherits Rectangle {
     property <int> cursor: State.section;
     public function activate(index: int) {
         if index < 2 { State.browse(index); }
-        else if index == 2 { State.request-panel(PanelState.settings); State.focus-settings-close(); }
+        else if index == 2 { State.request-panel(PanelState.settings); }
         else if index == 3 && State.has-account { State.open-profile(State.account-mid); }
     }
     rail-focus := FocusScope {
         accessible-role: button; accessible-label: "Navigation";
         key-pressed(event) => {
-            if State.browser-key(event) == accept { return accept; }
             if State.ime-active { return reject; }
             if event.text == Key.Tab { if event.modifiers.shift { State.focus-cycle-end(); } else if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } return accept; }
             if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.cursor = max(0, root.cursor - 1); return accept; }

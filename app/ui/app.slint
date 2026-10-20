@@ -19,10 +19,12 @@ import { Layers } from "layers.slint";
 import { RecoveryDialog } from "recovery-dialog.slint";
 import { ConnectionNotice } from "connection-notice.slint";
 
+enum Cover { none, sheet, conversation }
+
 export component AppWindow inherits Window {
+    public function paste-text() { conversation.paste-text(); }
 
     public function measure-rich(content: string, size: float) -> RichMetric { return rich-metrics.measure(content, size); }
-    public function go-back() { if State.narrow && State.show-conversation && !State.modal-open { State.show-conversation = false; if State.section == 1 { State.focus-friend-search(); } else { State.focus-search(); } } }
     public function back-to-members() { layers.back-to-members(); }
 
     public function focus-composer() { if State.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-editor(); } }
@@ -38,12 +40,15 @@ export component AppWindow inherits Window {
 
     property <length> token-base: State.text-size * 1px;
     changed token-base => { Tokens.base = root.token-base; }
-    property <length> state-window-width: root.width;
-    changed state-window-width => {
-        State.browser-focus-hidden = State.window-width >= State.narrow-width && root.width < State.narrow-width && State.show-conversation && (rail.has-focus || (State.section == 1 ? friends-surface.has-focus : chats-surface.has-focus));
-        State.window-width = root.width; State.window-height = root.height;
+    property <bool> browser-had-focus: rail.has-focus || (State.section == 1 ? friends-surface.has-focus : chats-surface.has-focus);
+    property <Cover> cover: State.narrow ? Cover.conversation : State.profile-sheet ? Cover.sheet : Cover.none;
+    changed cover => {
+        if State.window-modal-open { return; }
+        if State.detail-open { root.focus-profile-close(); }
+        else if root.cover == Cover.conversation && State.show-conversation && root.browser-had-focus { root.focus-composer(); }
     }
-    changed height => { State.window-height = root.height; }
+    property <{ width: length, height: length }> window-size: { width: root.width, height: root.height };
+    changed window-size => { State.window-width = root.window-size.width; State.window-height = root.window-size.height; }
     init => { State.window-width = root.width; State.window-height = root.height; Tokens.base = State.text-size * 1px; }
     public function reveal-chat(index: int) { chats-surface.reveal(index); }
     public function focus-cycle-end() {
@@ -90,11 +95,15 @@ export component AppWindow inherits Window {
     public function history-jump(y: length) { conversation.jump(y); }
 
     extension := DemoExtension {
+        capture-key-pressed(event) => {
+            if event.text == Key.F6 && auth-notice.has-focus { return reject; }
+            if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.LeftArrow || event.text == Key.RightArrow) && State.text-input-focused() { return reject; }
+            State.browser-key(event)
+        }
         width: root.width; height: root.height;
         shell := FocusScope {
             enabled: !State.new-chat-open && !State.attachments-open;
             focus-on-tab-navigation: false;
-            key-pressed(event) => { if State.browser-key(event) == accept { return accept; } if !State.ime-active && event.modifiers.alt && event.text == Key.LeftArrow { root.go-back(); return accept; } reject }
             y: 0px;
             width: 100%; height: root.height;
             visible: !State.auth-open && !State.viewer-open && !(State.narrow && State.detail-open);
