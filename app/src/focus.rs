@@ -4,6 +4,17 @@ use slint::private_unstable_api::re_exports::{FocusReason, WindowInner};
 
 pub(crate) fn install(ui: &AppWindow) {
     let weak = ui.as_weak();
+    ui.global::<State>().on_tab_focus(move |back| {
+        if let Some(ui) = weak.upgrade() {
+            let window = WindowInner::from_pub(ui.window());
+            if back {
+                window.focus_previous_item();
+            } else {
+                window.focus_next_item();
+            }
+        }
+    });
+    let weak = ui.as_weak();
     ui.global::<State>().on_text_input_focused(move || {
         weak.upgrade().is_some_and(|ui| {
             WindowInner::from_pub(ui.window())

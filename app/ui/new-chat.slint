@@ -13,12 +13,7 @@ export component NewChat inherits Dialog {
 
     panel-height: min(560px, root.height - 32px); panel-border: Tokens.border;
     dismissed => { if !State.new-chat-busy { State.new-chat-open = false; State.focus-search(); } }
-    key-pressed(event) => {
-        if State.ime-active { return reject; }
-        if event.text == Key.Tab && !event.modifiers.shift && submit.has-focus { search.focus(); return accept; }
-        if event.text == Key.Tab && event.modifiers.shift && search.has-focus { if submit.enabled { submit.focus(); } else { close-button.focus(); } return accept; }
-        reject
-    }
+
     VerticalLayout { padding: 24px; spacing: 12px;
         HorizontalLayout {
             Text { text: "New chat"; color: Tokens.text; font-size: Tokens.heading; font-weight: 600; vertical-alignment: center; }

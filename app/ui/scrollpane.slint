@@ -1,3 +1,4 @@
+import { ConnectionNotice } from "connection-notice.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 export component Pane inherits Rectangle {
@@ -16,21 +17,6 @@ export component Pane inherits Rectangle {
         root.offset = max(-root.extent, min(0px, anchored));
         root.residual = max(0px, anchored - root.offset);
         root.previous-cover = root.cover-height;
-    }
-    property <length> area-x: root.absolute-position.x;
-    property <length> area-y: root.absolute-position.y;
-    changed area-x => { root.publish-area(); }
-    changed area-y => { root.publish-area(); }
-    changed width => { root.publish-area(); }
-    changed height => { root.publish-area(); }
-    changed connection-feedback => { root.publish-area(); }
-    init => { root.publish-area(); }
-    function publish-area() {
-        if root.connection-feedback {
-            State.connection-area-x = root.area-x;
-            State.connection-area-y = root.area-y;
-            State.connection-area-width = root.width;
-        }
     }
     in-out property <length> offset: 0px;
     out property <length> extent: max(0px, (root.virtual ? root.virtual-height : content.height) - root.height) + root.cover-height;
@@ -81,6 +67,23 @@ export component Pane inherits Rectangle {
             return accept;
         }
     }
+    callback connection-dismissed();
+    callback connection-key-pressed(KeyEvent) -> EventResult;
+    public function focus-connection() { notice-host.focus(); State.tab-focus(false); }
+    out property <bool> connection-focused;
+    notice-host := FocusScope {
+        x: 0px; y: 0px;
+        focus-on-click: false;
+        focus-on-tab-navigation: false;
+        height: root.cover-height;
+        if root.connection-feedback: ConnectionNotice {
+            x: 0px; y: 0px;
+            changed has-focus => { root.connection-focused = self.has-focus; }
+            dismissed => { root.connection-dismissed(); }
+            key-pressed(event) => { root.connection-key-pressed(event) }
+            visible: State.connection-feedback-visible;
+        }
+    }
     viewport := Rectangle {
         y: root.visible-top; width: root.visible-width; height: root.visible-height;
         clip: root.visible-top > 0px;
@@ -92,7 +95,7 @@ export component Pane inherits Rectangle {
         }
     }
     track := Rectangle {
-        x: parent.width - 12px; width: 12px; height: parent.height;
+        x: parent.width - 12px; y: root.visible-top; width: 12px; height: root.visible-height;
         background: transparent;
         visible: root.extent > 0px;
         thumb := Rectangle {
@@ -126,4 +129,3 @@ export component Pane inherits Rectangle {
         }
     }
 }
-

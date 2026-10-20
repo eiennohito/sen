@@ -66,7 +66,6 @@ export component Members inherits FocusScope {
                         avatar-size: 40px; trailing-width: 40px;
                         touch := TouchArea { enabled: !member.invited; mouse-cursor: pointer; clicked => { root.selected = i; list.focus(); if !member.invited { State.open-member(member.id); } } }
                         IconButton { x: parent.width - 40px; y: (parent.height - 32px) / 2; visible: member.friend && !member.invited && !member.is-self && (touch.has-hover || (list.has-focus && root.selected == i)); enabled: self.visible; label: "Chat with " + member.name; icon: @image-url("../assets/icons/chats.svg"); activated => { State.detail-action(DetailAction.member-chat, member.id); } }
-
                       }
                     }
                 }

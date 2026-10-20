@@ -380,43 +380,55 @@ def check_missing_module():
     wait_element("Not signed in", "Text")
 
 
+def focus_label():
+    current = focused_control()
+    focused = [item for item in tree() if is_focused(item, current)]
+    assert len(focused) == 1, f"unlabelled or ambiguous Tab stop: {focused}"
+    label = focused[0].get("accessibleLabel", "")
+    assert label, "focused control has no label"
+    assert focused[0]["size"]["width"] > 0 and focused[0]["size"]["height"] > 0, f"hidden focus: {label}"
+    return label
+
+def focus_tab(reverse=False):
+    if reverse: key("\x10", "Press")
+    key("\t")
+    if reverse: key("\x10", "Release")
+
+def check_chain(surface, expected, seed):
+    assert len(expected) == len(set(expected)), f"{surface}: duplicate expected stop"
+    if seed[1] == "TextInput":
+        click(*seed)
+    for _ in expected:
+        if focus_label() == seed[0]: break
+        focus_tab()
+    assert focus_label() == seed[0], f"{surface}: seed did not focus {seed[0]} (at {focus_label()})"
+    # One full cycle in each direction checks every focus edge and wrap.
+    label = focus_label()
+    index = expected.index(label)
+    for reverse in (False, True):
+        seen = [label]
+        for offset in range(1, len(expected) + 1):
+            focus_tab(reverse)
+            current = focus_label()
+            wanted = expected[(index + (-offset if reverse else offset)) % len(expected)]
+            assert current == wanted, f"{surface}: {'reverse' if reverse else 'forward'} from {label}: {seen} → {current}, expected {wanted}"
+            if offset < len(expected): seen.append(current)
+        assert len(set(seen)) == len(expected) and set(seen) == set(expected), f"{surface}: incomplete cycle: {seen}"
+        assert focus_label() == label, f"{surface}: did not return to seed {label}"
+
+
+def check_narrow_chats_focus():
+    show_chats()
+    for recovery in ([], ["Sign in again"]):
+        if recovery: demo_scenario("Expired sign-in")
+        expected = ["Navigation", "Find a conversation", "All", "New chat"] + recovery + ["Conversations"]
+        check_chain("narrow chats", expected, ("Find a conversation", "TextInput"))
+        set_value("Find a conversation", "葵")
+        check_chain("narrow chats search clear", expected[:2] + ["Clear search"] + expected[2:], ("Find a conversation", "TextInput"))
+        click("Clear search")
+
+
 def check_focus():
-    def focus_label():
-        current = focused_control()
-        focused = [item for item in tree() if is_focused(item, current)]
-        assert len(focused) == 1, f"unlabelled or ambiguous Tab stop: {focused}"
-        label = focused[0].get("accessibleLabel", "")
-        assert label, "focused control has no label"
-        assert focused[0]["size"]["width"] > 0 and focused[0]["size"]["height"] > 0, f"hidden focus: {label}"
-        return label
-
-    def focus_tab(reverse=False):
-        if reverse: key("\x10", "Press")
-        key("\t")
-        if reverse: key("\x10", "Release")
-
-    def check_chain(surface, expected, seed):
-        assert len(expected) == len(set(expected)), f"{surface}: duplicate expected stop"
-        if seed[1] == "TextInput":
-            click(*seed)
-        for _ in expected:
-            if focus_label() == seed[0]: break
-            focus_tab()
-        assert focus_label() == seed[0], f"{surface}: seed did not focus {seed[0]} (at {focus_label()})"
-        # One full cycle in each direction checks every focus edge and wrap.
-        label = focus_label()
-        index = expected.index(label)
-        for reverse in (False, True):
-            seen = [label]
-            for offset in range(1, len(expected) + 1):
-                focus_tab(reverse)
-                current = focus_label()
-                wanted = expected[(index + (-offset if reverse else offset)) % len(expected)]
-                assert current == wanted, f"{surface}: {'reverse' if reverse else 'forward'} from {label}: {seen} → {current}, expected {wanted}"
-                if offset < len(expected): seen.append(current)
-            assert len(set(seen)) == len(expected) and set(seen) == set(expected), f"{surface}: incomplete cycle: {seen}"
-            assert focus_label() == label, f"{surface}: did not return to seed {label}"
-
     logical_width = properties["size"]["width"] / properties.get("scaleFactor", 1)
     narrow = logical_width < 740
     panel = logical_width >= 1060
@@ -771,13 +783,18 @@ def check_compose():
              position={"x": close["absolutePosition"]["x"] + close["size"]["width"] / 2,
                        "y": close["absolutePosition"]["y"] + close["size"]["height"] + 60},
              deltaY=10000)
-        injection = element("Attachment paths", "TextInput")
-        call("set_element_value", elementHandle=injection["handle"], value=json.dumps([str(photo), str(file), str(removed)]))
+        paths = json.dumps([str(photo), str(file), str(removed)])
+        click("Attachment paths", "TextInput")
+        ctrl("a")
+        key(paths)
+        assert element("Attachment paths", "TextInput").get("accessibleValue") == paths, "attachment paths field is not typeable"
         click("Preview attachments")
         wait_element("Send 3", "Button")
+        check_chain("attachments", ["Close attachments", "Remove Holiday.png", "Remove Notes.txt", "Remove Remove.txt", "Cancel", "Send 3"], ("Cancel", "Button"))
         screenshot("attachments")
         click("Remove Remove.txt")
         wait_element("Send 2", "Button")
+        check_chain("attachments after removal", ["Close attachments", "Remove Holiday.png", "Remove Notes.txt", "Cancel", "Send 2"], ("Cancel", "Button"))
         assert not any(item.get("accessibleLabel", "").startswith("Uploading") for item in tree()), "selection uploaded before Send"
         click("Send 2")
         wait_for(lambda: any(item.get("accessibleLabel", "").startswith("Uploading ") and item.get("accessibleLabel") not in ("Uploading 0%", "Uploading 100%") for item in tree()), "upload progress did not appear")
@@ -1037,6 +1054,10 @@ def check_layers():
     # Public OA metadata assets use the same offline media paths as other photos.
     click("Open photo", "Button")
     wait_element("Photo in viewer", "Image")
+    assert is_focused(element("Close photo", "Button")), "viewer did not focus Close photo on open"
+    viewer_stops = ["Close photo", "Zoom out", "Zoom in", "Fit", "Original size", "Save photo"]
+    viewer_stops += [label for label in ("Previous", "Next") if any(item.get("accessibleLabel") == label and item.get("accessibleEnabled") for item in tree())]
+    check_chain("viewer", viewer_stops, ("Close photo", "Button"))
     key("\x1b")
     demo_scenario("Live reaction")
     wait_element("👍", "Text")
@@ -1596,7 +1617,7 @@ def main():
     global args, current_group, demo_directory, demo_pid
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--seed', type=int, help='Reproduce the randomized --all group order')
-    parser.add_argument('--all', action='store_true', help='Run the normal and wide behavioural matrix')
+    parser.add_argument('--all', action='store_true', help='Run the normal, wide, and narrow behavioural matrix')
     parser.add_argument('--group', choices=GROUPS, action='append', help='Run a group (repeatable; defaults to smoke)')
     parser.add_argument('--dark', action='store_true', help='Use the dark demo palette')
     parser.add_argument('--wide', action='store_true', help='Use a 1280×900 demo for selected groups')
@@ -1604,15 +1625,15 @@ def main():
     parser.add_argument('--screenshots', type=Path, help='Save group and intermediate surface screenshots in this directory')
     args = parser.parse_args()
     if args.all and (args.group or args.wide):
-        parser.error('--all supplies the groups and both window sizes')
+        parser.error('--all supplies the groups and window sizes')
     selected = args.group or ['smoke']
     if args.all:
-        matrix = [(False, [g for g in GROUPS if g not in ('signed-out', 'missing-module') and g not in SCENES]),
-                  (True, list(WIDE_GROUPS))]
-        matrix += [(False, [g]) for g in (*SCENES, 'signed-out', 'missing-module')]
+        matrix = [(980, [g for g in GROUPS if g not in ('signed-out', 'missing-module') and g not in SCENES]),
+                  (1280, list(WIDE_GROUPS)), (420, ["focus"])]
+        matrix += [(980, [g]) for g in (*SCENES, 'signed-out', 'missing-module')]
     else:
         regular = [g for g in selected if g not in ('signed-out', 'missing-module') and g not in SCENES]
-        matrix = ([(args.wide, regular)] if regular else []) + [(args.wide, [g]) for g in selected if g in ('signed-out', 'missing-module') or g in SCENES]
+        matrix = ([(1280 if args.wide else 980, regular)] if regular else []) + [(1280 if args.wide else 980, [g]) for g in selected if g in ('signed-out', 'missing-module') or g in SCENES]
     seed = args.seed if args.seed is not None else secrets.randbits(32)
     print(f'Seed: {seed}', flush=True)
     if args.all:
@@ -1622,16 +1643,17 @@ def main():
         rng.shuffle(matrix)
     started = time.monotonic()
     failures = 0
-    for wide, groups in matrix:
+    for width, groups in matrix:
         # Smoke probes startup idle before reset can stop a mistakenly running timer.
         if 'smoke' in groups:
             groups = ['smoke'] + [group for group in groups if group != 'smoke']
-        args.wide = wide
+        args.wide = width == 1280
+        size_suffix = "-narrow" if width < 740 else "-wide" if args.wide else ""
         # Ask the OS for an unused port; readiness is determined only by initialize.
         with socket.socket() as reservation:
             reservation.bind(('127.0.0.1', 0))
             args.port = reservation.getsockname()[1]
-        flags = ['--demo-size', '1280x900' if wide else '980x720']
+        flags = ['--demo-size', f'{width}x{900 if args.wide else 720}']
         if args.dark:
             flags += ['--demo-dark']
         if groups[0] in SCENES:
@@ -1650,14 +1672,17 @@ def main():
                     children = Path(f"/proc/{process.pid}/task/{process.pid}/children").read_text().split()
                     demo_pid = next(int(pid) for pid in children if Path(f"/proc/{pid}/comm").read_text().strip() == "line-desktop")
                     for index, group in enumerate(groups):
-                        current_group = group + ('-wide' if wide else '')
+                        current_group = group + size_suffix
                         group_started = launch_started if index == 0 else time.monotonic()
                         try:
                             if group == 'smoke':
                                 check_idle()
                             if group not in ('signed-out', 'missing-module') and group not in SCENES:
                                 reset_demo()
-                            GROUPS[group]()
+                            if group == 'focus' and width < 740:
+                                check_narrow_chats_focus()
+                            else:
+                                GROUPS[group]()
                             screenshot('complete')
                             print(f'PASS {current_group} {time.monotonic() - group_started:.3f}s', flush=True)
                         except Exception:
@@ -1671,7 +1696,7 @@ def main():
             except Exception:
                 failures += 1
                 for group in groups[completed:]:
-                    label = group + ('-wide' if wide else '')
+                    label = group + size_suffix
                     print(f'FAIL {label} {time.monotonic() - launch_started:.3f}s', flush=True)
                 traceback.print_exc()
                 log.seek(0)

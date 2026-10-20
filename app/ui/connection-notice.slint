@@ -6,7 +6,6 @@ component Action inherits Pressable {
     in property <length> text-size: Tokens.base;
     in property <string> label;
     in property <string> description;
-    callback tab(bool);
     preferred-width: caption.preferred-width + 32px;
     width: self.preferred-width;
     height: 32px;
@@ -15,35 +14,30 @@ component Action inherits Pressable {
     FocusRing { focused: root.has-focus; border-radius: 8px; border-color: Tokens.accent; }
     caption := Text { width: 100%; height: 100%; text: root.label; font-size: root.text-size; color: root.pressed ? Tokens.selection-foreground : Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; }
     accessible-label: root.description;
-    key-event(event) => { if event.text == Key.Tab { root.tab(event.modifiers.shift); return accept; } reject }
-
 }
 
 export component ConnectionNotice inherits Rectangle {
-    callback leave(bool);
+    callback dismissed();
+    callback key-pressed(KeyEvent) -> EventResult;
     out property <bool> has-focus: notice-focus.has-focus || sign-in.has-focus;
     width: 100%; height: State.connection-notice-height;
     visible: State.connection-feedback-visible;
     background: Tokens.warning-surface;
     property <string> status: State.signed-out ? State.session-cause : State.fatal ? "Something went wrong — restart" : "Offline. Reconnecting…";
-    property <length> status-width: max(0px, root.width - 64px - (sign-in.visible ? sign-in.preferred-width + 8px : 0px));
     accessible-role: banner; accessible-label: State.connection-failed ? "Connection needs attention" : "Connection restored";
-    public function focus-first() { sign-in.focus(); }
-    public function focus-action() { sign-in.focus(); }
     TouchArea { scroll-event(event) => { accept } }
     notice-focus := FocusScope {
         focus-on-tab-navigation: false;
-        key-pressed(event) => { if event.text == Key.F6 { root.leave(false); return accept; } reject }
+        key-pressed(event) => { if root.key-pressed(event) == accept { return accept; } if event.text == Key.F6 { root.dismissed(); return accept; } reject }
         HorizontalLayout {
             padding-left: 16px; padding-right: 16px; spacing: 8px; alignment: start;
             Rectangle { width: 20px; height: 36px; Image { y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/warning.svg"); colorize: Tokens.text; } }
-            Text { width: root.status-width; text: root.status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
+            Text { horizontal-stretch: 1; min-width: 0px; text: root.status; accessible-label: root.status; color: Tokens.foreground; font-size: Tokens.base; overflow: elide; vertical-alignment: center; wrap: no-wrap; }
             sign-in := Action {
                 visible: State.connection-failed && State.sign-in-available; width: self.visible ? self.preferred-width : 0px;
                 label: "Sign in"; description: "Sign in again";
                 enabled: State.sign-in-available && !State.retrying-connection && !State.auth-busy;
                 activated => { State.open-sign-in(); }
-                tab(back) => { root.leave(back); }
             }
         }
     }

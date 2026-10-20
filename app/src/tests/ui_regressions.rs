@@ -483,7 +483,7 @@ fn busy_controls_refuse_focus_and_activation() {
         g.set_connection(ConnectionState::SigningIn);
         g.set_has_account(true);
         ui.invoke_focus_search();
-        ui.invoke_focus_sign_in_opener();
+        ui.invoke_focus_connection_first();
         assert_ne!(
             focused(),
             "Sign in again",

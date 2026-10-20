@@ -34,7 +34,6 @@ impl crate::Desktop {
         }
         self.state.panel = Panel::Viewer;
         self.render(ui);
-        ui.invoke_focus_viewer_close();
     }
     pub(crate) fn photos(&self) -> Vec<String> {
         self.state

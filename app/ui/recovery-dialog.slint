@@ -11,18 +11,12 @@ export component RecoveryDialog inherits Dialog {
 
     panel-border: Tokens.border; shadow: true;
     dismissed => { State.resolve-recovery(RecoveryAction.cancel); }
-    key-pressed(event) => {
-        if !State.ime-active && event.text == Key.Tab {
-            if event.modifiers.shift && cancel.has-focus { if State.recovery-kind == RecoveryKind.edit { append.focus(); } else { confirm.focus(); } return accept; }
-            if !event.modifiers.shift && (append.has-focus || confirm.has-focus) { cancel.focus(); return accept; }
-        }
-        reject
-    }
+
     content := VerticalLayout {
         padding: 24px; spacing: 12px;
         HorizontalLayout { spacing: 8px;
             Text { text: State.recovery-kind == RecoveryKind.unsend ? "Unsend message?" : "Use message text?"; font-size: Tokens.heading; wrap: word-wrap; }
-            IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.resolve-recovery(RecoveryAction.cancel); } }
+            IconButton { focus-on-tab-navigation: false; label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.resolve-recovery(RecoveryAction.cancel); } }
         }
         Text { text: State.recovery-kind == RecoveryKind.unsend ? "It will be removed for everyone." : "There is already a draft in this conversation. Replace it or append this message?"; color: Tokens.foreground; wrap: word-wrap; }
         HorizontalLayout {

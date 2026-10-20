@@ -55,7 +55,7 @@ export global State {
         if self.ime-active { return reject; }
         if event.text == Key.Escape && self.composer-reply.reply-id != "" && !self.window-modal-open && !self.detail-open { self.cancel-reply(); return accept; }
         if event.text == Key.Escape && self.detail-open && !self.window-modal-open { self.pop-detail(false); return accept; }
-        if !self.window-modal-open && !(self.detail-open && self.profile-sheet ) && self.connection-actions-enabled && event.text == Key.F6 { self.focus-sign-in-opener(); return accept; }
+        if !self.window-modal-open && !(self.detail-open && self.profile-sheet) && self.connection-actions-enabled && event.text == Key.F6 { self.focus-connection-first(); return accept; }
         if self.window-modal-open || (self.narrow && self.detail-open) { return reject; }
         if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
             if event.text == "f" || event.text == "F" { self.show-conversation = false; if self.section == 1 { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
@@ -219,12 +219,9 @@ export global State {
     out property <bool> signed-out: self.connection == ConnectionState.signed-out;
     out property <bool> fatal: self.connection == ConnectionState.fatal;
     out property <bool> sign-in-available: !self.has-account || self.signed-out || self.fatal;
-    out property <bool> connection-feedback-visible: self.has-account && self.connection-failed && !self.window-modal-open && !(self.detail-open && self.profile-sheet );
+    out property <bool> connection-feedback-visible: self.has-account && self.connection-failed && !self.window-modal-open && !(self.detail-open && self.profile-sheet);
     out property <bool> connection-actions-enabled: self.sign-in-available && self.connection-feedback-visible && !self.retrying-connection && !self.auth-busy;
     out property <length> connection-notice-height: 36px;
-    in-out property <length> connection-area-x;
-    in-out property <length> connection-area-y;
-    in-out property <length> connection-area-width;
     out property <bool> retrying-connection: self.connection == ConnectionState.connecting;
     out property <bool> auth-open: self.panel == PanelState.sign-in;
     out property <bool> auth-busy: self.connection == ConnectionState.signing-in;
@@ -286,6 +283,7 @@ export global State {
     callback recover-message(string);
 
     public function close-profile() { self.pop-detail(true); }
+    callback tab-focus(bool);
     callback focus-composer();
     callback focus-cycle-end();
     callback focus-after-browser();
@@ -293,10 +291,10 @@ export global State {
     callback focus-before-layer();
     callback focus-after-layer();
     callback focus-reading-before-editor();
-    public function show-viewer(key: string) { self.request-panel(PanelState.viewer); self.viewer-key = key; self.viewer-zoom = 1; self.reset-viewer(); self.focus-viewer-close(); }
+    public function show-viewer(key: string) { self.request-panel(PanelState.viewer); self.viewer-key = key; self.viewer-zoom = 1; self.reset-viewer(); }
     public function close-viewer() { self.request-panel(PanelState.none); }
     public function account-ready() { self.request-panel(PanelState.none); self.show-conversation = false; self.focus-search(); }
-    public function close-sign-in() { self.request-panel(PanelState.none); self.focus-sign-in-opener(); }
+    public function close-sign-in() { self.request-panel(PanelState.none); self.focus-connection-first(); }
     public function open-sign-in() { if self.sign-in-available { self.request-panel(PanelState.sign-in); } }
     public function show-history(y: length, latest: bool) {
         self.following = latest;
@@ -312,12 +310,8 @@ export global State {
     callback focus-search();
     callback focus-friend-search();
     callback focus-settings-opener();
-    callback focus-settings-close();
     callback focus-profile-close();
-    callback focus-auth-start();
     callback focus-connection-first();
-    callback focus-sign-in-opener();
-    callback focus-viewer-close();
     public function reading-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }
         if self.recovery-kind != RecoveryKind.none { return reject; }

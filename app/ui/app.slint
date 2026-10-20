@@ -17,7 +17,6 @@ import { Chats } from "chats.slint";
 import { Conversation } from "conversation.slint";
 import { Layers } from "layers.slint";
 import { RecoveryDialog } from "recovery-dialog.slint";
-import { ConnectionNotice } from "connection-notice.slint";
 
 enum Cover { none, sheet, conversation }
 
@@ -58,7 +57,7 @@ export component AppWindow inherits Window {
         else { chats-surface.focus-list(); }
     }
     public function focus-after-browser() {
-        if State.detail-open && State.profile-sheet { if State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
+        if State.detail-open && State.profile-sheet { layers.focus-profile(); }
         else if State.narrow && !State.show-conversation { rail.focus-navigation(); }
         else { conversation.focus-first(); }
     }
@@ -68,14 +67,13 @@ export component AppWindow inherits Window {
         else { rail.focus-navigation(); }
     }
     public function focus-before-layer() {
-        if State.profile-sheet && State.connection-actions-enabled { auth-notice.focus-action(); }
-        else if State.narrow { layers.focus-profile-last(); }
+        if State.narrow { layers.focus-profile-last(); }
         else if !State.profile-sheet { conversation.focus-last(); }
         else if State.section == 1 { friends-surface.focus-list(); }
         else { chats-surface.focus-list(); }
     }
     public function focus-after-layer() {
-        if State.narrow { if State.connection-actions-enabled { auth-notice.focus-first(); } else { layers.focus-profile(); } }
+        if State.narrow { layers.focus-profile(); }
         else { rail.focus-navigation(); }
     }
     public function focus-search() { chats-surface.focus-search(); }
@@ -86,17 +84,15 @@ export component AppWindow inherits Window {
     public function focus-settings-close() { layers.focus-settings(); }
     public function focus-profile-close() { layers.focus-profile-close(); }
     public function focus-auth-start() { layers.focus-auth(); }
-    public function focus-viewer-close() { layers.focus-viewer(); }
     public function focus-history() { if State.detail-open && State.profile-sheet { State.focus-profile-close(); } else { conversation.focus-history(); } }
-    public function focus-connection-first() { auth-notice.focus-first(); }
-    public function focus-sign-in-opener() { auth-notice.focus-action(); }
+    public function focus-connection-first() { if !State.narrow || State.show-conversation { conversation.focus-connection(); } else if State.section == 1 { friends-surface.focus-connection(); } else { chats-surface.focus-connection(); } }
     public function reset-viewer() { layers.reset-viewer(); }
     public function history-scroll(delta: length) { conversation.scroll(delta); }
     public function history-jump(y: length) { conversation.jump(y); }
 
     extension := DemoExtension {
         capture-key-pressed(event) => {
-            if event.text == Key.F6 && auth-notice.has-focus { return reject; }
+            if event.text == Key.F6 && (chats-surface.connection-focused || friends-surface.connection-focused || conversation.connection-focused) { return reject; }
             if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow || event.text == Key.LeftArrow || event.text == Key.RightArrow) && State.text-input-focused() { return reject; }
             State.browser-key(event)
         }
@@ -123,25 +119,7 @@ export component AppWindow inherits Window {
         }
         layers := Layers {}
         NewChat { width: parent.width; height: parent.height; }
-        auth-notice := ConnectionNotice {
-            x: State.connection-area-x; y: State.connection-area-y;
-            width: State.connection-area-width;
-            visible: State.connection-feedback-visible;
-            leave(back) => {
-                if State.detail-open && State.profile-sheet {
-                    if !back { layers.focus-profile(); }
-                    else if State.narrow { layers.focus-profile-last(); }
-                    else if State.section == 1 { friends-surface.focus-list(); }
-                    else { chats-surface.focus-list(); }
-                } else if !State.narrow || State.show-conversation {
-                    if back { conversation.focus-header(); } else { conversation.focus-history(); }
-                } else if State.section == 1 {
-                    if back { friends-surface.focus-search-last(); } else { friends-surface.focus-list(); }
-                } else {
-                    if back { chats-surface.focus-search-last(); } else { chats-surface.focus-list(); }
-                }
-            }
-        }
+
         Attachments { }
         RecoveryDialog { }
     }
