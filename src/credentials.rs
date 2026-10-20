@@ -196,7 +196,28 @@ fn open(envelope: &Value, keys: &impl Keys) -> Result<Value> {
     parse(&plain)
 }
 
+#[cfg(not(any(test, feature = "demo", feature = "harness")))]
 mod secret_service;
+// Integration and app tests enable demo through their dev-dependencies.
+#[cfg(any(test, feature = "demo", feature = "harness"))]
+mod secret_service {
+    use super::*;
+
+    pub struct Keyring;
+    impl Keyring {
+        pub fn reachable(&self) -> Result<()> {
+            bail!("tests must not use the desktop keyring")
+        }
+    }
+    impl Keys for Keyring {
+        fn get(&self, _: &str) -> Result<Option<[u8; 32]>> {
+            bail!("tests must not use the desktop keyring")
+        }
+        fn put(&self, _: &str, _: &[u8; 32]) -> Result<()> {
+            bail!("tests must not use the desktop keyring")
+        }
+    }
+}
 use secret_service::Keyring;
 
 #[cfg(test)]

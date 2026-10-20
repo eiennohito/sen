@@ -536,6 +536,40 @@ mod tests {
     }
 
     #[test]
+    fn expired_rpc_refreshes_retries_and_rotates_tokens() -> anyhow::Result<()> {
+        use crate::client::http::test_support::{Reply, server_responses};
+        let steps = [
+            ("/api/test", json!({"code":10051,"data":{"code":119}})),
+            ("/api/auth/tokenRefresh", json!({"code":10202})),
+            ("/api/auth/tokenRefresh", json!({"code":0,"message":"OK","data":{"accessToken":"renewed","refreshToken":"rotated"}})),
+            ("/api/test", json!({"code":0,"message":"OK","data":{"value":"success"}})),
+        ].into_iter().map(|(path, response)| {
+            let reply: Reply = Box::new(move |args| {
+                assert_eq!(args, if path == "/api/test" { json!([7]) } else { json!({"refreshToken":"refresh"}) });
+                (200, response)
+            });
+            (path, reply)
+        }).collect();
+        let (http, server) = server_responses(steps);
+        let mut api = super::super::Api::without_crypto()?;
+        api.http = http;
+        api.state.token_v3_issue_result.access_token = "expired".into();
+        api.state.token_v3_issue_result.refresh_token = Some("refresh".into());
+        assert_eq!(
+            api.call("/api/test", &json!([7]), "", 0)?["value"],
+            "success"
+        );
+        assert_eq!(*api.stream_access.read().unwrap(), "renewed");
+        assert_eq!(api.state.token_v3_issue_result.access_token, "renewed");
+        assert_eq!(
+            api.state.token_v3_issue_result.refresh_token.as_deref(),
+            Some("rotated")
+        );
+        server.join().unwrap();
+        Ok(())
+    }
+
+    #[test]
     fn second_119_ends_the_session() {
         use crate::client::http::test_support::server_responses;
         let (http, server) = server_responses(

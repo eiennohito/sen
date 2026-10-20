@@ -652,3 +652,46 @@ fn repeated_empty_closes_back_off_to_cap_and_events_reset_delay() {
     assert_eq!(*waits.borrow(), [3, 6, 12, 24, 30, 30, 3, 3, 3]);
     assert_eq!(opens_after_waits, [0, 1, 2, 3, 4, 5, 6, 6, 7, 8, 8]);
 }
+
+#[test]
+fn repeated_stream_expiry_signs_out_after_one_refresh() -> Result<()> {
+    let (transport, server) = local_server(move |listener| {
+        for _ in 0..2 {
+            let mut socket = BufReader::new(accept(&listener));
+            request(&mut socket);
+            headers(&mut socket);
+            socket
+                .get_mut()
+                .write_all(b"event: talkException\ndata: {\"code\":119}\n\n")
+                .unwrap();
+        }
+    });
+    let mut authorizations = Vec::new();
+    let mut failures = Vec::new();
+    receive_on(
+        &transport,
+        "9.8.7",
+        12,
+        &Arc::new(CancelToken::new()),
+        |refresh| {
+            authorizations.push(refresh);
+            Ok("synthetic-token".into())
+        },
+        |event| {
+            if let Event::Failure { error } = event {
+                failures.push(error);
+            }
+            true
+        },
+        |_, _| panic!("terminal authentication failure retried"),
+    )?;
+    server.join().unwrap();
+    assert_eq!(authorizations, [false, true, false]);
+    assert_eq!(
+        failures,
+        [crate::client::error::Failure::SignedOut(
+            crate::client::error::SignOutReason::TokenRefresh
+        )]
+    );
+    Ok(())
+}
