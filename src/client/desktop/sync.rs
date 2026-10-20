@@ -18,7 +18,7 @@ pub enum Event {
         attempt: u32,
         error: crate::client::error::Failure,
     },
-    Operation(Value),
+    Operation(crate::client::operation::RawOperation),
     Resync {
         next_revision: Option<String>,
         complete: async_channel::Sender<std::result::Result<(), crate::client::error::Failure>>,
@@ -207,7 +207,7 @@ fn dispatch(
     }
     match name {
         "message" if revisions.accepts(&data) => {
-            if !deliver(Event::Operation(data.clone())) {
+            if !deliver(Event::Operation(data.clone().into())) {
                 return Ok(false);
             }
             revisions.commit(&data);
@@ -392,7 +392,7 @@ mod transport_tests {
         let mut seen = Vec::new();
         let mut consumer = |event| {
             match event {
-                Event::Operation(v) => seen.push(number(&v["revision"]).unwrap()),
+                Event::Operation(v) => seen.push(number(&v.data["revision"]).unwrap()),
                 Event::Resync { complete, .. } => {
                     complete.send_blocking(Ok(())).unwrap();
                 }

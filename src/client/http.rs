@@ -291,6 +291,7 @@ pub(super) struct Transport {
     proxy: Option<Proxy>,
     pool: Pool,
     config: Config,
+    pub(in crate::client) activity: super::NetworkActivity,
 }
 trait Io: AsyncRead + AsyncWrite + Unpin + Send {}
 impl<T: AsyncRead + AsyncWrite + Unpin + Send> Io for T {}
@@ -322,6 +323,7 @@ impl Transport {
             proxy,
             pool: Arc::default(),
             config: Config::default(),
+            activity: Default::default(),
         })
     }
     pub(super) fn assets(&self) -> Self {
@@ -487,7 +489,7 @@ impl Transport {
         })?;
         let deadline = Instant::now() + duration;
         let sent = std::cell::Cell::new(false);
-        super::network_touched();
+        self.activity.record();
         let send = cancellable(
             cancel.as_deref(),
             future::or(

@@ -171,7 +171,7 @@ impl Fetchers {
         let threads = (0..THREADS)
             .map(|index| {
                 let shared = shared.clone();
-                let http = http.clone();
+                let mut http = http.clone();
                 let cache = cache.clone();
                 let publish = publish.clone();
                 let authorize = authorize.clone();
@@ -228,14 +228,15 @@ impl Fetchers {
                                 }
                                 Work::Fetch(key, job, blacklisted) => (key, job, blacklisted),
                             };
-                            crate::client::take_network_touched();
+                            let activity = crate::client::NetworkActivity::default();
+                            http.activity = activity.clone();
                             let result = if let Some(class) = blacklisted.filter(|_| !job.bypass) {
                                 Err(class)
                             } else {
                                 fetch(&http, &cache, &job, || authorize(&job.asset, &shared.stop))
                                     .map_err(|error| media_failure(&error))
                             };
-                            let network = crate::client::take_network_touched();
+                            let network = activity.touched();
                             if shared.stopped() {
                                 return;
                             }

@@ -1194,16 +1194,42 @@ fn cancel_before_pairing_job_runs_closes_immediately_and_fences_late_results() {
 
 #[test]
 fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
-    use line::client::error::SignInFailure;
+    use line::{client::error::SignInFailure, store::Store};
+    let temp = TempDir::new("line-panicking-open");
+    Store::open(&temp.0)
+        .unwrap()
+        .set_account(
+            "self",
+            line::store::Profile {
+                mid: "self".into(),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    let opens = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let open_count = opens.clone();
     let mut app = App::from_worker(Worker::start::<FakeBackend>(
-        StoreLocation::Memory,
-        || panic!("synthetic network worker crash"),
+        StoreLocation::Directory(temp.0.clone()),
+        move || {
+            open_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            panic!("synthetic network worker crash");
+        },
         line::engine::WorkerOptions::default(),
     ));
-    for attempt in 0..3 {
-        if attempt > 0 {
-            app.send(Intent::SignIn);
-        }
+    app.until(|state| {
+        state.connection
+            == Connection::SignedOut {
+                reason: SignOutReason::Unavailable(SignInFailure::Internal),
+            }
+    });
+    assert!(
+        !app.state
+            .refresh_failures
+            .contains_key(&line::engine::Refresh::Session)
+    );
+    assert_eq!(app.state.profile.mid, "self");
+    for _ in 0..2 {
+        app.send(Intent::SignIn);
         let Delta::PairFailed { reason } = app.until_delta(
             |d| matches!(d, Delta::PairFailed { .. }),
             Duration::from_secs(3),
@@ -1211,6 +1237,78 @@ fn panicking_open_completes_each_job_and_keeps_network_worker_alive() {
             unreachable!()
         };
         assert_eq!(reason, SignInFailure::Internal);
+    }
+    assert_eq!(opens.load(std::sync::atomic::Ordering::SeqCst), 3);
+}
+
+#[test]
+fn failed_probe_during_sign_in_restores_a_signed_out_account() {
+    use line::{client::error::SignInFailure, store::Store};
+    use std::sync::mpsc;
+    for failure in [
+        Failure::Bug("probe failed".into()),
+        Failure::Refused(Refusal::Internal),
+    ] {
+        let temp = TempDir::new("line-probe-sign-in");
+        Store::open(&temp.0)
+            .unwrap()
+            .set_account(
+                "self",
+                line::store::Profile {
+                    mid: "self".into(),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        let (entered, waiting) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let mut first = true;
+        let fake = FakeBackend::signed_out();
+        fake.fail_sign_in(Some(SignInFailure::Internal));
+        let mut app = App::from_worker(Worker::start(
+            StoreLocation::Directory(temp.0.clone()),
+            move || {
+                if std::mem::take(&mut first) {
+                    entered.send(()).unwrap();
+                    resume.recv().unwrap();
+                    return Err(failure.clone().into());
+                }
+                Ok(fake.clone())
+            },
+            Default::default(),
+        ));
+        waiting.recv_timeout(Duration::from_secs(3)).unwrap();
+        app.send(Intent::SignIn);
+        app.until(|s| s.connection == Connection::SigningIn);
+        release.send(()).unwrap();
+        app.until_delta(
+            |d| matches!(d, Delta::PairFailed { .. }),
+            Duration::from_secs(3),
+        );
+        // Cancel presents the restored account and exposes a lingering Opening state.
+        app.send(Intent::SignIn);
+        app.until_delta(
+            |d| matches!(d, Delta::Pair(line::backend::PairEvent::Qr(_))),
+            Duration::from_secs(3),
+        );
+        app.worker.sender.cancel_sign_in();
+        app.until_delta(
+            |d| {
+                matches!(
+                    d,
+                    Delta::PairFailed {
+                        reason: SignInFailure::Cancelled
+                    }
+                )
+            },
+            Duration::from_secs(3),
+        );
+        assert!(matches!(
+            app.state.connection,
+            Connection::SignedOut {
+                reason: SignOutReason::Unavailable(_)
+            }
+        ));
     }
 }
 

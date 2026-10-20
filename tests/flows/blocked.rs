@@ -48,6 +48,9 @@ impl Blocked {
     }
 }
 impl Backend for Blocked {
+    fn set_network_activity(&mut self, activity: line::client::NetworkActivity) {
+        self.fake.set_network_activity(activity);
+    }
     fn finish_attachment(
         &mut self,
         chat: &ChatId,
@@ -83,7 +86,7 @@ impl Backend for Blocked {
     fn members(&mut self, c: &ChatId) -> Result<Vec<line::store::Member>> {
         self.fake.members(c)
     }
-    fn start_assets(&mut self, s: Arc<CancelToken>, d: Deliver) {
+    fn start_assets(&mut self, s: Arc<CancelToken>, d: Deliver) -> Result<()> {
         self.fake.start_assets(s, d)
     }
     fn authorize(&mut self, a: &line::client::desktop::assets::Asset) -> Result<Option<String>> {
@@ -171,7 +174,7 @@ impl Backend for Blocked {
     ) -> Result<Box<dyn FnOnce() + Send>> {
         self.fake.stream(r, s, d)
     }
-    fn decode(&mut self, r: serde_json::Value) -> Result<LiveOp> {
+    fn decode(&mut self, r: line::client::operation::RawOperation) -> Result<LiveOp> {
         self.fake.decode(r)
     }
     fn refresh_token(&mut self) -> Result<()> {

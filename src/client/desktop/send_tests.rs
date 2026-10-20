@@ -190,8 +190,14 @@ fn refused_key_fetch_renders_undecryptable_and_loads_following_messages() -> Res
     let messages = client.messages("upeer")?;
     assert_eq!(messages[0].content, Content::Undecryptable);
     assert_eq!(messages[1].content.as_text(), "still here");
+    for kind in [25, 43] {
+        let (chat, live) = client.operation(&json!({"type":kind,"message":{"id":"103", "from":"uself", "to":"upeer", "text":"outgoing", "contentType":0}}).into())?.expect("outgoing operation was dropped");
+        assert_eq!(chat, "upeer");
+        assert_eq!(live.content.as_text(), "outgoing");
+        assert!(live.outgoing);
+    }
     let (_, live) = client
-        .operation(&json!({"type":26,"message":encrypted}))?
+        .operation(&json!({"type":26,"message":encrypted}).into())?
         .unwrap();
     assert_eq!(live.content, Content::Undecryptable);
     server.join().unwrap();

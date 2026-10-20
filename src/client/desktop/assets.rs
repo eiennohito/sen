@@ -120,6 +120,7 @@ impl Asset {
         })
     }
 
+    // Incomplete sticker metadata keeps the message label visible without fetching an image.
     pub fn sticker(meta: &Value) -> Option<Self> {
         let id = segment(meta["STKID"].as_str()?)?;
         let hash = meta["STKHASH"].as_str().and_then(segment);
@@ -169,6 +170,7 @@ impl Asset {
         })
     }
 
+    // A photo without an object identity keeps its placeholder and cannot be fetched.
     pub(crate) fn photo(message: &Value) -> Option<Self> {
         let meta = &message["contentMetadata"];
         let id = message["id"].as_str()?;

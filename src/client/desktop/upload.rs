@@ -2,12 +2,18 @@ use super::*;
 use crate::attachments::Attachment;
 
 impl Client {
+    #[expect(
+        clippy::type_complexity,
+        reason = "return the concrete upload closure without boxing"
+    )]
     pub fn prepare_attachment(
         &mut self,
         to: &str,
         mut item: Attachment,
         seq: u32,
-    ) -> Result<impl FnOnce(&mut dyn FnMut(f32)) -> Result<Value> + Send + 'static> {
+    ) -> Result<
+        impl FnOnce(super::NetworkActivity, &mut dyn FnMut(f32)) -> Result<Value> + Send + use<>,
+    > {
         ensure!(
             seq > 0 && seq <= 0x7fff_ffff,
             "invalid persisted send sequence"
@@ -29,8 +35,9 @@ impl Client {
             flow["flowMap"][content_type.to_string()] == 2,
             "unsupported media flow"
         );
-        let http = self.api.http.assets();
-        Ok(move |progress: &mut dyn FnMut(f32)| {
+        let mut http = self.api.http.assets();
+        Ok(move |activity, progress: &mut dyn FnMut(f32)| {
+            http.activity = activity;
             let original = item.read()?;
             let mut material = [0_u8; 32];
             crate::fill_random(&mut material)?;

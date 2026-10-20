@@ -1,5 +1,6 @@
 //! A store thread schedules work; a network thread owns the backend.
 use crate::client::http::CancelToken;
+use crate::client::{NetworkActivity, operation::OperationType};
 use crate::{backend::*, store::*};
 use serde_json::Value;
 use std::{
@@ -373,6 +374,7 @@ pub enum Delta {
 }
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Refresh {
+    Session,
     Stream,
     Profile,
     Send(Key),
@@ -393,6 +395,7 @@ pub enum Refresh {
 impl Refresh {
     fn name(&self) -> &'static str {
         match self {
+            Self::Session => "refresh-session",
             Self::Stream => "refresh-stream",
             Self::Profile => "refresh-profile",
             Self::Send(_) => "send",
@@ -430,11 +433,19 @@ struct Inbox {
 pub struct Sender(Arc<Inbox>);
 impl Sender {
     pub fn cancel_sign_in(&self) {
-        self.0.pair_cancel.lock().unwrap().cancel();
+        self.0
+            .pair_cancel
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .cancel();
         self.send(Intent::CancelSignIn);
     }
     pub fn send(&self, intent: Intent) {
-        let mut q = self.0.lanes.lock().unwrap();
+        let mut q = self
+            .0
+            .lanes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         q.users.push_back(intent);
         self.0.notify();
     }
@@ -464,8 +475,13 @@ impl Inbox {
     }
 }
 type Completion = Box<dyn FnOnce(&mut Engine) -> Result<()> + Send>;
-type NetJob = Box<dyn FnOnce(std::result::Result<&mut dyn Backend, Failure>) -> Completion + Send>;
-
+type OpenBackend = dyn FnMut() -> anyhow::Result<Box<dyn Backend>>;
+type NetJob = Box<
+    dyn FnOnce(
+            crate::backend::Result<(&mut Option<Box<dyn Backend>>, &mut OpenBackend)>,
+        ) -> Completion
+        + Send,
+>;
 type UploadTask = Box<dyn FnOnce() + Send>;
 fn upload_workers() -> mpsc::Sender<UploadTask> {
     let (tx, rx) = mpsc::channel::<UploadTask>();
@@ -555,6 +571,7 @@ impl Worker {
         mut open: impl FnMut() -> anyhow::Result<B> + Send + 'static,
         options: WorkerOptions,
     ) -> Self {
+        crate::reporting::install_panic_hook();
         let timing = options.timing;
         #[cfg(feature = "demo")]
         let project = options.project;
@@ -612,29 +629,13 @@ impl Worker {
                                                 net_cancel,
                                             );
                                             let mut backend = None;
+                                            let mut open = move || {
+                                                open().map(|value| {
+                                                    Box::new(value) as Box<dyn Backend>
+                                                })
+                                            };
                                             while let Ok(job) = rx.recv() {
-                                                crate::client::take_network_touched();
-                                                let opened = if backend.is_none() {
-                                                    match std::panic::catch_unwind(
-                                                        std::panic::AssertUnwindSafe(&mut open),
-                                                    ) {
-                                                        Ok(Ok(value)) => {
-                                                            backend = Some(value);
-                                                            Ok(())
-                                                        }
-                                                        Ok(Err(error)) => Err(
-                                                            crate::client::error::classify(&error),
-                                                        ),
-                                                        Err(_) => {
-                                                            Err(Failure::Bug("internal".into()))
-                                                        }
-                                                    }
-                                                } else {
-                                                    Ok(())
-                                                };
-                                                let completed = job(opened.map(|()| {
-                                                    backend.as_mut().unwrap() as &mut dyn Backend
-                                                }));
+                                                let completed = job(Ok((&mut backend, &mut open)));
                                                 let mut q = inbox.lanes.lock().unwrap();
                                                 if q.stopped {
                                                     break;
@@ -690,7 +691,11 @@ impl Worker {
                     }
                     Ok(())
                 }));
-            worker_inbox.lanes.lock().unwrap().stopped = true;
+            worker_inbox
+                .lanes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .stopped = true;
             worker_inbox.notify();
             if let Ok(Err(error)) = &outcome {
                 crate::reporting::log("engine-start", "fatal", error.as_ref());
@@ -806,22 +811,36 @@ impl Engine {
         let job: NetJob = Box::new(move |backend| {
             crate::reporting::set_operation(&operation);
             crate::client::desktop::set_cancellation_token(cancel);
-            // Cancelled jobs have no network outcome and never enter the backend.
-            let result = (generation == live_generation.load(Ordering::SeqCst)).then(|| {
-                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| match backend {
-                    Ok(backend) => run(backend),
+            let activity = NetworkActivity::default();
+            // Cancellation still produces a completion so the UI leaves its busy state.
+            let result = if generation != live_generation.load(Ordering::SeqCst) {
+                Err(Failure::SignedOut(SignOutReason::NoSession))
+            } else {
+                match backend {
+                    Ok((backend, open)) => {
+                        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            if backend.is_none() {
+                                *backend = Some(
+                                    open()
+                                        .map_err(|error| crate::client::error::classify(&error))?,
+                                );
+                            }
+                            let backend = backend.as_mut().expect("opened backend");
+                            backend.set_network_activity(activity.clone());
+                            run(backend.as_mut())
+                        }))
+                        .unwrap_or_else(|_| Err(Failure::Bug("network job panicked".into())))
+                    }
+                    // A dead worker completes on the store thread, which already has a boundary.
                     Err(error) => Err(error),
-                }))
-                .unwrap_or_else(|_| Err(Failure::Bug("network job panicked".into())))
-            });
-            let touched = crate::client::take_network_touched();
+                }
+            };
+            let network = activity.touched();
             Box::new(move |engine| {
                 engine.operation = operation;
                 engine.net_pending -= 1;
-                let result =
-                    result.unwrap_or_else(|| Err(Failure::SignedOut(SignOutReason::NoSession)));
                 let current = generation == engine.generation.load(Ordering::SeqCst);
-                if current && touched {
+                if current && network {
                     engine.network_outcome(&result);
                 }
                 if let Err(error) = &result
@@ -870,11 +889,16 @@ impl Engine {
         let inbox = self.inbox.clone();
         let stop = Arc::new(CancelToken::new());
         self.rpc(
-            move |backend| {
-                backend.start_assets(stop, Arc::new(move |event| inbox.live(event)));
+            move |backend| backend.start_assets(stop, Arc::new(move |event| inbox.live(event))),
+            |_, result, _| {
+                if let Err(error) = result
+                    // rpc reports Bug failures before invoking this completion.
+                    && !matches!(error, Failure::Bug(_))
+                {
+                    crate::reporting::log("start-assets", "startup", &error);
+                }
                 Ok(())
             },
-            |_, _, _| Ok(()),
         );
     }
 
@@ -1003,7 +1027,7 @@ impl Engine {
     fn priority(&self, r: &Refresh) -> u8 {
         let opened = self.window.as_ref().map(|w| &w.chat);
         match r {
-            Refresh::Send(_) => 0,
+            Refresh::Session | Refresh::Send(_) => 0,
             Refresh::Read(chat) if Some(chat) == opened => 1,
             Refresh::Recent(chat) if Some(chat) == opened => 2,
             Refresh::ChatList | Refresh::MoreChats => 3,
@@ -1020,18 +1044,68 @@ impl Engine {
         }
     }
     fn can_refresh(&self, r: &Refresh) -> bool {
-        self.known()
+        matches!(r, Refresh::Session) && matches!(self.account, AccountSession::Opening { .. })
+            || self.known()
             || matches!(r, Refresh::Profile) && matches!(self.account, AccountSession::Ready)
     }
+    fn probe_session(&mut self) {
+        let probe_gen = self.generation.load(Ordering::SeqCst);
+        self.rpc(
+            |backend| backend.session(),
+            move |engine, result, _| {
+                let fact = match result {
+                    Ok(true) => AccountSession::Ready,
+                    Ok(false) => AccountSession::NoSession,
+                    Err(Failure::SignedOut(reason)) => AccountSession::SessionUnusable { reason },
+                    Err(error @ (Failure::NotDelivered | Failure::Unanswered)) => {
+                        let opening = matches!(engine.account, AccountSession::Opening { epoch } if epoch == probe_gen);
+                        let signing_in = matches!(&engine.account, AccountSession::SigningIn { previous, .. } if matches!(previous.as_ref(), AccountSession::Opening { epoch } if *epoch == probe_gen));
+                        if opening || signing_in {
+                            if opening {
+                                engine.connection(Connection::Offline);
+                            }
+                            engine.rpc_failed(Refresh::Session, error);
+                        }
+                        return Ok(());
+                    }
+                    Err(error) => AccountSession::SessionUnusable {
+                        reason: SignOutReason::Unavailable(crate::client::error::sign_in_failure(
+                            &anyhow::Error::new(error), false,
+                        )),
+                    },
+                };
+                engine.retry_attempts.remove(&Refresh::Session);
+                if engine.refresh_failures.remove(&Refresh::Session) {
+                    engine.emit(Delta::RefreshRecovered(Refresh::Session));
+                }
+                match &mut engine.account {
+                    AccountSession::Opening { epoch } if *epoch == probe_gen => {
+                        engine.account = fact;
+                        engine.present_account(true)?;
+                    }
+                    AccountSession::SigningIn { previous, .. }
+                        if matches!(previous.as_ref(), AccountSession::Opening { epoch } if *epoch == probe_gen) => {
+                        **previous = fact;
+                    }
+                    _ => {}
+                }
+                Ok(())
+            },
+        );
+    }
+
     fn run(&mut self) -> Result<()> {
         if let Some(accounts) = &self.account_root
             && let Some(data) = accounts.parent()
         {
             // Retain retry sources from every account sharing this clipboard directory.
             // If any store cannot be read, leave the files alone.
-            let _ = self
+            if let Err(error) = self
                 .store
-                .prune_clipboard(&data.join("clipboard-attachments"), accounts);
+                .prune_clipboard(&data.join("clipboard-attachments"), accounts)
+            {
+                crate::reporting::log("clipboard-prune", "cleanup", &error);
+            }
         }
         self.emit(Delta::Connection(Connection::Local));
         self.emit(Delta::Profile(self.store.account()?.profile));
@@ -1050,30 +1124,7 @@ impl Engine {
                 after: 80,
             })?;
         }
-        let probe_gen = self.generation.load(Ordering::SeqCst);
-        self.rpc(
-            |backend| backend.session(),
-            move |engine, result, _| {
-                let fact = match result {
-                    Ok(true) => AccountSession::Ready,
-                    Ok(false) => AccountSession::NoSession,
-                    Err(Failure::SignedOut(reason)) => AccountSession::SessionUnusable { reason },
-                    Err(_) => AccountSession::SessionUnusable { reason: SignOutReason::Unavailable(crate::client::error::SignInFailure::Internal) },
-                };
-                match &mut engine.account {
-                    AccountSession::Opening { epoch } if *epoch == probe_gen => {
-                        engine.account = fact;
-                        engine.present_account(true)?;
-                    }
-                    AccountSession::SigningIn { previous, .. }
-                        if matches!(previous.as_ref(), AccountSession::Opening { epoch } if *epoch == probe_gen) => {
-                        **previous = fact;
-                    }
-                    _ => {}
-                }
-                Ok(())
-            },
-        );
+        self.probe_session();
         loop {
             enum Work {
                 User(Intent),
@@ -1192,7 +1243,11 @@ impl Engine {
     fn stop_stream(&mut self) {
         if let Some((stop, j)) = self.stream.take() {
             {
-                let _q = self.inbox.lanes.lock().unwrap();
+                let _q = self
+                    .inbox
+                    .lanes
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
                 stop.cancel();
                 self.inbox.notify();
             }
@@ -1254,6 +1309,9 @@ impl Engine {
     fn online(&mut self) -> Result<()> {
         if !matches!(self.account, AccountSession::Ready) {
             return Ok(());
+        }
+        if self.refresh_failures.remove(&Refresh::Session) {
+            self.emit(Delta::RefreshRecovered(Refresh::Session));
         }
         self.attempt = self.attempt.saturating_add(1);
         if self.connection == Connection::Local {
@@ -1865,13 +1923,19 @@ impl Engine {
                     return Ok(());
                 }
                 for item in items.into_iter().filter(|item| !item.too_large()) {
-                    if let Ok(Some(pixels)) =
-                        crate::client::desktop::assets::Asset::local(item.clone()).local_pixels()
+                    match crate::client::desktop::assets::Asset::local(item.clone()).local_pixels()
                     {
-                        self.emit(Delta::Asset {
-                            key: crate::client::desktop::assets::Asset::local(item.clone()).key(),
-                            pixels: Arc::new(pixels),
-                        });
+                        Ok(Some(pixels)) => {
+                            self.emit(Delta::Asset {
+                                key: crate::client::desktop::assets::Asset::local(item.clone())
+                                    .key(),
+                                pixels: Arc::new(pixels),
+                            });
+                        }
+                        Ok(None) => {} // Files without image previews use the attachment label.
+                        Err(error) => {
+                            crate::reporting::log("attachment-preview", "decode", error.as_ref())
+                        }
                     }
                     let key = self.enqueue(&chat, || item.content(), None)?;
                     self.inbox.refresh(Refresh::Send(key));
@@ -2069,10 +2133,10 @@ impl Engine {
                             );
                             return;
                         }
-                        crate::client::take_network_touched();
+                        let activity = NetworkActivity::default();
                         let mut last_percent = None;
                         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                            upload(&mut |fraction| {
+                            upload(activity.clone(), &mut |fraction| {
                                 let percent = (fraction.clamp(0., 1.) * 100.) as u32;
                                 if last_percent == Some(percent) {
                                     return;
@@ -2091,12 +2155,12 @@ impl Engine {
                             })
                         }))
                         .unwrap_or_else(|_| Err(Failure::Bug("upload job panicked".into())));
-                        let touched = crate::client::take_network_touched();
+                        let network = activity.touched();
                         upload_completed(
                             &inbox,
                             Box::new(move |engine| {
                                 engine.operation = operation;
-                                if touched {
+                                if network {
                                     engine.network_outcome(&result);
                                 }
                                 if let Err(error) = &result
@@ -2383,6 +2447,10 @@ impl Engine {
         self.refused_refreshes.remove(chat);
     }
     fn refresh(&mut self, r: Refresh) -> Result<()> {
+        if r == Refresh::Session {
+            self.probe_session();
+            return Ok(());
+        }
         if r == Refresh::Profile {
             return self.online();
         }
@@ -2391,7 +2459,7 @@ impl Engine {
         }
         match r {
             Refresh::Stream => self.start_stream()?,
-            Refresh::Profile => self.online()?,
+            Refresh::Session | Refresh::Profile => unreachable!("handled above"),
             Refresh::Send(key) => self.send(key)?,
             Refresh::Notice(mid) => {
                 let net = mid.clone();
@@ -2739,16 +2807,20 @@ impl Engine {
                 }
             }
             StreamEvent::Raw(raw) => {
-                if raw["revision"]
+                let data = &raw.data;
+                if data["revision"]
                     .as_i64()
-                    .or_else(|| raw["revision"].as_str()?.parse().ok())
+                    .or_else(|| data["revision"].as_str()?.parse().ok())
                     .is_some_and(|r| r > self.store.sync_revision().unwrap_or(0))
+                    && let Some(id) = data["param1"].as_str().filter(|id| !id.is_empty())
                 {
-                    let id = raw["param1"].as_str().unwrap_or_default().to_owned();
+                    let id = id.to_owned();
                     self.chat_changed(&ChatId(id.clone()));
-                    match raw["type"].as_u64() {
-                        Some(4 | 49) => self.inbox.refresh(Refresh::Contact(id)),
-                        Some(41)
+                    match raw.kind {
+                        OperationType::AddContact | OperationType::UpdateContact => {
+                            self.inbox.refresh(Refresh::Contact(id))
+                        }
+                        OperationType::SendChatRemoved
                             if self
                                 .store
                                 .chat(&ChatId(id.clone()))?
@@ -2758,8 +2830,11 @@ impl Engine {
                             self.publish()?;
                             self.inbox.refresh(Refresh::ChatList);
                         }
-                        Some(121 | 122 | 127 | 128) => {
-                            if matches!(raw["type"].as_u64(), Some(127))
+                        OperationType::UpdateChat
+                        | OperationType::NotifiedUpdateChat
+                        | OperationType::DeleteSelfFromChat
+                        | OperationType::NotifiedDeleteSelfFromChat => {
+                            if raw.kind == OperationType::DeleteSelfFromChat
                                 && let Some(mut row) = self.store.chat(&ChatId(id.clone()))?
                             {
                                 row.left = true;
@@ -3019,7 +3094,11 @@ pub fn now_ms() -> i64 {
 impl Drop for Engine {
     fn drop(&mut self) {
         {
-            let mut lanes = self.inbox.lanes.lock().unwrap();
+            let mut lanes = self
+                .inbox
+                .lanes
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
             lanes.stopped = true;
             lanes.completed.clear();
         }

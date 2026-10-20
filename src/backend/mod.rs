@@ -1,5 +1,9 @@
 //! RPC boundary shared by the real account and synthetic runs.
 use crate::client::http::CancelToken;
+use crate::client::{
+    NetworkActivity,
+    operation::{OperationType, RawOperation},
+};
 use crate::store::*;
 use serde_json::Value;
 use std::sync::Arc;
@@ -62,7 +66,7 @@ pub enum StreamEvent {
         complete: async_channel::Sender<Result<()>>,
     },
     Operation(LiveOp),
-    Raw(Value),
+    Raw(RawOperation),
     RefreshToken {
         reply: async_channel::Sender<Result<()>>,
     },
@@ -76,16 +80,18 @@ pub enum StreamEvent {
 }
 pub type Deliver = Arc<dyn Fn(StreamEvent) -> bool + Send + Sync>;
 pub type FinishUpload = Box<dyn FnOnce(&mut dyn Backend) -> Result<MessageInput> + Send>;
-pub type UploadJob = Box<dyn FnOnce(&mut dyn FnMut(f32)) -> Result<FinishUpload> + Send>;
+pub type UploadJob =
+    Box<dyn FnOnce(NetworkActivity, &mut dyn FnMut(f32)) -> Result<FinishUpload> + Send>;
 /// Each stream invocation runs on its own thread. Returning is supervised by the engine.
 pub trait Backend: Send {
+    fn set_network_activity(&mut self, activity: NetworkActivity);
     fn session(&self) -> Result<bool>;
     fn sign_in(&mut self, cancel: Arc<CancelToken>, deliver: PairDeliver) -> Result<()>;
     fn friends(&mut self) -> Result<Vec<crate::store::Friend>>;
     fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>>;
     /// Publish AssetRequests before returning. Its handles enqueue independently
     /// of RPCs, and asset completions use this delivery channel directly.
-    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver);
+    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) -> Result<()>;
     fn authorize(
         &mut self,
         asset: &crate::client::desktop::assets::Asset,
@@ -143,7 +149,7 @@ pub trait Backend: Send {
         stop: Arc<CancelToken>,
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>>;
-    fn decode(&mut self, raw: Value) -> Result<LiveOp>;
+    fn decode(&mut self, operation: RawOperation) -> Result<LiveOp>;
     fn refresh_token(&mut self) -> Result<()>;
 }
 
@@ -152,25 +158,32 @@ mod fake;
 #[cfg(any(test, feature = "demo"))]
 pub use fake::{FakeBackend, FakeConfig, FakeRpc};
 
+enum SessionClient {
+    Open(Box<crate::client::desktop::Client>),
+    Absent(NetworkActivity),
+}
+
 pub struct LineBackend {
     cache: std::path::PathBuf,
     session_failure: Option<crate::client::error::SignInFailure>,
     fetchers: Option<Arc<crate::client::desktop::assets::Fetchers>>,
-    client: Option<crate::client::desktop::Client>,
+    client: SessionClient,
     state: std::path::PathBuf,
     wasm_override: Option<std::path::PathBuf>,
     version_override: Option<String>,
 }
 impl LineBackend {
     pub fn local_mid(&self) -> Option<String> {
-        self.client
-            .as_ref()
-            .map(|client| client.local_mid().to_owned())
+        match &self.client {
+            SessionClient::Open(client) => Some(client.local_mid().to_owned()),
+            SessionClient::Absent(_) => None,
+        }
     }
     fn client(&mut self) -> Result<&mut crate::client::desktop::Client> {
-        self.client
-            .as_mut()
-            .ok_or(Failure::SignedOut(SignOutReason::NoSession))
+        match &mut self.client {
+            SessionClient::Open(client) => Ok(client),
+            SessionClient::Absent(_) => Err(Failure::SignedOut(SignOutReason::NoSession)),
+        }
     }
     pub fn open_local(
         state: &std::path::Path,
@@ -199,7 +212,10 @@ impl LineBackend {
         Ok(Self {
             fetchers: None,
             cache: cache.into(),
-            client,
+            client: match client {
+                Some(client) => SessionClient::Open(Box::new(client)),
+                None => SessionClient::Absent(NetworkActivity::default()),
+            },
             session_failure,
             state: state.into(),
             wasm_override,
@@ -280,6 +296,12 @@ fn refresh_stream_token(stop: &CancelToken, deliver: &Deliver) -> Result<()> {
 }
 
 impl Backend for LineBackend {
+    fn set_network_activity(&mut self, activity: NetworkActivity) {
+        match &mut self.client {
+            SessionClient::Open(client) => client.set_network_activity(activity),
+            SessionClient::Absent(pending) => *pending = activity,
+        }
+    }
     fn finish_attachment(
         &mut self,
         chat: &ChatId,
@@ -297,7 +319,7 @@ impl Backend for LineBackend {
             Some(reason) => Err(Failure::SignedOut(SignOutReason::Unavailable(
                 reason.clone(),
             ))),
-            None => Ok(self.client.is_some()),
+            None => Ok(matches!(self.client, SessionClient::Open(_))),
         }
     }
     fn sign_in(&mut self, cancel: Arc<CancelToken>, deliver: PairDeliver) -> Result<()> {
@@ -311,10 +333,15 @@ impl Backend for LineBackend {
             self.version_override.clone(),
         )
         .map_err(rpc)?;
-        self.client = None;
+        let activity = match &self.client {
+            SessionClient::Open(client) => client.network_activity(),
+            SessionClient::Absent(activity) => activity.clone(),
+        };
+        self.client = SessionClient::Absent(activity.clone());
         let mut client = pairing::sign_in_validated(
             &self.state,
             module,
+            activity,
             &cancel,
             move |event| {
                 deliver(match event {
@@ -349,7 +376,7 @@ impl Backend for LineBackend {
             ))
         })?;
         client.installed_at(&self.state);
-        self.client = Some(client);
+        self.client = SessionClient::Open(Box::new(client));
         self.session_failure = None;
         Ok(())
     }
@@ -360,11 +387,9 @@ impl Backend for LineBackend {
     fn members(&mut self, chat: &ChatId) -> Result<Vec<crate::store::Member>> {
         self.client()?.members(&chat.0).map_err(rpc)
     }
-    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) {
+    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) -> Result<()> {
         let auth = deliver.clone();
-        let Some(client) = self.client.as_mut() else {
-            return;
-        };
+        let client = self.client()?;
         let queue_stop = stop.clone();
         self.fetchers = Some(Arc::new(client.asset_fetchers(
             stop,
@@ -388,6 +413,7 @@ impl Backend for LineBackend {
                 retry.retry(&key);
             }),
         }));
+        Ok(())
     }
     fn authorize(
         &mut self,
@@ -512,8 +538,8 @@ impl Backend for LineBackend {
             .client()?
             .prepare_attachment(&chat.0, item, seq)
             .map_err(rpc)?;
-        Ok(Box::new(move |progress| {
-            let uploaded = upload(progress).map_err(rpc)?;
+        Ok(Box::new(move |activity, progress| {
+            let uploaded = upload(activity, progress).map_err(rpc)?;
             Ok(Box::new(move |backend: &mut dyn Backend| {
                 backend.finish_attachment(&chat, uploaded, seq)
             }) as FinishUpload)
@@ -600,10 +626,10 @@ impl Backend for LineBackend {
                 |e| {
                     deliver(match e {
                         Event::Operation(mut v) => {
-                            let rev = v["revision"]
+                            let rev = v.data["revision"]
                                 .as_i64()
-                                .or_else(|| v["revision"].as_str()?.parse().ok());
-                            v["replay"] = rev.is_some_and(|r| r <= replay_through).into();
+                                .or_else(|| v.data["revision"].as_str()?.parse().ok());
+                            v.data["replay"] = rev.is_some_and(|r| r <= replay_through).into();
                             StreamEvent::Raw(v)
                         }
                         Event::State(s) => match s {
@@ -631,18 +657,22 @@ impl Backend for LineBackend {
             }
         }))
     }
-    fn decode(&mut self, raw: Value) -> Result<LiveOp> {
+    fn decode(&mut self, operation: RawOperation) -> Result<LiveOp> {
+        let kind = operation.kind;
+        let raw = &operation.data;
         let revision = raw["revision"]
             .as_i64()
             .or_else(|| raw["revision"].as_str()?.parse().ok())
             .ok_or(Failure::Bug("decode".into()))?;
-        let chat = || wire_string(&raw, "param1").map(|s| ChatId(s.into()));
-        let id = || decode_id(wire_string(&raw, "param2")?);
-        let op = match raw["type"].as_u64() {
-            Some(25 | 26 | 43) => {
+        let chat = || wire_string(raw, "param1").map(|s| ChatId(s.into()));
+        let id = || decode_id(wire_string(raw, "param2")?);
+        let op = match kind {
+            OperationType::SendMessage
+            | OperationType::ReceiveMessage
+            | OperationType::SendContent => {
                 let (c, mut m) = self
                     .client()?
-                    .operation(&raw)
+                    .operation(&operation)
                     .map_err(rpc)?
                     .ok_or(Failure::Bug("decode".into()))?;
                 m.request_seq = raw["reqSeq"]
@@ -652,7 +682,7 @@ impl Backend for LineBackend {
                     .or(m.request_seq);
                 Op::Message((message_input(&ChatId(c), m, revision)?).into())
             }
-            Some(55) => Op::Receipt {
+            OperationType::NotifiedReadMessage => Op::Receipt {
                 chat: chat()?,
                 up_to: decode_id(
                     raw["param3"]
@@ -660,12 +690,17 @@ impl Backend for LineBackend {
                         .ok_or(Failure::Bug("decode".into()))?,
                 )?,
             },
-            Some(40) => Op::Read {
+            OperationType::SendChatChecked => Op::Read {
                 chat: chat()?,
                 up_to: id()?,
             },
-            Some(64 | 65) => Op::Withdraw(id()?),
-            Some(139 | 140) => reaction_operation(&raw, self.client()?.local_mid())?,
+            OperationType::DestroyMessage | OperationType::NotifiedDestroyMessage => {
+                Op::Withdraw(id()?)
+            }
+            OperationType::SendReaction | OperationType::NotifiedSendReaction => {
+                reaction_operation(kind, raw, self.client()?.local_mid())?
+            }
+            // Unhandled operation types still advance the revision checkpoint.
             _ => Op::Checkpoint,
         };
         Ok(LiveOp {
@@ -679,7 +714,7 @@ impl Backend for LineBackend {
     }
 }
 
-fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
+fn reaction_operation(kind: OperationType, raw: &Value, own_mid: &str) -> Result<Op> {
     let id = decode_id(
         raw["param1"]
             .as_str()
@@ -693,7 +728,7 @@ fn reaction_operation(raw: &Value, own_mid: &str) -> Result<Op> {
     .map_err(|_| Failure::Bug("decode".into()))?;
     let chat = wire_string(&data, "chatMid")?;
     // Extension 3.7.2 main.js: SEND_REACTION uses self; NOTIFIED_SEND_REACTION uses param3.
-    let actor = if raw["type"] == 139 {
+    let actor = if kind == OperationType::SendReaction {
         own_mid
     } else {
         match wire_string(raw, "param3") {
@@ -835,11 +870,11 @@ mod tests {
     fn reaction_actor_uses_the_observed_wire_field() {
         let mut raw = json!({"type":140,"param1":"10","param2":json!({"chatMid":"chat","curr":{"predefinedReactionType":2},"fromUserMid":"guessed"}).to_string()});
         assert!(
-            matches!(reaction_operation(&raw, "self").unwrap(), Op::Recent(chat) if chat.0 == "chat")
+            matches!(reaction_operation(OperationType::NotifiedSendReaction, &raw, "self").unwrap(), Op::Recent(chat) if chat.0 == "chat")
         );
         raw["param3"] = "actor".into();
         assert!(
-            matches!(reaction_operation(&raw, "self").unwrap(), Op::Reaction { actor, .. } if actor == "actor")
+            matches!(reaction_operation(OperationType::NotifiedSendReaction, &raw, "self").unwrap(), Op::Reaction { actor, .. } if actor == "actor")
         );
         for value in [Value::Null, json!(""), json!(3)] {
             assert!(wire_string(&json!({"param1":value}), "param1").is_err());
@@ -852,11 +887,12 @@ mod tests {
         for id in ["", "01", "-1", "x", "123456789012345678901"] {
             assert!(
                 backend
-                    .decode(json!({"type":64,"revision":1,"param2":id}))
+                    .decode(json!({"type":64,"revision":1,"param2":id}).into())
                     .is_err()
             );
             assert!(
                 reaction_operation(
+                    OperationType::NotifiedSendReaction,
                     &json!({
                         "type":140,"param1":id,"param2":r#"{"chatMid":"chat"}"#
                     }),

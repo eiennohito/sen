@@ -38,16 +38,25 @@ impl Presenter {
         });
         for (request, failure) in &state.refresh_failures {
             use line::{client::error::Failure, engine::Refresh};
-            let message = match failure {
-                Failure::Refused(reason) => {
-                    format!("Couldn't load this item: {}", text::rejection(reason))
+            let message = if matches!(request, Refresh::Session) {
+                match failure {
+                    Failure::Refused(_) | Failure::Bug(_) => {
+                        "Couldn't check your saved session.".into()
+                    }
+                    _ => continue,
                 }
-                Failure::Bug(_) => "Couldn't load this item.".into(),
-                _ => continue,
+            } else {
+                match failure {
+                    Failure::Refused(reason) => {
+                        format!("Couldn't load this item: {}", text::rejection(reason))
+                    }
+                    Failure::Bug(_) => "Couldn't load this item.".into(),
+                    _ => continue,
+                }
             };
             match request {
                 Refresh::Friends => friends_error = message,
-                Refresh::Profile | Refresh::ChatList | Refresh::MoreChats => {
+                Refresh::Session | Refresh::Profile | Refresh::ChatList | Refresh::MoreChats => {
                     chat_list_error = message
                 }
                 Refresh::Recent(chat)
