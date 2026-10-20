@@ -19,7 +19,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         let g = ui.global::<G>();
         if kind == DetailAction::MemberChat {
             let id = ChatId(value.to_string());
-            d.show_chat(&ui, id);
+            d.open_conversation(&ui, id);
             return;
         }
         if d.state.action.is_some() {
@@ -71,7 +71,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     global_callback!(ui, actions, G, on_filter_members, |ui, d| {
-        d.render(&ui);
+        d.presenter.present_members(&ui, &d.state);
     });
     global_callback!(ui, actions, G, on_open_profile, |ui, d, id| {
         d.state.detail.clear();
@@ -85,7 +85,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         if group {
             let chat = ChatId(id);
             if d.state.selected.as_ref() != Some(&chat) {
-                d.open_chat(&ui, chat.clone());
+                d.switch_chat(&ui, chat.clone());
             }
             ui.global::<ShellState>().set_show_conversation(true);
             d.state.push_detail(DetailPage::GroupInfo(chat.clone()));
@@ -111,7 +111,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     global_callback!(ui, actions, G, on_start_friend_chat, |ui, d| {
         if let Some(DetailPage::Profile(id)) = d.state.detail_page() {
             let id = ChatId(id.clone());
-            d.show_chat(&ui, id);
+            d.open_conversation(&ui, id);
         }
     });
 }

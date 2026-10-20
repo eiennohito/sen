@@ -36,16 +36,18 @@ impl crate::Desktop {
         self.render(ui);
     }
     pub(crate) fn photos(&self) -> Vec<String> {
-        self.state
-            .rows()
-            .iter()
+        Self::photo_keys(&self.state.rows())
+    }
+    fn photo_keys(rows: &[&StoredMessage]) -> Vec<String> {
+        rows.iter()
             .filter(|m| matches!(m.body, Content::Photo { .. }))
             .filter_map(|m| m.body.image().cloned())
             .map(|asset| asset.key())
             .collect()
     }
     pub(crate) fn open_photo(&mut self, ui: &AppWindow, key: &str) {
-        let asset = self.state.rows().iter().find_map(|m| {
+        let rows = self.state.rows();
+        let asset = rows.iter().find_map(|m| {
             let asset = m.body.image().filter(|a| a.key() == key)?;
             if matches!(m.body, Content::Sticker { .. }) {
                 Some(asset.clone())
@@ -54,7 +56,7 @@ impl crate::Desktop {
             }
         });
         if let Some(asset) = asset {
-            let photos = self.photos();
+            let photos = Self::photo_keys(&rows);
             let index = photos.iter().position(|k| k == key);
             ui.global::<ViewerState>()
                 .set_viewer_has_previous(index.is_some_and(|i| i > 0));

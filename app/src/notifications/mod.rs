@@ -89,9 +89,8 @@ pub(crate) fn handle(event: notifications::worker::Event, ui: &AppWindow, deskto
             }
         }
         notifications::worker::Event::OpenChat { chat } => {
-            desktop.open_chat(ui, ChatId(chat));
             let _ = ui.show();
-            ui.global::<ShellState>().set_show_conversation(true);
+            desktop.open_conversation(ui, ChatId(chat));
         }
         notifications::worker::Event::MarkRead { chat, message } => {
             if let Ok(id) = ServerId::new(message) {

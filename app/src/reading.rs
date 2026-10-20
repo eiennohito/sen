@@ -22,7 +22,6 @@ pub(crate) struct Reading {
     pub(crate) exposed: BTreeMap<ChatId, ServerId>,
     pub(crate) paging_anchor: Option<Key>,
     pub(crate) restore_anchor: Option<(Key, f32)>,
-    pub(crate) oldest: Option<(ChatId, Cursor)>,
 }
 
 impl Reading {
@@ -106,8 +105,8 @@ pub(crate) fn exposure(
     {
         let top = -view.y + view.visible_top;
         let bottom = -view.y + view.height - view.pill_height;
-        let exposed = state
-            .rows()
+        let rows = state.rows();
+        let exposed = rows
             .iter()
             .filter(|m| {
                 reading
@@ -118,9 +117,8 @@ pub(crate) fn exposure(
             .filter(|m| !m.outgoing && matches!(m.delivery, Delivery::Sent | Delivery::Read))
             .filter_map(|m| m.server_id.clone())
             .max();
-        let tail_visible = state
-            .rows()
-            .into_iter()
+        let tail_visible = rows
+            .iter()
             .rev()
             .find(|m| line::system_events::displayable(&m.body))
             .is_none_or(|m| {
@@ -187,15 +185,15 @@ pub(crate) fn page_older(
     let mut intents = Vec::new();
     if view.y >= -30.
         && !state.reaches_start
-        && let Some((chat, before)) = reading.oldest.clone()
+        && let Some(chat) = state.selected.clone()
+        && let Some((key, before)) = state
+            .messages
+            .values()
+            .filter(|m| m.server_id.is_some())
+            .min_by(|a, b| a.sort.cmp(&b.sort))
+            .map(|m| (m.key, m.sort.clone()))
     {
-        if let Some(key) = state
-            .rows()
-            .into_iter()
-            .find(|m| m.server_id.is_some())
-            .map(|m| m.key)
-            && reading.paging_anchor != Some(key)
-        {
+        if reading.paging_anchor != Some(key) {
             let offset = reading
                 .geometry
                 .get(&key)

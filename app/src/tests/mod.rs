@@ -23,14 +23,20 @@ pub(crate) fn message(text: &str) -> StoredMessage {
         skip_badge: false,
     }
 }
-fn test_window() -> AppWindow {
-    let ui = window::create_app_window().unwrap();
+pub(crate) fn test_window(
+    backend: line::backend::FakeBackend,
+    seed: impl FnOnce(&mut Desktop, &Worker, &AppWindow),
+) -> (AppWindow, Runtime, Worker) {
     let worker = Worker::start(
         StoreLocation::Memory,
-        || Ok(line::backend::FakeBackend::canned()),
+        {
+            let mut backend = Some(backend);
+            move || Ok(backend.take().unwrap())
+        },
         Default::default(),
     );
-    let desktop = Desktop {
+    let ui = window::create_app_window().unwrap();
+    let mut desktop = Desktop {
         clipboard_root: std::env::temp_dir(),
         history: Default::default(),
         shown_composer: String::new(),
@@ -47,14 +53,17 @@ fn test_window() -> AppWindow {
         sender: worker.sender.clone(),
         category: ChatCategory::All,
     };
+    desktop.presenter.install(&ui);
+    seed(&mut desktop, &worker, &ui);
     let runtime = Runtime {
         desktop: Rc::new(RefCell::new(Some(desktop))),
         actions: Default::default(),
         draining: Default::default(),
     };
-    callbacks::install(&ui, runtime);
-    ui
+    callbacks::install(&ui, runtime.clone());
+    (ui, runtime, worker)
 }
+
 mod grouping;
 mod layers;
 pub(crate) mod previews;

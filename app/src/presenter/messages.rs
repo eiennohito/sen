@@ -30,12 +30,17 @@ impl Presenter {
             g.set_member_count(count as i32);
         }
     }
-    pub(super) fn present_messages(&mut self, ui: &AppWindow, state: &AppState) {
+    pub(super) fn present_messages(
+        &mut self,
+        ui: &AppWindow,
+        state: &AppState,
+        rows: &[&StoredMessage],
+    ) {
         let content = ui.global::<ContentState>();
         let conversation = ui.global::<ConversationState>();
-        let rows = state
-            .rows()
-            .into_iter()
+        let rows = rows
+            .iter()
+            .copied()
             .filter(|m| line::system_events::displayable(&m.body))
             .collect::<Vec<_>>();
         if self.history_chat != state.selected && content.get_link_feedback() == text::LINK_FAILURE

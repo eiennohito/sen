@@ -2,13 +2,13 @@ use super::system_events;
 use super::*;
 
 impl Presenter {
-    pub(super) fn present_chats(
+    pub(crate) fn present_chats(
         &mut self,
         ui: &AppWindow,
         state: &AppState,
         category: ChatCategory,
-        text_size: i32,
     ) {
+        let text_size = ui.global::<SettingsState>().get_text_size();
         let g = ui.global::<ChatsState>();
         let query = Query::new(&g.get_chat_query());
         g.set_selected_chat(
