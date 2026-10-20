@@ -525,3 +525,33 @@ fn logout_request_and_three_second_timeout_without_retry() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn reaction_requests_match_extension_set_and_cancel() -> Result<()> {
+    let root = crate::test_support::TempDir::new("reaction-requests");
+    let (transport, worker) = server_responses(vec![
+        (
+            "/api/talk/thrift/Talk/TalkService/react",
+            Box::new(|args| {
+                assert_eq!(
+                    args,
+                    json!([{"reqSeq":41,"messageId":"123","reactionType":{"predefinedReactionType":3}}])
+                );
+                (200, json!({"message":"OK"}))
+            }),
+        ),
+        (
+            "/api/talk/thrift/Talk/TalkService/cancelReaction",
+            Box::new(|args| {
+                assert_eq!(args, json!([{"reqSeq":42,"messageId":"123"}]));
+                (200, json!({"message":"OK"}))
+            }),
+        ),
+    ]);
+    let mut client =
+        super::test_client::local_client(&root.0, "U00000000000000000000000000000001", transport)?;
+    client.react("123", Some(3), 41)?;
+    client.react("123", None, 42)?;
+    worker.join().unwrap();
+    Ok(())
+}

@@ -730,7 +730,7 @@ impl Client {
         )
     }
 
-    /// Source-backed shapes; live unverified.
+    /// Setting confirmed live; cancellation follows the extension source.
     pub fn react(&mut self, id: &str, kind: Option<u32>, seq: u32) -> Result<()> {
         if let Some(kind) = kind {
             self.talk("react", json!([{"reqSeq":seq,"messageId":id,"reactionType":{"predefinedReactionType":kind}}]))?;

@@ -115,6 +115,7 @@ export global ConversationState {
     callback read-state-changed();
     changed reading => { self.read-state-changed(); }
     callback react(string, int);
+    callback cancel-reaction(string);
     in-out property <string> reaction-error-id;
     in-out property <string> conversation-error;
     in-out property <bool> chat-group;

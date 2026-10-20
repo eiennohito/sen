@@ -270,3 +270,43 @@ Sen uses the existing authenticated/signed request, with a three-second
 whole-request timeout and no refresh/retry. Server errors are logged and do
 not prevent local logout. Loopback tests verify the path and argument array;
 the real call remains live unverified.
+
+## Reaction cancellation and artwork (2026-10-21)
+
+Source: installed LINE Chrome extension 3.7.2 public `static/js/main.js`
+(and its public `static/css` / `static/media` files), **from main.js source,
+not captured**. No account or network was used.
+
+- `uU = SD("talk/thrift/Talk/TalkService/cancelReaction")`; the picker calls
+  `j.mutate([{reqSeq:HO(), messageId:e.id}])` when the picked type equals
+  the current user's `predefinedReactionType`. Otherwise it calls `react`
+  with `[{reqSeq, messageId, reactionType:{predefinedReactionType:type}}]`.
+  Both use the existing `message == "OK"` success rule, without a payload.
+- `bU` defines NICE=2, LOVE=3, FUN=4, AMAZING=5, SAD=6, OMG=7.
+  `GX` supplies picker PNGs; `LX` supplies chip SVGs, all package-local
+  paths prefixed by webpack's public path (`n.p`). These fixed reactions
+  are not fetched from a LINE CDN. The filenames have build hashes:
+
+  | Type | Name | Picker filename prefix | Chip filename prefix |
+  |---|---|---|---|
+  | 2 | NICE | `icon_button_1003.` | `icon_1003_32x32.` |
+  | 3 | LOVE | `icon_button_1001.` | `icon_1001_32x32.` |
+  | 4 | FUN | `icon_button_1002.` | `icon_1002_32x32.` |
+  | 5 | AMAZING | `icon_button_1004.` | `icon_1004_32x32.` |
+  | 6 | SAD | `icon_button_1006.` | `icon_1006_32x32.` |
+  | 7 | OMG | `icon_button_1005.` | `icon_1005_32x32.` |
+
+- The picker renders an `img` with `GX[type]` and selected-state styling;
+  its CSS sets image width to 2.625em. Chips render `LX[type]` as `img`
+  (image CSS: block, width 100%). Unknown fixed types use the extension's
+  bundled fallback icon. Paid reactions take a separate `CD` URL path,
+  with animation reloads when applicable. Extension chips open the reactor
+  list; own-chip cancellation is sen's requested shortcut.
+- sen resolves the newest installed extension using the crypto discovery
+  path, then reads `static/media/icon_*_32x32.*.svg` directly at runtime.
+  Decision: share the chip SVG in both the picker and chips, at 20px, so
+  they use identical artwork. Missing or unreadable artwork shows the
+  existing emoji. No LINE images are copied into the repository or cache;
+  tests generate rectangles in synthetic package directories. Discovery is
+  skipped in unit tests; tests supply their own asset directory. Reinstall
+  or upgrade during a running session takes effect on the next launch.

@@ -150,6 +150,7 @@ pub enum Intent {
         key: Key,
         kind: u32,
     },
+    CancelReaction(Key),
     StickerPackages,
     SendAttachments {
         chat: ChatId,
@@ -201,6 +202,7 @@ impl Intent {
             Self::Send { .. } => "send",
             Self::SendAttachments { .. } => "send-attachments",
             Self::React { .. } => "react",
+            Self::CancelReaction(_) => "cancel-reaction",
             Self::StickerPackages => "sticker-packages",
             Self::SendSticker { .. } => "send-sticker",
             Self::CreateChat { .. } => "create-chat",
@@ -239,6 +241,7 @@ fn account_allows(intent: &Intent, ready: bool, known: bool) -> bool {
         Intent::ProfileAction(_)
         | Intent::RetryAsset(_)
         | Intent::React { .. }
+        | Intent::CancelReaction(_)
         | Intent::StickerPackages
         | Intent::CreateChat { .. }
         | Intent::Unsend(_)
@@ -1457,6 +1460,37 @@ impl Engine {
         self.seq = (self.seq + 1) & 0x7fff_ffff;
         self.seq
     }
+    fn react(&mut self, key: Key, kind: Option<u32>) -> Result<()> {
+        if kind.is_some_and(|kind| !(2..=7).contains(&kind)) {
+            return Ok(());
+        }
+        let row = self.store.message(key)?;
+        let Some(id) = row.server_id else {
+            return Ok(());
+        };
+        if row.body.is_withdrawn() {
+            return Ok(());
+        }
+        let actor = self.store.account()?.own_mid;
+        let previous = row
+            .reactions
+            .iter()
+            .find(|r| r.actor == actor)
+            .map(|r| r.kind.clone());
+        let next = kind.filter(|kind| previous != Some(ReactionKind::Predefined(*kind)));
+        self.store
+            .own_reaction(key, &actor, next.map(ReactionKind::Predefined))?;
+        self.publish()?;
+        if let Some(queued) = self.reaction_flights.get_mut(&key) {
+            *queued = match next {
+                None => ReactionFlight::Remove,
+                Some(kind) => ReactionFlight::Set(kind),
+            };
+        } else {
+            self.send_reaction(key, id, actor, previous, next)?;
+        }
+        Ok(())
+    }
     fn send_reaction(
         &mut self,
         key: Key,
@@ -1865,40 +1899,8 @@ impl Engine {
                     self.defer_page(chat, kind);
                 }
             }
-            Intent::React { key, kind } => {
-                if !(2..=7).contains(&kind) {
-                    return Ok(());
-                }
-                let row = self.store.message(key)?;
-                let Some(id) = row.server_id else {
-                    return Ok(());
-                };
-                if row.body.is_withdrawn() {
-                    return Ok(());
-                }
-                let actor = self.store.account()?.own_mid;
-                let previous = row
-                    .reactions
-                    .iter()
-                    .find(|r| r.actor == actor)
-                    .map(|r| r.kind.clone());
-                let next = if previous == Some(ReactionKind::Predefined(kind)) {
-                    None
-                } else {
-                    Some(kind)
-                };
-                self.store
-                    .own_reaction(key, &actor, next.map(ReactionKind::Predefined))?;
-                self.publish()?;
-                if let Some(queued) = self.reaction_flights.get_mut(&key) {
-                    *queued = match next {
-                        None => ReactionFlight::Remove,
-                        Some(kind) => ReactionFlight::Set(kind),
-                    };
-                } else {
-                    self.send_reaction(key, id, actor, previous, next)?;
-                }
-            }
+            Intent::React { key, kind } => self.react(key, Some(kind))?,
+            Intent::CancelReaction(key) => self.react(key, None)?,
             Intent::StickerPackages => {
                 self.emit(Delta::StickerPackages(self.store.sticker_packages()?));
                 self.rpc(

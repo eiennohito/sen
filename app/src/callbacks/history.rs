@@ -12,6 +12,12 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             });
         }
     });
+    global_callback!(ui, actions, G, on_cancel_reaction, |ui, d, id| {
+        if let Some(key) = super::message_key(&id) {
+            ui.global::<G>().set_reaction_error_id("".into());
+            d.sender.send(Intent::CancelReaction(key));
+        }
+    });
     global_callback!(ui, actions, G, on_retry_message, |_ui, d, id| {
         let Some(key) = super::message_key(&id) else {
             return;
