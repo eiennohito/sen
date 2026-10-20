@@ -193,12 +193,20 @@ pub fn sign_in(
         return Err(super::error::SignInFailure::Cancelled.into());
     }
     let module = crate::crypto_module::resolve(wasm_override, version_override)?;
-    sign_in_validated(state, module, cancel, emit, |_, _| Ok(()))
+    sign_in_validated(
+        state,
+        module,
+        NetworkActivity::default(),
+        cancel,
+        emit,
+        |_, _| Ok(()),
+    )
 }
 
 pub(crate) fn sign_in_validated<T>(
     state: &Path,
     module: crate::crypto_module::CryptoModule,
+    activity: NetworkActivity,
     cancel: &CancelToken,
     emit: impl Fn(Event),
     validate: impl FnOnce(&Path, Api) -> Result<T>,
@@ -207,6 +215,7 @@ pub(crate) fn sign_in_validated<T>(
     ui.check()?;
     let wasm = module.read()?;
     let mut api = Api::with_runtime(module.runtime(&wasm)?, &wasm, &module.version)?;
+    api.http.activity = activity;
     ui.set(Stage::WaitingKeyring)?;
     let probe_state = state.to_owned();
     let (send, receive) = async_channel::bounded(1);
@@ -300,6 +309,7 @@ mod tests {
                     wasm: wasm.clone(),
                     version: "9.8.7".into(),
                 },
+                NetworkActivity::default(),
                 &CancelToken::new(),
                 |event| {
                     assert!(

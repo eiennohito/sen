@@ -5,13 +5,19 @@ use std::{
 };
 
 thread_local! {
-    static OPERATION: std::cell::RefCell<String> = std::cell::RefCell::new("network".into());
+    static OPERATION: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
 }
 pub(crate) fn set_operation(operation: &str) {
-    OPERATION.with(|value| operation.clone_into(&mut value.borrow_mut()));
+    OPERATION.with(|value| *value.borrow_mut() = Some(operation.into()));
 }
 pub(crate) fn source(error: &(dyn Error + 'static)) {
-    OPERATION.with(|value| log(&value.borrow(), "source", error));
+    OPERATION.with(|value| {
+        log(
+            value.borrow().as_deref().unwrap_or("network"),
+            "source",
+            error,
+        )
+    });
 }
 
 /// Log the full chain's categories, preserving OS/SQLite codes without payloads.
@@ -26,6 +32,42 @@ pub fn log(operation: &str, kind: &str, error: &(dyn Error + 'static)) {
         stamp.subsec_millis(),
         format_event(operation, kind, error)
     );
+}
+
+/// Report each panic once, before the owning thread's recovery boundary unwinds.
+pub(crate) fn install_panic_hook() {
+    static INSTALL: std::sync::Once = std::sync::Once::new();
+    INSTALL.call_once(|| {
+        let previous = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let payload = info.payload();
+            let message = payload
+                .downcast_ref::<String>()
+                .map(String::as_str)
+                .or_else(|| payload.downcast_ref::<&str>().copied())
+                .unwrap_or("non-string panic payload");
+            let thread = std::thread::current();
+            OPERATION.with(|value| {
+                let operation = value.borrow();
+                let operation = operation
+                    .as_deref()
+                    .unwrap_or_else(|| thread.name().unwrap_or("engine"));
+                let location = info
+                    .location()
+                    .map(|location| {
+                        format!(
+                            "{}:{}:{}",
+                            location.file(),
+                            location.line(),
+                            location.column()
+                        )
+                    })
+                    .unwrap_or_else(|| "unknown".into());
+                eprintln!("operation={operation} kind=panic location={location} payload={message}");
+            });
+            previous(info);
+        }))
+    });
 }
 
 fn format_event(operation: &str, kind: &str, error: &(dyn Error + 'static)) -> String {
@@ -71,6 +113,56 @@ fn chain(error: &(dyn Error + 'static)) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn panic_reports_keep_default_diagnostics_and_operation() {
+        const CHILD: &str = "LINE_TEST_REPORTING_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args([
+                    "--exact",
+                    "reporting::tests::panic_reports_keep_default_diagnostics_and_operation",
+                    "--nocapture",
+                ])
+                .env(CHILD, "1")
+                .env("RUST_BACKTRACE", "1")
+                .output()
+                .unwrap();
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(output.status.success(), "{stderr}");
+            for operation in ["probe-regression", "fallback-thread"] {
+                assert!(
+                    stderr.contains(&format!(
+                        "operation={operation} kind=panic location=src/reporting.rs:"
+                    )),
+                    "{stderr}"
+                );
+            }
+            assert!(stderr.contains("panicked at src/reporting.rs:"), "{stderr}");
+            assert!(
+                stderr.contains("assertion `left == right` failed"),
+                "{stderr}"
+            );
+            assert!(stderr.contains("stack backtrace:"), "{stderr}");
+            assert_eq!(stderr.matches("payload=assertion").count(), 2, "{stderr}");
+            return;
+        }
+        install_panic_hook();
+        for named_operation in [true, false] {
+            assert!(
+                std::thread::Builder::new()
+                    .name("fallback-thread".into())
+                    .spawn(move || {
+                        if named_operation {
+                            set_operation("probe-regression");
+                        }
+                        assert_eq!(1, 2, "panic-hook-regression");
+                    })
+                    .unwrap()
+                    .join()
+                    .is_err()
+            );
+        }
+    }
     #[test]
     fn rpc_log_includes_operation_method_gateway_and_codes() {
         let error = crate::client::error::RpcError {

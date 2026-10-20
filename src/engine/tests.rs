@@ -361,7 +361,6 @@ fn cached_thumbnail_does_not_clear_offline() {
         },
     );
     app.on_engine(|engine| {
-        engine.health.failure((engine.timing.health_now)());
         engine.connection(Connection::Offline);
     });
     app.worker.sender.send(Intent::Asset(asset));
@@ -630,5 +629,270 @@ fn suppression_is_only_for_invalid_requests_and_resync_owned_refreshes() {
             assert!(!engine.refused_refreshes.contains(&chat));
         });
         app.settle();
+    }
+}
+
+#[test]
+fn empty_live_op_target_still_checkpoints_and_unknown_types_survive() {
+    use crate::client::operation::{OperationType, RawOperation};
+    let mut app = App::new();
+    let (done, wait) = mpsc::channel();
+    app.on_engine(move |engine| {
+        let mut revision = engine.store.sync_revision().unwrap();
+        for (wire, kind) in [
+            (121, OperationType::UpdateChat),
+            (-4000, OperationType::Unknown(-4000)),
+        ] {
+            revision += 1;
+            let raw: RawOperation = serde_json::json!({
+                "type": wire, "param1": "", "revision": revision
+            })
+            .into();
+            assert_eq!(raw.kind, kind);
+            engine.live(StreamEvent::Raw(raw)).unwrap();
+            assert!(engine.inbox.lanes.lock().unwrap().refresh.is_empty());
+        }
+        engine.rpc(
+            |_| Ok(()),
+            move |engine, _, _| {
+                assert_eq!(engine.store.sync_revision()?, revision);
+                done.send(()).unwrap();
+                Ok(())
+            },
+        );
+    });
+    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    app.settle();
+}
+
+#[test]
+fn startup_probe_preserves_failure_classes_and_can_recover_offline() {
+    use crate::client::error::{ServerRefusal, SignInFailure};
+    let failures = [
+        Failure::NotDelivered,
+        Failure::Unanswered,
+        classify(&anyhow::Error::new(SignInFailure::Network)),
+        classify(&anyhow::Error::new(SignInFailure::Keyring)),
+        classify(
+            &crate::client::decode_response("/test", 401, br#"{"code":10051,"data":{"code":1}}"#)
+                .unwrap_err(),
+        ),
+        Failure::Refused(Refusal::Server(ServerRefusal::Http(403))),
+        Failure::Bug("probe failed".into()),
+    ];
+    for failure in failures {
+        let fake = FakeBackend::canned();
+        let opener = fake.clone();
+        let failure_for_open = failure.clone();
+        let repaired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let open_repaired = repaired.clone();
+        let worker = Worker::start(
+            StoreLocation::Memory,
+            move || {
+                if open_repaired.load(Ordering::SeqCst) {
+                    Ok(opener.clone())
+                } else {
+                    Err(anyhow::Error::new(failure_for_open.clone()))
+                }
+            },
+            WorkerOptions {
+                timing: Timing {
+                    retry_initial: Duration::ZERO,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        let mut app = App {
+            worker,
+            fake,
+            state: AppState::default(),
+        };
+        match &failure {
+            Failure::NotDelivered | Failure::Unanswered => {
+                app.until(|s| s.connection == Connection::Offline);
+                repaired.store(true, Ordering::SeqCst);
+                app.until(|s| s.connection == Connection::Online);
+            }
+            Failure::SignedOut(reason) => {
+                let reason = reason.clone();
+                let mut unlock = false;
+                while app.state.connection
+                    != (Connection::SignedOut {
+                        reason: reason.clone(),
+                    })
+                {
+                    let delta = app
+                        .worker
+                        .deltas
+                        .recv_timeout(Duration::from_secs(3))
+                        .unwrap();
+                    unlock |= matches!(
+                        delta,
+                        Delta::PairFailed {
+                            reason: SignInFailure::Keyring
+                        }
+                    );
+                    app.state.apply(delta);
+                }
+                if reason == SignOutReason::Unavailable(SignInFailure::Keyring) {
+                    // The sign-in surface receives the unlock-keyring reason.
+                    assert!(unlock);
+                }
+            }
+            Failure::Refused(_) | Failure::Bug(_) => {
+                let reason = crate::client::error::sign_in_failure(
+                    &anyhow::Error::new(failure.clone()),
+                    false,
+                );
+                app.until(|s| {
+                    s.connection
+                        == Connection::SignedOut {
+                            reason: SignOutReason::Unavailable(reason.clone()),
+                        }
+                });
+                assert!(!app.state.refresh_failures.contains_key(&Refresh::Session));
+            }
+        }
+    }
+}
+
+#[test]
+fn cached_rpc_cannot_erase_a_network_failure() {
+    let mut app = App::new();
+    let (done, wait) = mpsc::channel();
+    app.on_engine(move |engine| {
+        engine.timing.offline_after = Duration::ZERO;
+        engine.health.failure((engine.timing.health_now)());
+        engine.connection(Connection::Offline);
+        engine.rpc(
+            |backend| backend.session(),
+            move |engine, result, current| {
+                assert_eq!(result, Ok(true));
+                assert!(current);
+                assert_eq!(
+                    engine.connection,
+                    Connection::Offline,
+                    "cache hit cleared offline health"
+                );
+                // A remote response must clear the same failure.
+                engine.rpc(
+                    |backend| backend.profile(),
+                    move |engine, result, _| {
+                        assert!(result.is_ok());
+                        assert_eq!(engine.connection, Connection::Online);
+                        done.send(()).unwrap();
+                        Ok(())
+                    },
+                );
+                Ok(())
+            },
+        );
+    });
+    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    app.settle();
+}
+
+#[test]
+fn cleanup_failures_are_reported_without_dropping_attachments() {
+    const CHILD: &str = "LINE_TEST_CLEANUP_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "engine::tests::cleanup_failures_are_reported_without_dropping_attachments",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .output()
+            .unwrap();
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(output.status.success(), "{stderr}");
+        for operation in ["clipboard-prune", "start-assets", "attachment-preview"] {
+            assert_eq!(
+                stderr.matches(&format!("operation={operation} ")).count(),
+                1,
+                "{stderr}"
+            );
+        }
+        return;
+    }
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join(format!("target/tmp/cleanup-{}", std::process::id()));
+    std::fs::create_dir_all(root.join("accounts")).unwrap();
+    std::fs::write(root.join("clipboard-attachments"), b"not a directory").unwrap();
+    let fake = FakeBackend::canned();
+    fake.fail_rpc(FakeRpc::StartAssets, Failure::Refused(Refusal::Internal));
+    let opener = fake.clone();
+    let worker = Worker::start(
+        StoreLocation::Account {
+            root: root.join("accounts"),
+            mid: None,
+        },
+        move || Ok(opener.clone()),
+        Default::default(),
+    );
+    let mut app = App {
+        worker,
+        fake,
+        state: AppState::default(),
+    };
+    app.until(|s| s.connection == Connection::Online);
+    let path = root.join("attachment");
+    std::fs::write(&path, b"attachment body").unwrap();
+    let mut item = crate::attachments::Attachment::prepare(&path).unwrap();
+    item.preview = b"broken preview".to_vec();
+    app.worker.sender.send(Intent::SendAttachments {
+        chat: ChatId("alice".into()),
+        items: vec![item],
+    });
+    app.settle();
+    let (done, wait) = mpsc::channel();
+    app.on_engine(move |engine| {
+        let window = engine
+            .store
+            .window(&ChatId("alice".into()), Anchor::Latest, 80, 80)
+            .unwrap();
+        assert!(
+            window
+                .rows
+                .iter()
+                .any(|row| matches!(&row.body, Content::File { name, .. } if name.as_deref() == Some("attachment")))
+        );
+        done.send(()).unwrap();
+    });
+    wait.recv_timeout(Duration::from_secs(3)).unwrap();
+    drop(app);
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn corrupt_local_photo_completes_the_demo_asset_request() {
+    use crate::client::desktop::assets::{Asset, Failure as MediaFailure};
+    let app = App::new();
+    let asset = Asset::local(crate::attachments::Attachment {
+        path: PathBuf::from("unused-photo"),
+        name: "photo.png".into(),
+        size: 1,
+        photo: None,
+        preview: b"corrupt image".to_vec(),
+        clipboard: false,
+    });
+    let key = asset.key();
+    app.worker.sender.send(Intent::Asset(asset));
+    loop {
+        if let Delta::MediaFailed {
+            key: failed,
+            failure,
+        } = app
+            .worker
+            .deltas
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap()
+            && failed == key
+        {
+            assert_eq!(failure, MediaFailure::Decode);
+            break;
+        }
     }
 }

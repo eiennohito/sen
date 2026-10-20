@@ -146,7 +146,10 @@ fn causes(error: &anyhow::Error) -> impl Iterator<Item = &(dyn std::error::Error
 
 pub fn classify(error: &anyhow::Error) -> Failure {
     if let Some(reason) = error.downcast_ref::<SignInFailure>() {
-        return Failure::SignedOut(SignOutReason::Unavailable(reason.clone()));
+        return match reason {
+            SignInFailure::Network => Failure::NotDelivered,
+            _ => Failure::SignedOut(SignOutReason::Unavailable(reason.clone())),
+        };
     }
     if let Some(failure) = error.downcast_ref::<Failure>() {
         return failure.clone();

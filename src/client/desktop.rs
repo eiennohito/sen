@@ -172,6 +172,12 @@ fn load_sticker_packages(
 }
 
 impl Client {
+    pub(crate) fn network_activity(&self) -> super::NetworkActivity {
+        self.api.http.activity.clone()
+    }
+    pub(crate) fn set_network_activity(&mut self, activity: super::NetworkActivity) {
+        self.api.http.activity = activity;
+    }
     pub fn open_local(
         state_path: &Path,
         module: crate::crypto_module::CryptoModule,
@@ -261,11 +267,18 @@ impl Client {
             .filter(|range| range.reader != self.my_mid)
             .collect())
     }
-    pub fn operation(&mut self, operation: &Value) -> Result<Option<(String, Message)>> {
-        if !matches!(operation["type"].as_u64(), Some(25 | 26 | 43)) {
+    pub fn operation(
+        &mut self,
+        operation: &super::operation::RawOperation,
+    ) -> Result<Option<(String, Message)>> {
+        use super::operation::OperationType;
+        if !matches!(
+            operation.kind,
+            OperationType::SendMessage | OperationType::ReceiveMessage | OperationType::SendContent
+        ) {
             return Ok(None);
         }
-        let raw = &operation["message"];
+        let raw = &operation.data["message"];
         let from = required(raw, "from")?;
         let to = required(raw, "to")?;
         let chat = if is_user(to) && from != self.my_mid {

@@ -4,6 +4,8 @@ use std::{sync::Mutex, time::Duration};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum FakeRpc {
+    // Asset worker initialization is independent of RPC and download failures.
+    StartAssets,
     Send(ChatId),
     Friends,
     SignIn,
@@ -55,7 +57,10 @@ struct FakeState {
     slow_assets: std::collections::BTreeMap<String, Duration>,
 }
 #[derive(Clone)]
-pub struct FakeBackend(Arc<Mutex<FakeState>>);
+pub struct FakeBackend {
+    state: Arc<Mutex<FakeState>>,
+    activity: NetworkActivity,
+}
 impl Default for FakeBackend {
     fn default() -> Self {
         Self::canned()
@@ -63,7 +68,7 @@ impl Default for FakeBackend {
 }
 impl FakeBackend {
     pub fn configure<T>(&self, configure: impl FnOnce(&mut FakeConfig) -> T) -> T {
-        configure(&mut self.0.lock().unwrap().config)
+        configure(&mut self.state.lock().unwrap().config)
     }
 
     pub fn revision(&self) -> i64 {
@@ -73,22 +78,25 @@ impl FakeBackend {
         })
     }
     pub fn fail_sign_in(&self, reason: Option<crate::client::error::SignInFailure>) {
-        self.0.lock().unwrap().sign_in_failure = reason;
+        self.state.lock().unwrap().sign_in_failure = reason;
     }
 
     /// An account with no saved session or cached account data.
     pub fn signed_out() -> Self {
-        Self(Arc::new(Mutex::new(FakeState {
-            signed_out: true,
-            ..Default::default()
-        })))
+        Self {
+            state: Arc::new(Mutex::new(FakeState {
+                signed_out: true,
+                ..Default::default()
+            })),
+            activity: NetworkActivity::default(),
+        }
     }
     /// Retryable local initialization failure, before a backend exists.
     pub fn fail_open(&self, reason: Option<crate::client::error::SignInFailure>) {
-        self.0.lock().unwrap().open_failure = reason;
+        self.state.lock().unwrap().open_failure = reason;
     }
     pub fn open(&self) -> anyhow::Result<Self> {
-        if let Some(reason) = self.0.lock().unwrap().open_failure.clone()
+        if let Some(reason) = self.state.lock().unwrap().open_failure.clone()
             && !matches!(reason, crate::client::error::SignInFailure::SavedSession)
         {
             return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)).into());
@@ -98,13 +106,13 @@ impl FakeBackend {
     pub fn block_send(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (entered, wait) = std::sync::mpsc::channel();
         let (release, blocked) = std::sync::mpsc::channel();
-        self.0.lock().unwrap().send_gate = Some((entered, blocked));
+        self.state.lock().unwrap().send_gate = Some((entered, blocked));
         (wait, release)
     }
     pub fn block_upload(&self) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
         let (entered, wait) = std::sync::mpsc::channel();
         let (release, blocked) = std::sync::mpsc::channel();
-        self.0.lock().unwrap().upload_gate = Some((entered, blocked));
+        self.state.lock().unwrap().upload_gate = Some((entered, blocked));
         (wait, release)
     }
     fn fake_send(
@@ -114,14 +122,14 @@ impl FakeBackend {
         seq: u32,
         reply: Option<&ReplyReference>,
     ) -> Result<MessageInput> {
-        let gate = self.0.lock().unwrap().send_gate.take();
+        let gate = self.state.lock().unwrap().send_gate.take();
         if let Some((entered, blocked)) = gate {
             let _ = entered.send(());
             let _ = blocked.recv();
         }
         self.rpc(FakeRpc::Send(chat.clone()))?;
         let (row, echo, revision, deliver) = {
-            let mut s = self.0.lock().unwrap();
+            let mut s = self.state.lock().unwrap();
             s.next_id += 1;
             let mut row = Self::message(&chat.0, s.next_id, "", true);
             row.body = body;
@@ -200,16 +208,19 @@ impl FakeBackend {
                 )],
             );
         }
-        Self(Arc::new(Mutex::new(FakeState {
-            config: FakeConfig {
-                chats,
-                revision: 1000,
+        Self {
+            state: Arc::new(Mutex::new(FakeState {
+                config: FakeConfig {
+                    chats,
+                    revision: 1000,
+                    ..Default::default()
+                },
+                pages,
+                next_id: 100,
                 ..Default::default()
-            },
-            pages,
-            next_id: 100,
-            ..Default::default()
-        })))
+            })),
+            activity: NetworkActivity::default(),
+        }
     }
     pub fn message(chat: &str, id: i64, text: &str, outgoing: bool) -> MessageInput {
         MessageInput {
@@ -231,7 +242,7 @@ impl FakeBackend {
     }
     pub fn offline(&self, offline: bool) {
         let deliver = {
-            let mut s = self.0.lock().unwrap();
+            let mut s = self.state.lock().unwrap();
             s.offline = offline;
             s.deliver.clone()
         };
@@ -244,14 +255,14 @@ impl FakeBackend {
         }
     }
     pub fn fail_rpc(&self, rpc: FakeRpc, error: Failure) {
-        self.0.lock().unwrap().failures.push((rpc, error));
+        self.state.lock().unwrap().failures.push((rpc, error));
     }
     pub fn calls(&self) -> Vec<FakeRpc> {
-        self.0.lock().unwrap().calls.clone()
+        self.state.lock().unwrap().calls.clone()
     }
     fn rpc(&self, rpc: FakeRpc) -> Result<()> {
         self.online()?;
-        let mut s = self.0.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         s.calls.push(rpc.clone());
         if let Some(index) = s.failures.iter().position(|(call, _)| call == &rpc) {
             return Err(s.failures.remove(index).1);
@@ -259,7 +270,7 @@ impl FakeBackend {
         Ok(())
     }
     pub fn set_contact(&self, contact: Friend) {
-        self.0
+        self.state
             .lock()
             .unwrap()
             .contacts
@@ -271,10 +282,10 @@ impl FakeBackend {
                 row.profile.relation = Some(0);
             }
         }
-        self.0.lock().unwrap().friends = Some(rows);
+        self.state.lock().unwrap().friends = Some(rows);
     }
     pub fn page(&self, chat: &ChatId) -> Vec<MessageInput> {
-        self.0
+        self.state
             .lock()
             .unwrap()
             .pages
@@ -287,7 +298,7 @@ impl FakeBackend {
         asset: &crate::client::desktop::assets::Asset,
         failure: crate::client::desktop::assets::Failure,
     ) {
-        self.0
+        self.state
             .lock()
             .unwrap()
             .asset_failures
@@ -298,24 +309,24 @@ impl FakeBackend {
         asset: &crate::client::desktop::assets::Asset,
         pixels: crate::client::desktop::assets::Pixels,
     ) {
-        self.0
+        self.state
             .lock()
             .unwrap()
             .pixels
             .insert(asset.key(), Arc::new(pixels));
     }
     pub fn delay_asset(&self, asset: &crate::client::desktop::assets::Asset, delay: Duration) {
-        self.0
+        self.state
             .lock()
             .unwrap()
             .slow_assets
             .insert(asset.key(), delay);
     }
     pub fn set_receipt(&self, chat: ChatId, id: ServerId) {
-        self.0.lock().unwrap().receipts.insert(chat, id);
+        self.state.lock().unwrap().receipts.insert(chat, id);
     }
     pub fn auth_expired(&self) {
-        let d = self.0.lock().unwrap().deliver.clone();
+        let d = self.state.lock().unwrap().deliver.clone();
         if let Some(d) = d {
             d(StreamEvent::Connection(Err(Failure::SignedOut(
                 SignOutReason::AuthenticationFailed,
@@ -345,15 +356,15 @@ impl FakeBackend {
         row
     }
     pub fn echo_first(&self, value: bool) {
-        self.0.lock().unwrap().echo_first = value;
+        self.state.lock().unwrap().echo_first = value;
     }
     pub fn add_chat(&self, chat: ChatInput) {
-        let mut s = self.0.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         s.config.chats.retain(|c| c.id != chat.id);
         s.config.chats.push(chat);
     }
     pub fn set_page(&self, chat: ChatId, rows: Vec<MessageInput>) {
-        let mut s = self.0.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         for m in &rows {
             s.next_id = s.next_id.max(m.server_id.as_str().parse().unwrap());
             s.config.revision = s.config.revision.max(s.next_id);
@@ -362,15 +373,15 @@ impl FakeBackend {
     }
     pub fn inject_raw(&self, mut raw: Value) {
         raw["revision"] = self.revision().into();
-        let deliver = self.0.lock().unwrap().deliver.clone();
+        let deliver = self.state.lock().unwrap().deliver.clone();
         if let Some(d) = deliver {
             d(StreamEvent::Connection(Ok(())));
-            d(StreamEvent::Raw(raw));
+            d(StreamEvent::Raw(raw.into()));
         }
     }
     pub fn inject(&self, op: LiveOp) {
         let deliver = {
-            let mut s = self.0.lock().unwrap();
+            let mut s = self.state.lock().unwrap();
             s.config.revision = s.config.revision.max(op.revision);
             if let Op::Message(m) = &op.op {
                 s.next_id = s.next_id.max(m.server_id.as_str().parse().unwrap());
@@ -385,7 +396,7 @@ impl FakeBackend {
     }
     fn retry_asset(&mut self, key: &str) {
         let (purpose, deliver) = {
-            let mut s = self.0.lock().unwrap();
+            let mut s = self.state.lock().unwrap();
             (
                 s.failed_assets.remove(key).unwrap(),
                 s.assets.clone().unwrap(),
@@ -420,16 +431,16 @@ impl FakeBackend {
         }
 
         if let Some(failure) = asset.failure().or_else(|| {
-            self.0
+            self.state
                 .lock()
                 .unwrap()
                 .asset_failures
                 .get(&asset.key())
                 .copied()
         }) {
-            crate::client::network_touched();
+            self.activity.record();
             let deliver = {
-                let mut s = self.0.lock().unwrap();
+                let mut s = self.state.lock().unwrap();
                 s.failed_assets.insert(asset.key(), purpose.clone());
                 s.assets.clone().unwrap()
             };
@@ -443,14 +454,14 @@ impl FakeBackend {
             ));
             return Ok(None);
         }
-        let slow = self.0.lock().unwrap().slow_assets.remove(&asset.key());
+        let slow = self.state.lock().unwrap().slow_assets.remove(&asset.key());
         if let Some(delay) = slow {
             std::thread::sleep(delay);
         }
-        if let Some(pixels) = self.0.lock().unwrap().pixels.get(&asset.key()).cloned() {
+        if let Some(pixels) = self.state.lock().unwrap().pixels.get(&asset.key()).cloned() {
             return Ok(Some(Payload::Image(pixels)));
         }
-        crate::client::network_touched();
+        self.activity.record();
         Ok(Some(match purpose {
             Purpose::File { .. } => Payload::File(Arc::new(b"Synthetic attachment\n".to_vec())),
             Purpose::Original { .. } => Payload::Image(Arc::new(Pixels {
@@ -466,8 +477,8 @@ impl FakeBackend {
         }))
     }
     fn online(&self) -> Result<()> {
-        crate::client::network_touched();
-        if self.0.lock().unwrap().offline {
+        self.activity.record();
+        if self.state.lock().unwrap().offline {
             Err(Failure::NotDelivered)
         } else {
             Ok(())
@@ -475,23 +486,26 @@ impl FakeBackend {
     }
 }
 impl Backend for FakeBackend {
+    fn set_network_activity(&mut self, activity: NetworkActivity) {
+        self.activity = activity;
+    }
     fn session(&self) -> Result<bool> {
-        if let Some(reason) = self.0.lock().unwrap().open_failure.clone() {
+        if let Some(reason) = self.state.lock().unwrap().open_failure.clone() {
             return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)));
         }
-        Ok(!self.0.lock().unwrap().signed_out)
+        Ok(!self.state.lock().unwrap().signed_out)
     }
     fn sign_in(&mut self, cancel: Arc<CancelToken>, deliver: PairDeliver) -> Result<()> {
         use crate::client::{desktop::assets::Pixels, pairing::Stage};
         {
-            let mut state = self.0.lock().unwrap();
+            let mut state = self.state.lock().unwrap();
             state.calls.push(FakeRpc::SignIn);
             if let Some(reason) = state.sign_in_failure.take() {
                 return Err(Failure::SignedOut(SignOutReason::Unavailable(reason)));
             }
         }
         deliver(PairEvent::Stage(Stage::Synthetic));
-        if self.0.lock().unwrap().signed_out {
+        if self.state.lock().unwrap().signed_out {
             let qr =
                 qrcodegen::QrCode::encode_text("offline-demo-sign-in", qrcodegen::QrCodeEcc::Low)
                     .expect("synthetic QR");
@@ -521,11 +535,11 @@ impl Backend for FakeBackend {
 
     fn friends(&mut self) -> Result<Vec<crate::store::Friend>> {
         self.rpc(FakeRpc::Friends)?;
-        if let Some(rows) = &self.0.lock().unwrap().friends {
+        if let Some(rows) = &self.state.lock().unwrap().friends {
             return Ok(rows.clone());
         }
         Ok(self
-            .0
+            .state
             .lock()
             .unwrap()
             .config
@@ -547,7 +561,7 @@ impl Backend for FakeBackend {
     }
     fn members(&mut self, _chat: &ChatId) -> Result<Vec<crate::store::Member>> {
         self.online()?;
-        if let Some(rows) = &self.0.lock().unwrap().config.members {
+        if let Some(rows) = &self.state.lock().unwrap().config.members {
             return Ok(rows.clone());
         }
         Ok(self
@@ -559,8 +573,18 @@ impl Backend for FakeBackend {
             })
             .collect())
     }
-    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) {
-        self.0.lock().unwrap().assets = Some(deliver.clone());
+    fn start_assets(&mut self, stop: Arc<CancelToken>, deliver: Deliver) -> Result<()> {
+        {
+            let mut state = self.state.lock().unwrap();
+            if let Some(index) = state
+                .failures
+                .iter()
+                .position(|(call, _)| *call == FakeRpc::StartAssets)
+            {
+                return Err(state.failures.remove(index).1);
+            }
+        }
+        self.state.lock().unwrap().assets = Some(deliver.clone());
         let fake = self.clone();
         let retry = self.clone();
         let output = deliver.clone();
@@ -570,19 +594,22 @@ impl Backend for FakeBackend {
                 let mut fake = fake.clone();
                 let output = output.clone();
                 std::thread::spawn(move || {
-                    crate::client::take_network_touched();
-                    let result = fake.media(&asset, purpose.clone());
-                    let network = crate::client::take_network_touched();
-                    if let Ok(Some(payload)) = result {
-                        output(StreamEvent::Asset(
-                            crate::client::desktop::assets::Completion {
-                                network,
-                                key: asset.key(),
-                                purpose,
-                                result: Ok(payload),
-                            },
-                        ));
-                    }
+                    let activity = NetworkActivity::default();
+                    fake.set_network_activity(activity.clone());
+                    let result = match fake.media(&asset, purpose.clone()) {
+                        Ok(Some(payload)) => Ok(payload),
+                        // Synthetic remote failures publish their own completion in media().
+                        Ok(None) => return,
+                        Err(error) => Err(crate::client::error::media_failure(&error.into())),
+                    };
+                    output(StreamEvent::Asset(
+                        crate::client::desktop::assets::Completion {
+                            network: activity.touched(),
+                            key: asset.key(),
+                            purpose,
+                            result,
+                        },
+                    ));
                 });
             }),
             retry: Arc::new(move |key| {
@@ -590,6 +617,7 @@ impl Backend for FakeBackend {
                 fake.retry_asset(&key);
             }),
         }));
+        Ok(())
     }
     fn authorize(
         &mut self,
@@ -605,7 +633,7 @@ impl Backend for FakeBackend {
         _purpose: crate::client::desktop::assets::Purpose,
     ) -> Result<Option<crate::client::desktop::assets::Payload>> {
         Ok(self
-            .0
+            .state
             .lock()
             .unwrap()
             .pixels
@@ -616,10 +644,10 @@ impl Backend for FakeBackend {
 
     fn contact(&mut self, mid: &str) -> Result<Option<crate::store::Friend>> {
         self.rpc(FakeRpc::Contact(mid.into()))?;
-        if let Some(contact) = self.0.lock().unwrap().contacts.get(mid).cloned() {
+        if let Some(contact) = self.state.lock().unwrap().contacts.get(mid).cloned() {
             return Ok(Some(contact));
         }
-        let state = self.0.lock().unwrap();
+        let state = self.state.lock().unwrap();
         state
             .friends
             .as_ref()
@@ -666,7 +694,7 @@ impl Backend for FakeBackend {
     fn full_chat(&mut self, chat: &ChatId) -> Result<Value> {
         self.online()?;
         Ok(
-            json!({"chatMid":chat.0,"chatName":self.0.lock().unwrap().config.chats.iter().find(|c| c.id == *chat).map(|c| &c.title),"notificationDisabled":false,"extra":{"groupExtra":{}}}),
+            json!({"chatMid":chat.0,"chatName":self.state.lock().unwrap().config.chats.iter().find(|c| c.id == *chat).map(|c| &c.title),"notificationDisabled":false,"extra":{"groupExtra":{}}}),
         )
     }
     fn profile_action(&mut self, action: &ProfileAction, _full: Value, _seq: u32) -> Result<()> {
@@ -687,17 +715,17 @@ impl Backend for FakeBackend {
                 }
                 let mut rows = self.friends()?;
                 rows.retain(|r| r.id != *mid);
-                self.0
+                self.state
                     .lock()
                     .unwrap()
                     .contacts
                     .insert(f.id.clone(), f.clone());
                 rows.push(f);
-                self.0.lock().unwrap().friends = Some(rows);
+                self.state.lock().unwrap().friends = Some(rows);
             }
             ProfileAction::Mute { chat, disabled } => {
                 if let Some(c) = self
-                    .0
+                    .state
                     .lock()
                     .unwrap()
                     .config
@@ -710,7 +738,7 @@ impl Backend for FakeBackend {
             }
             ProfileAction::Leave { chat } => {
                 if let Some(c) = self
-                    .0
+                    .state
                     .lock()
                     .unwrap()
                     .config
@@ -726,7 +754,7 @@ impl Backend for FakeBackend {
     }
     fn profile(&mut self) -> Result<Profile> {
         self.rpc(FakeRpc::Profile)?;
-        if self.0.lock().unwrap().signed_out {
+        if self.state.lock().unwrap().signed_out {
             return Err(Failure::SignedOut(SignOutReason::AuthenticationFailed));
         }
         Ok(Profile {
@@ -737,7 +765,7 @@ impl Backend for FakeBackend {
     }
     fn chats(&mut self, _cursor: Option<String>) -> Result<ChatPage> {
         self.rpc(FakeRpc::Chats)?;
-        let s = self.0.lock().unwrap();
+        let s = self.state.lock().unwrap();
         Ok(ChatPage {
             chats: s.config.chats.clone(),
             previews: s
@@ -751,7 +779,7 @@ impl Backend for FakeBackend {
     }
     fn details(&mut self, chat: &ChatId) -> Result<Vec<ChatInput>> {
         self.rpc(FakeRpc::Details(chat.clone()))?;
-        let mut s = self.0.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         if let Some(c) = s.config.chats.iter().find(|c| &c.id == chat) {
             return Ok(vec![c.clone()]);
         }
@@ -776,7 +804,7 @@ impl Backend for FakeBackend {
     }
     fn messages(&mut self, chat: &ChatId, kind: &PageKind) -> Result<Page> {
         self.rpc(FakeRpc::Messages(chat.clone()))?;
-        let state = self.0.lock().unwrap();
+        let state = self.state.lock().unwrap();
         let rows = state
             .pages
             .get(chat)
@@ -817,7 +845,8 @@ impl Backend for FakeBackend {
         seq: u32,
     ) -> Result<UploadJob> {
         let mut fake = self.clone();
-        Ok(Box::new(move |progress| {
+        Ok(Box::new(move |activity, progress| {
+            fake.set_network_activity(activity);
             item.read().map_err(|_| {
                 Failure::Refused(if item.path.is_file() {
                     Refusal::NotAccepted
@@ -826,12 +855,12 @@ impl Backend for FakeBackend {
                 })
             })?;
             fake.online()?;
-            let gate = fake.0.lock().unwrap().upload_gate.take();
+            let gate = fake.state.lock().unwrap().upload_gate.take();
             if let Some((entered, blocked)) = gate {
                 let _ = entered.send(());
                 let _ = blocked.recv();
             }
-            let delay = fake.0.lock().unwrap().config.upload_delay;
+            let delay = fake.state.lock().unwrap().config.upload_delay;
             for tick in 0..=10 {
                 progress(tick as f32 / 10.);
                 std::thread::sleep(delay / 11);
@@ -842,7 +871,7 @@ impl Backend for FakeBackend {
                 // SEND_MESSAGE carries the persisted request identity; SEND_CONTENT repeats
                 // the same server identity after storage, without a matching request seq.
                 let (deliver, revision) = {
-                    let mut state = fake.0.lock().unwrap();
+                    let mut state = fake.state.lock().unwrap();
                     state.config.revision += 2;
                     (state.deliver.clone(), state.config.revision)
                 };
@@ -924,7 +953,7 @@ impl Backend for FakeBackend {
     }
     fn react(&mut self, id: &ServerId, kind: Option<u32>, _seq: u32) -> Result<()> {
         self.rpc(FakeRpc::React(id.clone(), kind))?;
-        let mut s = self.0.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         for row in s
             .pages
             .values_mut()
@@ -955,7 +984,7 @@ impl Backend for FakeBackend {
     }
     fn create_chat(&mut self, name: &str, targets: &[String], _seq: u32) -> Result<ChatInput> {
         self.rpc(FakeRpc::CreateChat)?;
-        let mut s = self.0.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         s.next_id += 1;
         let row = ChatInput {
             id: ChatId(format!("group-{}", s.next_id)),
@@ -969,7 +998,7 @@ impl Backend for FakeBackend {
     }
     fn unsend(&mut self, id: &ServerId, _seq: u32) -> Result<()> {
         self.rpc(FakeRpc::Unsend(id.clone()))?;
-        let mut s = self.0.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         for row in s
             .pages
             .values_mut()
@@ -983,7 +1012,7 @@ impl Backend for FakeBackend {
     fn receipts(&mut self, chat: &ChatId) -> Result<Vec<Option<ServerId>>> {
         self.rpc(FakeRpc::Receipts(chat.clone()))?;
         Ok(self
-            .0
+            .state
             .lock()
             .unwrap()
             .receipts
@@ -1002,7 +1031,7 @@ impl Backend for FakeBackend {
         deliver: Deliver,
     ) -> Result<Box<dyn FnOnce() + Send>> {
         self.rpc(FakeRpc::Stream(revision))?;
-        let mut s = self.0.lock().unwrap();
+        let mut s = self.state.lock().unwrap();
         s.deliver = Some(deliver.clone());
         drop(s);
         Ok(Box::new(move || {
@@ -1012,19 +1041,25 @@ impl Backend for FakeBackend {
             async_io::block_on(stop.cancelled());
         }))
     }
-    fn decode(&mut self, raw: Value) -> Result<LiveOp> {
+    fn decode(&mut self, raw: RawOperation) -> Result<LiveOp> {
+        let kind = raw.kind;
+        let raw = raw.data;
         Ok(LiveOp {
             revision: raw["revision"]
                 .as_i64()
                 .ok_or(Failure::Bug("decode".into()))?,
             replay: raw["replay"].as_bool().unwrap_or(false),
-            op: match raw["type"].as_u64() {
-                Some(139 | 140) => reaction_operation(&raw, "self")?,
-                Some(64 | 65) => Op::Withdraw(decode_id(
-                    raw["param2"]
-                        .as_str()
-                        .ok_or(Failure::Bug("decode".into()))?,
-                )?),
+            op: match kind {
+                OperationType::SendReaction | OperationType::NotifiedSendReaction => {
+                    reaction_operation(kind, &raw, "self")?
+                }
+                OperationType::DestroyMessage | OperationType::NotifiedDestroyMessage => {
+                    Op::Withdraw(decode_id(
+                        raw["param2"]
+                            .as_str()
+                            .ok_or(Failure::Bug("decode".into()))?,
+                    )?)
+                }
                 _ => Op::Checkpoint,
             },
         })
@@ -1044,7 +1079,8 @@ mod tests {
         let mut fake = FakeBackend::signed_out();
         fake.offline(true);
         fake.fail_sign_in(Some(SignInFailure::Server));
-        crate::client::take_network_touched();
+        let activity = NetworkActivity::default();
+        fake.set_network_activity(activity.clone());
         let result = fake.sign_in(Arc::new(CancelToken::new()), Arc::new(|_| {}));
         assert_eq!(
             result,
@@ -1052,7 +1088,7 @@ mod tests {
                 SignInFailure::Server
             )))
         );
-        assert!(!crate::client::take_network_touched());
+        assert!(!activity.touched());
         assert_eq!(fake.calls(), vec![FakeRpc::SignIn]);
     }
 }

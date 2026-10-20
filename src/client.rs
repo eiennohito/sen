@@ -1,6 +1,7 @@
 //! Shared client protocol against the same endpoints as LINE Chrome.
 //! Rust owns protocol/state/WASM, all HTTPS (RPC, SSE, media) and QR encoding.
 pub mod error;
+pub mod operation;
 use crate::runtime::{Call, Runtime};
 use anyhow::{Context, Result, bail, ensure};
 use base64::{
@@ -518,14 +519,16 @@ mod tests {
     }
 }
 
-thread_local! {
-    static NETWORK_TOUCHED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-pub(crate) fn network_touched() {
-    NETWORK_TOUCHED.set(true);
-}
-pub(crate) fn take_network_touched() -> bool {
-    NETWORK_TOUCHED.replace(false)
+/// Explicit, request-scoped transport activity shared with detached upload work.
+#[derive(Clone, Default)]
+pub struct NetworkActivity(std::sync::Arc<std::sync::atomic::AtomicBool>);
+impl NetworkActivity {
+    pub(crate) fn record(&self) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+    pub(crate) fn touched(&self) -> bool {
+        self.0.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
 pub const TOKEN: &str = "wODdrvWqmdP4Zliay-iF3cz3KZcK0ekrial868apg06TXeCo7A1hIQO0ESElHg6D";
