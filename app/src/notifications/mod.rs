@@ -22,7 +22,7 @@ impl Notifications {
         let prefs = preferences(&state.prefs.desktop);
         let text = policy::redact(
             prefs.preview,
-            "LINE preview",
+            "閃 preview",
             "日本語と emoji 🐈 · Test notification",
         );
         ui.global::<SettingsState>()
@@ -58,7 +58,7 @@ impl Notifications {
                 .chats
                 .get(&m.chat_id)
                 .map(|c| presenter::chats::chat_title(&c.chat, state))
-                .unwrap_or("LINE");
+                .unwrap_or("閃");
             let text = policy::redact(
                 prefs.preview,
                 title,

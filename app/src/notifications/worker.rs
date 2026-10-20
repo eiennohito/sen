@@ -343,7 +343,7 @@ mod service_tests {
         fn get_server_information(&self) -> (String, String, String, String) {
             (
                 "Synthetic daemon".into(),
-                "LINE tests".into(),
+                "閃 tests".into(),
                 "1".into(),
                 "1.2".into(),
             )

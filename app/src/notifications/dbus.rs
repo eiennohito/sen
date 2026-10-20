@@ -66,7 +66,7 @@ pub(super) fn notify(
             Some("org.freedesktop.Notifications"),
             "Notify",
             &(
-                "LINE",
+                "閃",
                 previous,
                 crate::desktop_env::desktop_integration::APP_ID,
                 &notice.summary,

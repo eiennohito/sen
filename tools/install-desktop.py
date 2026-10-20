@@ -69,7 +69,7 @@ service.chmod(0o644)
 icon_value = str(icon.resolve()).replace("\\", "\\\\")
 launcher.write_text(f"""[Desktop Entry]
 Type=Application
-Name=LINE Native
+Name=閃
 Comment=Native messaging client
 Exec={command}
 Icon={icon_value}

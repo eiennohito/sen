@@ -31,7 +31,7 @@ pub(crate) fn save_photo(ui: &AppWindow, source: Option<PathBuf>) {
             .map_err(|_| "Could not read this photo.".to_string())
             .and_then(|bytes| {
                 let extension = source.extension().and_then(|s| s.to_str()).unwrap_or("img");
-                save_bytes(&bytes, &format!("LINE photo.{extension}"))
+                save_bytes(&bytes, &format!("閃 photo.{extension}"))
             });
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ui.global::<ViewerState>().set_viewer_saving(false);
@@ -58,7 +58,7 @@ pub(crate) fn save_bytes(bytes: &[u8], suggested_name: &str) -> Result<Option<Pa
         .file_name()
         .and_then(|v| v.to_str())
         .filter(|name| !name.is_empty() && !name.contains(['\r', '\n']))
-        .unwrap_or("LINE attachment");
+        .unwrap_or("閃 attachment");
     save_dialog(bytes, name)
 }
 pub(crate) fn save_dialog(bytes: &[u8], name: &str) -> Result<Option<PathBuf>, String> {
@@ -101,7 +101,7 @@ pub(crate) fn write_unique(directory: &Path, name: &str, bytes: &[u8]) -> Result
             let stem = name
                 .file_stem()
                 .and_then(|v| v.to_str())
-                .unwrap_or("LINE attachment");
+                .unwrap_or("閃 attachment");
             match name.extension().and_then(|v| v.to_str()) {
                 Some(extension) => format!("{stem} ({index}).{extension}"),
                 None => format!("{stem} ({index})"),
@@ -216,8 +216,8 @@ mod tests {
             .write_to(&mut jpeg, image::ImageFormat::Jpeg)
             .unwrap();
         let jpeg = jpeg.into_inner();
-        let first = write_unique(&root, "LINE photo.jpg", &jpeg).unwrap();
-        let second = write_unique(&root, "LINE photo.jpg", &jpeg).unwrap();
+        let first = write_unique(&root, "閃 photo.jpg", &jpeg).unwrap();
+        let second = write_unique(&root, "閃 photo.jpg", &jpeg).unwrap();
         assert_ne!(first, second);
         assert_eq!(fs::read(&first).unwrap(), jpeg);
         use std::os::unix::fs::PermissionsExt;

@@ -42,7 +42,7 @@ impl Item {
     }
     #[zbus(property)]
     fn title(&self) -> &str {
-        "LINE"
+        "閃"
     }
     #[zbus(property)]
     fn status(&self) -> &str {

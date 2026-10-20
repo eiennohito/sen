@@ -57,7 +57,7 @@ export component AppWindow inherits Window {
 
     public function focus-composer() { if DetailState.detail-open && ShellState.profile-sheet { root.focus-profile-close(); } else { conversation.focus-editor(); } }
 
-    title: ShellState.title-override != "" ? ShellState.title-override : ShellState.unread-conversations > 0 && !ShellState.unread-stale ? "LINE (" + ShellState.unread-conversations + ")" : "LINE";
+    title: ShellState.title-override != "" ? ShellState.title-override : ShellState.unread-conversations > 0 && !ShellState.unread-stale ? "閃 (" + ShellState.unread-conversations + ")" : "閃";
     icon: @image-url("../assets/icon.svg");
     forward-focus: shell;
     preferred-width: 980px; preferred-height: 720px;

@@ -62,7 +62,7 @@ impl Keys for Keyring {
         let properties = HashMap::from([
             (
                 "org.freedesktop.Secret.Item.Label",
-                Value::from("LINE desktop session key"),
+                Value::from("閃 session key"),
             ),
             (
                 "org.freedesktop.Secret.Item.Attributes",

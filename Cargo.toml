@@ -2,7 +2,7 @@
 name = "line"
 version = "0.1.0"
 edition = "2024"
-description = "LINE desktop client core"
+description = "Core for an unofficial desktop client for the LINE messaging service"
 
 [workspace]
 members = ["app", "ui"]

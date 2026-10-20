@@ -647,7 +647,7 @@ pub(crate) fn worker(
 pub(crate) fn prepare(ui: &AppWindow) {
     ui.global::<DemoState>().set_demo(true);
     ui.global::<ShellState>()
-        .set_title_override("LINE (preview · F12: scenarios)".into());
+        .set_title_override("閃 (preview · F12: scenarios)".into());
 }
 #[cfg(test)]
 mod tests {
