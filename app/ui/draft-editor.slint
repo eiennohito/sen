@@ -1,11 +1,14 @@
+import { AttachmentState } from "globals.slint";
+import { ComposerMode } from "globals.slint";
+import { ComposerState, SettingsState, ShellState } from "globals.slint";
 import { FocusRing } from "button.slint";
-import { ComposerMode } from "types.slint";
-import { State } from "state.slint";
+
 import { Tokens } from "tokens.slint";
 import { Pane } from "scrollpane.slint";
 // Thin native TextInput wrapper: keep native IME, selection and clipboard
 // behavior while exposing the pinned Slint byte-offset selection API.
 export component DraftEditor inherits Rectangle {
+    property <length> editor-y;
     public function paste-text() { input.paste(); }
     in property <string> placeholder: "Message";
     in property <bool> read-only; in property <bool> enabled: true;
@@ -16,31 +19,31 @@ export component DraftEditor inherits Rectangle {
     out property <int> anchor: input.anchor-position-byte-offset;
     public function restore(anchor: int, caret: int) {
         input.set-selection-offsets(anchor, caret);
-        State.editor-anchor = input.anchor-position-byte-offset;
-        State.editor-caret = input.cursor-position-byte-offset;
+        ComposerState.editor-anchor = input.anchor-position-byte-offset;
+        ComposerState.editor-caret = input.cursor-position-byte-offset;
     }
     out property <bool> has-focus: input.has-focus;
-    public function focus-editor() { input.focus(); input.set-selection-offsets(State.editor-anchor, State.editor-caret); }
+    public function focus-editor() { input.focus(); input.set-selection-offsets(ComposerState.editor-anchor, ComposerState.editor-caret); }
     // Native TextInput collapses selection on FocusOut. Preserve the user's
     // selection while a layer owns focus and restore on programmatic return.
-    changed caret => { if input.has-focus { State.editor-caret = root.caret; } }
-    changed anchor => { if input.has-focus { State.editor-anchor = root.anchor; } }
+    changed caret => { if input.has-focus { ComposerState.editor-caret = root.caret; } }
+    changed anchor => { if input.has-focus { ComposerState.editor-anchor = root.anchor; } }
     background: Tokens.surface-2; border-radius: 18px;
     FocusRing { outset: 4px; text-entry: true; focused: input.has-focus; border-radius: 22px; }
     Text {
         x: 12px; y: 8px; width: parent.width - 24px;
-        visible: State.draft == "" && !State.ime-active && !input.has-focus;
+        visible: ComposerState.draft == "" && !ShellState.ime-active && !input.has-focus;
         text: root.placeholder; font-size: Tokens.base; color: Tokens.placeholder;
         accessible-role: none;
     }
     editor-pane := Pane {
         x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px;
-        offset <=> State.editor-y;
-        changed extent => { self.jump(State.editor-y); }
+        offset <=> root.editor-y;
+        changed extent => { self.jump(root.editor-y); }
         input := TextInput {
             x: 0px; y: 0px; width: editor-pane.visible-width;
             height: max(self.preferred-height, root.height - 16px);
-            text <=> State.draft;
+            text <=> ComposerState.draft;
             enabled: root.enabled; read-only: root.read-only;
             accessible-label: "Message draft"; accessible-placeholder-text: root.placeholder;
             accessible-description: "Message draft";
@@ -48,20 +51,20 @@ export component DraftEditor inherits Rectangle {
             font-size: Tokens.base; color: Tokens.foreground;
             selection-background-color: Tokens.selection; selection-foreground-color: Tokens.selection-foreground;
             page-height: root.height - 16px;
-            edited => { State.draft-edited(); }
+            edited => { ComposerState.draft-edited(); }
             cursor-position-changed(pos) => {
                 if root.height > Tokens.base + 8px {
-                    if pos.y + State.editor-y < 0px { editor-pane.jump(-pos.y); }
-                    else if pos.y + State.editor-y > root.height - Tokens.base - 8px {
+                    if pos.y + root.editor-y < 0px { editor-pane.jump(-pos.y); }
+                    else if pos.y + root.editor-y > root.height - Tokens.base - 8px {
                         editor-pane.jump(root.height - Tokens.base - 8px - pos.y);
                     }
                 }
             }
             key-pressed(event) => {
-                if State.ime-active { return reject; }
-                if event.modifiers.control && (event.text == "v" || event.text == "V") && !State.modal-open && State.paste-attachment() { return accept; }
-                if event.text == Key.Return && !event.modifiers.alt && !event.modifiers.meta && !event.modifiers.shift && (event.modifiers.control || State.enter-sends) {
-                    if !State.modal-open && State.composer-mode == ComposerMode.ready && !event.repeat { State.send(); }
+                if ShellState.ime-active { return reject; }
+                if event.modifiers.control && (event.text == "v" || event.text == "V") && !ShellState.modal-open && AttachmentState.paste-attachment() { return accept; }
+                if event.text == Key.Return && !event.modifiers.alt && !event.modifiers.meta && !event.modifiers.shift && (event.modifiers.control || SettingsState.enter-sends) {
+                    if !ShellState.modal-open && ComposerState.composer-mode == ComposerMode.ready && !event.repeat { ComposerState.send(); }
                     return accept;
                 }
                 reject

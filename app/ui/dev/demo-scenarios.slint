@@ -1,8 +1,8 @@
+import { ShellState } from "../globals.slint";
 import { Dialog } from "../button.slint";
 import { DemoAutomation } from "demo-state.slint";
 import { ExtensionState } from "demo-state.slint";
 import { ScrollView, Button } from "std-widgets.slint";
-import { State } from "../state.slint";
 import { Tokens } from "../tokens.slint";
 
 struct Scenario { text: string, label: string, kind: int }
@@ -18,7 +18,7 @@ export component DemoScenarios inherits Rectangle {
     }
     // Keyboard navigation can scroll to the final scenario. Reopen at the first row.
     public function open() -> bool {
-        if ExtensionState.demo && !State.modal-open { root.media-menu = false; ExtensionState.remember-demo-focus(); ExtensionState.demo-scenarios-open = true; scenario-scroll.content-y = 0px; close.focus(); return true; }
+        if ExtensionState.demo && !ShellState.modal-open { root.media-menu = false; ExtensionState.remember-demo-focus(); ExtensionState.demo-scenarios-open = true; scenario-scroll.content-y = 0px; close.focus(); return true; }
         return false;
     }
     public function dismiss() { ExtensionState.demo-scenarios-open = false; root.media-menu = false; ExtensionState.restore-demo-focus(); }
@@ -46,8 +46,8 @@ export component DemoScenarios inherits Rectangle {
         visible: ExtensionState.demo-scenarios-open;
         width: root.width; height: root.height;
         background: Tokens.foreground.with-alpha(0.32);
-        panel-width: State.narrow ? root.width : min(560px, root.width - 48px);
-        panel-height: State.narrow ? root.height : min(640px, root.height - 48px);
+        panel-width: ShellState.narrow ? root.width : min(560px, root.width - 48px);
+        panel-height: ShellState.narrow ? root.height : min(640px, root.height - 48px);
         panel-border: Tokens.border;
         dismissed => { root.dismiss(); }
         scenario-panel := VerticalLayout {

@@ -21,9 +21,9 @@ pub(crate) fn install_window(
         launch.size.0 as f32,
         launch.size.1 as f32,
     ));
-    install_events(&ui, !launch.headless && !launch.automation);
-    ui.global::<State>().set_text_size(launch.text_size);
-    ui.global::<State>()
+    install_events(&ui, runtime.clone(), !launch.headless && !launch.automation);
+    ui.global::<SettingsState>().set_text_size(launch.text_size);
+    ui.global::<ShellState>()
         .set_desktop_warning(options.warning.clone());
     ui.global::<Palette>()
         .set_color_scheme(options.color_scheme);
@@ -46,13 +46,13 @@ pub(crate) fn install_window(
 
 pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
-    ui.global::<State>()
+    ui.global::<ContentState>()
         .on_avatar_tint(|id| presenter::format::avatar_tint(&id));
-    ui.global::<State>()
+    ui.global::<ContentState>()
         .on_name_tint(|id, background, dark| presenter::format::name_tint(&id, background, dark));
     let mut avatars: std::collections::VecDeque<(slint::Image, u32, slint::Image)> =
         std::collections::VecDeque::new();
-    ui.global::<State>()
+    ui.global::<ContentState>()
         .on_avatar_picture(move |source, width, scale| {
             if source.size().width == 0 {
                 return source;
@@ -90,43 +90,25 @@ pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     #[cfg(feature = "demo")]
     dev::install_focus(&ui);
     let weak = ui.as_weak();
-    ui.global::<State>().on_back_to_members(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_back_to_members();
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_history_jump(move |y| {
+    ui.global::<ConversationState>().on_history_jump(move |y| {
         if let Some(ui) = weak.upgrade() {
             ui.invoke_history_jump(y);
         }
     });
     let weak = ui.as_weak();
-    ui.global::<State>().on_history_scroll(move |delta| {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_history_scroll(delta);
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_reset_viewer(move || {
-        if let Some(ui) = weak.upgrade() {
-            ui.invoke_reset_viewer();
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>()
-        .on_restore_editor(move |anchor, caret| {
+    ui.global::<ConversationState>()
+        .on_history_scroll(move |delta| {
             if let Some(ui) = weak.upgrade() {
-                ui.invoke_restore_editor(anchor, caret);
+                ui.invoke_history_scroll(delta);
             }
         });
-    ui.global::<State>().on_quit(|| {
+    ui.global::<ShellState>().on_quit(|| {
         let _ = slint::quit_event_loop();
     });
     Ok(ui)
 }
 
-pub(crate) fn install_events(ui: &AppWindow, native_events: bool) {
+pub(crate) fn install_events(ui: &AppWindow, runtime: Runtime, native_events: bool) {
     if native_events {
         use slint::winit_030::{
             EventResult, WinitWindowAccessor,
@@ -135,16 +117,18 @@ pub(crate) fn install_events(ui: &AppWindow, native_events: bool) {
         let weak = ui.as_weak();
         let drops = Rc::new(RefCell::new(Vec::<std::path::PathBuf>::new()));
         let drop_timer = slint::Timer::default();
+        let runtime = runtime.clone();
         ui.window().on_winit_window_event(move |_, event| {
             if let Some(ui) = weak.upgrade() {
                 match event {
                     WindowEvent::DroppedFile(path) => {
-                        if ui.global::<State>().get_show_conversation()
-                            && !ui.global::<State>().get_modal_open()
+                        if ui.global::<ShellState>().get_show_conversation()
+                            && !ui.global::<ShellState>().get_modal_open()
                         {
                             drops.borrow_mut().push(path.clone());
                             let drops = drops.clone();
                             let weak = ui.as_weak();
+                            let runtime = runtime.clone();
                             drop_timer.start(
                                 slint::TimerMode::SingleShot,
                                 std::time::Duration::from_millis(80),
@@ -156,21 +140,26 @@ pub(crate) fn install_events(ui: &AppWindow, native_events: bool) {
                                         .collect::<Vec<_>>()
                                         .join("\n");
                                     if let Some(ui) = weak.upgrade() {
-                                        ui.global::<State>().invoke_drop_attachment(uris.into());
+                                        runtime.push(move |d| {
+                                            callbacks::attachments::drop_files(&ui, d, &uris)
+                                        });
                                     }
                                 },
                             );
                         }
                     }
                     WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                        ui.global::<State>().set_device_scale(*scale_factor as f32);
+                        ui.global::<ShellState>()
+                            .set_device_scale(*scale_factor as f32);
                     }
-                    WindowEvent::Focused(active) => ui.global::<State>().set_window_active(*active),
+                    WindowEvent::Focused(active) => {
+                        ui.global::<ShellState>().set_window_active(*active)
+                    }
                     WindowEvent::Ime(Ime::Preedit(text, _)) => {
-                        ui.global::<State>().set_ime_active(!text.is_empty())
+                        ui.global::<ShellState>().set_ime_active(!text.is_empty())
                     }
                     WindowEvent::Ime(Ime::Commit(_)) | WindowEvent::Ime(Ime::Disabled) => {
-                        ui.global::<State>().set_ime_active(false)
+                        ui.global::<ShellState>().set_ime_active(false)
                     }
                     _ => {}
                 }
@@ -181,8 +170,8 @@ pub(crate) fn install_events(ui: &AppWindow, native_events: bool) {
     let weak = ui.as_weak();
     ui.window().on_close_requested(move || {
         if let Some(ui) = weak.upgrade()
-            && ui.global::<State>().get_background_mode()
-            && ui.global::<State>().get_tray_available()
+            && ui.global::<SettingsState>().get_background_mode()
+            && runtime.update(|d| d.background.available)
         {
             let _ = ui.hide();
             slint::CloseRequestResponse::KeepWindowShown

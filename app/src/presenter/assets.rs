@@ -62,6 +62,8 @@ impl Images {
 
 impl Presenter {
     pub fn patch_asset(&mut self, ui: &AppWindow, state: &AppState, key: &str) {
+        let conversation = ui.global::<ConversationState>();
+        let detail = ui.global::<DetailState>();
         self.messages.asset_changed(key);
         self.chats.asset_changed(key);
         self.friends.asset_changed(key);
@@ -77,7 +79,7 @@ impl Presenter {
                 .and_then(|id| chats::chat_avatar(state, id))
                 .is_some_and(|a| a.key() == key)
             {
-                ui.global::<State>().set_chat_avatar(image.clone());
+                conversation.set_chat_avatar(image.clone());
             }
             let avatar = match state.detail_page() {
                 Some(DetailPage::Profile(id)) => detail::profile_avatar(state, id),
@@ -85,7 +87,7 @@ impl Presenter {
                 _ => None,
             };
             if avatar.is_some_and(|a| a.key() == key) {
-                ui.global::<State>().set_profile_avatar(image);
+                detail.set_profile_avatar(image);
             }
         }
         if state

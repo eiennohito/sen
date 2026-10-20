@@ -2,46 +2,10 @@ use super::system_events;
 use super::*;
 
 impl Presenter {
-    pub fn clear_compose_selection(&mut self) {
-        self.compose_ids.clear();
-    }
-    pub fn toggle_compose_friend(&mut self, id: &str) {
-        if !self.compose_ids.remove(id) {
-            self.compose_ids.insert(id.into());
-        }
-    }
     pub fn present_compose(&mut self, ui: &AppWindow, state: &AppState) {
+        let composer = ui.global::<ComposerState>();
         self.present_quote(ui, state);
-        let global = ui.global::<State>();
-        if global.get_new_chat_open() {
-            let query = global.get_new_chat_query().to_lowercase();
-            let (mut friends, mut chosen, mut names) = (Vec::new(), Vec::new(), Vec::new());
-            for f in state
-                .friends
-                .iter()
-                .filter(|f| !f.group && f.id != state.profile.mid)
-            {
-                let name = single_line(text::friend_name(f));
-                let selected = self.compose_ids.contains(&f.id);
-                let row = (
-                    f.id.clone(),
-                    (f.clone(), selected),
-                    f.avatar.iter().map(|a| a.key()).collect(),
-                );
-                if selected {
-                    names.push(name.clone());
-                    chosen.push(row.clone());
-                }
-                if name.to_lowercase().contains(&query) {
-                    friends.push(row);
-                }
-            }
-            global.set_new_chat_count(chosen.len() as i32);
-            global.set_new_chat_placeholder(names.join(", ").into());
-            self.compose_selected.replace(chosen);
-            self.compose_friends.replace(friends);
-        }
-        global.set_stickers_failed(state.sticker_packages_failed);
+        composer.set_stickers_failed(state.sticker_packages_failed);
         self.sticker_tabs.replace(
             state
                 .sticker_packages
@@ -59,7 +23,7 @@ impl Presenter {
         self.sticker_items.replace(
             state
                 .sticker_packages
-                .get(global.get_sticker_package() as usize)
+                .get(composer.get_sticker_package() as usize)
                 .map(|p| {
                     p.stickers
                         .iter()
@@ -71,7 +35,7 @@ impl Presenter {
         );
     }
     pub(super) fn present_quote(&self, ui: &AppWindow, state: &AppState) {
-        let global = ui.global::<State>();
+        let g = ui.global::<ComposerState>();
         let reply = state
             .composer_reply
             .as_ref()
@@ -86,7 +50,7 @@ impl Presenter {
         if let Some(reference) = &state.composer_reply {
             quote.reply_id = reference.message_id.clone().into();
         }
-        global.set_composer_reply(quote);
+        g.set_composer_reply(quote);
     }
     pub(super) fn quote(&self, m: &StoredMessage, state: &AppState) -> MessageRow {
         let image_key = m.body.image().map(|a| a.key()).unwrap_or_default();
@@ -107,8 +71,8 @@ impl Presenter {
         }
     }
     pub(crate) fn present_draft(&mut self, ui: &AppWindow, state: &AppState) {
-        let global = ui.global::<State>();
-        global.set_composer_mode(if state.selected.is_none() {
+        let g = ui.global::<ComposerState>();
+        g.set_composer_mode(if state.selected.is_none() {
             ComposerMode::Unavailable
         } else if state
             .selected
@@ -123,9 +87,8 @@ impl Presenter {
         } else {
             ComposerMode::Idle
         });
-        if ui.global::<State>().get_draft().as_str() != state.composer {
-            ui.global::<State>()
-                .set_draft(state.composer.clone().into());
+        if g.get_draft().as_str() != state.composer {
+            g.set_draft(state.composer.clone().into());
         }
     }
 }

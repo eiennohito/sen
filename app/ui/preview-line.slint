@@ -1,18 +1,18 @@
+import { ContentState } from "globals.slint";
 import { RichRun } from "types.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
 export component PreviewLine inherits Rectangle {
     in property <[RichRun]> runs;
     in property <string> prefix;
     in property <brush> text-color;
-    property <[RichRun]> source: State.rich-source(root.runs);
+    property <[RichRun]> source: ContentState.rich-source(root.runs);
     property <[RichRun]> line;
     property <bool> measuring;
     function reflow() {
         if !root.measuring && root.width >= 1px {
             root.measuring = true;
-            root.line = State.preview-layout(root.source, root.prefix, root.width / 1px, Tokens.preview / 1px);
+            root.line = ContentState.preview-layout(root.source, root.prefix, root.width / 1px, Tokens.preview / 1px);
             root.measuring = false;
         }
     }

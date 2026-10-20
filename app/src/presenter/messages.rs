@@ -3,18 +3,47 @@ use super::system_events;
 use super::*;
 
 impl Presenter {
+    pub(super) fn present_header(&mut self, ui: &AppWindow, state: &AppState) {
+        let g = ui.global::<ConversationState>();
+        g.set_has_chat(state.selected.is_some());
+        g.set_window_sub(state.window_sub as i32);
+        g.set_window_loading(state.window_loading);
+
+        if let Some(id) = &state.selected {
+            let chat = state.chats.get(id).map(|c| &c.chat);
+            let contact = state.contact(&id.0);
+            let title = chat
+                .map(|c| chats::chat_title(c, state))
+                .unwrap_or_else(|| contact.map(text::friend_name).unwrap_or("Conversation"));
+            let group = chat.is_some_and(|c| c.is_group);
+            let avatar = chats::chat_avatar(state, id);
+            g.set_chat_title(single_line(title).into());
+            g.set_chat_id(id.0.clone().into());
+            g.set_chat_initial(name_initial(title));
+            g.set_chat_avatar(
+                avatar
+                    .and_then(|a| self.images.get(&a.key()))
+                    .unwrap_or_default(),
+            );
+            g.set_chat_group(group);
+            let count = chat.and_then(|c| c.member_count).unwrap_or(0);
+            g.set_member_count(count as i32);
+        }
+    }
     pub(super) fn present_messages(&mut self, ui: &AppWindow, state: &AppState) {
-        let g = ui.global::<State>();
+        let content = ui.global::<ContentState>();
+        let conversation = ui.global::<ConversationState>();
         let rows = state
             .rows()
             .into_iter()
             .filter(|m| line::system_events::displayable(&m.body))
             .collect::<Vec<_>>();
-        if self.history_chat != state.selected && g.get_link_feedback() == text::LINK_FAILURE {
-            g.set_link_feedback("".into());
+        if self.history_chat != state.selected && content.get_link_feedback() == text::LINK_FAILURE
+        {
+            content.set_link_feedback("".into());
         }
         if self.messages.row_count() == 0 || self.history_chat != state.selected {
-            g.set_history_virtual(rows.len() > 60);
+            conversation.set_history_virtual(rows.len() > 60);
             self.history_chat = state.selected.clone();
         }
         let group = state
@@ -59,7 +88,7 @@ impl Presenter {
         self.messages.replace(next);
     }
     pub(super) fn present_history(&mut self, ui: &AppWindow, state: &AppState) {
-        let g = ui.global::<State>();
+        let g = ui.global::<ConversationState>();
         g.set_unread_divider(
             state
                 .unread_divider
@@ -76,13 +105,6 @@ impl Presenter {
             .into(),
         );
         g.set_history_can_follow(state.reaches_end);
-        g.set_unread_conversations(
-            state.chats.values().filter(|c| c.unread_count > 0).count() as i32
-        );
-        g.set_unread_stale(
-            state.connection != Connection::Online
-                || state.chats.values().any(|c| c.chat.unread_stale),
-        );
     }
 }
 

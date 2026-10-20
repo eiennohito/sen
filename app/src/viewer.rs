@@ -1,5 +1,6 @@
 //! Photo navigation and deliberate local exports. No network operations here.
-use crate::{AppWindow, State};
+use crate::AppWindow;
+use crate::ViewerState;
 use image::ImageEncoder;
 use slint::{ComponentHandle, Rgba8Pixel, SharedPixelBuffer};
 use std::{
@@ -16,18 +17,18 @@ pub(crate) fn save_photo(
     destination: Destination,
     source: Option<std::sync::Arc<Vec<u8>>>,
 ) {
-    if ui.global::<State>().get_viewer_saving()
-        || ui.global::<State>().get_viewer_loading()
-        || !ui.global::<State>().get_viewer_error().is_empty()
+    if ui.global::<ViewerState>().get_viewer_saving()
+        || ui.global::<ViewerState>().get_viewer_loading()
+        || !ui.global::<ViewerState>().get_viewer_error().is_empty()
     {
         return;
     }
-    let Some(pixels) = ui.global::<State>().get_viewer_image().to_rgba8() else {
+    let Some(pixels) = ui.global::<ViewerState>().get_viewer_image().to_rgba8() else {
         return;
     };
-    ui.global::<State>().set_viewer_saving(true);
-    ui.global::<State>().set_viewer_save_status("".into());
-    let key = ui.global::<State>().get_viewer_key();
+    ui.global::<ViewerState>().set_viewer_saving(true);
+    ui.global::<ViewerState>().set_viewer_save_status("".into());
+    let key = ui.global::<ViewerState>().get_viewer_key();
     let weak = ui.as_weak();
     std::thread::spawn(move || {
         let result = export_photo(
@@ -36,13 +37,13 @@ pub(crate) fn save_photo(
             destination,
         );
         let _ = weak.upgrade_in_event_loop(move |ui| {
-            ui.global::<State>().set_viewer_saving(false);
-            if !ui.global::<State>().get_viewer_open()
-                || ui.global::<State>().get_viewer_key() != key
+            ui.global::<ViewerState>().set_viewer_saving(false);
+            if !ui.global::<ViewerState>().get_viewer_open()
+                || ui.global::<ViewerState>().get_viewer_key() != key
             {
                 return;
             }
-            ui.global::<State>().set_viewer_save_status(
+            ui.global::<ViewerState>().set_viewer_save_status(
                 match result {
                     Ok(Some(path)) => format!("Saved to {}", path.display()),
                     Ok(None) => "".into(),
@@ -208,18 +209,18 @@ mod tests {
         std::thread::spawn(|| {
             let _platform = crate::snapshot::install().unwrap();
             let ui = crate::create_app_window().unwrap();
-            ui.global::<State>()
+            ui.global::<ViewerState>()
                 .set_viewer_image(slint::Image::from_rgba8(
                     SharedPixelBuffer::<Rgba8Pixel>::new(1, 1),
                 ));
-            ui.global::<State>().set_viewer_loading(true);
+            ui.global::<ViewerState>().set_viewer_loading(true);
             save_photo(&ui, crate::dev::demo::destination(), None);
-            assert!(!ui.global::<State>().get_viewer_saving());
-            ui.global::<State>().set_viewer_loading(false);
-            ui.global::<State>()
+            assert!(!ui.global::<ViewerState>().get_viewer_saving());
+            ui.global::<ViewerState>().set_viewer_loading(false);
+            ui.global::<ViewerState>()
                 .set_viewer_error("Original unavailable".into());
             save_photo(&ui, crate::dev::demo::destination(), None);
-            assert!(!ui.global::<State>().get_viewer_saving());
+            assert!(!ui.global::<ViewerState>().get_viewer_saving());
         })
         .join()
         .unwrap();

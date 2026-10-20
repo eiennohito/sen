@@ -1,7 +1,8 @@
+import { DetailAction, DetailPageMode } from "globals.slint";
+import { ContentState, DetailState, ShellState } from "globals.slint";
 import { Pressable, FocusRing, Button } from "button.slint";
-import { FocusOpener, DetailPageMode, DetailAction } from "types.slint";
+import { FocusOpener } from "types.slint";
 import { RowText } from "list-row.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { IconButton } from "icon-button.slint";
 import { Avatar } from "avatar.slint";
@@ -52,76 +53,76 @@ export component Detail inherits FocusScope {
     focus-on-tab-navigation: false;
     public function focus-first() {
         // Header controls are conditional; enter the first available stop.
-        header-start.focus(); State.tab-focus(false);
+        header-start.focus(); ShellState.tab-focus(false);
     }
     public function focus-open() {
         // Profile more is conditional; Close details is the fixed header stop.
-        close.focus(); if State.detail-page == DetailPageMode.profile { State.tab-focus(true); }
+        close.focus(); if DetailState.detail-page == DetailPageMode.profile { ShellState.tab-focus(true); }
     }
     public function focus-action() {
         // Profile and group actions vary with availability and busy state.
-        action-end.focus(); State.tab-focus(true);
+        action-end.focus(); ShellState.tab-focus(true);
     }
     callback open-dialog(DetailAction);
-    capture-key-pressed(event) => { if State.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
+    capture-key-pressed(event) => { if ShellState.profile-sheet && event.text == Key.Return && event.modifiers.control { return accept; } reject }
     key-pressed(event) => {
-        if State.ime-active { return reject; }
-        if event.text == Key.Escape { State.pop-detail(false); return accept; }
+        if ShellState.ime-active { return reject; }
+        if event.text == Key.Escape { DetailState.pop-detail(false); return accept; }
         reject
     }
     Rectangle {
         header-start := FocusScope { width: 0px; height: 0px; focus-on-click: false; focus-on-tab-navigation: false; }
         HorizontalLayout { y: 0px; width: parent.width; height: 56px; padding: 12px; spacing: 8px;
-            if State.detail-depth > 1: back := IconButton { label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { State.pop-detail(false); } }
+            if DetailState.detail-depth > 1: back := IconButton { label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { DetailState.pop-detail(false); } }
             heading := Text { text: "Profile"; font-size: Tokens.heading; font-weight: 600; vertical-alignment: center; }
-            if State.detail-page == DetailPageMode.profile: more := IconButton { label: "Profile more"; icon: @image-url("../assets/icons/more.svg"); activated => { menu.show({x: root.width - 176px, y: 48px}); } }
-            close := IconButton { label: "Close details"; icon: @image-url("../assets/icons/close.svg"); activated => { State.pop-detail(true); } }
+            if DetailState.detail-page == DetailPageMode.profile: more := IconButton { label: "Profile more"; icon: @image-url("../assets/icons/more.svg"); activated => { menu.show({x: root.width - 176px, y: 48px}); } }
+            close := IconButton { label: "Close details"; icon: @image-url("../assets/icons/close.svg"); activated => { DetailState.pop-detail(true); } }
         }
         cover := Rectangle { y: 56px; width: parent.width; height: 96px; background: Tokens.accent.with-alpha(0.25); }
         info := ScrollView { y: 88px; width: parent.width; height: parent.height - self.y; horizontal-scrollbar-policy: always-off; content-width: self.width;
             VerticalLayout { padding: 16px; spacing: 12px; alignment: start;
                 HorizontalLayout { alignment: center;
                     Rectangle { width: 96px; height: 96px;
-                        Avatar { width: 96px; height: 96px; identity: State.profile-id; initial: State.profile-initial; picture: State.profile-avatar; }
+                        Avatar { width: 96px; height: 96px; identity: DetailState.profile-id; initial: DetailState.profile-initial; picture: DetailState.profile-avatar; }
                         avatar-focus := Pressable { accessible-label: "Open profile photo";
-                            activated => { State.profile-photo(); }
+                            activated => { DetailState.profile-photo(); }
                             FocusRing { focused: avatar-focus.has-focus; border-radius: 48px; }
                         }
                     }
                 }
                 HorizontalLayout { alignment: center; spacing: 8px;
-                    RichFlow { width: min(root.name-width, root.width - 32px - (State.profile-favourite ? 28px : 0px)); runs: State.profile-name-runs; text-size: Tokens.heading; max-lines: 2; elide-overflow: true; accessible-role: text; accessible-label: State.profile-name; natural-width(value) => { root.name-width = max(24px,value * 1px); } }
-                    if State.profile-favourite: Image { height: 20px; width: 20px; source: @image-url("../assets/icons/star.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Favourite"; }
+                    RichFlow { width: min(root.name-width, root.width - 32px - (DetailState.profile-favourite ? 28px : 0px)); runs: DetailState.profile-name-runs; text-size: Tokens.heading; max-lines: 2; elide-overflow: true; accessible-role: text; accessible-label: DetailState.profile-name; natural-width(value) => { root.name-width = max(24px,value * 1px); } }
+                    if DetailState.profile-favourite: Image { height: 20px; width: 20px; source: @image-url("../assets/icons/star.svg"); colorize: Tokens.secondary; accessible-role: image; accessible-label: "Favourite"; }
                 }
-                if State.profile-original != "": Text { text: State.profile-original; color: Tokens.secondary; wrap: word-wrap; horizontal-alignment: center; }
-                if State.detail-page == DetailPageMode.profile && State.profile-status != "": RichFlow { runs: State.profile-status-runs; centered: true; text-color: Tokens.secondary; max-lines: 4; accessible-role: text; accessible-label: State.profile-status; }
-                if State.detail-page == DetailPageMode.profile && State.profile-notice != "": Text { text: State.profile-notice; color: Tokens.secondary; wrap: word-wrap; }
-                if State.detail-page == DetailPageMode.profile && (State.profile-available || State.profile-friend || State.profile-addable): profile-actions := HorizontalLayout { height: 72px; alignment: center; spacing: 8px;
-                    if State.profile-available: chat := ProfileActionButton { enabled: true; label: "Chat"; icon: @image-url("../assets/icons/chats.svg"); activated => { State.start-friend-chat(); } }
-                    if State.profile-friend: rename := ProfileActionButton { enabled: !State.detail-busy; label: State.detail-running == DetailAction.rename ? "Renaming…" : "Rename"; icon: @image-url("../assets/icons/rename.svg"); activated => { root.open-dialog(DetailAction.rename); } }
-                    if State.profile-addable: add := ProfileActionButton { enabled: !State.detail-busy; label: State.detail-running == DetailAction.add ? "Adding…" : "Add friend"; icon: @image-url("../assets/icons/add-friend.svg"); activated => { State.detail-action(DetailAction.add, ""); } }
+                if DetailState.profile-original != "": Text { text: DetailState.profile-original; color: Tokens.secondary; wrap: word-wrap; horizontal-alignment: center; }
+                if DetailState.detail-page == DetailPageMode.profile && DetailState.profile-status != "": RichFlow { runs: DetailState.profile-status-runs; centered: true; text-color: Tokens.secondary; max-lines: 4; accessible-role: text; accessible-label: DetailState.profile-status; }
+                if DetailState.detail-page == DetailPageMode.profile && DetailState.profile-notice != "": Text { text: DetailState.profile-notice; color: Tokens.secondary; wrap: word-wrap; }
+                if DetailState.detail-page == DetailPageMode.profile && (DetailState.profile-available || DetailState.profile-friend || DetailState.profile-addable): profile-actions := HorizontalLayout { height: 72px; alignment: center; spacing: 8px;
+                    if DetailState.profile-available: chat := ProfileActionButton { enabled: true; label: "Chat"; icon: @image-url("../assets/icons/chats.svg"); activated => { DetailState.start-friend-chat(); } }
+                    if DetailState.profile-friend: rename := ProfileActionButton { enabled: !DetailState.detail-busy; label: DetailState.detail-running == DetailAction.rename ? "Renaming…" : "Rename"; icon: @image-url("../assets/icons/rename.svg"); activated => { root.open-dialog(DetailAction.rename); } }
+                    if DetailState.profile-addable: add := ProfileActionButton { enabled: !DetailState.detail-busy; label: DetailState.detail-running == DetailAction.add ? "Adding…" : "Add friend"; icon: @image-url("../assets/icons/add-friend.svg"); activated => { DetailState.detail-action(DetailAction.add, ""); } }
                 }
-                if State.detail-page == DetailPageMode.group: Text { text: State.group-count >= 0 ? State.group-count + " members" : ""; color: Tokens.secondary; horizontal-alignment: center; }
-                member-row := DetailRow { visible: State.detail-page == DetailPageMode.group; height: self.visible ? 52px : 0px; label: "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : ""); activated => { State.open-members(); } }
-                if State.detail-page == DetailPageMode.group && !State.group-room && !State.group-left: mute := DetailRow { accessible-role: checkbox; enabled: State.group-writable && !State.detail-busy; label: State.detail-running == DetailAction.mute ? "Updating…" : "Notifications"; toggle: true; checked: !State.group-muted; activated => { State.detail-action(DetailAction.mute, ""); } }
-                if State.detail-page == DetailPageMode.group && !State.group-room && !State.group-left: leave := DetailRow { enabled: !State.detail-busy; label: State.detail-running == DetailAction.leave ? "Leaving…" : "Leave group"; danger: true; activated => { root.open-dialog(DetailAction.leave); } }
-                if State.detail-error != "": Text { text: State.detail-error; color: Tokens.danger; wrap: word-wrap; }
+                if DetailState.detail-page == DetailPageMode.group: Text { text: DetailState.group-count >= 0 ? DetailState.group-count + " members" : ""; color: Tokens.secondary; horizontal-alignment: center; }
+                member-row := DetailRow { visible: DetailState.detail-page == DetailPageMode.group; height: self.visible ? 52px : 0px; label: "Members" + (DetailState.group-count >= 0 ? " (" + DetailState.group-count + ")" : ""); activated => { DetailState.open-members(); } }
+                if DetailState.detail-page == DetailPageMode.group && !DetailState.group-room && !DetailState.group-left: mute := DetailRow { accessible-role: checkbox; enabled: DetailState.group-writable && !DetailState.detail-busy; label: DetailState.detail-running == DetailAction.mute ? "Updating…" : "Notifications"; toggle: true; checked: !DetailState.group-muted; activated => { DetailState.detail-action(DetailAction.mute, ""); } }
+                if DetailState.detail-page == DetailPageMode.group && !DetailState.group-room && !DetailState.group-left: leave := DetailRow { enabled: !DetailState.detail-busy; label: DetailState.detail-running == DetailAction.leave ? "Leaving…" : "Leave group"; danger: true; activated => { root.open-dialog(DetailAction.leave); } }
+                if DetailState.detail-error != "": Text { text: DetailState.detail-error; color: Tokens.danger; wrap: word-wrap; }
             }
             action-end := FocusScope { width: 0px; height: 0px; focus-on-click: false; focus-on-tab-navigation: false; }
         }
-        members := Members { visible: State.detail-page == DetailPageMode.members; y: 56px; width: parent.width; height: parent.height - 56px; }
+        members := Members { visible: DetailState.detail-page == DetailPageMode.members; y: 56px; width: parent.width; height: parent.height - 56px; }
     }
     states [
-        group when State.detail-page == DetailPageMode.group: {
+        group when DetailState.detail-page == DetailPageMode.group: {
             heading.text: "Group info"; cover.visible: false; info.y: 56px;
         }
-        members when State.detail-page == DetailPageMode.members: {
-            heading.text: "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : "");
+        members when DetailState.detail-page == DetailPageMode.members: {
+            heading.text: "Members" + (DetailState.group-count >= 0 ? " (" + DetailState.group-count + ")" : "");
             cover.visible: false; info.visible: false;
         }
     ]
     menu := ContextMenuArea {
         enabled: false;
-        Menu { MenuItem { title: "Copy name"; activated => { State.copy-text(State.profile-name); } } }
+        Menu { MenuItem { title: "Copy name"; activated => { ContentState.copy-text(DetailState.profile-name); } } }
     }
 }

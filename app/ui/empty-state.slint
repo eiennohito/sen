@@ -1,6 +1,6 @@
+import { AuthState } from "globals.slint";
 import { Tokens } from "tokens.slint";
 import { Button } from "button.slint";
-import { State } from "state.slint";
 import { Avatar } from "avatar.slint";
 export component EmptyState inherits Rectangle {
     in property <bool> signed-out;
@@ -18,6 +18,6 @@ export component EmptyState inherits Rectangle {
         }
         if root.name != "": Text { text: root.name; font-size: Tokens.base; color: Tokens.text; font-weight: 600; horizontal-alignment: center; }
         Text { text: root.signed-out ? "Not signed in" : root.text; font-size: Tokens.base; color: root.name != "" ? Tokens.secondary : Tokens.text; horizontal-alignment: center; wrap: word-wrap; }
-        if root.signed-out: HorizontalLayout { alignment: center; Button { text: "Sign in"; primary: true; clicked => { State.open-sign-in(); } } }
+        if root.signed-out: HorizontalLayout { alignment: center; Button { text: "Sign in"; primary: true; clicked => { AuthState.open-sign-in(); } } }
     }
 }

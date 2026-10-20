@@ -1,5 +1,5 @@
+import { ShellState } from "globals.slint";
 import { ConnectionNotice } from "connection-notice.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 export component Pane inherits Rectangle {
     in property <bool> virtual: false;
@@ -7,7 +7,7 @@ export component Pane inherits Rectangle {
     in property <length> full-height: -1px;
     in property <bool> connection-feedback: false;
     out property <length> inset <=> root.cover-height;
-    property <length> cover-height: root.connection-feedback && State.connection-feedback-visible ? State.connection-notice-height : 0px;
+    property <length> cover-height: root.connection-feedback && ShellState.connection-feedback-visible ? ShellState.connection-notice-height : 0px;
     property <length> residual;
     out property <length> visible-top: root.cover-height + root.residual;
     out property <length> visible-height: max(0px, root.height - root.visible-top);
@@ -68,7 +68,7 @@ export component Pane inherits Rectangle {
         }
     }
     callback connection-dismissed();
-    public function focus-connection() { notice-host.focus(); State.tab-focus(false); }
+    public function focus-connection() { notice-host.focus(); ShellState.tab-focus(false); }
     out property <bool> connection-focused;
     notice-host := FocusScope {
         x: 0px; y: 0px;
@@ -79,7 +79,7 @@ export component Pane inherits Rectangle {
             x: 0px; y: 0px;
             changed has-focus => { root.connection-focused = self.has-focus; }
             dismissed => { root.connection-dismissed(); }
-            visible: State.connection-feedback-visible;
+            visible: ShellState.connection-feedback-visible;
         }
     }
     viewport := Rectangle {

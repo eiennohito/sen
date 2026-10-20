@@ -76,6 +76,8 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         reveal: None,
         viewer_asset: None,
         viewer_source: None,
+        viewer_name: String::new(),
+        attachments: Default::default(),
         destination: viewer::save_dialog,
         notifications: if !launch.headless {
             Some(notifications::Notifications::start())
@@ -133,9 +135,7 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
                     let _ = ui.show();
                     if let desktop_env::desktop_integration::Activation::OpenChat(chat) = e {
                         d.update(|d| {
-                            d.open_chat(&ui, ChatId(chat));
-                            d.render(&ui);
-                            ui.global::<State>().set_show_conversation(true);
+                            d.show_chat(&ui, ChatId(chat));
                         });
                     }
                 }

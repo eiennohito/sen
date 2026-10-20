@@ -2,9 +2,9 @@ use crate::*;
 use slint::private_unstable_api::re_exports::WindowInner;
 
 macro_rules! global_callback {
-    ($ui:ident, $callback:ident, $method:ident) => {
+    ($ui:ident, $global:ty, $callback:ident, $method:ident) => {
         let weak = $ui.as_weak();
-        $ui.global::<State>().$callback(move || {
+        $ui.global::<$global>().$callback(move || {
             if let Some(ui) = weak.upgrade() {
                 ui.$method();
             }
@@ -56,12 +56,12 @@ pub(crate) fn install(ui: &AppWindow) {
                                         )
                                     )
                                 {
-                                    ui.global::<State>().set_keyboard_navigation(true);
+                                    ui.global::<ShellState>().set_keyboard_navigation(true);
                                 }
                             }
                             WindowEvent::WindowActiveChanged(false) => chords.set(0),
                             WindowEvent::PointerPressed { .. } => {
-                                ui.global::<State>().set_keyboard_navigation(false)
+                                ui.global::<ShellState>().set_keyboard_navigation(false)
                             }
                             _ => {}
                         }
@@ -75,14 +75,34 @@ pub(crate) fn install(ui: &AppWindow) {
         }
         *window = Some(ui.as_weak());
     });
-    global_callback!(ui, on_focus_composer, invoke_focus_composer);
-    global_callback!(ui, on_focus_connection_first, invoke_focus_connection_first);
-    global_callback!(ui, on_focus_friend_search, invoke_focus_friend_search);
-    global_callback!(ui, on_focus_history, invoke_focus_history);
-    global_callback!(ui, on_focus_search, invoke_focus_search);
-    global_callback!(ui, on_focus_settings_opener, invoke_focus_settings_opener);
+    global_callback!(ui, ShellState, on_focus_composer, invoke_focus_composer);
+    global_callback!(
+        ui,
+        ShellState,
+        on_focus_connection_first,
+        invoke_focus_connection_first
+    );
+    global_callback!(
+        ui,
+        ShellState,
+        on_focus_friend_search,
+        invoke_focus_friend_search
+    );
+    global_callback!(
+        ui,
+        ConversationState,
+        on_focus_history,
+        invoke_focus_history
+    );
+    global_callback!(ui, ShellState, on_focus_search, invoke_focus_search);
+    global_callback!(
+        ui,
+        ShellState,
+        on_focus_settings_opener,
+        invoke_focus_settings_opener
+    );
     let weak = ui.as_weak();
-    ui.global::<State>().on_tab_focus(move |back| {
+    ui.global::<ShellState>().on_tab_focus(move |back| {
         if let Some(ui) = weak.upgrade() {
             let window = WindowInner::from_pub(ui.window());
             if back {
@@ -92,36 +112,7 @@ pub(crate) fn install(ui: &AppWindow) {
             }
         }
     });
-    let saved = Rc::new(RefCell::new(Vec::new()));
-    let record = saved.clone();
-    let weak = ui.as_weak();
-    ui.global::<State>().on_remember_detail_focus(move |reset| {
-        if let Some(ui) = weak.upgrade() {
-            if reset {
-                record.borrow_mut().clear();
-            }
-            record.borrow_mut().push(ui.invoke_focus_opener());
-        }
-    });
-    let weak = ui.as_weak();
-    ui.global::<State>().on_restore_detail_focus(move |all| {
-        if let Some(ui) = weak.upgrade() {
-            let opener = if all {
-                let first = saved.borrow().first().cloned();
-                saved.borrow_mut().clear();
-                first
-            } else {
-                saved.borrow_mut().pop()
-            };
-            if let Some(opener) = opener {
-                ui.invoke_restore_opener(opener);
-            } else if ui.global::<State>().get_detail_open() {
-                ui.invoke_focus_profile_close();
-            } else {
-                ui.invoke_focus_composer();
-            }
-        }
-    });
+    DETAIL_FOCUS.with_borrow_mut(Vec::clear);
 }
 
 #[cfg(feature = "demo")]
@@ -144,4 +135,34 @@ pub(crate) fn install_demo(ui: &AppWindow) {
                 ui.invoke_restore_opener(opener);
             }
         });
+}
+
+thread_local! {
+    static DETAIL_FOCUS: RefCell<Vec<FocusOpener>> = const { RefCell::new(Vec::new()) };
+}
+pub(crate) fn remember_detail(ui: &AppWindow, reset: bool) {
+    DETAIL_FOCUS.with_borrow_mut(|saved| {
+        if reset {
+            saved.clear();
+        }
+        saved.push(ui.invoke_focus_opener());
+    });
+}
+pub(crate) fn restore_detail(ui: &AppWindow, all: bool) {
+    let opener = DETAIL_FOCUS.with_borrow_mut(|saved| {
+        if all {
+            let first = saved.first().copied();
+            saved.clear();
+            first
+        } else {
+            saved.pop()
+        }
+    });
+    if let Some(opener) = opener {
+        ui.invoke_restore_opener(opener);
+    } else if ui.global::<DetailState>().get_detail_open() {
+        ui.invoke_focus_profile_close();
+    } else {
+        ui.invoke_focus_composer();
+    }
 }

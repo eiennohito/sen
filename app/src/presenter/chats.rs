@@ -8,7 +8,18 @@ impl Presenter {
         state: &AppState,
         query: &str,
         category: ChatCategory,
+        text_size: i32,
     ) {
+        let g = ui.global::<ChatsState>();
+        g.set_selected_chat(
+            state
+                .selected
+                .as_ref()
+                .and_then(|id| state.chat_order.iter().position(|c| c == id))
+                .map(|n| n as i32)
+                .unwrap_or(-1),
+        );
+
         let mut chats = Vec::new();
         for (index, id) in state.chat_order.iter().enumerate() {
             let item = &state.chats[id];
@@ -30,7 +41,7 @@ impl Presenter {
                     .and_then(|m| system_events::text(&m.body, state, &m.sender_id)),
                 offline: state.connection != Connection::Online,
                 index,
-                text_size: ui.global::<State>().get_text_size(),
+                text_size,
             };
             let assets = inputs
                 .avatar
@@ -47,45 +58,6 @@ impl Presenter {
             chats.push((id.clone(), inputs, assets));
         }
         self.chats.replace(chats);
-    }
-    pub(super) fn present_header(&mut self, ui: &AppWindow, state: &AppState) {
-        let g = ui.global::<State>();
-        g.set_selected_chat(
-            state
-                .selected
-                .as_ref()
-                .and_then(|id| state.chat_order.iter().position(|c| c == id))
-                .map(|n| n as i32)
-                .unwrap_or(-1),
-        );
-        if let Some(id) = &state.selected {
-            let chat = state.chats.get(id).map(|c| &c.chat);
-            let contact = state.contact(&id.0);
-            let title = chat
-                .map(|c| chat_title(c, state))
-                .unwrap_or_else(|| contact.map(text::friend_name).unwrap_or("Conversation"));
-            let group = chat.is_some_and(|c| c.is_group);
-            let avatar = chat_avatar(state, id);
-            g.set_chat_title(single_line(title).into());
-            g.set_chat_id(id.0.clone().into());
-            g.set_chat_initial(name_initial(title));
-            g.set_chat_avatar(
-                avatar
-                    .and_then(|a| self.images.get(&a.key()))
-                    .unwrap_or_default(),
-            );
-            g.set_chat_group(group);
-            let count = chat.and_then(|c| c.member_count).unwrap_or(0);
-            g.set_member_count(count as i32);
-            g.set_chat_subtitle(
-                if group {
-                    format!("{count} members")
-                } else {
-                    String::new()
-                }
-                .into(),
-            );
-        }
     }
 
     pub fn patch_draft(&mut self, chat: &ChatId, draft: &Option<Draft>) {

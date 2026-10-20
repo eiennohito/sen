@@ -221,7 +221,17 @@ def check_detail_stack():
     assert any(item.get("accessibleLabel")=="Weekend plans" for item in tree()), "group info is not bound to its chat"
     click("Members (25)")
     wait_element("Search members", "TextInput")
+    call("hover_element", elementHandle=element("Search members", "TextInput")["handle"])
+    assert all(call("get_element_properties", elementHandle=item["handle"]).get("computedOpacity", 0) == 0 for item in tree() if item.get("accessibleLabel", "").startswith("Chat with ")), "pointer users saw a keyboard-selected row's Chat with action"
     set_value("Search members", "葵")
+    click("Search members", "TextInput")
+    key("\uf701")
+    focused("Group members", "List")
+    focus_tab()
+    focused("Chat with 葵")
+    assert call("get_element_properties", elementHandle=element("Chat with 葵", "Button")["handle"]).get("computedOpacity", 0) == 1, "keyboard-selected Chat with action is hidden"
+    focus_tab(True)
+    focused("Group members", "List")
     click("Open member: 葵")
     wait_element("Profile", "Text")
     click("Rename")
@@ -572,7 +582,7 @@ def check_focus():
                 prefix = expected if panel else [] if narrow else ["Navigation", "New chat", "Find a conversation", "All", "Conversations"]
                 check_chain(f"members {layer_kind} {suffix}", prefix + layer, ("Close details", "Button"))
                 set_value("Search members", "葵")
-                check_chain(f"members search clear {suffix}", prefix + layer[:2] + ["Clear search"] + layer[2:], ("Close details", "Button"))
+                check_chain(f"members search clear {suffix}", prefix + layer[:2] + ["Clear search"] + layer[2:] + ["Chat with 葵"], ("Close details", "Button"))
                 click("Open member: 葵")
                 check_chain(f"member profile {layer_kind} {suffix}", prefix + ["Back", "Profile more", "Close details", "Open profile photo", "Chat", "Rename"], ("Close details", "Button"))
                 key("\x1b")
@@ -731,6 +741,25 @@ def check_compose():
     open_reactions()
     wait_for(lambda: element("LOVE", "Button").get("accessibleItemSelected"), "own reaction was not highlighted")
     screenshot("reactions")
+    key("\x1b")
+    body = next(item for item in tree() if item.get("accessibleRole") == "TextInput" and item.get("accessibleValue") == before_shortcut)
+    call("click_element", elementHandle=body["handle"])
+    call("hover_element", elementHandle=element("Find a conversation", "TextInput")["handle"])
+    for label in ("LOVE, 1 reactions", "React", "Reply"):
+        focus_tab()
+        assert is_focused(element(label, "Button")), f"reaction message Tab sequence missed {label}: {focused_control()}"
+    for label in ("React", "LOVE, 1 reactions"):
+        focus_tab(True)
+        assert is_focused(element(label, "Button")), f"reaction message reverse Tab sequence missed {label}"
+    focus_tab(True)
+    assert is_focused(body), "reverse Tab from reaction chip skipped its message body"
+    for label in ("LOVE, 1 reactions", "React", "Reply"):
+        focus_tab()
+        assert is_focused(element(label, "Button")), f"reaction message Tab sequence missed {label}: {focused_control()}"
+    composer_start = next((label, "Button") for label in ("Stickers", "Attach") if element(label, "Button").get("accessibleEnabled"))
+    focus_tab()
+    assert is_focused(element(*composer_start)), "reaction message Reply skipped the composer's first control"
+    open_reactions()
     click("LOVE")
     open_reactions()
     wait_for(lambda: not element("LOVE", "Button").get("accessibleItemSelected"), "repeat pick did not cancel")
@@ -983,6 +1012,16 @@ def check_sticker():
     assert element(sticker_time, "Text")["absolutePosition"] == before_sticker_time, "sticker completion moved its timestamp"
     assert not any(item.get("accessibleLabel") == "Sticker · [sticker]" or item.get("accessibleValue") == "Sticker · [sticker]" for item in tree()), "loaded sticker retained its fallback label"
 
+    click("Open photo", "Button")
+    wait_element("Photo in viewer", "Image")
+    key("\x1b")
+    opener = element("Open photo", "Button")
+    assert is_focused(opener), "sticker viewer did not return to its media control"
+    focus_tab()
+    assert_restored_focus("React")
+    focus_tab(True)
+    assert is_focused(opener), "reverse Tab from sticker React skipped its Open photo control"
+
     demo_scenario("Group preview")
     wait_element("Members", "Button")  # The group's details arrive after the fixture history.
     # Inspect both ends because the final timestamp can be clipped. Scope to
@@ -1145,6 +1184,13 @@ def check_layers():
     screenshot("grouped-reactors")
     key("\x1b")
     assert is_focused(element("Emoji, 2 reactions", "Button"))
+    focus_tab(True)
+    assert_restored_focus("NICE, 1 reactions")
+    focus_tab()
+    assert_restored_focus("Emoji, 2 reactions")
+    key("\n")
+    assert_reactor_popup_visible()
+    key("\x1b")
 
     def unsend_menu(body):
         message = next(item for item in tree() if body in item.get("accessibleLabel", "") and item.get("accessibleRole") in ("Text", "TextInput"))
@@ -1228,6 +1274,13 @@ def check_layers():
     exported.unlink()
     key("\x1b")
     assert any(item.get("accessibleLabel") == "Open photo" and is_focused(item) for item in tree()), "viewer did not restore the photo opener"
+    call("hover_element", elementHandle=element("Open photo", "Button")["handle"])
+    focus_tab()
+    assert_restored_focus("React")
+    focus_tab(True)
+    assert is_focused(element("Open photo", "Button")), "reverse Tab from photo React skipped that message's Open photo control"
+    assert focused_control()["visible"], "reverse Tab from photo React focused hidden content"
+    assert focused_control().get("role") != "TextInput", "reverse Tab from photo React focused its invisible body"
     photos = [item for item in tree() if item.get("accessibleLabel") == "Open photo" and item.get("accessibleRole") == "Button"]
     call("click_element", elementHandle=photos[0]["handle"], button="Right")
     click("Open photo", "Text")

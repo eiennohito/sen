@@ -21,11 +21,11 @@ export component CheckBox inherits Pressable {
 }
 export component ComboBox inherits Pressable {
     in property <[string]> model;
-    in-out property <int> current-index;
-    callback selected(string);
+    in property <int> current-index;
+    callback selected(int);
     height: 36px; border-radius: 8px; background: Tokens.surface-2;
     accessible-role: combobox; accessible-value: root.model[root.current-index];
-    public function select(index: int) { root.current-index = max(0, min(root.model.length - 1, index)); root.selected(root.model[root.current-index]); }
+    public function select(index: int) { root.selected(max(0, min(root.model.length - 1, index))); }
     RowText { x: 12px; width: parent.width - 48px; height: parent.height; text: root.model[root.current-index]; color: Tokens.text; font-size: Tokens.base; vertical-alignment: center; }
     Image { x: parent.width - 32px; y: 10px; width: 16px; height: 16px; source: @image-url("../assets/icons/down.svg"); colorize: Tokens.secondary; }
     FocusRing { outset: 4px; focused: root.has-focus; }

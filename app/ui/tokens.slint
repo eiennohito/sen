@@ -1,6 +1,7 @@
+import { SettingsState } from "globals.slint";
 import { Palette } from "std-widgets.slint";
 export global Tokens {
-    in-out property <length> base: 15px;
+    out property <length> base: SettingsState.text-size * 1px;
     out property <length> small: max(11px, base - 2px);
     out property <length> heading: base + 6px;
     out property <length> preview: base - 1px;

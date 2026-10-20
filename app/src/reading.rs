@@ -238,7 +238,7 @@ pub(crate) fn return_anchor(
 mod tests {
     use super::*;
     use crate::ChatCategory;
-    use crate::State;
+    use crate::*;
     use slint::ComponentHandle;
 
     #[test]
@@ -295,7 +295,7 @@ mod tests {
             presenter.install(&ui);
             presenter.present(&ui, &state, "", ChatCategory::All);
             assert!(
-                ui.global::<State>()
+                ui.global::<ChatsState>()
                     .get_chats()
                     .iter()
                     .any(|row| row.id == "alice" && row.unread == 1)
@@ -326,7 +326,7 @@ mod tests {
             }
             presenter.present(&ui, &state, "", ChatCategory::All);
             let row = ui
-                .global::<State>()
+                .global::<ChatsState>()
                 .get_chats()
                 .iter()
                 .find(|row| row.id == "alice")

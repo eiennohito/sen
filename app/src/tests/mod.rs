@@ -37,6 +37,8 @@ fn test_window() -> AppWindow {
         reveal: None,
         viewer_asset: None,
         viewer_source: None,
+        viewer_name: String::new(),
+        attachments: Default::default(),
         destination: viewer::save_dialog,
         notifications: None,
         background: Default::default(),
@@ -65,3 +67,17 @@ mod rich_flow;
 mod ui_regressions;
 
 mod messages;
+
+fn element(ui: &AppWindow, label: &str) -> i_slint_backend_testing::ElementHandle {
+    i_slint_backend_testing::ElementHandle::find_by_accessible_label(ui, label)
+        .next()
+        .unwrap_or_else(|| panic!("missing {label}"))
+}
+fn visible(ui: &AppWindow, label: &str) -> bool {
+    i_slint_backend_testing::ElementHandle::find_by_accessible_label(ui, label)
+        .next()
+        .is_some()
+}
+fn search(ui: &AppWindow) -> i_slint_backend_testing::ElementHandle {
+    element(ui, "Find a conversation")
+}

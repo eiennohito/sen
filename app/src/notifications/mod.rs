@@ -25,7 +25,7 @@ impl Notifications {
             "LINE preview",
             "日本語と emoji 🐈 · Test notification",
         );
-        ui.global::<State>()
+        ui.global::<SettingsState>()
             .set_notification_status("Sending test notification…".into());
         self.service.probe();
         self.service.notify(notifications::worker::Notice {
@@ -37,13 +37,12 @@ impl Notifications {
         });
     }
     pub fn incoming(&self, ui: &AppWindow, state: &AppState, m: &MessageInput) {
-        let global = ui.global::<State>();
         let muted = state.chats.get(&m.chat_id).is_some_and(|c| c.chat.muted);
         let prefs = preferences(&state.prefs.desktop);
         let actions = policy::decide(
             &prefs,
             Context {
-                active: global.get_window_active(),
+                active: ui.global::<ShellState>().get_window_active(),
                 muted,
             },
             if m.mentioned {
@@ -54,7 +53,7 @@ impl Notifications {
                 EventKind::Message
             },
         );
-        if actions.notify && !global.get_notifications_paused() {
+        if actions.notify && !ui.global::<SettingsState>().get_notifications_paused() {
             let title = state
                 .chats
                 .get(&m.chat_id)
@@ -82,16 +81,17 @@ impl Notifications {
 pub(crate) fn handle(event: notifications::worker::Event, ui: &AppWindow, desktop: &mut Desktop) {
     match event {
         notifications::worker::Event::Availability(available) => {
-            ui.global::<State>().set_notification_available(available);
+            ui.global::<SettingsState>()
+                .set_notification_available(available);
             if !available {
-                ui.global::<State>()
+                ui.global::<SettingsState>()
                     .set_notification_status("Notification service not available".into());
             }
         }
         notifications::worker::Event::OpenChat { chat } => {
             desktop.open_chat(ui, ChatId(chat));
             let _ = ui.show();
-            ui.global::<State>().set_show_conversation(true);
+            ui.global::<ShellState>().set_show_conversation(true);
         }
         notifications::worker::Event::MarkRead { chat, message } => {
             if let Ok(id) = ServerId::new(message) {
@@ -102,7 +102,7 @@ pub(crate) fn handle(event: notifications::worker::Event, ui: &AppWindow, deskto
             }
         }
         notifications::worker::Event::Delivered(chat) if chat == "notification-test" => ui
-            .global::<State>()
+            .global::<SettingsState>()
             .set_notification_status("Test notification sent".into()),
         notifications::worker::Event::Delivered(chat)
         | notifications::worker::Event::Closed(chat) => {
@@ -161,6 +161,8 @@ mod tests {
                 reveal: None,
                 viewer_asset: None,
                 viewer_source: None,
+                viewer_name: String::new(),
+                attachments: Default::default(),
                 destination: viewer::save_dialog,
                 notifications: None,
                 background: Default::default(),
@@ -208,9 +210,10 @@ mod tests {
                     .apply(receive("waiting for B's draft to be persisted"));
             }
             desktop.render(&ui);
-            ui.global::<State>().set_draft("unsent draft in A".into());
-            ui.global::<State>().set_editor_caret(8);
-            ui.global::<State>().set_editor_anchor(3);
+            ui.global::<ComposerState>()
+                .set_draft("unsent draft in A".into());
+            ui.global::<ComposerState>().set_editor_caret(8);
+            ui.global::<ComposerState>().set_editor_anchor(3);
             let (events, receiver) = std::sync::mpsc::channel();
             desktop.notifications = Some(Notifications {
                 service: notifications::worker::Attention::disconnected(),
@@ -234,7 +237,7 @@ mod tests {
                 "the second queued OpenChat did not select C"
             );
             assert_eq!(
-                ui.global::<State>().get_draft().as_str(),
+                ui.global::<ComposerState>().get_draft().as_str(),
                 "unsent draft in A",
                 "the composer did not follow the second selection"
             );

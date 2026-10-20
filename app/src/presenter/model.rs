@@ -189,7 +189,7 @@ mod tests {
                 ..Default::default()
             };
             presenter.present(&ui, &state, "", crate::ChatCategory::All);
-            let view = ui.global::<crate::State>().get_friends();
+            let view = ui.global::<crate::FriendsState>().get_friends();
             let peer = Box::pin(ModelChangeListenerContainer::new(Peer::default()));
             view.model_tracker().attach_peer(peer.as_ref().model_peer());
             let image = slint::Image::from_rgba8(slint::SharedPixelBuffer::new(2, 2));
@@ -237,7 +237,7 @@ mod tests {
             message.sort.sort_ts = now_millis();
             state.messages.insert(message.key, message.clone());
             presenter.present(&ui, &state, "", ChatCategory::All);
-            let view = ui.global::<State>().get_messages();
+            let view = ui.global::<ConversationState>().get_messages();
             let peer = Box::pin(ModelChangeListenerContainer::new(Peer::default()));
             view.model_tracker().attach_peer(peer.as_ref().model_peer());
             assert_eq!(view.row_data(0).unwrap().day_label, "Today");

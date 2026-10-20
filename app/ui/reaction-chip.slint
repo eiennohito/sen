@@ -1,6 +1,6 @@
+import { ShellState } from "globals.slint";
 import { Pressable, FocusRing } from "button.slint";
 import { ReactionRow } from "types.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Avatar } from "avatar.slint";
 import { Pane } from "scrollpane.slint";
@@ -15,6 +15,8 @@ component ReactionMark inherits Rectangle {
 export component ReactionChip inherits Rectangle {
     in property <ReactionRow> reaction;
     in property <[ReactionRow]> groups;
+    out property <bool> has-focus: chip-focus.has-focus;
+    callback history-key(KeyEvent) -> EventResult;
     height: 28px; width: content.preferred-width; horizontal-stretch: 0;
     border-radius: 14px; background: root.reaction.own ? Tokens.selection : Tokens.bg;
     border-width: 1px; border-color: root.reaction.own ? Tokens.accent : Tokens.divider;
@@ -24,7 +26,7 @@ export component ReactionChip inherits Rectangle {
         Text { text: root.reaction.count; color: Tokens.foreground; font-size: Tokens.small; vertical-alignment: center; }
     }
     chip-focus := Pressable {
-        focus-on-tab-navigation: false;
+        key-event(event) => { root.history-key(event) }
         accessible-label: root.reaction.label + ", " + root.reaction.count + " reactions";
         accessible-item-selected: root.reaction.own;
 
@@ -35,8 +37,8 @@ export component ReactionChip inherits Rectangle {
         close-policy: close-on-click-outside;
         x: 0px;
         y: root.height;
-        width: min(State.window-width, max(120px, actors.preferred-width + 12px));
-        height: min(State.window-height, min(320px, actors.preferred-height));
+        width: min(ShellState.window-width, max(120px, actors.preferred-width + 12px));
+        height: min(ShellState.window-height, min(320px, actors.preferred-height));
         Rectangle {
             accessible-role: list; accessible-label: "Who reacted";
             background: Tokens.bg; border-radius: 8px; border-width: 1px; border-color: Tokens.border;
