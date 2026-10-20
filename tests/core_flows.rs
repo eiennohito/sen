@@ -791,36 +791,23 @@ fn unsend_success_echo_and_failure_keep_the_same_row() {
 fn contact_actions_report_failure_then_update_in_place() {
     use line::{
         backend::ProfileAction,
-        engine::ProfileFailure,
         store::{ContactProfile, Friend},
     };
     let chat = ChatId("weekend".into());
-    for (action, failure) in [
-        (
-            ProfileAction::Rename {
-                mid: "alice".into(),
-                name: "Aoi 🌿".into(),
-            },
-            ProfileFailure::Rename,
-        ),
-        (
-            ProfileAction::AddFriend {
-                mid: "alice".into(),
-                chat: "weekend".into(),
-            },
-            ProfileFailure::AddFriend,
-        ),
-        (
-            ProfileAction::Mute {
-                chat: chat.clone(),
-                disabled: true,
-            },
-            ProfileFailure::Mute,
-        ),
-        (
-            ProfileAction::Leave { chat: chat.clone() },
-            ProfileFailure::Leave,
-        ),
+    for action in [
+        ProfileAction::Rename {
+            mid: "alice".into(),
+            name: "Aoi 🌿".into(),
+        },
+        ProfileAction::AddFriend {
+            mid: "alice".into(),
+            chat: "weekend".into(),
+        },
+        ProfileAction::Mute {
+            chat: chat.clone(),
+            disabled: true,
+        },
+        ProfileAction::Leave { chat: chat.clone() },
     ] {
         let fake = FakeBackend::canned();
         let relation = if matches!(action, ProfileAction::AddFriend { .. }) {
@@ -855,7 +842,7 @@ fn contact_actions_report_failure_then_update_in_place() {
             app.until(|s| s.action.is_none());
             assert_eq!(
                 app.state.action_error,
-                if success { None } else { Some(failure) }
+                if success { None } else { Some(action.clone()) }
             );
             match &action {
                 ProfileAction::Rename { .. } => {

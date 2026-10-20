@@ -31,7 +31,10 @@ fn grouping_uses_identity_time_and_delivery() {
         presenter.install(&ui);
         let mut state = AppState::default();
         let mut group = |source: &[StoredMessage], gap: Option<Key>| {
-            state.messages = source.iter().map(|m| (m.key, m.clone())).collect();
+            state.messages.clear();
+            for row in source {
+                state.messages.insert(row.key, row.clone());
+            }
             state.gaps = gap
                 .into_iter()
                 .map(|after| line::store::Gap {

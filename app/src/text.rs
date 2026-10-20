@@ -49,13 +49,13 @@ pub(crate) fn create_failure(failure: &line::engine::CreateFailure) -> &str {
     }
 }
 
-pub(crate) fn profile_failure(failure: line::engine::ProfileFailure) -> &'static str {
-    use line::engine::ProfileFailure;
-    match failure {
-        ProfileFailure::Rename => "Couldn't rename.",
-        ProfileFailure::AddFriend => "Couldn't add friend.",
-        ProfileFailure::Mute => "Couldn't change notifications.",
-        ProfileFailure::Leave => "Couldn't leave group.",
+pub(crate) fn profile_failure(action: &line::backend::ProfileAction) -> &'static str {
+    use line::backend::ProfileAction;
+    match action {
+        ProfileAction::Rename { .. } => "Couldn't rename.",
+        ProfileAction::AddFriend { .. } => "Couldn't add friend.",
+        ProfileAction::Mute { .. } => "Couldn't change notifications.",
+        ProfileAction::Leave { .. } => "Couldn't leave group.",
     }
 }
 
