@@ -1,5 +1,26 @@
 # UI latency audit (L2)
 
+## Budgets
+
+閃 is meant to be fast (the name: a flash, a fast cut along a line). These
+budgets are release `ui-debug` builds on the development machine; a change
+that exceeds one is a regression like a failing test, unless the user accepts
+the trade. Numbers on Oct 20 in brackets.
+
+| What | Budget |
+|---|---|
+| Chat switch, Rust + layout + draw | ≤ 16 ms, one 60 Hz frame (1.7 + 2.9 + 2.6 ms) |
+| One asset arriving, Rust + layout + draw | ≤ 4 ms (0.4 + 0.02 + 2.3 ms) |
+| 100 avatars arriving at once | ≤ 100 ms (51 ms) |
+| Steady-state frame, median | ≤ 4 ms (~2 ms) |
+| First frame of a scene (chats, photos, rich) | ≤ 16 ms (9–12 ms) |
+| Cached image | visible on the first frame its row is shown |
+| Opening a 12 MP photo in the viewer | ≤ 150 ms (80 ms) |
+| Idle main-thread wakeups | ≤ 10 /s (5.5 chat list, 2.0 open chat) |
+
+Measure with the latency harness below and the `IDLE`/frame lines of
+`tools/check-ui-mcp.py --all` on a release build.
+
 Measured offline in a release `ui-debug` build, using the software snapshot
 backend at 980×720. The opt-in harness is in `app/src/dev/latency.rs`:
 
