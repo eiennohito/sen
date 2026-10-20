@@ -25,7 +25,7 @@ def launch_demo(binary, port, arguments=(), log=None):
         raise ValueError('use an unprivileged MCP port')
     if not shutil.which('dbus-run-session'):
         raise RuntimeError('dbus-run-session is required for the private headless session')
-    if any(value in ('--check-live', '--state', '--wasm') for value in arguments):
+    if any(value in ('--state', '--wasm') for value in arguments):
         raise ValueError('this launcher accepts offline demo arguments only')
     arguments = ['--demo', '--demo-size', '980x720', *arguments, '--debug-background']
     environment = os.environ.copy()
@@ -99,10 +99,6 @@ def main():
     args = parser.parse_args()
     binary = args.binary or ROOT / 'target' / ('debug' if args.profile == 'dev' else args.profile) / 'line-desktop'
     arguments = args.arguments[1:] if args.arguments[:1] == ['--'] else args.arguments
-    def terminate(_signum, _frame):
-        raise KeyboardInterrupt
-    for signum in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(signum, terminate)
     with args.log.open('w') if args.log else contextlib.nullcontext() as log:
         try:
             with launch_demo(binary, args.port, arguments, log) as process:

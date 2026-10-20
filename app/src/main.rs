@@ -69,13 +69,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             _ => return Err(format!("unknown option {arg}").into()),
         }
     }
-    startup::start(startup::Options {
-        #[cfg(feature = "demo")]
-        dev_args,
+    startup::start(
         locations,
         client_version,
         wasm_override,
-    })
+        #[cfg(feature = "demo")]
+        dev_args,
+    )
 }
 
 #[cfg(test)]

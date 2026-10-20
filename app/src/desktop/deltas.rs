@@ -232,9 +232,8 @@ impl Desktop {
                 let weak = ui.as_weak();
                 let name = name.clone();
                 let bytes = bytes.clone();
-                let destination = self.destination;
                 std::thread::spawn(move || {
-                    let result = crate::viewer::save_bytes(&bytes, &name, destination);
+                    let result = crate::viewer::save_bytes(&bytes, &name);
                     let _ = weak.upgrade_in_event_loop(move |ui| {
                         let g = ui.global::<ContentState>();
                         g.set_file_saving(false);

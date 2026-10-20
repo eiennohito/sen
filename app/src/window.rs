@@ -1,47 +1,28 @@
 use crate::*;
 
-#[derive(Clone)]
-pub(crate) struct Options {
-    pub launch: startup::Launch,
-    pub warning: slint::SharedString,
-    pub color_scheme: slint::language::ColorScheme,
-    #[cfg(feature = "demo")]
-    pub fake: Option<FakeBackend>,
-}
-
+#[cfg(not(feature = "demo"))]
 pub(crate) fn install_window(
     d: &mut Desktop,
     runtime: Runtime,
-    workers: &Rc<RefCell<Worker>>,
-    options: &Options,
+    warning: &str,
 ) -> Result<AppWindow, slint::PlatformError> {
     let ui = create_app_window()?;
-    let launch = &options.launch;
-    ui.window().set_size(slint::LogicalSize::new(
-        launch.size.0 as f32,
-        launch.size.1 as f32,
-    ));
-    install_events(&ui, runtime.clone(), !launch.headless && !launch.automation);
-    ui.global::<SettingsState>().set_text_size(launch.text_size);
-    ui.global::<ShellState>()
-        .set_desktop_warning(options.warning.clone());
-    ui.global::<Palette>()
-        .set_color_scheme(options.color_scheme);
-    d.presenter.install(&ui);
-    callbacks::install(&ui, runtime.clone());
-    #[cfg(feature = "demo")]
-    {
-        ui.global::<ExtensionState>()
-            .set_automation_background(launch.automation);
-        if let Some(fake) = &options.fake {
-            d.destination = dev::demo::destination();
-            dev::demo::prepare(&ui);
-            dev::demo::install(&ui, runtime, fake.clone(), workers.clone(), options);
-        }
-    }
-    #[cfg(not(feature = "demo"))]
-    let _ = workers;
+    ui.window().set_size(slint::LogicalSize::new(980., 720.));
+    configure(&ui, d, runtime, warning, true);
     Ok(ui)
+}
+pub(crate) fn configure(
+    ui: &AppWindow,
+    d: &mut Desktop,
+    runtime: Runtime,
+    warning: &str,
+    native_events: bool,
+) {
+    install_events(ui, runtime.clone(), native_events);
+    ui.global::<ShellState>()
+        .set_desktop_warning(warning.into());
+    d.presenter.install(ui);
+    callbacks::install(ui, runtime);
 }
 
 pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {

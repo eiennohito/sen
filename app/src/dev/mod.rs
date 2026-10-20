@@ -7,11 +7,11 @@ mod demo_data;
 mod latency;
 
 pub(crate) fn install_focus(ui: &AppWindow) {
-    focus::install_demo(ui);
+    remember_focus(ui);
     #[cfg(feature = "ui-debug")]
     {
         let weak = ui.as_weak();
-        ui.global::<ExtensionState>().on_focused_control(move || {
+        ui.global::<DemoState>().on_focused_control(move || {
             use i_slint_core::item_tree::ParentItemTraversalMode;
             use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
             let Some(ui) = weak.upgrade() else {
@@ -55,13 +55,17 @@ pub(crate) fn install_focus(ui: &AppWindow) {
 
 pub(crate) struct Session {
     args: demo::Args,
-    fake: Option<FakeBackend>,
+    pub(crate) fake: Option<FakeBackend>,
+    window: Rc<RefCell<Option<AppWindow>>>,
+    pub(crate) workers: Rc<RefCell<Worker>>,
+    _store_directory: RefCell<Option<tempfile::TempDir>>,
     snapshot: Option<Rc<slint::platform::software_renderer::MinimalSoftwareWindow>>,
 }
 impl Session {
     pub(crate) fn start(
         args: demo::Args,
-    ) -> Result<(startup::Launch, Self), Box<dyn std::error::Error>> {
+        real: impl FnOnce() -> Worker,
+    ) -> Result<Rc<Self>, Box<dyn std::error::Error>> {
         let snapshot = args
             .snapshot_path
             .as_ref()
@@ -88,44 +92,73 @@ impl Session {
         if let Some(fake) = &fake {
             demo::configure(fake, &args.scene, args.case.as_deref());
         }
-        let launch = startup::Launch {
-            headless,
-            automation: args.background,
-            size: args.size,
-            text_size: args.text_size,
+        let (worker, store_directory) = match &fake {
+            Some(fake) => {
+                DEMO_SESSION.set(()).expect("start demo session once");
+                let (worker, directory) =
+                    demo::worker(fake.clone(), args.text_size, &demo::directory());
+                (worker, Some(directory))
+            }
+            None => (real(), None),
         };
-        Ok((
-            launch,
-            Self {
-                args,
-                fake,
-                snapshot,
-            },
-        ))
+        worker.on_deltas(event_loop::wake);
+        Ok(Rc::new(Self {
+            window: Default::default(),
+            workers: Rc::new(RefCell::new(worker)),
+            _store_directory: RefCell::new(store_directory),
+            args,
+            fake,
+            snapshot,
+        }))
     }
-    pub(crate) fn fake(&self) -> Option<&FakeBackend> {
-        self.fake.as_ref()
-    }
-    pub(crate) fn color_scheme(&self) -> slint::language::ColorScheme {
-        if self.args.dark {
+    pub(crate) fn install_window(
+        self: &Rc<Self>,
+        d: &mut Desktop,
+        runtime: Runtime,
+        fake: Option<&FakeBackend>,
+        warning: &str,
+    ) -> Result<AppWindow, slint::PlatformError> {
+        let ui = window::create_app_window()?;
+        ui.window().set_size(slint::LogicalSize::new(
+            self.args.size.0 as f32,
+            self.args.size.1 as f32,
+        ));
+        window::configure(
+            &ui,
+            d,
+            runtime.clone(),
+            warning,
+            self.snapshot.is_none() && !self.args.background,
+        );
+        ui.global::<Palette>().set_color_scheme(if self.args.dark {
             slint::language::ColorScheme::Dark
         } else {
             slint::language::ColorScheme::Unknown
+        });
+        ui.global::<DemoState>()
+            .set_automation_background(self.args.background);
+        if let Some(fake) = fake {
+            demo::prepare(&ui);
+            demo::install(&ui, runtime, fake.clone(), self);
         }
+        self.window.replace(Some(ui.clone_strong()));
+        Ok(ui)
     }
-    pub(crate) fn worker(&self, real: impl FnOnce() -> Worker) -> Worker {
-        self.fake
-            .as_ref()
-            .map(|fake| demo::worker(fake.clone(), self.args.text_size))
-            .unwrap_or_else(real)
+    pub(crate) fn window_getter(&self) -> impl Fn() -> Option<AppWindow> + use<> {
+        let window = self.window.clone();
+        move || window.borrow().as_ref().map(ComponentHandle::clone_strong)
+    }
+    pub(crate) fn delta_drain(&self) -> impl Fn() -> Vec<Delta> + use<> {
+        let workers = self.workers.clone();
+        move || workers.borrow().deltas.try_iter().collect()
     }
     pub(crate) fn stage(
-        self,
+        &self,
         ui: &AppWindow,
         desktop: &Runtime,
-        worker: &Rc<RefCell<Worker>>,
     ) -> Result<bool, Box<dyn std::error::Error>> {
-        let args = self.args;
+        let worker = &self.workers;
+        let args = &self.args;
         if self.snapshot.is_some() {
             let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
             while desktop.update(|d| {
@@ -163,10 +196,13 @@ impl Session {
             desktop.update(|d| latency::run(d, ui, window));
             return Ok(true);
         }
-        demo::profile(ui, &args.scene, args.snapshot_profile);
-        if let (Some(window), Some(path)) = (self.snapshot, args.snapshot_path) {
+        if args.snapshot_profile || args.scene == "member-profile" {
+            ui.global::<DetailState>()
+                .invoke_open_profile("alice".into());
+        }
+        if let (Some(window), Some(path)) = (self.snapshot.as_ref(), args.snapshot_path.as_ref()) {
             ui.show()?;
-            snapshot::save(&window, &path, args.size)?;
+            snapshot::save(window, path, args.size)?;
             ui.hide()?;
         }
         Ok(false)
@@ -194,3 +230,24 @@ fn image_mut(
         _ => panic!("content has no image"),
     }
 }
+
+pub(crate) fn remember_focus(ui: &AppWindow) {
+    let saved = Rc::new(RefCell::new(None));
+    let record = saved.clone();
+    let weak = ui.as_weak();
+    ui.global::<DemoState>().on_remember_demo_focus(move || {
+        if let Some(ui) = weak.upgrade() {
+            *record.borrow_mut() = Some(ui.invoke_focus_opener());
+        }
+    });
+    let weak = ui.as_weak();
+    ui.global::<DemoState>().on_restore_demo_focus(move || {
+        if let Some(ui) = weak.upgrade()
+            && let Some(opener) = saved.borrow_mut().take()
+        {
+            ui.invoke_restore_opener(opener);
+        }
+    });
+}
+
+pub(crate) static DEMO_SESSION: std::sync::OnceLock<()> = std::sync::OnceLock::new();

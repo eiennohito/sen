@@ -1,66 +1,64 @@
 use super::*;
 
-pub(super) fn install_reset(
-    ui: &AppWindow,
-    actions: &Runtime,
-    workers: Rc<RefCell<Worker>>,
-    options: &window::Options,
-) {
-    ui.global::<ExtensionState>().set_demo_reset_enabled(true);
-    ui.global::<ExtensionState>()
+pub(super) fn install_reset(ui: &AppWindow, actions: &Runtime, session: &Rc<dev::Session>) {
+    ui.global::<DemoState>().set_demo_reset_enabled(true);
+    ui.global::<DemoState>()
         .set_demo_instance(std::env::var("LINE_UI_INSTANCE").unwrap_or_default().into());
-    let options = options.clone();
+    let session = Rc::downgrade(session);
     let weak = ui.as_weak();
     let actions = actions.clone();
-    ui.global::<ExtensionState>()
-        .on_demo_automation(move |hook| {
-            if hook != line_desktop_ui::DemoAutomation::Reset {
+    ui.global::<DemoState>().on_demo_automation(move |hook| {
+        if hook != line_desktop_ui::DemoAutomation::Reset {
+            return;
+        }
+        let weak = weak.clone();
+        let runtime = actions.clone();
+        let session = session.clone();
+        actions.push(move |d| {
+            let Some(old) = weak.upgrade() else { return };
+            let Some(session) = session.upgrade() else {
                 return;
-            }
-            let weak = weak.clone();
-            let workers = workers.clone();
-            let runtime = actions.clone();
-            let options = options.clone();
-            actions.push(move |d| {
-                let Some(old) = weak.upgrade() else { return };
-                let fresh = FakeBackend::canned();
-                demo::configure(&fresh, "", None);
-                let worker = demo::worker(fresh.clone(), options.launch.text_size);
-                worker.on_deltas(event_loop::wake);
-                d.sender = worker.sender.clone();
-                workers.replace(worker);
-                d.state = AppState::default();
-                d.history = reading::Reading {
-                    opening_history: true,
-                    ..Default::default()
-                };
-                d.assets = assets::Assets::default();
-                d.presenter = presenter::Presenter::default();
-                d.shown_composer.clear();
-                d.category = ChatCategory::All;
-                d.reveal = None;
-                d.viewer_asset = None;
-                d.viewer_source = None;
-                let mut options = options;
-                let size = old.window().size().to_logical(old.window().scale_factor());
-                options.launch.size = (size.width as u32, size.height as u32);
-                options.color_scheme = old.global::<Palette>().get_color_scheme();
-                options.fake = Some(fresh);
-                let ui = window::install_window(d, runtime.clone(), &workers, &options)
-                    .expect("recreate demo window");
-                ui.window().set_position(old.window().position());
-                ui.global::<ShellState>()
-                    .set_device_scale(old.global::<ShellState>().get_device_scale());
-                ui.global::<ExtensionState>().set_demo_reset_generation(
-                    old.global::<ExtensionState>().get_demo_reset_generation() + 1,
-                );
-                d.render(&ui);
-                ui.invoke_focus_search();
-                ui.show().expect("show reset demo");
-                old.hide().expect("hide previous demo");
-                runtime.window.upgrade().unwrap().replace(Some(ui));
-            });
+            };
+            let fresh = FakeBackend::canned();
+            demo::configure(&fresh, "", None);
+            let (worker, directory) =
+                demo::worker(fresh.clone(), session.args.text_size, &demo::directory());
+            worker.on_deltas(event_loop::wake);
+            d.sender = worker.sender.clone();
+            d.state = AppState::default();
+            d.history = reading::Reading {
+                opening_history: true,
+                ..Default::default()
+            };
+            d.assets = assets::Assets::default();
+            d.presenter = presenter::Presenter::default();
+            d.shown_composer.clear();
+            d.category = ChatCategory::All;
+            d.reveal = None;
+            d.viewer_asset = None;
+            d.viewer_source = None;
+            let size = old.window().size();
+            let warning = old.global::<ShellState>().get_desktop_warning();
+            session.workers.replace(worker);
+            session._store_directory.replace(Some(directory));
+            let ui = session
+                .install_window(d, runtime.clone(), Some(&fresh), &warning)
+                .expect("recreate demo window");
+            ui.window().set_size(size);
+            ui.global::<Palette>()
+                .set_color_scheme(old.global::<Palette>().get_color_scheme());
+            ui.window().set_position(old.window().position());
+            ui.global::<ShellState>()
+                .set_device_scale(old.global::<ShellState>().get_device_scale());
+            ui.global::<DemoState>().set_demo_reset_generation(
+                old.global::<DemoState>().get_demo_reset_generation() + 1,
+            );
+            d.render(&ui);
+            ui.invoke_focus_search();
+            ui.show().expect("show reset demo");
+            old.hide().expect("hide previous demo");
         });
+    });
 }
 
 pub(super) fn launch(background: bool, demo: bool) -> Result<(), Box<dyn std::error::Error>> {
@@ -79,13 +77,13 @@ pub(super) fn launch(background: bool, demo: bool) -> Result<(), Box<dyn std::er
     Ok(())
 }
 pub(crate) fn internal_error(ui: &AppWindow, kind: &str) {
-    ui.global::<ExtensionState>().set_internal_error_seen(true);
-    ui.global::<ExtensionState>()
+    ui.global::<DemoState>().set_internal_error_seen(true);
+    ui.global::<DemoState>()
         .set_internal_error(format!("Internal error: {kind} (see log)").into());
     let weak = ui.as_weak();
     slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
         if let Some(ui) = weak.upgrade() {
-            ui.global::<ExtensionState>().set_internal_error("".into());
+            ui.global::<DemoState>().set_internal_error("".into());
         }
     });
 }
@@ -93,12 +91,12 @@ pub(crate) fn internal_error(ui: &AppWindow, kind: &str) {
 pub(crate) fn inject_attachments(ui: &AppWindow, actions: &Runtime) {
     let weak = ui.as_weak();
     let actions = actions.clone();
-    ui.global::<ExtensionState>()
+    ui.global::<DemoState>()
         .on_inject_attachments(move |paths| {
             let weak = weak.clone();
             actions.push(move |d| {
                 if let Some(ui) = weak.upgrade()
-                    && ui.global::<ExtensionState>().get_automation_background()
+                    && ui.global::<DemoState>().get_automation_background()
                 {
                     let paths: Vec<std::path::PathBuf> =
                         serde_json::from_str(&paths).unwrap_or_default();

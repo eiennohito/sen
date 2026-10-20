@@ -2,7 +2,6 @@ use crate::*;
 
 #[derive(Clone)]
 pub(crate) struct Runtime {
-    pub(crate) window: std::rc::Weak<RefCell<Option<AppWindow>>>,
     pub(crate) desktop: Rc<RefCell<Option<Desktop>>>,
     pub(crate) actions: ActionQueue<Desktop>,
     pub(crate) draining: Rc<std::cell::Cell<bool>>,

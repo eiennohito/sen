@@ -1,4 +1,4 @@
-//! Headless software rendering for reviewing the sketch without a desktop.
+//! Headless software rendering for offline previews and UI checks.
 use slint::{
     PhysicalSize, Rgb8Pixel, SharedPixelBuffer,
     platform::{

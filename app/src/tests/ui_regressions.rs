@@ -952,3 +952,34 @@ fn dialog_scrim_blocks_wheel_scrolling() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn keyboard_navigation_updates_only_the_current_window() {
+    std::thread::spawn(|| {
+        i_slint_backend_testing::init_no_event_loop();
+        let first = window::create_app_window().unwrap();
+        use i_slint_core::context::set_window_event_hook;
+        let hook = set_window_event_hook(None).unwrap().unwrap();
+        let installed = std::ptr::from_ref(&*hook);
+        set_window_event_hook(Some(hook)).unwrap();
+        let second = window::create_app_window().unwrap();
+        let hook = set_window_event_hook(None).unwrap().unwrap();
+        assert!(
+            std::ptr::eq(installed, &*hook),
+            "recreating a window installed another input hook"
+        );
+        set_window_event_hook(Some(hook)).unwrap();
+        first.global::<ShellState>().set_keyboard_navigation(false);
+        second.global::<ShellState>().set_keyboard_navigation(false);
+        second
+            .window()
+            .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
+        assert!(second.global::<ShellState>().get_keyboard_navigation());
+        assert!(
+            !first.global::<ShellState>().get_keyboard_navigation(),
+            "an old window still receives input hooks"
+        );
+    })
+    .join()
+    .unwrap();
+}

@@ -1,6 +1,9 @@
 //! Synthetic data enters through the backend and follows the normal commit path.
 use super::*;
 use line::backend::{Failure, FakeRpc, LiveOp, Op};
+const REFUSED: Failure = Failure::Refused(line::client::error::Refusal::Server(
+    line::client::error::ServerRefusal::Gateway(13),
+));
 
 pub(crate) struct Args {
     pub enabled: bool,
@@ -63,22 +66,24 @@ impl Args {
     }
 }
 
-pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: i32) {
+pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind: DemoScenario) {
     let chat = d.state.selected.clone().unwrap_or(ChatId("alice".into()));
+    use DemoScenario::*;
     match kind {
-        40..=46 => {
+        SignInCrypto | SignInState | SignInKeyring | SignInNetwork | SignInServer | SignInPhone
+        | SignInCancelled => {
             use line::client::error::SignInFailure::*;
             fake.fail_sign_in(Some(match kind {
-                40 => CryptoModule("/demo/crypto.wasm".into()),
-                41 => StateDirectory("/demo/state".into()),
-                42 => Keyring,
-                43 => Network,
-                44 => Server,
-                45 => Phone,
+                SignInCrypto => CryptoModule("/demo/crypto.wasm".into()),
+                SignInState => StateDirectory("/demo/state".into()),
+                SignInKeyring => Keyring,
+                SignInNetwork => Network,
+                SignInServer => Server,
+                SignInPhone => Phone,
                 _ => Cancelled,
             }));
         }
-        34 => {
+        Attachments => {
             let directory = directory().join("attachments");
             if std::fs::create_dir_all(&directory).is_ok() {
                 let photo = directory.join("Holiday.png");
@@ -99,21 +104,16 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             }
         }
 
-        32 => {
+        Protocol => {
             let rows = vec![
                 FakeBackend::message("protocol", 6300, "Unsend success fixture", true),
                 FakeBackend::message("protocol", 6301, "Unsend failure fixture", true),
                 FakeBackend::official_image("protocol", 6302),
             ];
-            fake.fail_rpc(
-                FakeRpc::Unsend(ServerId::new("6301").unwrap()),
-                Failure::Refused(line::client::error::Refusal::Server(
-                    line::client::error::ServerRefusal::Gateway(13),
-                )),
-            );
+            fake.fail_rpc(FakeRpc::Unsend(ServerId::new("6301").unwrap()), REFUSED);
             fixture(ui, d, fake, "protocol", "Protocol fixtures", rows);
         }
-        33 => {
+        Reaction => {
             if let Some(row) = d
                 .state
                 .rows()
@@ -142,7 +142,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 }
             }
         }
-        12 => {
+        Rich => {
             fixture(
                 ui,
                 d,
@@ -152,7 +152,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 demo_data::rich_fixture(fake, "rich", 2000),
             );
         }
-        0 => {
+        History => {
             let mut rows = fake.page(&chat);
             rows.extend(demo_data::history(fake, &chat.0));
             rows.sort_by_key(|m| m.created_ms);
@@ -168,7 +168,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             ui.global::<ConversationState>()
                 .invoke_show_history(0., true);
         }
-        8 => fixture(
+        Reading => fixture(
             ui,
             d,
             fake,
@@ -176,7 +176,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             "Reading fixtures",
             demo_data::reading(fake, "reading"),
         ),
-        14 => {
+        Unread => {
             demo_data::hidden_events(fake);
             for (target, count) in [(chat.clone(), 3), (ChatId("weekend".into()), 2)] {
                 let mut rows = fake.page(&target);
@@ -205,7 +205,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             }
             d.sender.send(Intent::MoreChats);
         }
-        15 => {
+        ChatList => {
             for i in 0..40 {
                 fake.add_chat(ChatInput {
                     id: ChatId(format!("browser-{i}")),
@@ -220,7 +220,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             });
             d.sender.send(Intent::MoreChats);
         }
-        1 => {
+        Arrivals => {
             for i in 1..=3 {
                 let id = fake.revision();
                 fake.inject(LiveOp {
@@ -233,7 +233,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 });
             }
         }
-        5 => fixture(
+        Photo => fixture(
             ui,
             d,
             fake,
@@ -241,11 +241,11 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             "Photo preview",
             demo_data::photos(fake, "photos"),
         ),
-        6 => {
+        Sticker => {
             let row = demo_data::sticker(fake, "stickers");
             fixture(ui, d, fake, "stickers", "Sticker preview", vec![row]);
         }
-        47 => {
+        Actions => {
             fixture(
                 ui,
                 d,
@@ -263,7 +263,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 demo_data::action_geometry(fake, "actions", 9800),
             );
         }
-        7 => fixture(
+        Group => fixture(
             ui,
             d,
             fake,
@@ -271,19 +271,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             "Group preview",
             demo_data::group(fake, "groups", 5200),
         ),
-        20..=29 => {
-            let mut row = FakeBackend::message(&chat.0, fake.revision(), "", false);
-
-            demo_data::rich(
-                &mut row,
-                line::client::desktop::rich::RichContent {
-                    content_type: 1,
-                    ..Default::default()
-                },
-            );
-            let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
-            asset["failure"] = serde_json::to_value(media_failure((kind - 20) as usize)).unwrap();
-            *super::image_mut(&mut row.body) = Some(serde_json::from_value(asset).unwrap());
+        MediaTimeout | MediaNetwork | MediaNotFound | MediaForbidden | MediaServer
+        | MediaUnsupported | MediaPath | MediaLarge | MediaDecode | MediaCancelled => {
+            let row = media_row(&chat.0, fake.revision(), media_failure(kind));
             fake.set_page(chat.clone(), vec![row]);
             d.sender.send(Intent::Page {
                 chat,
@@ -291,8 +281,8 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             });
             ui.global::<ConversationState>().set_following(true);
         }
-        19 => fake.auth_expired(),
-        3 => {
+        Expired => fake.auth_expired(),
+        Unanswered => {
             fake.fail_rpc(FakeRpc::Send(ChatId("alice".into())), Failure::Unanswered);
             d.sender.send(Intent::Send {
                 chat: chat.clone(),
@@ -310,14 +300,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 },
             });
         }
-        10 | 31 => {
-            fake.fail_rpc(
-                FakeRpc::Send(chat.clone()),
-                Failure::Refused(line::client::error::Refusal::Server(
-                    line::client::error::ServerRefusal::Gateway(13),
-                )),
-            );
-            if kind == 10 {
+        Rejected | RejectNext => {
+            fake.fail_rpc(FakeRpc::Send(chat.clone()), REFUSED);
+            if kind == Rejected {
                 d.sender.send(Intent::Send {
                     chat,
                     text: "Rejected message".into(),
@@ -325,15 +310,9 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 });
             }
         }
-        30 => fake.fail_rpc(
-            FakeRpc::Send(chat.clone()),
-            Failure::Refused(line::client::error::Refusal::Server(
-                line::client::error::ServerRefusal::Gateway(13),
-            )),
-        ),
-        17 => fake.offline(true),
-        16 => fake.offline(false),
-        _ => {}
+        Offline => fake.offline(true),
+        Reconnect => fake.offline(false),
+        MediaMenu => {}
     }
 }
 
@@ -360,33 +339,20 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
     if let Some(case) = case
         && let Some(class) = case.strip_prefix("media-")
     {
-        let index = [
-            "timeout",
-            "network",
-            "404",
-            "403",
-            "500",
-            "unsupported",
-            "path",
-            "large",
-            "decode",
-            "cancelled",
-        ]
-        .iter()
-        .position(|v| *v == class)
-        .unwrap();
-        let mut row = FakeBackend::message("alice", 900, "", false);
-
-        demo_data::rich(
-            &mut row,
-            line::client::desktop::rich::RichContent {
-                content_type: 1,
-                ..Default::default()
-            },
-        );
-        let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
-        asset["failure"] = serde_json::to_value(media_failure(index)).unwrap();
-        *super::image_mut(&mut row.body) = Some(serde_json::from_value(asset).unwrap());
+        let kind = match class {
+            "timeout" => DemoScenario::MediaTimeout,
+            "network" => DemoScenario::MediaNetwork,
+            "404" => DemoScenario::MediaNotFound,
+            "403" => DemoScenario::MediaForbidden,
+            "500" => DemoScenario::MediaServer,
+            "unsupported" => DemoScenario::MediaUnsupported,
+            "path" => DemoScenario::MediaPath,
+            "large" => DemoScenario::MediaLarge,
+            "decode" => DemoScenario::MediaDecode,
+            "cancelled" => DemoScenario::MediaCancelled,
+            _ => panic!("unknown media failure case: {class}"),
+        };
+        let row = media_row("alice", 900, media_failure(kind));
         fake.set_page(ChatId("alice".into()), vec![row]);
         return;
     }
@@ -447,13 +413,7 @@ pub fn configure(fake: &FakeBackend, scene: &str, case: Option<&str>) {
         fake.set_page(ChatId("alice".into()), vec![row]);
     }
 }
-pub fn install(
-    ui: &AppWindow,
-    actions: Runtime,
-    fake: FakeBackend,
-    workers: Rc<RefCell<Worker>>,
-    options: &window::Options,
-) {
+pub fn install(ui: &AppWindow, actions: Runtime, fake: FakeBackend, session: &Rc<dev::Session>) {
     let weak = ui.as_weak();
     let links = actions.clone();
     ui.global::<ContentState>().on_open_link(move |url| {
@@ -462,16 +422,16 @@ pub fn install(
             if let Some(ui) = weak.upgrade() {
                 ui.global::<ContentState>()
                     .set_link_feedback(format!("Preview opened: {url}").into());
-                ui.global::<ExtensionState>().set_last_opened_link(url);
+                ui.global::<DemoState>().set_last_opened_link(url);
             }
         });
     });
     #[cfg(feature = "ui-debug")]
-    automation::install_reset(ui, &actions, workers, options);
+    automation::install_reset(ui, &actions, session);
     #[cfg(not(feature = "ui-debug"))]
-    let _ = (workers, options);
+    let _ = session;
     let weak = ui.as_weak();
-    ui.global::<ExtensionState>().on_demo_event(move |kind| {
+    ui.global::<DemoState>().on_demo_event(move |kind| {
         let weak = weak.clone();
         let fake = fake.clone();
         actions.push(move |d| {
@@ -482,20 +442,36 @@ pub fn install(
     });
 }
 
-fn media_failure(index: usize) -> line::client::desktop::assets::Failure {
+fn media_row(chat: &str, id: i64, failure: line::client::desktop::assets::Failure) -> MessageInput {
+    let mut row = FakeBackend::message(chat, id, "", false);
+    demo_data::rich(
+        &mut row,
+        line::client::desktop::rich::RichContent {
+            content_type: 1,
+            ..Default::default()
+        },
+    );
+    let mut asset = serde_json::to_value(FakeBackend::asset(true)).unwrap();
+    asset["failure"] = serde_json::to_value(failure).unwrap();
+    *super::image_mut(&mut row.body) = Some(serde_json::from_value(asset).unwrap());
+    row
+}
+fn media_failure(kind: DemoScenario) -> line::client::desktop::assets::Failure {
+    use DemoScenario::*;
     use line::client::desktop::assets::Failure::*;
-    [
-        Timeout,
-        Network,
-        Http(404),
-        Http(403),
-        Http(500),
-        UnsupportedHost,
-        RejectedPath,
-        TooLarge,
-        Decode,
-        Cancelled,
-    ][index]
+    match kind {
+        MediaTimeout => Timeout,
+        MediaNetwork => Network,
+        MediaNotFound => Http(404),
+        MediaForbidden => Http(403),
+        MediaServer => Http(500),
+        MediaUnsupported => UnsupportedHost,
+        MediaPath => RejectedPath,
+        MediaLarge => TooLarge,
+        MediaDecode => Decode,
+        MediaCancelled => Cancelled,
+        _ => unreachable!("not a media failure scenario"),
+    }
 }
 
 fn fixture(
@@ -614,12 +590,7 @@ pub(crate) fn stage(
     {
         desktop.update(|d| {
             if let Some(chat) = d.state.selected.clone() {
-                fake.fail_rpc(
-                    FakeRpc::Send(chat),
-                    Failure::Refused(line::client::error::Refusal::Server(
-                        line::client::error::ServerRefusal::Gateway(13),
-                    )),
-                );
+                fake.fail_rpc(FakeRpc::Send(chat), REFUSED);
             }
         });
         ui.global::<ComposerState>()
@@ -628,14 +599,10 @@ pub(crate) fn stage(
     }
 }
 
-pub(super) fn directory() -> std::path::PathBuf {
+pub(crate) fn directory() -> std::path::PathBuf {
     std::env::var_os("LINE_DEMO_DIRECTORY")
         .map(std::path::PathBuf::from)
         .unwrap_or_else(std::env::temp_dir)
-}
-
-pub(crate) fn destination() -> viewer::Destination {
-    save_export
 }
 
 pub(crate) fn settle(ui: &AppWindow, desktop: &Runtime, worker: &Worker) {
@@ -646,45 +613,85 @@ pub(crate) fn settle(ui: &AppWindow, desktop: &Runtime, worker: &Worker) {
     }
 }
 
-pub(crate) fn worker(fake: FakeBackend, text_size: i32) -> Worker {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let initial = AtomicBool::new(true);
+pub(crate) fn worker(
+    fake: FakeBackend,
+    text_size: i32,
+    directory: &std::path::Path,
+) -> (Worker, tempfile::TempDir) {
+    std::fs::create_dir_all(directory).expect("create demo directory");
+    let root = tempfile::Builder::new()
+        .prefix("store-")
+        .tempdir_in(directory)
+        .expect("create empty demo store");
+    let mut store = line::store::Store::open(root.path()).expect("open demo store");
+    store
+        .set_prefs(&Prefs {
+            text_size,
+            ..Default::default()
+        })
+        .expect("seed demo preferences");
+    drop(store);
     let worker = Worker::start(
-        StoreLocation::Memory,
+        StoreLocation::Directory(root.path().to_owned()),
         move || fake.open(),
         line::engine::WorkerOptions {
             timing: line::engine::Timing {
                 offline_after: std::time::Duration::from_millis(300),
                 ..Default::default()
             },
-            project: std::sync::Arc::new(move |delta| match delta {
-                Delta::Prefs(mut prefs) if initial.swap(false, Ordering::Relaxed) => {
-                    prefs.text_size = text_size;
-                    Delta::Prefs(prefs)
-                }
-                other => other,
-            }),
         },
     );
-    worker.sender.send(Intent::Prefs(Prefs {
-        text_size,
-        ..Default::default()
-    }));
-    worker
+    (worker, root)
 }
 
 pub(crate) fn prepare(ui: &AppWindow) {
-    ui.global::<ExtensionState>().set_demo(true);
-    ui.global::<ExtensionState>()
+    ui.global::<DemoState>().set_demo(true);
+    ui.global::<ShellState>()
         .set_title_override("LINE (preview · F12: scenarios)".into());
 }
-pub(crate) fn profile(ui: &AppWindow, scene: &str, snapshot_profile: bool) {
-    if snapshot_profile || scene == "member-profile" {
-        ui.global::<DetailState>()
-            .invoke_open_profile("alice".into());
-    }
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-fn save_export(bytes: &[u8], name: &str) -> Result<Option<std::path::PathBuf>, String> {
-    viewer::write_unique(&directory().join("exports"), name, bytes).map(Some)
+    #[test]
+    fn consecutive_demo_workers_start_empty_and_remove_their_store() {
+        let directory = tempfile::Builder::new()
+            .prefix("demo-session-")
+            .tempdir_in(directory())
+            .unwrap();
+        for _ in 0..2 {
+            let (worker, store_directory) = worker(FakeBackend::signed_out(), 14, directory.path());
+            let mut state = AppState::default();
+            while !matches!(state.connection, Connection::SignedOut { .. }) {
+                state.apply(
+                    worker
+                        .deltas
+                        .recv_timeout(std::time::Duration::from_secs(5))
+                        .unwrap(),
+                );
+            }
+            assert!(state.chats.is_empty());
+            let paths: Vec<_> = std::fs::read_dir(directory.path())
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(paths.len(), 1);
+            let mut store = line::store::Store::open(&paths[0]).unwrap();
+            assert!(store.chat_list(10, 0).unwrap().is_empty());
+            store
+                .upsert_chats(
+                    &[ChatInput {
+                        id: ChatId("stale-chat".into()),
+                        ..Default::default()
+                    }],
+                    false,
+                )
+                .unwrap();
+            drop(store);
+            drop(worker);
+            drop(store_directory);
+            assert!(!paths[0].exists(), "demo store survived its session");
+            assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        }
+    }
 }
