@@ -1,7 +1,8 @@
 //! Link parsing and desktop dispatch. Parsing uses UTF-8 boundaries and never
 //! treats adjacent Japanese sentence punctuation as part of a URL.
 use crate::{LinkRow, MessageRow};
-use slint::{ModelRc, VecModel};
+use slint::ModelRc;
+use slint::VecModel;
 
 pub(crate) fn detect(text: &str) -> Vec<(String, String)> {
     let mut found = Vec::new();

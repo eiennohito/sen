@@ -24,7 +24,8 @@ fn rich_fixture() -> Vec<MessageRow> {
             image_key: "demo-inline".into(),
         }],
     );
-    if let Some(runs) = row.rich_runs.as_any().downcast_ref::<VecModel<RichRun>>() {
+    {
+        let runs = &row.rich_runs;
         for i in 0..runs.row_count() {
             let mut run = runs.row_data(i).unwrap();
             if run.emoji {
@@ -73,7 +74,7 @@ fn watch_layout(ui: &AppWindow) -> Rc<RefCell<ModelRc<RichRun>>> {
     let metrics = RefCell::new(Measurements::default());
     ui.global::<State>()
         .on_rich_layout(move |rows, width, size, previous| {
-            let output = reuse(
+            let output = crate::rich_content::flow::reuse(
                 previous,
                 crate::rich_content::flow::layout(&weak.unwrap(), &rows, width, size, &metrics),
             );
@@ -91,11 +92,8 @@ fn missing_emoji_reserves_the_loaded_geometry() {
         let mut message = rich_fixture().remove(1);
         rich_content::links::decorate_message(&mut message);
         let before = layout(&ui, &message.rich_runs, 140., 24.);
-        if let Some(runs) = message
-            .rich_runs
-            .as_any()
-            .downcast_ref::<VecModel<RichRun>>()
         {
+            let runs = &message.rich_runs;
             for i in 0..runs.row_count() {
                 let mut run = runs.row_data(i).unwrap();
                 if run.emoji {
@@ -525,7 +523,7 @@ fn emoji_click_keeps_images() {
         let mut row = rich_fixture().remove(1);
         row.reply_id = "".into();
         let runs = row.rich_runs.clone();
-        let model = runs.as_any().downcast_ref::<VecModel<RichRun>>().unwrap();
+        let model = &runs;
         let emoji_index = runs.iter().position(|r| r.emoji).unwrap();
         let mut emoji = model.row_data(emoji_index).unwrap();
         let mut buffer = slint::SharedPixelBuffer::<slint::Rgb8Pixel>::new(8, 8);

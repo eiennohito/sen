@@ -1,150 +1,145 @@
 use super::*;
 
+#[derive(Clone, PartialEq)]
+#[allow(clippy::large_enum_variant)] // Keep Friend inline instead of allocating it every present.
+pub(super) enum FriendEntry {
+    Header(&'static str, usize, bool),
+    Contact(Friend, i32),
+}
+
 impl Presenter {
     pub(super) fn present_people(&mut self, ui: &AppWindow, state: &AppState) {
-        let friends = state
+        let global = ui.global::<State>();
+        let query = global.get_friend_query().to_lowercase();
+        let friends: Vec<_> = state
             .friends
             .iter()
-            .filter(|f| {
-                text::friend_name(f)
-                    .to_lowercase()
-                    .contains(&ui.global::<State>().get_friend_query().to_lowercase())
-            })
-            .map(|f| {
-                if let Some(cached) = self.rendered_friends.get(&f.id)
-                    && cached.friend == *f
-                    && cached.size == ui.global::<State>().get_text_size()
-                {
-                    return cached.row.clone();
-                }
-                let spans =
-                    line::client::desktop::rich::emoji_spans(&f.status, &f.profile.status_metadata);
-                let assets = spans
-                    .iter()
-                    .filter_map(line::client::desktop::assets::Asset::inline_emoji)
-                    .collect::<Vec<_>>();
-                let metadata = spans.into_iter().map(EmojiView::new).collect::<Vec<_>>();
-                let row = FriendRow {
-                    id: f.id.clone().into(),
-                    name: single_line(text::friend_name(f)).into(),
-                    initial: name_initial(text::friend_name(f)),
-                    status: single_line(&f.status).into(),
-                    status_runs: rich_content::preview::preview_runs(
-                        &f.status,
-                        &metadata,
-                        &self.images,
-                        ui.global::<State>().get_text_size(),
-                    ),
-                    group: f.group,
-                    avatar_key: f
-                        .avatar
-                        .as_ref()
-                        .map(|a| a.key())
-                        .unwrap_or_default()
-                        .into(),
-                    avatar: f
-                        .avatar
-                        .as_ref()
-                        .and_then(|a| self.images.get(&a.key()))
-                        .cloned()
-                        .unwrap_or_default(),
-                    ..Default::default()
-                };
-                self.rendered_friends.insert(
-                    f.id.clone(),
-                    CachedFriend {
-                        friend: f.clone(),
-                        size: ui.global::<State>().get_text_size(),
-                        row: row.clone(),
-                        assets,
-                    },
-                );
-                row
-            })
-            .collect::<Vec<_>>();
+            .filter(|f| text::friend_name(f).to_lowercase().contains(&query))
+            .collect();
+        self.status_assets = friends
+            .iter()
+            .flat_map(|f| emoji_spans(&f.status, &f.profile.status_metadata))
+            .filter_map(|span| Asset::inline_emoji(&span))
+            .collect();
         let mut grouped = Vec::new();
         for (group, label, expanded) in [
-            (true, "Groups", ui.global::<State>().get_groups_expanded()),
-            (
-                false,
-                "Friends",
-                ui.global::<State>().get_friends_expanded(),
-            ),
+            (true, "Groups", global.get_groups_expanded()),
+            (false, "Friends", global.get_friends_expanded()),
         ] {
-            let rows = friends
-                .iter()
-                .filter(|row| row.group == group)
-                .cloned()
-                .collect::<Vec<_>>();
-            if state.friends.is_empty()
-                || (!ui.global::<State>().get_friend_query().is_empty() && rows.is_empty())
-            {
+            let rows: Vec<_> = friends.iter().filter(|f| f.group == group).collect();
+            if state.friends.is_empty() || (!query.is_empty() && rows.is_empty()) {
                 continue;
             }
-            grouped.push(FriendRow {
-                id: format!("header-{label}").into(),
-                name: label.into(),
-                count: rows.len() as i32,
-                header: true,
-                group,
-                ..Default::default()
-            });
+            grouped.push((
+                format!("header-{label}"),
+                FriendEntry::Header(label, rows.len(), group),
+                Vec::new(),
+            ));
             if expanded {
-                grouped.extend(rows);
+                grouped.extend(rows.into_iter().map(|f| {
+                    (
+                        f.id.clone(),
+                        FriendEntry::Contact((*f).clone(), global.get_text_size()),
+                        friend_assets(f),
+                    )
+                }));
             }
         }
-        patch(
-            &self.friends,
-            &mut self.friend_keys,
-            grouped.into_iter().map(|r| (r.id.to_string(), r)).collect(),
+        self.friends.replace(grouped);
+        let mut members: Vec<_> = state.members.iter().collect();
+        members.sort_by_key(|m| (m.contact.profile.invited, !m.is_self));
+        let query = global.get_member_query().to_lowercase();
+        self.members.replace(
+            members
+                .into_iter()
+                .filter_map(|m| {
+                    let contact = if m.is_self {
+                        state.contact(&m.contact.id).unwrap_or(&m.contact)
+                    } else {
+                        &m.contact
+                    };
+                    if !text::member_name(contact.name.as_deref())
+                        .to_lowercase()
+                        .contains(&query)
+                        && !contact.status.to_lowercase().contains(&query)
+                        && !(m.is_self && "you".contains(&query))
+                    {
+                        return None;
+                    }
+                    Some((
+                        contact.id.clone(),
+                        (
+                            contact.clone(),
+                            m.is_self,
+                            state.friends.iter().any(|f| f.id == contact.id && !f.group)
+                                || contact.profile.relation == Some(0),
+                        ),
+                        contact.avatar.iter().map(|a| a.key()).collect(),
+                    ))
+                })
+                .collect(),
         );
-        let mut ordered_members = state.members.iter().collect::<Vec<_>>();
-        ordered_members.sort_by_key(|m| (m.contact.profile.invited, !m.is_self));
-        let members = ordered_members
-            .into_iter()
-            .map(|m| {
-                let contact = if m.is_self {
-                    state.contact(&m.contact.id).unwrap_or(&m.contact)
-                } else {
-                    &m.contact
-                };
-                (m, contact)
-            })
-            .filter(|(m, contact)| {
-                let query = ui.global::<State>().get_member_query().to_lowercase();
-                text::member_name(contact.name.as_deref())
-                    .to_lowercase()
-                    .contains(&query)
-                    || contact.status.to_lowercase().contains(&query)
-                    || (m.is_self && "you".contains(&query))
-            })
-            .map(|(m, contact)| MemberRow {
-                id: contact.id.clone().into(),
-                name: single_line(text::member_name(contact.name.as_deref())).into(),
-                initial: name_initial(text::member_name(contact.name.as_deref())),
-                status: single_line(&contact.status).into(),
-                is_self: m.is_self,
-                friend: state.friends.iter().any(|f| f.id == contact.id && !f.group)
-                    || contact.profile.relation == Some(0),
-                invited: contact.profile.invited,
-                avatar_key: contact
-                    .avatar
-                    .as_ref()
-                    .map(|a| a.key())
-                    .unwrap_or_default()
-                    .into(),
-                avatar: contact
-                    .avatar
-                    .as_ref()
-                    .and_then(|a| self.images.get(&a.key()))
-                    .cloned()
-                    .unwrap_or_default(),
-            })
-            .collect::<Vec<_>>();
-        patch(
-            &self.members,
-            &mut self.member_keys,
-            members.into_iter().map(|r| (r.id.to_string(), r)).collect(),
-        );
+    }
+}
+
+fn friend_assets(friend: &Friend) -> Vec<String> {
+    friend
+        .avatar
+        .iter()
+        .map(|a| a.key())
+        .chain(
+            emoji_spans(&friend.status, &friend.profile.status_metadata)
+                .iter()
+                .filter_map(Asset::inline_emoji)
+                .map(|a| a.key()),
+        )
+        .collect()
+}
+
+pub(super) fn friend_row(entry: FriendEntry, images: &Images) -> FriendRow {
+    match entry {
+        FriendEntry::Header(label, count, group) => FriendRow {
+            id: format!("header-{label}").into(),
+            name: label.into(),
+            count: count as i32,
+            header: true,
+            group,
+            ..Default::default()
+        },
+        FriendEntry::Contact(f, size) => {
+            let metadata = emoji_spans(&f.status, &f.profile.status_metadata)
+                .into_iter()
+                .map(EmojiView::new)
+                .collect::<Vec<_>>();
+            FriendRow {
+                id: f.id.clone().into(),
+                name: single_line(text::friend_name(&f)).into(),
+                initial: name_initial(text::friend_name(&f)),
+                status: single_line(&f.status).into(),
+                status_runs: rich_content::preview::preview_runs(
+                    &f.status, &metadata, images, size,
+                ),
+                group: f.group,
+                avatar_key: asset_key(f.avatar.as_ref()),
+                avatar: images.picture(f.avatar.as_ref()),
+                ..Default::default()
+            }
+        }
+    }
+}
+pub(super) fn member_row(
+    (contact, is_self, friend): (Friend, bool, bool),
+    images: &Images,
+) -> MemberRow {
+    MemberRow {
+        id: contact.id.into(),
+        name: single_line(text::member_name(contact.name.as_deref())).into(),
+        initial: name_initial(text::member_name(contact.name.as_deref())),
+        status: single_line(&contact.status).into(),
+        is_self,
+        friend,
+        invited: contact.profile.invited,
+        avatar_key: asset_key(contact.avatar.as_ref()),
+        avatar: images.picture(contact.avatar.as_ref()),
     }
 }

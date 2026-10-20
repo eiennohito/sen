@@ -435,7 +435,7 @@ pub struct Window {
     pub reaches_end: bool,
 }
 /// Visible chat with preview taken exclusively from its newest stored row.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ChatListItem {
     pub unread_count: u32,
     pub chat: ChatInput,

@@ -10,31 +10,31 @@ mod shell;
 pub(crate) mod system_events;
 
 use crate::*;
+pub(crate) use assets::Images;
+use assets::{asset_key, content_assets};
+use line::client::desktop::{
+    assets::{Asset, Failure},
+    rich::emoji_spans,
+};
 use messages::compact_text;
+use model::KeyedModel;
+pub(crate) mod model;
 #[derive(Default)]
 pub struct Presenter {
-    chats: Rc<VecModel<ChatRow>>,
-    messages: Rc<VecModel<MessageRow>>,
-    chat_keys: Vec<ChatId>,
+    chats: Rc<KeyedModel<ChatId, ChatInputs>>,
+    messages: Rc<KeyedModel<RowKey, messages::MessageData>>,
     history_chat: Option<ChatId>,
-    message_keys: Vec<RowKey>,
-    pub images: HashMap<String, slint::Image>,
-    pub failures: HashMap<String, line::client::desktop::assets::Failure>,
-    friends: Rc<VecModel<FriendRow>>,
-    friend_keys: Vec<String>,
-    members: Rc<VecModel<MemberRow>>,
-    member_keys: Vec<String>,
-    rendered_friends: std::collections::BTreeMap<String, CachedFriend>,
-    rendered_chats: std::collections::BTreeMap<ChatId, (ChatInputs, ChatRow)>,
-    rendered: std::collections::BTreeMap<Key, (MessageInputs, MessageRow)>,
+    pub images: Images,
+    friends: Rc<KeyedModel<String, people::FriendEntry>>,
+    members: Rc<KeyedModel<String, (Friend, bool, bool)>>,
+    compose_friends: Rc<KeyedModel<String, (Friend, bool)>>,
+    compose_selected: Rc<KeyedModel<String, (Friend, bool)>>,
+    sticker_tabs: Rc<KeyedModel<usize, (String, Option<Content>)>>,
+    sticker_items: Rc<KeyedModel<usize, (usize, Content)>>,
+    status_assets: Vec<Asset>,
+    compose_ids: std::collections::HashSet<String>,
 }
-struct CachedFriend {
-    friend: Friend,
-    size: i32,
-    row: FriendRow,
-    assets: Vec<line::client::desktop::assets::Asset>,
-}
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct MessageInputs {
     message: StoredMessage,
     sender: Option<Friend>,
@@ -44,51 +44,23 @@ struct MessageInputs {
     system_text: Option<String>,
     reply: Option<(StoredMessage, String)>,
     upload: f32,
+    reply_text: Option<String>,
 }
-// Asset pixels are patched in place; these are the non-asset row inputs.
-#[derive(PartialEq)]
+#[derive(Clone, PartialEq)]
 struct ChatInputs {
-    chat: ChatInput,
-    unread_count: u32,
+    item: ChatListItem,
     title: String,
-    avatar: Option<line::client::desktop::assets::Asset>,
-    preview: Option<StoredMessage>,
+    avatar: Option<Asset>,
     system_text: Option<String>,
-    activity: i64,
-    failed: u32,
-    draft: Option<Draft>,
     offline: bool,
     index: usize,
     text_size: i32,
 }
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum RowKey {
     Message(Key),
     Gap(Key),
 }
-fn patch<K: PartialEq + Clone, R: Clone + PartialEq + 'static>(
-    model: &VecModel<R>,
-    keys: &mut Vec<K>,
-    next: Vec<(K, R)>,
-) {
-    for (index, (key, row)) in next.iter().enumerate() {
-        if keys.get(index) != Some(key) {
-            if let Some(old) = keys.iter().position(|k| k == key) {
-                keys.remove(old);
-                model.remove(old);
-            }
-            keys.insert(index, key.clone());
-            model.insert(index, row.clone());
-        } else if model.row_data(index).as_ref() != Some(row) {
-            model.set_row_data(index, row.clone());
-        }
-    }
-    while keys.len() > next.len() {
-        keys.pop();
-        model.remove(model.row_count() - 1);
-    }
-}
-
 impl Presenter {
     pub fn present(
         &mut self,

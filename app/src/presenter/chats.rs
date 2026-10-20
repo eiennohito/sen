@@ -21,78 +21,36 @@ impl Presenter {
                 continue;
             }
             let inputs = ChatInputs {
-                chat: c.clone(),
+                item: item.clone(),
                 avatar: chat_avatar(state, id).cloned(),
-                unread_count: item.unread_count,
                 title: title.to_owned(),
-                preview: item.preview.clone(),
                 system_text: item
                     .preview
                     .as_ref()
                     .and_then(|m| system_events::text(&m.body, state, &m.sender_id)),
-                activity: item.activity_ms,
-                failed: item.failed_count,
-                draft: item.draft.clone(),
                 offline: state.connection != Connection::Online,
                 index,
                 text_size: ui.global::<State>().get_text_size(),
             };
-            if let Some((old, row)) = self.rendered_chats.get(id)
-                && *old == inputs
-            {
-                chats.push((id.clone(), row.clone()));
-                continue;
-            }
-            let mut row = ChatRow {
-                id: id.0.clone().into(),
-                index: index as i32,
-                title: single_line(title).into(),
-                initial: name_initial(title),
-                unread: item.unread_count as i32,
-                failed: item.failed_count > 0,
-                draft: item.draft.as_ref().is_some_and(|d| !d.text.is_empty()),
-                draft_preview: item
-                    .draft
-                    .as_ref()
-                    .map(|d| single_line(&d.text))
-                    .unwrap_or_default()
-                    .into(),
-                unread_unknown: c.unread_stale || state.connection != Connection::Online,
-                muted: c.muted,
-                group: c.is_group,
-                member_count: c.member_count.unwrap_or(0) as i32,
-                time: list_time(item.activity_ms).into(),
-                ..Default::default()
-            };
-            if let Some(m) = &item.preview {
-                rich_content::preview::set(
-                    &mut row,
-                    &m.body,
-                    m.outgoing,
-                    inputs.system_text.as_deref(),
-                    &self.images,
-                    ui.global::<State>().get_text_size(),
-                );
-            } else if item.activity_ms == 0 {
-                row.time = "New".into();
-                row.preview = "No messages yet".into();
-            }
-            if let Some(asset) = chat_avatar(state, id) {
-                row.avatar_key = asset.key().into();
-                if let Some(image) = self.images.get(row.avatar_key.as_str()) {
-                    row.avatar = image.clone();
-                }
-            }
-            self.rendered_chats
-                .insert(id.clone(), (inputs, row.clone()));
-            chats.push((id.clone(), row));
+            let assets = inputs
+                .avatar
+                .iter()
+                .map(|a| a.key())
+                .chain(
+                    inputs
+                        .item
+                        .preview
+                        .iter()
+                        .flat_map(|m| content_assets(&m.body)),
+                )
+                .collect();
+            chats.push((id.clone(), inputs, assets));
         }
-        patch(&self.chats, &mut self.chat_keys, chats);
-        self.rendered_chats
-            .retain(|id, _| state.chats.contains_key(id));
+        self.chats.replace(chats);
     }
     pub(super) fn present_header(&mut self, ui: &AppWindow, state: &AppState) {
-        ui.global::<State>().set_selected_chat(
+        let g = ui.global::<State>();
+        g.set_selected_chat(
             state
                 .selected
                 .as_ref()
@@ -108,20 +66,18 @@ impl Presenter {
                 .unwrap_or_else(|| contact.map(text::friend_name).unwrap_or("Conversation"));
             let group = chat.is_some_and(|c| c.is_group);
             let avatar = chat_avatar(state, id);
-            ui.global::<State>()
-                .set_chat_title(single_line(title).into());
-            ui.global::<State>().set_chat_id(id.0.clone().into());
-            ui.global::<State>().set_chat_initial(name_initial(title));
-            ui.global::<State>().set_chat_avatar(
+            g.set_chat_title(single_line(title).into());
+            g.set_chat_id(id.0.clone().into());
+            g.set_chat_initial(name_initial(title));
+            g.set_chat_avatar(
                 avatar
                     .and_then(|a| self.images.get(&a.key()))
-                    .cloned()
                     .unwrap_or_default(),
             );
-            ui.global::<State>().set_chat_group(group);
+            g.set_chat_group(group);
             let count = chat.and_then(|c| c.member_count).unwrap_or(0);
-            ui.global::<State>().set_member_count(count as i32);
-            ui.global::<State>().set_chat_subtitle(
+            g.set_member_count(count as i32);
+            g.set_chat_subtitle(
                 if group {
                     format!("{count} members")
                 } else {
@@ -133,22 +89,58 @@ impl Presenter {
     }
 
     pub fn patch_draft(&mut self, chat: &ChatId, draft: &Option<Draft>) {
-        let Some((inputs, row)) = self.rendered_chats.get_mut(chat) else {
-            return;
-        };
-        inputs.draft = draft.clone();
-        row.draft = draft.as_ref().is_some_and(|d| !d.text.is_empty());
-        row.draft_preview = draft
+        self.chats
+            .update(chat, |inputs| inputs.item.draft = draft.clone());
+    }
+}
+
+pub(super) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
+    let mut row = ChatRow {
+        id: inputs.item.chat.id.0.clone().into(),
+        index: inputs.index as i32,
+        title: single_line(&inputs.title).into(),
+        initial: name_initial(&inputs.title),
+        unread: inputs.item.unread_count as i32,
+        failed: inputs.item.failed_count > 0,
+        draft: inputs
+            .item
+            .draft
+            .as_ref()
+            .is_some_and(|d| !d.text.is_empty()),
+        draft_preview: inputs
+            .item
+            .draft
             .as_ref()
             .map(|d| single_line(&d.text))
             .unwrap_or_default()
-            .into();
-        if let Some(i) = self.chat_keys.iter().position(|id| id == chat)
-            && self.chats.row_data(i).as_ref() != Some(row)
-        {
-            self.chats.set_row_data(i, row.clone());
+            .into(),
+        unread_unknown: inputs.item.chat.unread_stale || inputs.offline,
+        muted: inputs.item.chat.muted,
+        group: inputs.item.chat.is_group,
+        member_count: inputs.item.chat.member_count.unwrap_or(0) as i32,
+        time: list_time(inputs.item.activity_ms).into(),
+        ..Default::default()
+    };
+    if let Some(m) = &inputs.item.preview {
+        rich_content::preview::set(
+            &mut row,
+            &m.body,
+            m.outgoing,
+            inputs.system_text.as_deref(),
+            images,
+            inputs.text_size,
+        );
+    } else if inputs.item.activity_ms == 0 {
+        row.time = "New".into();
+        row.preview = "No messages yet".into();
+    }
+    if let Some(asset) = inputs.avatar.as_ref() {
+        row.avatar_key = asset.key().into();
+        if let Some(image) = images.get(row.avatar_key.as_str()) {
+            row.avatar = image.clone();
         }
     }
+    row
 }
 
 pub(crate) fn chat_title<'a>(chat: &'a ChatInput, state: &'a AppState) -> &'a str {
@@ -162,10 +154,7 @@ pub(crate) fn chat_title<'a>(chat: &'a ChatInput, state: &'a AppState) -> &'a st
         .unwrap_or("Conversation")
 }
 
-pub(super) fn chat_avatar<'a>(
-    state: &'a AppState,
-    id: &ChatId,
-) -> Option<&'a line::client::desktop::assets::Asset> {
+pub(super) fn chat_avatar<'a>(state: &'a AppState, id: &ChatId) -> Option<&'a Asset> {
     let chat = state.chats.get(id).map(|c| &c.chat);
     if chat.is_some_and(|c| c.is_group) {
         chat.and_then(|c| c.avatar.as_ref())
