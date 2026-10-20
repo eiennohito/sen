@@ -19,7 +19,7 @@ impl Presenter {
                 .iter()
                 .filter(|f| !f.group && f.id != state.profile.mid)
             {
-                let name = single_line(text::friend_name(f));
+                let name = single_line(names::friend_name(f));
                 let selected = self.compose_ids.contains(&f.id);
                 let row = (
                     f.id.clone(),
@@ -30,7 +30,7 @@ impl Presenter {
                     names.push(name.clone());
                     chosen.push(row.clone());
                 }
-                if query.matches([text::friend_name(f)]) {
+                if query.matches([names::friend_name(f)]) {
                     friends.push(row);
                 }
             }

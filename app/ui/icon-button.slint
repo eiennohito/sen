@@ -8,8 +8,9 @@ export component IconButton inherits Pressable {
     width: 32px; height: 32px; border-radius: 8px;
     Rectangle {
         border-radius: root.border-radius;
-        background: root.pressed ? Tokens.selection : root.has-hover ? Tokens.surface-hover : transparent;
-        Image { x: (parent.width - 20px) / 2; y: (parent.height - 20px) / 2; width: 20px; height: 20px; source: root.icon; colorize: root.icon-color; }
+        background: (root.pressed ? Tokens.selection : root.has-hover ? Tokens.surface-hover : transparent).transparentize(root.dimming);
+        // Slint treats transparent colorize as the original image colours.
+        Image { visible: root.icon-color.alpha > 0; x: (parent.width - 20px) / 2; y: (parent.height - 20px) / 2; width: 20px; height: 20px; source: root.icon; colorize: root.icon-color.transparentize(root.dimming); }
         FocusRing { outset: 4px; focused: root.has-focus; border-radius: root.border-radius + 4px; }
     }
     Tooltip { Text { text: root.label; font-size: Tokens.small; color: Tokens.text; } }

@@ -41,8 +41,10 @@ component TextAction inherits Pressable {
     callback clicked();
     width: label.preferred-width + 8px; height: max(24px, Tokens.small * 1.5);
     horizontal-stretch: 0;
-    background: root.has-hover ? Tokens.alternate-background : transparent; animate background { duration: 100ms; }
-    label := Text { text: root.text; color: Tokens.accent-strong; font-size: Tokens.small; vertical-alignment: center; horizontal-alignment: center; }
+    private property <brush> fill: root.has-hover ? Tokens.alternate-background : transparent;
+    animate fill { duration: 100ms; }
+    background: root.fill;
+    label := Text { text: root.text; color: Tokens.accent-strong.transparentize(root.dimming); font-size: Tokens.small; vertical-alignment: center; horizontal-alignment: center; }
     accessible-label: root.action-label;
     activated => { root.clicked(); }
     FocusRing { thickness: 1px; focused: root.has-focus; border-radius: 0px; border-color: Tokens.accent; }
@@ -227,7 +229,7 @@ export component Message inherits TouchArea {
                                             card-title := TextInput { changed has-focus => { root.card-focused = self.has-focus; } read-only: true; single-line: false; text-cursor-width: 0px; text: root.message.body; color: Tokens.text; font-size: Tokens.base; font-weight: 600; wrap: word-wrap; accessible-label: root.message.accessible-label; key-pressed(event) => { ConversationState.reading-key(event) } }
                                             card-meta := Text { text: root.message.detail; color: Tokens.secondary; font-size: Tokens.small; }
                                         }
-                                        if root.message.kind == MessageKind.file && (root.message.delivery == DeliveryState.sent || root.message.delivery == DeliveryState.read) && (!root.message.file-failed || root.message.file-retryable): IconButton { focus-on-tab-navigation: false; label: root.message.file-failed ? "Retry file" : "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !ContentState.file-saving && !root.message.local-media; activated => { ContentState.save-file(root.message.id); } }
+                                        if root.message.kind == MessageKind.file && (root.message.delivery == DeliveryState.sent || root.message.delivery == DeliveryState.read): IconButton { focus-on-tab-navigation: false; label: "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !ContentState.file-saving && !root.message.local-media; activated => { ContentState.save-file(root.message.id); } }
                                     }
                                     if !root.card && root.message.detail != "": Rectangle {
                                         height: detail.preferred-height;
@@ -237,7 +239,6 @@ export component Message inherits TouchArea {
                                         accessible-role: text; accessible-label: "Uploading " + round(root.message.upload-progress * 100) + "%";
                                         Rectangle { x: 0px; y: 0px; height: 100%; width: parent.width * root.message.upload-progress; background: Tokens.accent; }
                                     }
-                                    if root.message.file-failed: Text { text: root.message.file-error; color: Tokens.secondary; font-size: Tokens.small; wrap: word-wrap; }
                                     if ContentState.file-save-id == root.message.id && ContentState.file-save-status != "": Rectangle {
                                         height: saved.preferred-height;
                                         saved := Text { x: 0px; y: 0px; width: parent.width; text: ContentState.file-save-status; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
@@ -249,7 +250,7 @@ export component Message inherits TouchArea {
                                         Image { source: root.message.picture; width: 100%; height: 100%; image-fit: contain; visible: root.message.has-picture; accessible-role: image; accessible-label: root.message.kind == MessageKind.photo ? "Photo preview" : root.message.kind == MessageKind.sticker ? "Sticker" : "Message image"; }
                                         // Software clips are rectangular: cover the four outside corners
                                         // at the contained image's actual bounds, without touching cached pixels.
-                                        if root.message.kind == MessageKind.photo && root.message.has-picture: Rectangle {
+                                        Rectangle { visible: root.message.kind == MessageKind.photo && root.message.has-picture;
                                             width: min(parent.width, parent.height * root.message.picture.width / max(1, root.message.picture.height));
                                             height: min(parent.height, parent.width * root.message.picture.height / max(1, root.message.picture.width));
                                             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
@@ -272,7 +273,7 @@ export component Message inherits TouchArea {
                                             }
                                             FocusRing { focused: parent.has-focus; border-radius: 0px; border-color: Tokens.accent; }
                                         }
-                                        if root.message.uploading: Rectangle {
+                                        Rectangle { visible: root.message.uploading;
                                             width: root.message.has-picture ? min(parent.width, parent.height * root.message.picture.width / max(1, root.message.picture.height)) : parent.width;
                                             x: (parent.width - self.width) / 2;
                                             y: root.message.has-picture ? (parent.height + min(parent.height, parent.width * root.message.picture.height / max(1, root.message.picture.width))) / 2 - 3px : parent.height - 3px;

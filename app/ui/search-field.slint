@@ -14,12 +14,11 @@ export component SearchField inherits Rectangle {
     callback clear();
     forward-focus: input;
     height: 36px; min-width: 160px;
-    // Opacity stays off the root (see Pressable).
-    dimmed := Rectangle {
-        border-radius: 8px; background: Tokens.surface-2;
-        opacity: root.enabled ? 1 : 0.4;
+    property <float> dimming: root.enabled ? 0 : 0.6;
+    Rectangle {
+        border-radius: 8px; background: Tokens.surface-2.transparentize(root.dimming);
         FocusRing { outset: 4px; text-entry: true; focused: input.has-focus; }
-        Image { x: 12px; y: 10px; width: 16px; height: 16px; source: @image-url("../assets/icons/search.svg"); colorize: Tokens.secondary; }
+        Image { x: 12px; y: 10px; width: 16px; height: 16px; source: @image-url("../assets/icons/search.svg"); colorize: Tokens.secondary.transparentize(root.dimming); }
         editor-clip := Rectangle {
             x: 36px; y: 0px; width: max(0px, root.width - 48px - (clear-button.visible ? 32px : 0px)); height: root.height; clip: true;
             ContextMenuArea {
@@ -32,18 +31,19 @@ export component SearchField inherits Rectangle {
                 input := TextInput {
                     width: 100%; height: 100%;
                     enabled: root.enabled; single-line: true; vertical-alignment: center;
-                    text <=> root.text; font-size: Tokens.base; color: Tokens.text;
+                    text <=> root.text; font-size: Tokens.base; color: Tokens.text.transparentize(root.dimming);
                     accessible-placeholder-text: root.placeholder-text; accessible-label: root.label;
                     edited => { root.edited(self.text); }
                     key-pressed(event) => { root.key-pressed(event) }
                 }
             }
         }
-        Text { x: 36px; width: input.width; height: root.height; visible: root.text == "" && !input.has-focus; text: root.placeholder-text; color: Tokens.placeholder; font-size: Tokens.base; vertical-alignment: center; overflow: elide; accessible-role: none; }
+        Text { x: 36px; width: input.width; height: root.height; visible: root.text == "" && !input.has-focus; text: root.placeholder-text; color: Tokens.placeholder.transparentize(root.dimming); font-size: Tokens.base; vertical-alignment: center; overflow: elide; accessible-role: none; }
         clear-button := IconButton {
             x: root.width - 36px; y: (root.height - self.height) / 2;
             visible: root.text != ""; enabled: root.enabled && self.visible;
             width: 32px; height: 32px;
+            icon-color: Tokens.text.transparentize(root.dimming);
             label: "Clear search"; icon: @image-url("../assets/icons/close.svg");
             activated => { input.focus(); root.clear(); }
         }

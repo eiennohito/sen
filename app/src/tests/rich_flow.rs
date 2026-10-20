@@ -67,8 +67,8 @@ fn layout(ui: &AppWindow, rows: &ModelRc<RichRun>, width: f32, size: f32) -> Mod
     )
 }
 
-fn watch_layout(ui: &AppWindow) -> Rc<RefCell<ModelRc<RichRun>>> {
-    let observed = Rc::new(RefCell::new(ModelRc::default()));
+fn watch_layout(ui: &AppWindow) -> Rc<RefCell<(ModelRc<RichRun>, f32)>> {
+    let observed = Rc::new(RefCell::new((ModelRc::default(), 0.)));
     let recorded = observed.clone();
     let weak = ui.as_weak();
     let metrics = RefCell::new(Measurements::default());
@@ -78,7 +78,7 @@ fn watch_layout(ui: &AppWindow) -> Rc<RefCell<ModelRc<RichRun>>> {
                 previous,
                 crate::rich_content::flow::layout(&weak.unwrap(), &rows, width, size, &metrics),
             );
-            *recorded.borrow_mut() = output.clone();
+            *recorded.borrow_mut() = (output.clone(), width);
             output
         });
     observed
@@ -349,16 +349,16 @@ fn maximum_rich_flow_measures_and_reflows_at_narrow_large_text() {
         let started = std::time::Instant::now();
         render(&window, (980, 720));
         let cold = started.elapsed();
-        let before = observed.borrow().iter().last().unwrap().y;
+        let before = observed.borrow().0.iter().last().unwrap().y;
         let resized = std::time::Instant::now();
         assert!(before > 0.0, "native run measurements did not initialize");
         ui.global::<SettingsState>().set_text_size(24);
         render(&window, (360, 520));
-        let last = observed.borrow().iter().last().unwrap();
+        let last = observed.borrow().0.iter().last().unwrap();
         assert!(last.y > before, "narrow large text did not reflow");
-        for run in observed.borrow().iter() {
+        for run in observed.borrow().0.iter() {
             assert!(
-                run.x + run.measured_width <= run.available + 1.0,
+                run.x + run.measured_width <= observed.borrow().1 + 1.0,
                 "rich run overflowed the pane"
             );
         }
@@ -423,16 +423,16 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                     if linked { rich_content::links::decorate_message(&mut row); }
                     ui.global::<ConversationState>().set_messages(ModelRc::new(VecModel::from(vec![row])));
                     let pixels = render(&window, size);
-                    let runs = observed.borrow().clone();
+                    let runs = observed.borrow().0.clone();
                     if linked {
                         for run in runs.iter() {
                             assert!(run.measured_height > 0.0);
                             assert!(
-                                run.x + run.measured_width <= run.available + 0.25,
+                                run.x + run.measured_width <= observed.borrow().1 + 0.25,
                                 "inline URL overflowed"
                             );
                             if run.link_start {
-                                assert!(run.x + run.link_width <= run.available + 0.25);
+                                assert!(run.x + run.link_width <= observed.borrow().1 + 0.25);
                             }
                         }
                         assert!(runs.row_count() < 20);
@@ -503,7 +503,7 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                     assert!(
                         lines.iter().max().unwrap() - lines.iter().min().unwrap()
                             > text_size as u32,
-                        "long run did not wrap: {size:?} font {text_size} linked {linked}; layout {:?}", runs.iter().map(|r| (r.text, r.x, r.y, r.measured_width, r.available)).collect::<Vec<_>>()
+                        "long run did not wrap: {size:?} font {text_size} linked {linked}; layout {:?}", runs.iter().map(|r| (r.text, r.x, r.y, r.measured_width, observed.borrow().1)).collect::<Vec<_>>()
                     );
                 }
             }
@@ -942,9 +942,9 @@ fn first_frame_never_paints_unpositioned_or_overlapping_runs() {
                     } else {
                         assert_eq!(ink, first_ink, "message ink moved after the first frame");
                     }
-                    let rows: Vec<_> = observed.borrow().iter().collect();
-                    let positioned = !rows.is_empty()
-                        && rows.iter().all(|r| r.positioned && r.measured_height > 0.0);
+                    let rows: Vec<_> = observed.borrow().0.iter().collect();
+                    let positioned =
+                        !rows.is_empty() && rows.iter().all(|r| r.measured_height > 0.0);
                     if !positioned {
                         assert!(
                             !pixels

@@ -1,24 +1,23 @@
 export enum PreviewMode { incoming, outgoing, draft }
 export enum DeliveryState { sent, pending, read, rejected }
 export enum HistoryRowKind { message, gap, unread }
-export struct RichRun { text: string, break-before: bool, url: string, link-start: bool, link-first: bool, link-id: int, link-width: float, positioned: bool, natural-width: float, line-width: float, image-key: string, picture: image, has-picture: bool, emoji: bool, thumbnail: bool, contain: bool, thumbnail-text: string, newline: bool, x: float, y: float, measured-width: float, measured-height: float, available: float }
+export struct RichRun { text: string, break-before: bool, url: string, link-start: bool, link-first: bool, link-id: int, link-width: float, natural-width: float, line-width: float, image-key: string, picture: image, has-picture: bool, emoji: bool, thumbnail: bool, contain: bool, thumbnail-text: string, newline: bool, x: float, y: float, measured-width: float, measured-height: float }
 export enum RunPosition { single, first, middle, last }
 export enum MessageKind { text, photo, sticker, video, voice, file, location, contact, system, withdrawn, undecryptable, unknown }
 export struct LinkRow { label: string, url: string }
-export struct ChatRow { accessible-label: string, badge: string, unread: int, unread-unknown: bool, member-count: int, preview-mode: PreviewMode, preview-prefix: string, display-preview: string, failed: bool, muted: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, activity: string, time: string, avatar: image, avatar-key: string }
-export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, status-runs: [RichRun], group: bool, avatar: image, avatar-key: string }
-export struct ReactorRow { id: string, name: string, initial: string, avatar-key: string, avatar: image }
+export struct ChatRow { accessible-label: string, badge: string, unread: int, unread-unknown: bool, member-count: int, preview-mode: PreviewMode, preview-prefix: string, display-preview: string, failed: bool, muted: bool, group: bool, id: string, index: int, title: string, preview: string, preview-runs: [RichRun], initial: string, time: string, avatar: image }
+export struct FriendRow { count: int, header: bool, id: string, name: string, initial: string, status: string, status-runs: [RichRun], group: bool, avatar: image }
+export struct ReactorRow { id: string, name: string, initial: string, avatar: image }
 export struct ReactionRow { id: int, label: string, glyph: string, count: int, own: bool, reactors: [ReactorRow], image-key: string, picture: image, has-picture: bool }
 export struct MessageRow {
     row-kind: HistoryRowKind,
     uploading: bool, upload-progress: float, file-missing: bool, local-media: bool,
     own-reaction: int, can-react: bool, can-unsend: bool, reaction-count: int,
-    file-failed: bool, file-failure: string, file-error: string, file-retryable: bool,
-    skip-badge: bool, has-inline-emoji: bool, rich-fallback: bool,
-    rich-runs: [RichRun], reply-id: string, reply-sender: string, reply-preview: string, reply-sender-id: string, reply-image-key: string, reply-picture: image, reply-has-picture: bool, detail: string,
+    has-inline-emoji: bool, rich-fallback: bool,
+    rich-runs: [RichRun], reply-id: string, reply-sender: string, reply-preview: string, reply-sender-id: string, reply-picture: image, reply-has-picture: bool, detail: string,
     kind: MessageKind, links: [LinkRow], accessible-label: string,
-    id: string, delivered-time: string, sort-key: string, body: string, time: string, outgoing: bool,
-    sender-id: string, sender-name: string, sender-initial: string, sender-key: string, sender-avatar: image, has-sender-avatar: bool,
+    id: string, body: string, time: string, outgoing: bool,
+    sender-id: string, sender-name: string, sender-initial: string, sender-avatar: image, has-sender-avatar: bool,
     run-position: RunPosition, day-label: string, clock: string,
     image-key: string, picture: image, has-picture: bool, image-failed: bool, image-error: string, image-retryable: bool,
     delivery: DeliveryState, delivery-detail: string, recoverable: bool, reactions: [ReactionRow],
@@ -26,7 +25,7 @@ export struct MessageRow {
 
 // Fixed gutter and a wide pointer target. Content changes during a thumb drag
 
-export struct MemberRow { id: string, name: string, initial: string, status: string, avatar: image, avatar-key: string, is-self: bool, friend: bool, invited: bool }
+export struct MemberRow { id: string, name: string, initial: string, status: string, avatar: image, is-self: bool, friend: bool, invited: bool }
 
 export struct StickerTab { name: string, picture: image }
 export struct StickerItem { index: int, picture: image }

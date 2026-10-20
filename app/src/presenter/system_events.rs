@@ -6,18 +6,7 @@ pub(crate) fn text(content: &Content, state: &AppState, sender: &str) -> Option<
 }
 
 pub(crate) fn name(state: &AppState, mid: &str) -> String {
-    if mid == state.profile.mid {
-        return "You".into();
-    }
-    let contact = state.contact(mid);
-    let name = if state.profile_friend(mid) {
-        contact
-            .map(crate::text::friend_name)
-            .unwrap_or("Unnamed friend")
-    } else {
-        crate::text::member_name(contact.and_then(|f| f.name.as_deref()))
-    };
-    crate::presenter::format::single_line(name)
+    crate::presenter::format::single_line(super::names::person(state, mid))
 }
 
 fn event_text(event: &Event<'_>, sender: &str, name: impl Fn(&str) -> String) -> String {

@@ -115,7 +115,7 @@ pub(crate) fn decorate_message(row: &mut MessageRow) {
     ));
     crate::rich_content::spans::decorate_links(row, &rendered);
     let sender = if row.sender_name.is_empty() {
-        "Contact"
+        crate::presenter::names::CONTACT
     } else {
         row.sender_name.as_str()
     };

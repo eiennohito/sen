@@ -79,7 +79,6 @@ export component Pane inherits Rectangle {
             x: 0px; y: 0px;
             changed has-focus => { root.connection-focused = self.has-focus; }
             dismissed => { root.connection-dismissed(); }
-            visible: ShellState.connection-feedback-visible;
         }
     }
     viewport := Rectangle {
@@ -97,16 +96,16 @@ export component Pane inherits Rectangle {
         background: transparent;
         visible: root.extent > 0px;
         thumb := Rectangle {
-            x: (parent.width - self.width) / 2; width: 6px; opacity: 0;
+            x: (parent.width - self.width) / 2; width: 6px;
             animate width { duration: 120ms; easing: ease-out; }
             states [ shown when root.scrolling || thumb-touch.has-hover || thumb-touch.pressed: {
-                opacity: 1; width: thumb-touch.has-hover || thumb-touch.pressed ? 10px : 6px;
-                in-out { animate opacity { duration: 120ms; easing: ease-out; } }
+                background: Tokens.text-secondary.with-alpha(0.45); width: thumb-touch.has-hover || thumb-touch.pressed ? 10px : 6px;
+                in-out { animate background { duration: 120ms; easing: ease-out; } }
             } ]
             height: min(track.height, max(32px, track.height * track.height / max(1px, root.height + root.extent)));
             y: (track.height - self.height) * (max(0px, min(root.extent, -root.offset)) / max(1px, root.extent));
             border-radius: 5px;
-            background: Tokens.text-secondary.with-alpha(0.45);
+            background: Tokens.text-secondary.with-alpha(0);
         }
         thumb-touch := TouchArea {
             property <length> start-offset;

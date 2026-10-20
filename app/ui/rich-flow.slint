@@ -40,7 +40,7 @@ export component RichFlow inherits Rectangle {
         height: run.measured-height * 1px;
         background: transparent;
         Text { x: 0px; y: 0px; width: parent.width; height: parent.height; min-width: 0px; min-height: 0px; preferred-width: parent.width; preferred-height: parent.height; accessible-role: none; wrap: no-wrap; visible: !run.emoji || !run.has-picture; text: run.text; font-size: run.emoji ? max(11px,root.text-size - 2px) : root.text-size; color: run.url != "" ? Tokens.accent-strong : root.text-color; vertical-alignment: center; overflow: clip; }
-        if run.emoji && run.has-picture: Image { width: parent.width; height: parent.height; source: run.picture; image-fit: contain; accessible-role: image; accessible-label: run.text; }
+        Image { visible: run.emoji && run.has-picture; width: parent.width; height: parent.height; source: run.picture; image-fit: contain; accessible-role: image; accessible-label: run.text; }
         if run.link-start: ContextMenuArea {
             x: 0px; y: 0px;
             width: min(run.link-width * 1px, root.width - run.x * 1px);
@@ -73,7 +73,7 @@ export component RichFlow inherits Rectangle {
             }
         }
     }
-    if root.elide-overflow && root.natural-height > root.height: Rectangle {
+    Rectangle { visible: root.elide-overflow && root.natural-height > root.height;
         x: max(0px, root.width - root.text-size * 1.5); y: max(0px, root.height - root.text-size * 1.4);
         width: root.text-size * 1.5; height: root.text-size * 1.4; background: Tokens.bg;
         Text { text: "…"; font-size: root.text-size; color: root.text-color; horizontal-alignment: right; vertical-alignment: center; }

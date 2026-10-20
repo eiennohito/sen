@@ -261,7 +261,6 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
         assert_eq!(ui.global::<ConversationState>().get_chat_title(), "Friend");
         let friends = ui.global::<FriendsState>().get_friends();
         let friend_row = friends.iter().find(|r| r.id == "friend").unwrap();
-        assert_eq!(friend_row.avatar_key, asset.key());
         assert_eq!(friend_row.avatar, image);
         assert_eq!(
             ui.global::<ConversationState>().get_chat_avatar(),
@@ -288,7 +287,6 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
         );
         presenter.present(&ui, &state, ChatCategory::All);
         let chat = ui.global::<ChatsState>().get_chats().row_data(0).unwrap();
-        assert_eq!(chat.avatar_key, asset.key());
         assert_eq!(chat.avatar, image);
         assert_eq!(
             ui.global::<ConversationState>().get_chat_avatar(),
@@ -749,11 +747,22 @@ fn busy_controls_refuse_focus_and_activation() {
     std::thread::spawn(|| {
         use i_slint_backend_testing::{AccessibleRole, ElementHandle, ElementQuery};
         use slint::platform::{Key, WindowEvent};
-        i_slint_backend_testing::init_no_event_loop();
+        let platform = snapshot::install().unwrap();
         let ui = window::create_app_window().unwrap();
         ui.show().unwrap();
         ui.window().set_size(slint::LogicalSize::new(360., 720.));
         slint::platform::update_timers_and_animations();
+        let click = |control: &ElementHandle| {
+            let pos = control.absolute_position();
+            let size = control.size();
+            let position =
+                slint::LogicalPosition::new(pos.x + size.width / 2., pos.y + size.height / 2.);
+            let button = slint::platform::PointerEventButton::Left;
+            ui.window()
+                .dispatch_event(WindowEvent::PointerPressed { position, button });
+            ui.window()
+                .dispatch_event(WindowEvent::PointerReleased { position, button });
+        };
         let focused = || focus_label(&ui);
         let key = |text: slint::SharedString| {
             ui.window()
@@ -839,13 +848,26 @@ fn busy_controls_refuse_focus_and_activation() {
                 .next()
                 .unwrap_or_else(|| panic!("missing {label}"));
             assert_eq!(control.accessible_enabled(), Some(false));
-            let dimmed = control
-                .query_descendants()
-                .match_id("Pressable::dimmed")
-                .find_all();
-            assert!(dimmed.first().unwrap().computed_opacity() < 1.);
+            let pos = control.absolute_position();
+            let size = control.size();
+            let ink = |image: slint::SharedPixelBuffer<slint::Rgb8Pixel>| {
+                image
+                    .as_slice()
+                    .chunks(360)
+                    .skip(pos.y as usize)
+                    .take(size.height as usize)
+                    .flat_map(|row| row.iter().skip(pos.x as usize).take(size.width as usize))
+                    .map(|p| u16::from(p.r) + u16::from(p.g) + u16::from(p.b))
+                    .min()
+                    .unwrap()
+            };
+            ui.global::<DetailState>().set_detail_busy(false);
+            let idle = ink(snapshot::render(&platform, (360, 720)).unwrap());
+            ui.global::<DetailState>().set_detail_busy(true);
+            let busy = ink(snapshot::render(&platform, (360, 720)).unwrap());
+            assert!(busy > idle, "busy {label} content did not get lighter");
             control.invoke_accessible_default_action();
-            control.mock_single_click(slint::platform::PointerEventButton::Left);
+            click(&control);
             assert!(
                 ElementHandle::find_by_element_id(&ui, "Layers::dialog-title")
                     .next()
@@ -871,7 +893,7 @@ fn busy_controls_refuse_focus_and_activation() {
             .next()
             .unwrap();
         close.invoke_accessible_default_action();
-        close.mock_single_click(slint::platform::PointerEventButton::Left);
+        click(&close);
         assert!(ui.global::<NewChatState>().get_new_chat_open());
     })
     .join()
@@ -988,6 +1010,51 @@ fn keyboard_navigation_updates_only_the_current_window() {
             !first.global::<ShellState>().get_keyboard_navigation(),
             "an old window still receives input hooks"
         );
+    })
+    .join()
+    .unwrap();
+}
+
+slint::slint! {
+    import { Button } from "../../ui/button.slint";
+    import { IconButton } from "../../ui/icon-button.slint";
+    export component DisabledControlProbe inherits Window {
+        background: white;
+        Button { x: 16px; y: 16px; width: 64px; background: black; enabled: false; }
+        Button { x: 112px; y: 16px; width: 64px; background: black; }
+        IconButton { x: 16px; y: 80px; background: black; icon-color: white; icon: @image-url("../../assets/icons/rename.svg"); enabled: false; }
+        IconButton { x: 112px; y: 80px; background: black; icon-color: white; icon: @image-url("../../assets/icons/rename.svg"); }
+    }
+}
+
+#[test]
+fn disabled_controls_keep_their_dimmed_colours() {
+    std::thread::spawn(|| {
+        let platform = snapshot::install().unwrap();
+        let ui = DisabledControlProbe::new().unwrap();
+        ui.show().unwrap();
+        let pixels = snapshot::render(&platform, (200, 128)).unwrap();
+        let pixel = |x: usize, y: usize| {
+            let p = pixels.as_slice()[y * 200 + x];
+            (p.r, p.g, p.b)
+        };
+        assert_eq!(pixel(32, 24), (153, 153, 153));
+        assert_eq!(pixel(128, 24), (0, 0, 0));
+        assert_eq!(pixel(20, 84), (153, 153, 153));
+        assert_eq!(pixel(116, 84), (0, 0, 0));
+        let mut icon_ink = 0;
+        for y in 86..106 {
+            for x in 118..138 {
+                if pixel(x, y) == (255, 255, 255) {
+                    icon_ink += 1;
+                    let dimmed = pixel(x - 96, y);
+                    assert!(dimmed.0 > 153 && dimmed.0 < 255);
+                    assert_eq!(dimmed.0, dimmed.1);
+                    assert_eq!(dimmed.0, dimmed.2);
+                }
+            }
+        }
+        assert!(icon_ink > 5, "idle icon has no fully coloured ink");
     })
     .join()
     .unwrap();

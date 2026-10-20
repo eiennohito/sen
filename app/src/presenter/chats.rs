@@ -23,7 +23,7 @@ impl Presenter {
         for (index, id) in state.chat_order.iter().enumerate() {
             let item = &state.chats[id];
             let c = &item.chat;
-            let title = chat_title(c, state);
+            let title = names::chat(state, id, names::CONVERSATION);
             if !query.matches([title])
                 || (category == ChatCategory::Friends && c.is_group)
                 || (category == ChatCategory::Groups && !c.is_group)
@@ -87,8 +87,8 @@ pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         row.preview = "No messages yet".into();
     }
     if let Some(asset) = inputs.avatar.as_ref() {
-        row.avatar_key = asset.key().into();
-        if let Some(image) = images.get(row.avatar_key.as_str()) {
+        let key = asset.key();
+        if let Some(image) = images.get(&key) {
             row.avatar = image.clone();
         }
     }
@@ -124,17 +124,6 @@ pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
     row.accessible_label = label.join(", ").into();
     row.badge = unread_badge(row.unread);
     row
-}
-
-pub(crate) fn chat_title<'a>(chat: &'a ChatInput, state: &'a AppState) -> &'a str {
-    if !chat.title.trim().is_empty() {
-        return &chat.title;
-    }
-    state
-        .contact(&chat.id.0)
-        .and_then(|c| c.name.as_deref())
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("Conversation")
 }
 
 pub(super) fn chat_avatar<'a>(state: &'a AppState, id: &ChatId) -> Option<&'a Asset> {

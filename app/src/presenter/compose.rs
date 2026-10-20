@@ -57,7 +57,7 @@ impl Presenter {
         let image = self.images.small(&image_key);
         MessageRow {
             sender_name: if m.outgoing {
-                "You".into()
+                names::YOU.into()
             } else {
                 system_events::name(state, &m.sender_id).into()
             },
@@ -96,8 +96,8 @@ impl Presenter {
 pub(super) fn compose_row((f, selected): (Friend, bool), images: &Images) -> ComposeFriend {
     ComposeFriend {
         id: f.id.clone().into(),
-        name: single_line(text::friend_name(&f)).into(),
-        initial: name_initial(text::friend_name(&f)),
+        name: single_line(names::friend_name(&f)).into(),
+        initial: name_initial(names::friend_name(&f)),
         avatar: images.picture(f.avatar.as_ref()),
         selected,
     }

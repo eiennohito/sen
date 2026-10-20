@@ -20,8 +20,8 @@ component HistoryPill inherits Pressable {
     Rectangle { background: root.background; border-radius: root.border-radius; border-width: root.border-width; border-color: root.border-color; drop-shadow-color: #00000026; drop-shadow-blur: 8px; drop-shadow-offset-y: 2px; }
     FocusRing { focused: root.has-focus; border-radius: root.border-radius; }
     label := Text { x: 8px; width: parent.width - 16px; height: parent.height; visible: !root.latest; text: root.text; font-size: Tokens.small; color: Tokens.foreground; horizontal-alignment: center; vertical-alignment: center; overflow: elide; accessible-role: none; }
-    if root.latest: Image { x: 8px; y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/down.svg"); colorize: Tokens.text; }
-    if root.latest && ConversationState.new-count > 0: Rectangle { x: 20px; y: -4px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: "" + ConversationState.new-count; font-size: Tokens.small; font-weight: 600; color: Tokens.on-accent; horizontal-alignment: center; vertical-alignment: center; } }
+    Image { visible: root.latest; x: 8px; y: 8px; width: 20px; height: 20px; source: @image-url("../assets/icons/down.svg"); colorize: Tokens.text; }
+    Rectangle { visible: root.latest && ConversationState.new-count > 0; x: 20px; y: -4px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.accent; Text { text: "" + ConversationState.new-count; font-size: Tokens.small; font-weight: 600; color: Tokens.on-accent; horizontal-alignment: center; vertical-alignment: center; } }
     accessible-label: root.label;
     focus-on-activation: false;
 }
@@ -75,7 +75,7 @@ export component Conversation inherits FocusScope {
     loading-timer := Timer { interval: 300ms; running: ConversationState.window-loading && !root.loading-delayed; triggered => { root.loading-delayed = true; } }
     property <bool> latest-visible: !ConversationState.following && ConversationState.has-chat;
     property <string> latest-label: ConversationState.new-count > 0 ? "Latest · " + ConversationState.new-count + " new" : "Latest";
-          visible: !ShellState.narrow || ShellState.show-conversation;
+
           VerticalLayout {
             spacing: 0px;
             header := Rectangle {
@@ -84,8 +84,8 @@ export component Conversation inherits FocusScope {
                 HorizontalLayout {
                     y: 12px; height: 32px; padding-left: 16px; padding-right: 16px; spacing: 8px;
                     if ShellState.narrow: back-button := IconButton { label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { ShellState.show-conversation = false; if ShellState.section == Section.friends { ShellState.focus-friend-search(); } else { ShellState.focus-search(); } }
-                        if ShellState.unread-conversations > 0: Rectangle { x: 20px; y: -4px; width: ShellState.unread-stale ? 8px : 20px; height: ShellState.unread-stale ? 8px : 20px; border-radius: self.height / 2; background: Tokens.accent;
-                            if !ShellState.unread-stale: Text { text: ShellState.unread-badge; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
+                        Rectangle { visible: ShellState.unread-conversations > 0; x: 20px; y: -4px; width: ShellState.unread-stale ? 8px : 20px; height: ShellState.unread-stale ? 8px : 20px; border-radius: self.height / 2; background: Tokens.accent;
+                            Text { visible: !ShellState.unread-stale; text: ShellState.unread-badge; color: Tokens.on-accent; font-size: Tokens.small; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; }
                         }
                     }
                     title-button := Rectangle {

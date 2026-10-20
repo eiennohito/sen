@@ -86,9 +86,6 @@ pub(crate) fn unread_badge(count: i32) -> slint::SharedString {
 pub(crate) fn single_line(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
-pub(crate) fn order_key(timestamp: i64) -> String {
-    format!("{:020}", timestamp.max(0))
-}
 pub(crate) fn display_time(timestamp: i64) -> String {
     if timestamp <= 0 || timestamp == i64::MAX {
         return String::new();
@@ -176,9 +173,9 @@ pub(crate) fn kind_label(content: &Content) -> (MessageKind, String) {
         ),
         Content::Contact { name, .. } => (
             Contact,
-            name.as_ref()
+            crate::presenter::names::nonblank(name.as_deref())
                 .map(|n| format!("Contact · {n}"))
-                .unwrap_or_else(|| "Contact".into()),
+                .unwrap_or_else(|| crate::presenter::names::CONTACT.into()),
         ),
         Content::Location { .. } => (Location, "Location".into()),
         Content::System { text, .. } => (System, text.clone().unwrap_or_default()),
@@ -318,7 +315,6 @@ pub(crate) fn message_row(
     }
     .unwrap_or_default();
     MessageRow {
-        skip_badge: m.skip_badge,
         rich_fallback: kind == MessageKind::Text && !emoji.is_empty() && rich_runs.row_count() == 0,
         rich_runs,
         reply_id: m
@@ -330,7 +326,6 @@ pub(crate) fn message_row(
         reply_preview: "Original message".into(),
         detail: detail.into(),
         kind,
-        delivered_time: order_key(m.sort.sort_ts).into(),
         id: m.key.0.to_string().into(),
         sender_id: m.sender_id.clone().into(),
         body: system_text.unwrap_or(&body).into(),

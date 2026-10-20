@@ -14,13 +14,15 @@ component DetailRow inherits Pressable {
     in property <bool> toggle;
     in property <bool> checked;
     height: 52px; border-radius: 8px;
-    background: root.has-hover ? Tokens.surface-hover : transparent; animate background { duration: 100ms; }
+    private property <brush> fill: root.has-hover ? Tokens.surface-hover : transparent;
+    animate fill { duration: 100ms; }
+    background: root.fill;
     accessible-label: root.label; accessible-enabled: root.enabled; accessible-checked: root.checked; accessible-value: root.toggle ? (root.checked ? "On" : "Off") : "";
-    RowText { x: 12px; width: parent.width - 72px; height: parent.height; text: root.label; color: root.danger ? Tokens.danger : Tokens.text; vertical-alignment: center; }
-    if !root.toggle && !root.danger: Image { x: parent.width - 28px; y: 16px; width: 20px; height: 20px; source: @image-url("../assets/icons/next.svg"); colorize: Tokens.secondary; }
-    if root.toggle: Rectangle { x: parent.width - 52px; y: 14px; width: 40px; height: 24px; border-radius: 12px; background: Tokens.surface-2;
-        states [ checked when root.checked: { background: Tokens.accent; knob.x: 18px; in-out { animate background, knob.x { duration: 120ms; } } } ]
-        knob := Rectangle { x: 2px; y: 2px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.bg; }
+    RowText { x: 12px; width: parent.width - 72px; height: parent.height; text: root.label; color: (root.danger ? Tokens.danger : Tokens.text).transparentize(root.dimming); vertical-alignment: center; }
+    Image { visible: !root.toggle && !root.danger; x: parent.width - 28px; y: 16px; width: 20px; height: 20px; source: @image-url("../assets/icons/next.svg"); colorize: Tokens.secondary.transparentize(root.dimming); }
+    Rectangle { visible: root.toggle; x: parent.width - 52px; y: 14px; width: 40px; height: 24px; border-radius: 12px; background: Tokens.surface-2.transparentize(root.dimming);
+        states [ checked when root.checked: { background: Tokens.accent.transparentize(root.dimming); knob.x: 18px; in-out { animate background, knob.x { duration: 120ms; } } } ]
+        knob := Rectangle { x: 2px; y: 2px; width: 20px; height: 20px; border-radius: 10px; background: Tokens.bg.transparentize(root.dimming); }
     }
     FocusRing { focused: root.has-focus; outset: -2px; border-radius: 8px; }
 }
@@ -33,7 +35,7 @@ component ProfileActionButton inherits Rectangle {
     forward-focus: button;
     width: 72px; height: 72px;
     button := IconButton { x: (parent.width - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: root.label; icon: root.icon; enabled: root.enabled; activated => { root.activated(); } }
-    Text { y: 48px; width: parent.width; text: root.label; horizontal-alignment: center; font-size: Tokens.small; color: Tokens.text; }
+    Text { y: 48px; width: parent.width; text: root.label; horizontal-alignment: center; font-size: Tokens.small; color: Tokens.text.transparentize(root.enabled ? 0 : 0.6); }
 }
 export component Detail inherits FocusScope {
     public pure function focus-opener() -> FocusOpener {
