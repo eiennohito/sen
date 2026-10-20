@@ -2031,7 +2031,7 @@ impl Engine {
         reply: Option<ReplyReference>,
     ) -> Result<Key> {
         let seq = self.next_seq();
-        let (key, _) = self.store.insert_pending(
+        let key = self.store.insert_pending(
             chat,
             LocalId(format!("{}-{seq}", now_ms())),
             seq,

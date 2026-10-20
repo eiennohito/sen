@@ -1602,7 +1602,7 @@ fn restart_recovers_pending_row_without_sending() {
     let root = temp.0.clone();
     let queued = {
         let mut store = Store::open(&root).unwrap();
-        let (queued, _) = store
+        store
             .insert_pending(
                 &ChatId("alice".into()),
                 LocalId("queued".into()),
@@ -1611,8 +1611,7 @@ fn restart_recovers_pending_row_without_sending() {
                 2,
                 None,
             )
-            .unwrap();
-        queued
+            .unwrap()
     };
     let fake = FakeBackend::canned();
     let mut app = App::new(fake.clone(), StoreLocation::Directory(root.clone()));

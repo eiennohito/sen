@@ -52,7 +52,6 @@ fn pending(s: &mut Store, seq: u32) -> Key {
         None,
     )
     .unwrap()
-    .0
 }
 
 #[test]
@@ -105,7 +104,9 @@ fn echo_and_result_orders_preserve_key_and_merge_duplicate() {
                     .unwrap();
             }
             let duplicate = all(&s).into_iter().find(|r| r.key != key).map(|r| r.key);
-            let changes = s.link_sent(0, id(101), 999).unwrap();
+            s.take_changes();
+            s.link_sent(0, id(101), 999).unwrap();
+            let changes = s.take_changes();
             if let Some(duplicate) = duplicate {
                 assert!(changes.messages_removed.contains(&duplicate));
             }
@@ -198,7 +199,9 @@ fn outbox_failure_retry_discard_and_confirmation_guards() {
     )
     .unwrap();
     assert_eq!(s.all_pending().unwrap().len(), 1);
-    let changes = s.discard(k).unwrap();
+    s.take_changes();
+    s.discard(k).unwrap();
+    let changes = s.take_changes();
     assert!(changes.messages_removed.contains(&k));
     assert!(all(&s).is_empty());
     let k2 = pending(&mut s, 3);
@@ -319,9 +322,9 @@ fn empty_recent_does_not_create_chat_until_fetched_or_sent_message() {
     for reaches_start in [false, true] {
         for fetched in [false, true] {
             let mut s = store();
-            let changes = s
-                .apply_page(&chat(), PageKind::Recent, &[], reaches_start)
+            s.apply_page(&chat(), PageKind::Recent, &[], reaches_start)
                 .unwrap();
+            let changes = s.take_changes();
             assert!(changes.chats_changed.is_empty());
             assert!(s.take_changes().chats_changed.is_empty());
             assert!(s.chat(&chat()).unwrap().is_none());
@@ -361,7 +364,9 @@ fn chat_list_sweeps_metadata_and_activity_do_not_regress() {
     assert_eq!(list[0].activity_ms, 50);
     assert_eq!(list[0].preview.as_ref().unwrap().server_id, Some(id(50)));
     assert!(!s.needs_refresh(&chat()).unwrap());
-    let changes = s.upsert_chats(&[a], true).unwrap();
+    s.take_changes();
+    s.upsert_chats(&[a], true).unwrap();
+    let changes = s.take_changes();
     assert!(changes.chats_removed.contains(&b.id));
     assert!(!s.chat(&b.id).unwrap().unwrap().left);
     assert_eq!(s.chat_list(10, 0).unwrap().len(), 1);
@@ -436,7 +441,7 @@ fn drafts_preferences_and_account() {
     };
     s.save_draft(&chat(), &d).unwrap();
     assert_eq!(s.load_draft(&chat()).unwrap(), Some(d.clone()));
-    let (key, _) = s
+    let key = s
         .insert_pending(
             &chat(),
             LocalId("reply-pending".into()),
@@ -728,7 +733,7 @@ fn clipboard_cleanup_retains_unsent_sources_across_accounts() {
         let mut item = crate::attachments::Attachment::prepare(&path).unwrap();
         item.clipboard = true;
         let seq = index as u32 + 1;
-        let (key, _) = other
+        let key = other
             .insert_pending(
                 &chat(),
                 LocalId(format!("local-{index}")),

@@ -74,13 +74,16 @@ fn pending_key(conn: &Connection, seq: u32) -> Result<Option<Key>> {
         .optional()?
         .map(Key))
 }
-pub(super) fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
+fn write(
+    conn: &Connection,
+    sql: &str,
+    m: &StoredMessage,
+    identity: &dyn rusqlite::ToSql,
+) -> Result<()> {
     conn.execute(
-        "UPDATE message SET server_id=?2,local_id=?3,request_seq=?4,sort_ts=?5,sort_id=?6,
-        sender_id=?7,outgoing=?8,body_json=?9,reactions_json=?10,reactions_rev=?11,
-        delivery=?12,created_at_local=?13,body_rev=?14,mentioned=?15,skip_badge=?16,reply_json=?17 WHERE key=?1",
+        sql,
         params![
-            m.key.0,
+            identity,
             m.server_id.as_ref().map(|s| s.as_str()),
             m.local_id.as_ref().map(|s| s.0.as_str()),
             m.request_seq,
@@ -93,37 +96,34 @@ pub(super) fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
             m.reactions_rev,
             serde_json::to_string(&m.delivery)?,
             m.created_at_local,
-            m.body_rev, m.mentioned, m.skip_badge, serde_json::to_string(&m.reply)?,
+            m.body_rev,
+            m.mentioned,
+            m.skip_badge,
+            serde_json::to_string(&m.reply)?,
         ],
     )?;
     Ok(())
 }
+pub(super) fn save(conn: &Connection, m: &StoredMessage) -> Result<()> {
+    write(
+        conn,
+        "UPDATE message SET server_id=?2,local_id=?3,request_seq=?4,sort_ts=?5,sort_id=?6,
+        sender_id=?7,outgoing=?8,body_json=?9,reactions_json=?10,reactions_rev=?11,
+        delivery=?12,created_at_local=?13,body_rev=?14,mentioned=?15,skip_badge=?16,reply_json=?17 WHERE key=?1",
+        m,
+        &m.key.0,
+    )
+}
 fn insert(conn: &Connection, row: &mut StoredMessage) -> Result<()> {
     ensure_chat(conn, &row.chat_id)?;
-    conn.execute(
+    write(
+        conn,
         "INSERT INTO message(chat_id,server_id,local_id,request_seq,sort_ts,sort_id,sender_id,
         outgoing,body_json,reactions_json,reactions_rev,delivery,created_at_local,
         body_rev,mentioned,skip_badge,reply_json)
         VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17)",
-        params![
-            row.chat_id.0,
-            row.server_id.as_ref().map(|id| id.as_str()),
-            row.local_id.as_ref().map(|id| id.0.as_str()),
-            row.request_seq,
-            row.sort.sort_ts,
-            row.sort.sort_id,
-            row.sender_id,
-            row.outgoing,
-            serde_json::to_string(&row.body)?,
-            serde_json::to_string(&row.reactions)?,
-            row.reactions_rev,
-            serde_json::to_string(&row.delivery)?,
-            row.created_at_local,
-            row.body_rev,
-            row.mentioned,
-            row.skip_badge,
-            serde_json::to_string(&row.reply)?
-        ],
+        row,
+        &row.chat_id.0,
     )?;
     row.key = Key(conn.last_insert_rowid());
     Ok(())
@@ -156,13 +156,13 @@ fn receipt(conn: &Connection, m: &mut StoredMessage) -> Result<()> {
     if m.outgoing
         && let Some(id) = &m.server_id
     {
-        let marker: Option<String> = conn.query_row(
+        let marker: Option<ServerId> = conn.query_row(
             "SELECT receipt_server_id FROM chat WHERE chat_id=?",
             [&m.chat_id.0],
             |r| r.get(0),
         )?;
         if let Some(marker) = marker
-            && *id <= ServerId::new(marker)?
+            && *id <= marker
         {
             m.delivery = Delivery::Read;
         }
@@ -353,11 +353,11 @@ impl Store {
         kind: PageKind,
         messages: &[MessageInput],
         reaches_start: bool,
-    ) -> Result<Changes> {
+    ) -> Result<()> {
         // Opening a friend can fetch an empty Recent page before any chat exists.
         // Only a message (or explicit chat metadata) should create that chat.
         if matches!(kind, PageKind::Recent) && messages.is_empty() && self.chat(chat)?.is_none() {
-            return Ok(Changes::default());
+            return Ok(());
         }
         self.mutate(|tx, c| {
             ensure_chat(tx, chat)?;
@@ -399,7 +399,7 @@ impl Store {
         chat: &ChatId,
         message: &MessageInput,
         continuous: bool,
-    ) -> Result<Changes> {
+    ) -> Result<()> {
         self.mutate(|tx, c| {
             let pending = if message.outgoing {
                 message
@@ -439,9 +439,9 @@ impl Store {
         body: Content,
         now_ms: i64,
         reply: Option<ReplyReference>,
-    ) -> Result<(Key, Changes)> {
+    ) -> Result<Key> {
         let mut key = Key(0);
-        let c = self.mutate(|tx, c| {
+        self.mutate(|tx, c| {
             let mut row = new_row(chat, now_ms);
             row.local_id = Some(local_id);
             row.request_seq = Some(request_seq);
@@ -453,14 +453,14 @@ impl Store {
             c.chats_changed.insert(chat.clone());
             Ok(())
         })?;
-        Ok((key, c))
+        Ok(key)
     }
     pub fn link_sent(
         &mut self,
         request_seq: u32,
         server_id: ServerId,
         created_ms: i64,
-    ) -> Result<Changes> {
+    ) -> Result<()> {
         self.mutate(|tx, c| {
             if let Some(key) = pending_key(tx, request_seq)? {
                 let before = by_key(tx, key)?;
@@ -504,22 +504,17 @@ impl Store {
         }
         Ok(())
     }
-    pub fn mark_failed(&mut self, key: Key, delivery: Delivery) -> Result<Changes> {
+    pub fn mark_failed(&mut self, key: Key, delivery: Delivery) -> Result<()> {
         if !matches!(delivery, Delivery::Rejected { .. }) {
             return Err(StoreError::Invalid("expected failure delivery".into()));
         }
         self.local_delivery(key, delivery, None)
     }
-    pub fn retry(&mut self, key: Key, new_request_seq: u32) -> Result<Changes> {
+    pub fn retry(&mut self, key: Key, new_request_seq: u32) -> Result<()> {
         self.local_delivery(key, Delivery::Pending, Some(new_request_seq))
     }
 
-    fn local_delivery(
-        &mut self,
-        key: Key,
-        delivery: Delivery,
-        seq: Option<u32>,
-    ) -> Result<Changes> {
+    fn local_delivery(&mut self, key: Key, delivery: Delivery, seq: Option<u32>) -> Result<()> {
         self.mutate(|tx, c| {
             let mut row = by_key(tx, key)?;
             if row.server_id.is_some() {
@@ -539,7 +534,7 @@ impl Store {
             Ok(())
         })
     }
-    pub fn discard(&mut self, key: Key) -> Result<Changes> {
+    pub fn discard(&mut self, key: Key) -> Result<()> {
         self.mutate(|tx, c| {
             let row = by_key(tx, key)?;
             if row.server_id.is_some() || !matches!(row.delivery, Delivery::Rejected { .. }) {
@@ -553,7 +548,7 @@ impl Store {
             Ok(())
         })
     }
-    pub fn withdraw(&mut self, id: &ServerId) -> Result<Changes> {
+    pub fn withdraw(&mut self, id: &ServerId) -> Result<()> {
         self.mutate(|tx, c| {
             tx.execute("INSERT OR IGNORE INTO withdrawal VALUES(?)", [id.as_str()])?;
             if let Some(mut row) = by_server(tx, id)?
@@ -571,7 +566,7 @@ impl Store {
         id: &ServerId,
         reactions: Vec<Reaction>,
         rev: i64,
-    ) -> Result<Changes> {
+    ) -> Result<()> {
         self.mutate(|tx, c| {
             if let Some(mut row) = by_server(tx, id)?
                 && rev > row.reactions_rev
@@ -584,17 +579,14 @@ impl Store {
             Ok(())
         })
     }
-    pub fn advance_read_receipt(&mut self, chat: &ChatId, up_to: ServerId) -> Result<Changes> {
+    pub fn advance_read_receipt(&mut self, chat: &ChatId, up_to: ServerId) -> Result<()> {
         self.mutate(|tx, c| {
             ensure_chat(tx, chat)?;
-            let old = tx
-                .query_row(
-                    "SELECT receipt_server_id FROM chat WHERE chat_id=?",
-                    [&chat.0],
-                    |r| r.get::<_, Option<String>>(0),
-                )?
-                .map(ServerId::new)
-                .transpose()?;
+            let old = tx.query_row(
+                "SELECT receipt_server_id FROM chat WHERE chat_id=?",
+                [&chat.0],
+                |r| r.get::<_, Option<ServerId>>(0),
+            )?;
             let marker = max(old, Some(up_to)).expect("marker supplied");
             tx.execute(
                 "UPDATE chat SET receipt_server_id=?2 WHERE chat_id=?1",
