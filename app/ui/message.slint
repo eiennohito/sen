@@ -70,7 +70,7 @@ export component Message inherits TouchArea {
     property <bool> shows-time: root.message.run-position == RunPosition.single || root.message.run-position == RunPosition.last;
     property <length> bubble-x: message-content.x + message-column.x + message-bubble.x;
     property <length> bubble-bottom: message-content.y + message-column.y + message-bubble.y + message-bubble.height;
-    property <bool> selecting-rich: false; property <bool> rich-focused: false;
+    property <bool> selecting-rich: false;
     property <int> focused-chips;
     property <bool> photo-focused;
     property <bool> card-focused: false; property <bool> rich-fallback: false;
@@ -145,7 +145,7 @@ export component Message inherits TouchArea {
                                     else if kind == MessageAction.copy-selection { body.copy(); }
                                     else { ContentState.copy-text(root.message.body); }
                                 }
-                                property <bool> selected: body.has-focus || react-button.has-focus || reply-button.has-focus || root.focused-chips > 0 || root.photo-focused || root.card-focused || root.rich-focused || (ConversationState.highlight-message == root.message.id);
+                                property <bool> selected: body.has-focus || react-button.has-focus || reply-button.has-focus || root.focused-chips > 0 || root.photo-focused || root.card-focused || rich-focus.has-focus || (ConversationState.highlight-message == root.message.id);
                                 bubble-background := Rectangle { width: 100%; height: 100%;
                                 background: root.bubble-surface; border-color: Tokens.border;
                                 border-top-left-radius: (root.message.run-position == RunPosition.middle || root.message.run-position == RunPosition.last) ? 4px : 16px;
@@ -185,7 +185,6 @@ export component Message inherits TouchArea {
                                             visible: false;
                                             rich-focus := FocusScope {
                                                 accessible-role: text; accessible-label: root.message.accessible-label; accessible-value: root.message.body; accessible-description: root.message.accessible-label;
-                                                changed has-focus => { root.rich-focused = self.has-focus; }
                                                 accessible-action-default => { self.focus(); }
                                                 key-pressed(event) => {
                                                     if ShellState.ime-active { return reject; }

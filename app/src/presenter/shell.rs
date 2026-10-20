@@ -6,6 +6,7 @@ impl Presenter {
         g.set_unread_conversations(
             state.chats.values().filter(|c| c.unread_count > 0).count() as i32
         );
+        g.set_unread_badge(unread_badge(g.get_unread_conversations()));
         g.set_unread_stale(
             state.connection != Connection::Online
                 || state.chats.values().any(|c| c.chat.unread_stale),

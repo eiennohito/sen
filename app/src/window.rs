@@ -46,6 +46,7 @@ pub(crate) fn install_window(
 
 pub(crate) fn create_app_window() -> Result<AppWindow, slint::PlatformError> {
     let ui = AppWindow::new()?;
+    presenter::format::install(&ui);
     ui.global::<ContentState>()
         .on_avatar_tint(|id| presenter::format::avatar_tint(&id));
     ui.global::<ContentState>()

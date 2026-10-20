@@ -74,13 +74,6 @@ pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         initial: name_initial(&inputs.title),
         unread: inputs.item.unread_count as i32,
         failed: inputs.item.failed_count > 0,
-        draft_preview: inputs
-            .item
-            .draft
-            .as_ref()
-            .map(|d| single_line(&d.text))
-            .unwrap_or_default()
-            .into(),
         unread_unknown: inputs.item.chat.unread_stale || inputs.offline,
         muted: inputs.item.chat.muted,
         group: inputs.item.chat.is_group,
@@ -100,24 +93,43 @@ pub(crate) fn chat_row(inputs: ChatInputs, images: &Images) -> ChatRow {
         row.time = "New".into();
         row.preview = "No messages yet".into();
     }
-    row.preview_mode = if inputs
-        .item
-        .draft
-        .as_ref()
-        .is_some_and(|d| !d.text.is_empty())
-    {
-        PreviewMode::Draft
-    } else if inputs.item.preview.as_ref().is_some_and(|m| m.outgoing) {
-        PreviewMode::Outgoing
-    } else {
-        PreviewMode::Incoming
-    };
     if let Some(asset) = inputs.avatar.as_ref() {
         row.avatar_key = asset.key().into();
         if let Some(image) = images.get(row.avatar_key.as_str()) {
             row.avatar = image.clone();
         }
     }
+    let (prefix, preview) =
+        if let Some(draft) = inputs.item.draft.as_ref().filter(|d| !d.text.is_empty()) {
+            row.preview_mode = PreviewMode::Draft;
+            row.preview_runs = ModelRc::default();
+            ("Draft: ", single_line(&draft.text))
+        } else if inputs.item.preview.as_ref().is_some_and(|m| m.outgoing) {
+            row.preview_mode = PreviewMode::Outgoing;
+            ("You: ", row.preview.to_string())
+        } else {
+            ("", row.preview.to_string())
+        };
+    row.preview_prefix = prefix.into();
+    row.display_preview = format!("{prefix}{preview}").into();
+    let mut label = vec![row.title.to_string()];
+    if !row.time.is_empty() {
+        label.push(row.time.to_string());
+    }
+    label.push(row.display_preview.to_string());
+    if row.unread_unknown {
+        label.push("Unread count unavailable".into());
+    } else if row.unread > 0 {
+        label.push(format!("{} unread", row.unread));
+    }
+    if row.failed {
+        label.push("Send failed".into());
+    }
+    if row.muted {
+        label.push("Muted".into());
+    }
+    row.accessible_label = label.join(", ").into();
+    row.badge = unread_badge(row.unread);
     row
 }
 
