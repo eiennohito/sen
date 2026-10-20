@@ -259,7 +259,7 @@ fn layout_failure_keeps_the_native_body_selectable() {
         }
         let selected = render(&window, (980, 720));
         assert!(
-            selected.pixels().filter(|p| p.0 == [0, 135, 60]).count() > 100,
+            selected.pixels().filter(|p| p.0 == [0, 69, 204]).count() > 100,
             "fallback did not expose native selection"
         );
         ui.hide().unwrap();
@@ -440,7 +440,7 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                     }
                     let green: Vec<_> = pixels
                         .enumerate_pixels()
-                        .filter(|(_, _, p)| p.0 == [199, 242, 164])
+                        .filter(|(_, _, p)| p.0 == [214, 230, 255])
                         .map(|(x, y, _)| (x, y))
                         .collect();
                     assert!(!green.is_empty());
@@ -495,7 +495,7 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                                         && *x < right
                                         && *y >= top
                                         && *y <= bottom
-                                        && p.0 == [0, 135, 60]
+                                        && p.0 == [0, 69, 204]
                                 })
                                 .map(|(_, y, _)| y),
                         );
@@ -611,13 +611,13 @@ fn outgoing_selection_contrasts_in_both_color_schemes() {
                 "light",
                 slint::language::ColorScheme::Light,
                 [17, 17, 17],
-                [0, 135, 60],
+                [0, 69, 204],
             ),
             (
                 "dark",
                 slint::language::ColorScheme::Dark,
                 [236, 236, 236],
-                [61, 220, 132],
+                [138, 197, 255],
             ),
         ] {
             ui.global::<Palette>().set_color_scheme(scheme);
@@ -719,7 +719,7 @@ fn failure_marks_stay_beside_the_bubble() {
                 let pixels = render(&window, size);
                 let green: Vec<_> = pixels
                     .enumerate_pixels()
-                    .filter(|(_, _, p)| p.0 == [199, 242, 164])
+                    .filter(|(_, _, p)| p.0 == [214, 230, 255])
                     .map(|(x, y, _)| (x, y))
                     .collect();
                 let left = green.iter().map(|p| p.0).min().unwrap();

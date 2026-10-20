@@ -55,7 +55,7 @@ pub struct NotificationText {
 }
 
 pub fn redact(level: PreviewLevel, name: &str, text: &str) -> NotificationText {
-    let name = if name.is_empty() { "LINE" } else { name };
+    let name = if name.is_empty() { "閃" } else { name };
     match level {
         PreviewLevel::NameAndText => NotificationText {
             summary: name.into(),

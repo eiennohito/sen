@@ -65,7 +65,7 @@ export component Layers inherits Rectangle {
             x: (parent.width - self.width) / 2; y: max(24px, (parent.height - self.preferred-height) / 2);
             width: min(360px, parent.width - 32px); height: self.preferred-height;
             spacing: 16px; alignment: start;
-            Text { text: "LINE"; font-size: Tokens.heading + 8px; font-weight: 800; color: Tokens.accent; horizontal-alignment: center; }
+            Text { text: "閃"; font-size: Tokens.heading + 8px; font-weight: 800; color: Tokens.accent; horizontal-alignment: center; }
             Text { text: "Sign in"; font-size: Tokens.heading; font-weight: 600; horizontal-alignment: center; }
             Text { text: AuthState.auth-prerequisite-missing ? "Sign-in needs a supported LINE for Chrome installation." : "Scan the code with LINE on your phone."; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
             if AuthState.auth-qr.width > 0: HorizontalLayout { alignment: center;
@@ -152,14 +152,14 @@ export component Layers inherits Rectangle {
                         if root.settings-section == SettingsSection.background: VerticalLayout {
                             spacing: 12px;
                             CheckBox { text: "Keep running in background"; checked <=> SettingsState.background-mode; toggled => { SettingsState.settings-changed(); } }
-                            Text { text: "Closing LINE hides it to the desktop tray. Notifications and sync continue until you choose Quit."; wrap: word-wrap; color: Tokens.secondary; }
-                            autostart-control := CheckBox { text: "Start LINE at login"; checked <=> SettingsState.autostart; toggled => { SettingsState.settings-changed(); } }
+                            Text { text: "Closing 閃 hides it to the desktop tray. Notifications and sync continue until you choose Quit."; wrap: word-wrap; color: Tokens.secondary; }
+                            autostart-control := CheckBox { text: "Start 閃 at login"; checked <=> SettingsState.autostart; toggled => { SettingsState.settings-changed(); } }
                             if SettingsState.autostart-status != "": Text { text: SettingsState.autostart-status; wrap: word-wrap; color: Tokens.secondary; }
                         }
                         if root.settings-section == SettingsSection.shortcuts: Text { text: "Ctrl+Enter  Send\nEnter  Newline, or Send with Enter sends\nShift+Enter  Always newline\nEscape  Close layer or clear search\nCtrl+F  Search\nCtrl+1  Friends\nCtrl+2  Chats\nAlt+↑ / Alt+↓  Previous / next chat\nAlt+←  Back\nF6  Connection actions\nCtrl+Q  Quit"; wrap: word-wrap; }
                         if root.settings-section == SettingsSection.about: VerticalLayout {
                             spacing: 12px;
-                            Text { text: "LINE"; font-size: Tokens.heading; }
+                            Text { text: "閃"; font-size: Tokens.heading; }
                             if (ShellState.account-mid != ""): Button { text: ShellState.account-name; text-button: true; clicked => { DetailState.open-profile(ShellState.account-mid); } }
                             Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
                             if ShellState.desktop-warning != "": Text { text: ShellState.desktop-warning; color: Tokens.danger; wrap: word-wrap; }

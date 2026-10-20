@@ -1,7 +1,14 @@
-# Native LINE client
+# 閃 (sen)
 
-A Rust client experiment using LINE Chrome's unmodified crypto WASM and a
-software-rendered Slint desktop app. Linux is the first target.
+閃 is a flash, a fast sword cut along a line: a play on 線 (also *sen*, "line").
+The client is meant to be fast.
+
+An unofficial desktop client for the LINE messaging service, using LINE for
+Chrome's unmodified crypto WASM and a software-rendered Slint app. Linux is the
+first target.
+
+閃 is not affiliated with or endorsed by LY Corporation. LINE is a trademark of
+LY Corporation.
 
 Read [HANDOFF.md](HANDOFF.md) before account use. **Chrome owns the secondary-device
 slot; native account access requires a new explicit assignment.** Use offline

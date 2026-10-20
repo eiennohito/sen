@@ -3,7 +3,7 @@ name = "line-desktop"
 version = "0.1.0"
 edition = "2024"
 publish = false
-description = "Software-rendered Slint LINE client using the original crypto WASM"
+description = "Unofficial desktop client for the LINE messaging service"
 
 [features]
 demo = ["dep:tempfile", "line/demo", "line-desktop-ui/demo"]
