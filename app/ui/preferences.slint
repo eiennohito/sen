@@ -1,56 +1,47 @@
+import { Pressable, FocusRing } from "button.slint";
 import { RowText } from "list-row.slint";
 import { Tokens } from "tokens.slint";
-export component CheckBox inherits Rectangle {
+export component CheckBox inherits Pressable {
     in property <string> text;
-    in property <bool> enabled: true;
     in property <bool> indicator-only;
     in-out property <bool> checked;
-    out property <bool> has-focus: focus.has-focus;
     callback toggled();
-    forward-focus: focus;
     min-height: max(32px, label.preferred-height);
     preferred-height: self.min-height;
     vertical-stretch: 0;
     accessible-role: checkbox; accessible-label: root.text; accessible-checked: root.checked;
-    accessible-action-default => { root.checked = !root.checked; root.toggled(); }
+    key-event(event) => { event.text == Key.Return ? accept : reject }
+    activated => { root.checked = !root.checked; root.toggled(); }
     Rectangle { x: 0px; y: (root.height - self.height) / 2; width: 20px; height: 20px; border-radius: 4px; background: root.checked ? Tokens.accent : Tokens.surface-2;
         Image { x: 2px; y: 2px; width: 16px; height: 16px; source: @image-url("../assets/icons/check.svg"); colorize: Tokens.on-accent; visible: root.checked; }
     }
     label := RowText { x: 28px; width: max(0px, root.width - 28px); height: root.height; visible: !root.indicator-only; text: root.indicator-only ? "" : root.text; font-size: Tokens.base; color: Tokens.text; vertical-alignment: center; }
-    focus := FocusScope { enabled: root.enabled; key-pressed(event) => { if event.text == " " { root.checked = !root.checked; root.toggled(); return accept; } reject } }
-    Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; background: transparent; border-radius: 8px; border-color: Tokens.accent-strong; border-width: root.has-focus ? 2px : 0px; }
-    TouchArea { enabled: root.enabled; clicked => { focus.focus(); root.checked = !root.checked; root.toggled(); } }
+    FocusRing { outset: 4px; focused: root.has-focus; border-radius: 8px; }
 }
-export component ComboBox inherits Rectangle {
+export component ComboBox inherits Pressable {
     in property <[string]> model;
-    in property <bool> enabled: true;
     in-out property <int> current-index;
-    out property <bool> has-focus: focus.has-focus;
     callback selected(string);
-    forward-focus: focus;
     height: 36px; border-radius: 8px; background: Tokens.surface-2;
     accessible-role: combobox; accessible-value: root.model[root.current-index];
     public function select(index: int) { root.current-index = max(0, min(root.model.length - 1, index)); root.selected(root.model[root.current-index]); }
     RowText { x: 12px; width: parent.width - 48px; height: parent.height; text: root.model[root.current-index]; color: Tokens.text; font-size: Tokens.base; vertical-alignment: center; }
     Image { x: parent.width - 32px; y: 10px; width: 16px; height: 16px; source: @image-url("../assets/icons/down.svg"); colorize: Tokens.secondary; }
-    Rectangle { x: -4px; y: -4px; width: parent.width + 8px; height: parent.height + 8px; background: transparent; border-radius: 12px; border-color: Tokens.accent-strong; border-width: root.has-focus ? 2px : 0px; }
-    focus := FocusScope { enabled: root.enabled;
-        key-pressed(event) => {
+    FocusRing { outset: 4px; focused: root.has-focus; }
+    activated => { popup.show(); }
+    key-event(event) => {
             if event.text == Key.UpArrow { root.select(root.current-index - 1); return accept; }
             if event.text == Key.DownArrow { root.select(root.current-index + 1); return accept; }
             if event.text == Key.Home { root.select(0); return accept; }
             if event.text == Key.End { root.select(root.model.length - 1); return accept; }
-            if event.text == Key.Return || event.text == " " { popup.show(); return accept; }
             reject
-        }
     }
-    TouchArea { enabled: root.enabled; clicked => { focus.focus(); popup.show(); } }
     popup := PopupWindow { y: root.height + 4px; width: root.width; height: root.model.length * 32px + 8px;
         Rectangle { background: Tokens.bg; border-radius: 8px; border-width: 1px; border-color: Tokens.divider;
             VerticalLayout { padding: 4px;
                 for option[i] in root.model: Rectangle { height: 32px; border-radius: 4px; background: touch.has-hover ? Tokens.surface-hover : i == root.current-index ? Tokens.surface-selected : transparent;
                     RowText { x: 12px; width: parent.width - 24px; height: parent.height; text: option; color: Tokens.text; font-size: Tokens.base; vertical-alignment: center; }
-                    touch := TouchArea { accessible-role: button; accessible-label: option; accessible-action-default => { root.select(i); popup.close(); focus.focus(); } clicked => { root.select(i); popup.close(); focus.focus(); } }
+                    touch := TouchArea { accessible-role: button; accessible-label: option; accessible-action-default => { root.select(i); popup.close(); root.focus(); } clicked => { root.select(i); popup.close(); root.focus(); } }
                 }
             }
         }

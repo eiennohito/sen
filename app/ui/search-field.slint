@@ -1,3 +1,4 @@
+import { FocusRing } from "button.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { IconButton } from "icon-button.slint";
@@ -12,11 +13,11 @@ export component SearchField inherits Rectangle {
     callback edited(string);
     callback key-pressed(KeyEvent) -> EventResult;
     callback clear();
-    public function focus-last() { if root.text != "" { clear-button.focus-button(); } else { input.focus(); } }
+    public function focus-last() { if root.text != "" { clear-button.focus(); } else { input.focus(); } }
     forward-focus: input;
     height: 36px; min-width: 160px; border-radius: 8px; background: Tokens.surface-2;
     opacity: root.enabled ? 1 : 0.4;
-    Rectangle { x: -4px; y: -4px; width: root.width + 8px; height: root.height + 8px; background: transparent; border-radius: 12px; border-color: Tokens.accent-strong; border-width: input.has-focus ? 2px : 0px; }
+    FocusRing { outset: 4px; focused: input.has-focus; }
     Image { x: 12px; y: 10px; width: 16px; height: 16px; source: @image-url("../assets/icons/search.svg"); colorize: Tokens.secondary; }
     editor-clip := Rectangle {
         x: 36px; y: 0px; width: max(0px, root.width - 48px - (clear-button.visible ? 32px : 0px)); height: root.height; clip: true;
@@ -35,7 +36,7 @@ export component SearchField inherits Rectangle {
 
         edited => { root.edited(self.text); }
         key-pressed(event) => {
-            if !State.ime-active && event.text == Key.Tab && !event.modifiers.shift && root.text != "" { clear-button.focus-button(); return accept; }
+            if !State.ime-active && event.text == Key.Tab && !event.modifiers.shift && root.text != "" { clear-button.focus(); return accept; }
             root.key-pressed(event)
         }
     }
@@ -48,7 +49,7 @@ export component SearchField inherits Rectangle {
         width: 32px; height: 32px;
         label: "Clear search"; icon: @image-url("../assets/icons/close.svg");
         activated => { input.focus(); root.clear(); }
-        key-pressed(event) => {
+        key-event(event) => {
             if !State.ime-active && event.text == Key.Tab {
                 if event.modifiers.shift { input.focus(); return accept; }
                 return root.key-pressed(event);

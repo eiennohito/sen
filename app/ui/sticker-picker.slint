@@ -1,3 +1,4 @@
+import { Pressable, FocusRing } from "button.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Pane } from "scrollpane.slint";
@@ -29,22 +30,21 @@ export component StickerPicker inherits Rectangle {
                     x: i * root.pack-stride; width: root.pack-size; height: root.pack-size; border-radius: 8px;
                     background: i == State.sticker-package ? Tokens.surface-selected : transparent;
                     Image { source: package-tab.picture; width: parent.width; height: parent.height; image-fit: contain; }
-                    pack-focus := FocusScope {
+                    pack-focus := Pressable {
                         property <bool> selected: i == State.sticker-package;
                         changed selected => { if self.selected && root.keyboard-selection { self.focus(); root.keyboard-selection = false; } }
 
-                        Rectangle { background: transparent; border-radius: 8px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
+                        FocusRing { focused: parent.has-focus; border-radius: 8px; }
                         accessible-role: tab; accessible-label: package-tab.name; accessible-item-selected: i == State.sticker-package;
-                        accessible-action-default => { root.keyboard-selection = false; self.focus(); State.select-sticker-package(i); strip.reveal(i); }
-                        key-pressed(event) => {
+                        activated => { self.focus(); root.keyboard-selection = false; State.select-sticker-package(i); strip.reveal(i); }
+                        key-event(event) => {
                             if event.text == Key.LeftArrow || event.text == Key.RightArrow {
                                 let next = max(0, min(State.sticker-tabs.length - 1, State.sticker-package + (event.text == Key.RightArrow ? 1 : -1)));
                                 root.keyboard-selection = next != State.sticker-package; State.select-sticker-package(next); strip.reveal(next); return accept;
                             }
-                            if event.text == Key.Return || event.text == " " { State.select-sticker-package(i); strip.reveal(i); return accept; } reject
+                            reject
                         }
                     }
-                    TouchArea { clicked => { root.keyboard-selection = false; pack-focus.focus(); State.select-sticker-package(i); strip.reveal(i); } }
                 }
             }
             if State.stickers-failed: HorizontalLayout {
@@ -57,13 +57,11 @@ export component StickerPicker inherits Rectangle {
                     x: mod(i, 4) * (parent.width / 4); y: floor(i / 4) * 76px; width: 72px; height: 72px; border-radius: 8px;
                     background: touch.has-hover ? Tokens.surface-hover : transparent;
                     Image { source: sticker.picture; width: parent.width; height: parent.height; image-fit: contain; accessible-role: image; accessible-label: "Sticker preview " + (i + 1); accessible-description: sticker.picture.width > 0 ? "Loaded" : "Loading"; }
-                    FocusScope {
-                        Rectangle { background: transparent; border-radius: 8px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
-                        accessible-role: button; accessible-label: "Send sticker " + (i + 1);
-                        accessible-action-default => { State.send-sticker(sticker.index); root.close(); }
-                        key-pressed(event) => { if event.text == Key.Return || event.text == " " { State.send-sticker(sticker.index); root.close(); return accept; } reject }
+                    touch := Pressable {
+                        FocusRing { focused: parent.has-focus; border-radius: 8px; }
+                        accessible-label: "Send sticker " + (i + 1);
+                        activated => { State.send-sticker(sticker.index); root.close(); }
                     }
-                    touch := TouchArea { clicked => { State.send-sticker(sticker.index); root.close(); } }
                 }
             }
         }

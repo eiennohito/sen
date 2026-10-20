@@ -8,11 +8,10 @@ import { DraftEditor } from "draft-editor.slint";
 export component Composer inherits Rectangle {
     public function paste-text() { composer.paste-text(); }
     property <length> reply-height: State.composer-reply.reply-id != "" ? max(44px, Tokens.small * 2.8 + 12px) : 0px;
-    height: root.reply-height + max(52px, min(Tokens.base * 8.4 + 32px, draft-measure.preferred-height + 32px));
+    height: root.reply-height + max(52px, min(Tokens.base * 8.4 + 32px, composer.text-height + 32px));
     property <length> button-inset: max(0px, (composer.min-height - sticker-button.height) / 2);
     vertical-stretch: 0; background: Tokens.bg;
     Rectangle { x: 0px; y: 0px; height: 1px; width: parent.width; background: Tokens.divider; }
-    draft-measure := Text { visible: false; text: State.draft == "" ? "Ag" : State.draft; width: max(100px, root.width - 160px); wrap: word-wrap; font-size: Tokens.base; }
     FocusScope {
         width: root.width; height: root.height;
         focus-on-tab-navigation: false;
@@ -20,10 +19,10 @@ export component Composer inherits Rectangle {
             if State.ime-active { return reject; }
             if event.text == Key.Escape && State.composer-reply.reply-id != "" { State.cancel-reply(); return accept; }
             if event.text == Key.Tab {
-                if event.modifiers.shift { if send-button.has-focus && attach-button.enabled { attach-button.focus-button(); } else { composer.focus-editor(); } }
-                else if composer.has-focus && sticker-button.enabled { sticker-button.focus-button(); }
-                else if composer.has-focus && attach-button.enabled { attach-button.focus-button(); }
-                else if composer.has-focus && State.composer-mode == ComposerMode.ready { send-button.focus-button(); }
+                if event.modifiers.shift { if send-button.has-focus && attach-button.enabled { attach-button.focus(); } else { composer.focus-editor(); } }
+                else if composer.has-focus && sticker-button.enabled { sticker-button.focus(); }
+                else if composer.has-focus && attach-button.enabled { attach-button.focus(); }
+                else if composer.has-focus && State.composer-mode == ComposerMode.ready { send-button.focus(); }
                 else { State.focus-after-conversation(); }
                 return accept;
             }
@@ -40,8 +39,8 @@ export component Composer inherits Rectangle {
         HorizontalLayout {
             x: 0px; y: root.reply-height; width: parent.width; height: parent.height - self.y;
             padding: 8px; spacing: 8px;
-            VerticalLayout { alignment: end; padding-bottom: root.button-inset; horizontal-stretch: 0; sticker-button := IconButton { vertical-stretch: 0; label: "Stickers"; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { composer.focus-editor(); } else { attach-button.focus-button(); } return accept; } reject } icon: @image-url("../assets/icons/sticker.svg"); enabled: true; activated => { State.load-stickers(); picker.show(); } } }
-            VerticalLayout { alignment: end; padding-bottom: root.button-inset; horizontal-stretch: 0; attach-button := IconButton { vertical-stretch: 0; label: "Attach"; key-pressed(event) => { if event.text == Key.Tab { if event.modifiers.shift { if sticker-button.enabled { sticker-button.focus-button(); } else { composer.focus-editor(); } } else if State.composer-mode == ComposerMode.ready { send-button.focus-button(); } else { State.focus-after-conversation(); } return accept; } reject } icon: @image-url("../assets/icons/attach.svg"); enabled: true; activated => { State.attach(); } } }
+            VerticalLayout { alignment: end; padding-bottom: root.button-inset; horizontal-stretch: 0; sticker-button := IconButton { vertical-stretch: 0; label: "Stickers"; key-event(event) => { if event.text == Key.Tab { if event.modifiers.shift { composer.focus-editor(); } else { attach-button.focus(); } return accept; } reject } icon: @image-url("../assets/icons/sticker.svg"); enabled: true; activated => { State.load-stickers(); picker.show(); } } }
+            VerticalLayout { alignment: end; padding-bottom: root.button-inset; horizontal-stretch: 0; attach-button := IconButton { vertical-stretch: 0; label: "Attach"; key-event(event) => { if event.text == Key.Tab { if event.modifiers.shift { if sticker-button.enabled { sticker-button.focus(); } else { composer.focus-editor(); } } else if State.composer-mode == ComposerMode.ready { send-button.focus(); } else { State.focus-after-conversation(); } return accept; } reject } icon: @image-url("../assets/icons/attach.svg"); enabled: true; activated => { State.attach(); } } }
             composer := DraftEditor { vertical-stretch: 1; }
             VerticalLayout { alignment: end; padding-bottom: root.button-inset; horizontal-stretch: 0; send-button := IconButton { vertical-stretch: 0; label: "Send"; icon: @image-url("../assets/icons/send.svg"); icon-color: Tokens.secondary; enabled: false; activated => { State.focus-composer(); State.send(); } } }
         }
@@ -55,7 +54,7 @@ export component Composer inherits Rectangle {
     picker := PopupWindow { close-policy: close-on-click-outside; x: 0px; y: -320px; width: State.narrow ? root.width : min(360px, root.width); height: 320px;
         StickerPicker { close => { picker.close(); State.focus-composer(); } }
     }
-    public function focus-last() { if State.composer-mode == ComposerMode.ready { send-button.focus-button(); } else if attach-button.enabled { attach-button.focus-button(); } else { composer.focus-editor(); } }
+    public function focus-last() { if State.composer-mode == ComposerMode.ready { send-button.focus(); } else if attach-button.enabled { attach-button.focus(); } else { composer.focus-editor(); } }
     public function focus-editor() { composer.focus-editor(); }
     public function restore-editor(anchor: int, caret: int) { composer.restore(anchor, caret); }
 }

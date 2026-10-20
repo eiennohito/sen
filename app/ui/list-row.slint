@@ -6,6 +6,8 @@ export component RowText inherits Text {
     wrap: no-wrap; overflow: elide; min-width: 0px;
 }
 export component ListRow inherits Rectangle {
+    out property <length> row-height: max(68px, name.preferred-height + subtitle.preferred-height + 20px);
+    preferred-height: root.row-height;
     in property <string> identity;
     in property <string> initial;
     in property <image> avatar;
@@ -36,7 +38,7 @@ export component ListRow inherits Rectangle {
         }
         Rectangle {
             x: 0px; y: title-line.height + 2px; width: max(0px, parent.width - root.trailing-width); height: max(0px, parent.height - self.y); clip: true;
-            if content.runs.length == 0: RowText { width: parent.width; height: parent.height; text: content.prefix + content.text; color: Tokens.secondary; font-size: Tokens.preview; }
+            subtitle := RowText { visible: content.runs.length == 0; width: parent.width; height: parent.height; text: content.prefix + content.text; font-size: Tokens.preview; color: Tokens.secondary; }
             if content.runs.length > 0 && root.show-preview: PreviewLine { width: parent.width; height: parent.height; runs: content.runs; prefix: content.prefix; text-color: Tokens.secondary; }
         }
     }

@@ -1,3 +1,4 @@
+import { Pressable, FocusRing } from "button.slint";
 import { ReactionRow } from "types.slint";
 import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
@@ -22,15 +23,13 @@ export component ReactionChip inherits Rectangle {
         ReactionMark { reaction: root.reaction; }
         Text { text: root.reaction.count; color: Tokens.foreground; font-size: Tokens.small; vertical-alignment: center; }
     }
-    chip-focus := FocusScope {
-        accessible-role: button; accessible-label: root.reaction.label + ", " + root.reaction.count + " reactions";
+    chip-focus := Pressable {
+        accessible-label: root.reaction.label + ", " + root.reaction.count + " reactions";
         accessible-item-selected: root.reaction.own;
 
-        accessible-action-default => { self.focus(); reactors.show(); }
-        key-pressed(event) => { if event.text == Key.Return || event.text == " " { reactors.show(); return accept; } reject }
-        Rectangle { background: transparent; border-radius: 14px; border-width: parent.has-focus ? 2px : 0px; border-color: Tokens.accent; }
+        activated => { self.focus(); reactors.show(); }
+        FocusRing { focused: parent.has-focus; border-radius: 14px; border-color: Tokens.accent; }
     }
-    TouchArea { mouse-cursor: pointer; clicked => { chip-focus.focus(); reactors.show(); } }
     reactors := PopupWindow {
         close-policy: close-on-click-outside;
         x: 0px;

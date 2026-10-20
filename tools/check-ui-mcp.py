@@ -598,6 +598,24 @@ def check_pack_wheel():
 
 
 
+def check_composer_growth():
+    click("Settings")
+    click("Message text size", "Combobox")
+    click("Large")
+    key("\x1b")
+    set_value("Message draft", "")
+    minimum = bounds_by_id("Composer::composer")["size"]["height"]
+    set_value("Message draft", "One line")
+    assert abs(bounds_by_id("Composer::composer")["size"]["height"] - minimum) <= 1, "single-line draft grew beyond its minimum"
+    set_value("Message draft", "First line\nSecond line\nThird line")
+    assert bounds_by_id("Composer::composer")["size"]["height"] > minimum + 10, "multiline draft did not grow at large text size"
+    click("Settings")
+    click("Message text size", "Combobox")
+    click("Default")
+    key("\x1b")
+    set_value("Message draft", draft)
+
+
 def check_composer_alignment():
     for text, name in (("One line", "one-line"), ("Line one\nLine two\nLine three", "multiline")):
         set_value("Message draft", text)
@@ -615,6 +633,7 @@ def check_composer_alignment():
 
 
 def check_compose():
+    check_composer_growth()
     check_composer_alignment()
     set_value("Message draft", before_shortcut)
     click("Send")
@@ -917,6 +936,22 @@ def check_friends():
     call("set_element_value", elementHandle=handle("Message draft", "TextInput"), value=draft)
     click("Friends", "Button")
     wait_element("Open profile: 葵", "Button")  # Friends load on the engine worker.
+    click("Settings")
+    click("Message text size", "Combobox")
+    click("Extra large")
+    key("\x1b")
+    ordered = sorted((item for item in tree() if item.get("accessibleRole") == "Button" and (item.get("accessibleLabel", "").startswith("Open profile:") or item.get("accessibleLabel") in ("Friends", "Groups"))), key=lambda item: item["absolutePosition"]["y"])
+    rows = [item for item in ordered if item.get("accessibleLabel", "").startswith("Open profile:")]
+    assert len(rows) > 2, "friend geometry fixture needs several profiles"
+    height = rows[0]["size"]["height"]
+    assert height > 0 and all(abs(row["size"]["height"] - height) < .01 for row in rows), "extra-large friend rows have unequal heights"
+    for a, b in zip(ordered, ordered[1:]):
+        if a in rows and b in rows:
+            assert abs(b["absolutePosition"]["y"] - a["absolutePosition"]["y"] - height) < .01, f"extra-large friend row step differs from its height: {a} {b}"
+    click("Settings")
+    click("Message text size", "Combobox")
+    click("Default")
+    key("\x1b")
     call("set_element_value", elementHandle=handle("Search friends and groups", "TextInput"), value="葵")
     friend_rows = [item for item in tree() if item.get("accessibleLabel", "").startswith("Open profile:")]
     assert len(friend_rows) == 1 and friend_rows[0]["accessibleLabel"].startswith("Open profile: 葵"), "friend name search failed"
@@ -1048,6 +1083,7 @@ def check_layers():
     if args.wide:
         dialog = bounds_by_id("Layers::settings-dialog")
         scale = properties.get("scaleFactor", 1)
+        assert abs(dialog["size"]["width"] - min(640, properties["size"]["width"] / scale - 32)) <= 1, "Settings panel width changed"
         assert all(dialog["absolutePosition"][axis] > 0 and abs(dialog["absolutePosition"][axis] * 2 + dialog["size"][extent] - properties["size"][extent] / scale) <= 1 for axis, extent in (("x", "width"), ("y", "height"))), "wide Settings did not form a centered dialog"
     wait_element("Enter sends", "Checkbox")
     assert is_focused(call("get_element_properties", elementHandle=close_settings["handle"])), "Settings did not focus its close control"

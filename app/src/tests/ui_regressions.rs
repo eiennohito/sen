@@ -444,3 +444,162 @@ fn virtual_wheel_frames_update_latest_and_top_paging() {
     .join()
     .unwrap();
 }
+
+#[test]
+fn busy_controls_refuse_focus_and_activation() {
+    std::thread::spawn(|| {
+        use i_slint_backend_testing::ElementHandle;
+        use slint::platform::{Key, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = window::create_app_window().unwrap();
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(360., 720.));
+        slint::platform::update_timers_and_animations();
+        let g = ui.global::<State>();
+        let focused = || {
+            use slint::private_unstable_api::re_exports::{AccessibleStringProperty, WindowInner};
+            WindowInner::from_pub(ui.window())
+                .focus_item
+                .borrow()
+                .upgrade()
+                .and_then(|item| item.accessible_string_property(AccessibleStringProperty::Label))
+                .unwrap_or_default()
+                .to_string()
+        };
+        let key = |text: slint::SharedString| {
+            ui.window()
+                .dispatch_event(WindowEvent::KeyPressed { text: text.clone() });
+            ui.window()
+                .dispatch_event(WindowEvent::KeyReleased { text });
+        };
+        g.set_panel(PanelState::SignIn);
+        g.set_connection(ConnectionState::SigningIn);
+        g.set_auth_cancelling(true);
+        ui.invoke_focus_search();
+        ui.invoke_focus_auth_start();
+        assert_ne!(focused(), "Cancelling…", "cancelling Back accepted focus");
+
+        g.set_panel(PanelState::None);
+        g.set_connection(ConnectionState::SigningIn);
+        g.set_has_account(true);
+        ui.invoke_focus_search();
+        ui.invoke_focus_sign_in_opener();
+        assert_ne!(
+            focused(),
+            "Sign in again",
+            "unavailable sign-in accepted focus"
+        );
+
+        g.set_connection(ConnectionState::Online);
+        g.set_panel(PanelState::Detail);
+        g.set_detail_depth(1);
+        g.set_profile_friend(true);
+        g.set_detail_busy(true);
+        for (page, label) in [
+            (DetailPageMode::Profile, "Rename"),
+            (DetailPageMode::Group, "Leave group"),
+        ] {
+            g.set_detail_page(page);
+            slint::platform::update_timers_and_animations();
+            ui.invoke_focus_profile_close();
+            ui.invoke_focus_before_layer();
+            assert_ne!(focused(), label, "busy {label} accepted focus");
+            let control = ElementHandle::find_by_accessible_label(&ui, label)
+                .next()
+                .unwrap_or_else(|| panic!("missing {label}"));
+            assert_eq!(control.accessible_enabled(), Some(false));
+            assert!(control.computed_opacity() < 1.);
+            control.invoke_accessible_default_action();
+            control.mock_single_click(slint::platform::PointerEventButton::Left);
+            assert_eq!(g.get_detail_dialog(), DetailAction::None);
+        }
+
+        g.set_panel(PanelState::None);
+        g.set_new_chat_open(true);
+        slint::platform::update_timers_and_animations();
+        assert_eq!(focus_label(&ui), "Find friends for new chat");
+        g.set_new_chat_busy(true);
+        // Keep Shift held while the dialog attempts to focus its disabled close button.
+        ui.window().dispatch_event(WindowEvent::KeyPressed {
+            text: Key::Shift.into(),
+        });
+        key(Key::Tab.into());
+        ui.window().dispatch_event(WindowEvent::KeyReleased {
+            text: Key::Shift.into(),
+        });
+        assert_ne!(focused(), "Close new chat");
+        let close = ElementHandle::find_by_accessible_label(&ui, "Close new chat")
+            .next()
+            .unwrap();
+        close.invoke_accessible_default_action();
+        close.mock_single_click(slint::platform::PointerEventButton::Left);
+        assert!(g.get_new_chat_open());
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn checkbox_uses_space_but_not_return() {
+    std::thread::spawn(|| {
+        use i_slint_backend_testing::ElementHandle;
+        use slint::platform::{Key, WindowEvent};
+        i_slint_backend_testing::init_no_event_loop();
+        let ui = window::create_app_window().unwrap();
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(980., 720.));
+        ui.global::<State>().set_panel(PanelState::Settings);
+        let checkbox = ElementHandle::find_by_accessible_label(&ui, "Enter sends")
+            .next()
+            .unwrap();
+        checkbox.mock_single_click(slint::platform::PointerEventButton::Left);
+        let checked = checkbox.accessible_checked();
+        for (text, expected) in [
+            (Key::Return.into(), checked),
+            (" ".into(), checked.map(|v| !v)),
+        ] {
+            ui.window().dispatch_event(WindowEvent::KeyPressed { text });
+            assert_eq!(checkbox.accessible_checked(), expected);
+        }
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn dialog_scrim_blocks_wheel_scrolling() {
+    std::thread::spawn(|| {
+        use slint::platform::WindowEvent;
+        let platform = snapshot::install().unwrap();
+        let ui = window::create_app_window().unwrap();
+        let g = ui.global::<State>();
+        g.set_has_account(true);
+        let chats = vec![ChatRow::default(); 30];
+        g.set_chats(ModelRc::from(Rc::new(VecModel::from(chats))));
+        ui.show().unwrap();
+        snapshot::render(&platform, (1280, 900)).unwrap();
+        let scroll = || {
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(200., 400.),
+                delta_x: 0.,
+                delta_y: -120.,
+            })
+        };
+        scroll();
+        assert!(
+            g.get_list_y() < 0.,
+            "wheel fixture did not scroll the underlying list"
+        );
+        g.set_panel(PanelState::Settings);
+        snapshot::render(&platform, (1280, 900)).unwrap();
+        let before = g.get_list_y();
+        scroll();
+        assert_eq!(
+            g.get_list_y(),
+            before,
+            "wheel leaked through the settings scrim"
+        );
+    })
+    .join()
+    .unwrap();
+}
