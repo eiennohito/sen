@@ -1638,6 +1638,15 @@ def check_unread():
     assert not any(f", {n} unread" in current["accessibleLabel"] for n in [1,2]),"complete exposure left a partial boundary"
     wait_element("Unread messages","Text")
     assert ", 2 unread" in element("Weekend plans","Button")["accessibleLabel"],"reading one chat cleared another chat"
+    for scenario in ("Offline", "Reconnect blip"):
+        demo_scenario(scenario)
+        if scenario == "Offline":
+            wait_element("Connection needs attention", "Banner")
+        else:
+            wait_for(lambda: not any(item.get("accessibleLabel") == "Connection needs attention" for item in tree()), "reconnect did not clear Offline")
+        assert unread_badge("Weekend plans", 2), "connection change lost the unread count"
+        badge = tree(element("Weekend plans", "Button")["handle"])
+        assert any(item.get("accessibleLabel") == "2" for item in badge), "unread count was replaced by a dot"
 
 
 def check_action_geometry():

@@ -114,7 +114,7 @@ of the budget: slow tests cost development speed.
 Persisted data has two rules. The saved session survives every change:
 any change to its type comes with a test that loads JSON in the exact
 shape the previous code wrote and saves it back without losing a field.
-The local store may be discarded (bump the schema version), but never
-left half-readable.
+Local store changes must migrate existing data in one transaction; bump the
+schema version and add a migration step (see [core-model.md](core-model.md)).
 
 Add a row when a pass finds a new pattern.

@@ -14,7 +14,6 @@ export global ShellState {
     in-out property <bool> window-active: false;
     in-out property <int> unread-conversations;
     in-out property <string> unread-badge;
-    in-out property <bool> unread-stale;
     in-out property <Section> section: Section.chats;
     public function browser-key(event: KeyEvent) -> EventResult {
         if self.ime-active { return reject; }

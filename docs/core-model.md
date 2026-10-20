@@ -38,10 +38,16 @@ flowchart LR
 keys. The desktop account database is
 `$XDG_DATA_HOME/sen/<mid>/store.sqlite3`.
 Directory creation requests mode 0700. The database is not encrypted.
-`SCHEMA_VERSION` is 13; a different SQLite `user_version` causes the database,
-WAL and shared-memory files to be removed and the schema recreated. This
-also discards local drafts, unsent messages, preferences and pending read acks.
-The saved session is stored separately.
+`SCHEMA_VERSION` is 14. On open, the ordered `MIGRATIONS` list in
+`src/store.rs` applies steps keyed by their from-version. All applicable steps
+and SQLite `user_version` updates commit in one transaction; an error rolls
+them back. The 13 → 14 step drops the obsolete unread uncertainty column,
+keeping local history, drafts, pending sends and preferences. Future store
+changes add a step and bump the version; the local store must survive.
+Newer-than-known versions are refused before any schema or journal changes.
+Versions older than 13 retain the reset behavior: the database, WAL and
+shared-memory files are removed and the current schema is created.
+Fresh stores are created directly at 14. The saved session is stored separately.
 
 The tables in `src/store/schema.sql` are:
 
@@ -125,8 +131,11 @@ Opening a window publishes cached rows first. Recent, older and around requests
 run as background refreshes. Interior gaps fetch older messages before their
 upper boundary. Chat-list metadata supplies last-message hints without inventing
 message content; the preview comes from the newest stored message.
-`ChatListItem.unread_count` is computed by the store's unread query, separately
-from `ChatInput.server_unread` and `unread_stale`.
+`ChatListItem.unread_count` is computed by the store's unread query from
+`ChatInput.server_unread` and read markers. Each chat has one unread count,
+shown as a number in every connection state. Incoming unread messages for an
+unknown chat increment its count; later chat-list metadata replaces that count
+with the server's value.
 
 ## Worker
 

@@ -432,7 +432,6 @@ pub struct ChatInput {
     pub last_message_id: Option<ServerId>,
     pub last_message_ms: Option<i64>,
     pub server_unread: u32,
-    pub unread_stale: bool,
     pub last_read_server_id: Option<ServerId>,
 }
 /// Chats to republish and row identities removed by committed mutations.
