@@ -86,7 +86,7 @@ export component Detail inherits FocusScope {
         HorizontalLayout { y: 0px; width: parent.width; height: 56px; padding: 12px; spacing: 8px;
             back := IconButton { visible: State.detail-depth > 1; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Back"; icon: @image-url("../assets/icons/back.svg"); activated => { State.pop-detail(false); } }
             Text { text: State.detail-page == 0 ? "Profile" : State.detail-page == 1 ? "Group info" : "Members" + (State.group-count >= 0 ? " (" + State.group-count + ")" : ""); font-size: Tokens.heading; font-weight: 600; vertical-alignment: center; }
-            more := IconButton { visible: State.detail-page == 0; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Profile more"; icon: @image-url("../assets/icons/more.svg"); activated => { menu.show(); } }
+            more := IconButton { visible: State.detail-page == 0; enabled: self.visible; width: self.visible ? 32px : 0px; label: "Profile more"; icon: @image-url("../assets/icons/more.svg"); activated => { menu.show({x: root.width - 176px, y: 48px}); } }
             close := IconButton { label: "Close details"; icon: @image-url("../assets/icons/close.svg"); activated => { State.pop-detail(true); } }
         }
         if State.detail-page == 0: Rectangle { y: 56px; width: parent.width; height: 96px; background: Tokens.accent.with-alpha(0.25); }
@@ -124,11 +124,9 @@ export component Detail inherits FocusScope {
         }
         members := Members { y: 56px; width: parent.width; visible: State.detail-page == 2; height: self.visible ? parent.height - 56px : 0px; }
     }
-    menu := PopupWindow { x: max(0px, root.width - 176px); y: 48px; width: 168px; height: 40px;
-        Rectangle { background: Tokens.bg; border-width: 1px; border-color: Tokens.divider; border-radius: 8px;
-            Button { x: 4px; y: 4px; text: "Copy name"; text-button: true; clicked => { copy.text = State.profile-name; copy.select-all(); copy.copy(); menu.close(); more.focus-button(); } }
-            copy := TextInput { visible: false; }
-        }
+    menu := ContextMenuArea {
+        enabled: false;
+        Menu { MenuItem { title: "Copy name"; activated => { State.copy-text(State.profile-name); } } }
     }
     Rectangle { visible: State.detail-dialog != DetailAction.none; x: -root.absolute-position.x; y: -root.absolute-position.y; width: State.window-width; height: State.window-height; background: Tokens.scrim; TouchArea {}
         Rectangle { width: min(400px, parent.width - 32px); height: dialog-content.preferred-height; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; background: Tokens.bg; border-radius: 12px; border-width: 1px; border-color: Tokens.divider;

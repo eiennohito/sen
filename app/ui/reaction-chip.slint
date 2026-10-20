@@ -33,8 +33,8 @@ export component ReactionChip inherits Rectangle {
     TouchArea { mouse-cursor: pointer; clicked => { chip-focus.focus(); reactors.show(); } }
     reactors := PopupWindow {
         close-policy: close-on-click-outside;
-        x: max(-root.absolute-position.x, min(0px, State.window-width - root.absolute-position.x - self.width));
-        y: max(-root.absolute-position.y, min(root.height, State.window-height - root.absolute-position.y - self.height));
+        x: 0px;
+        y: root.height;
         width: min(State.window-width, max(120px, actors.preferred-width + 12px));
         height: min(State.window-height, min(320px, actors.preferred-height));
         Rectangle {

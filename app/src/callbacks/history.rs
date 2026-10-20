@@ -85,9 +85,8 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
     );
     global_callback!(ui, actions, on_history_scrolled, |ui, d| {
         d.observe_reading(&ui);
-        for intent in
-            reading::page_older(&mut d.history, &mut d.state, Desktop::reading_geometry(&ui))
-        {
+        let geometry = Desktop::reading_geometry(&ui);
+        for intent in reading::page_older(&mut d.history, &mut d.state, geometry) {
             d.sender.send(intent);
         }
     });

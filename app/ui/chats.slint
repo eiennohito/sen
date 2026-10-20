@@ -13,22 +13,12 @@ export component Chats inherits Rectangle {
     property <[{kind: ChatCategory, label: string}]> categories: [{kind: ChatCategory.all, label: "All"}, {kind: ChatCategory.friends, label: "Friends"}, {kind: ChatCategory.groups, label: "Groups"}];
     visible: State.section == 0;
     out property <bool> has-focus: search.contains-focus || chips-focus.has-focus || list-focus.has-focus;
-    out property <length> viewport-height: chat-list.visible-height;
-    changed viewport-height => { State.chat-list-height = root.viewport-height; }
-    property <length> reveal-y;
-    // Slint's virtual list estimates a distant seek at a row boundary first.
-    // Apply the requested pixel offset again after that layout has settled.
-    reveal-settle := Timer { interval: 0ms; running: false; triggered => { self.running = false; chat-list.jump(root.reveal-y); } }
     public function reveal(index: int) {
         chat-list.jump(State.list-y);
         let top = index * State.chat-row-height;
         let bottom = top + State.chat-row-height;
-        let extent = max(0px, State.chats.length * State.chat-row-height - chat-list.height) + chat-list.inset;
         let y = top + State.list-y < 0px ? -top : bottom + State.list-y > chat-list.visible-height ? chat-list.visible-height - bottom : State.list-y;
-        root.reveal-y = max(-extent, min(0px, y));
-        chat-list.jump(root.reveal-y);
-        reveal-settle.running = true;
-        reveal-settle.restart();
+        chat-list.jump(y);
     }
     public function focus-search-last() { chips-focus.focus(); }
     public function focus-list() { list-focus.focus(); }
@@ -149,13 +139,6 @@ for chat[i] in State.chats: ListRow {
                         accessible-label: chat.title + (chat.time != "" ? ", " + chat.time : "") + ", " + (chat.draft ? "Draft: " + chat.draft-preview : (chat.outgoing-preview ? "You: " : "") + chat.preview) + (chat.unread-unknown ? ", Unread count unavailable" : chat.unread > 0 ? ", " + chat.unread + " unread" : "") + (chat.failed ? ", Send failed" : "") + (chat.muted ? ", Muted" : "");
                         accessible-action-default => { State.result-focus = i; root.open-result(); }
                         row-touch := TouchArea {
-                            pointer-event(event) => {
-                                if event.kind == PointerEventKind.cancel { State.list-pressed = false; State.list-release-pending = true; }
-                                else if event.button == PointerEventButton.left {
-                                    if event.kind == PointerEventKind.down { State.list-pressed = true; }
-                                    else if event.kind == PointerEventKind.up || event.kind == PointerEventKind.cancel { State.list-pressed = false; State.list-release-pending = true; }
-                                }
-                            }
                             clicked => { State.result-focus = i; root.open-result(); } }
                     }
                 }

@@ -88,7 +88,6 @@ impl Presenter {
             g.set_profile_addable(kind == 0 && state.profile_addable(id));
             ui.global::<State>()
                 .set_profile_available(kind == 0 && state.profile_available(id));
-            ui.global::<State>().set_profile_group(kind != 0);
             g.set_profile_original(
                 f.and_then(|f| {
                     let original = f.profile.original_name.as_deref()?;

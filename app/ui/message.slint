@@ -68,9 +68,8 @@ export component Message inherits TouchArea {
     property <bool> card-focused: false;
     property <bool> rich-fallback: false;
     property <float> rich-width;
-    property <bool> copying-rich;
     property <bool> showing-rich: root.message.rich-runs.length > 0 && !root.selecting-rich && !root.rich-fallback;
-    function copy-message() { root.copying-rich = true; body.select-all(); body.copy(); root.copying-rich = false; }
+    function copy-message() { State.copy-text(root.message.body); }
 
     property <bool> system-item: root.message.kind == MessageKind.system || root.message.kind == MessageKind.withdrawn;
     property <length> anchor-top: root.origin-y + root.y + (root.system-item ? (root.message.day-label != "" ? 27px : 0px) + (root.message.id == State.unread-divider ? 31px : 0px) : message-content.y + message-column.y + message-bubble.y);
@@ -209,7 +208,7 @@ export component Message inherits TouchArea {
                                         action(kind) => { message-bubble.action(kind); }
 
                                         body := TextInput {
-                                            text: root.showing-rich && !root.copying-rich ? "" : root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
+                                            text: root.showing-rich ? "" : root.message.body; read-only: true; single-line: false; text-cursor-width: 0px;
                                             wrap: body-measure.min-width > self.width ? char-wrap : word-wrap; color: root.message.outgoing ? Tokens.outgoing-foreground : Tokens.foreground;
                                             font-size: Tokens.base;
                                             height: root.showing-rich ? 0px : self.preferred-height;

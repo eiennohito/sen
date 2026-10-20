@@ -321,15 +321,6 @@ impl Desktop {
             Delta::ReactionFailed(key) => {
                 ui.global::<State>()
                     .set_reaction_error_id(key.0.to_string().into());
-                let weak = ui.as_weak();
-                let id = key.0.to_string();
-                slint::Timer::single_shot(std::time::Duration::from_secs(4), move || {
-                    if let Some(ui) = weak.upgrade()
-                        && ui.global::<State>().get_reaction_error_id() == id
-                    {
-                        ui.global::<State>().set_reaction_error_id("".into());
-                    }
-                });
             }
             Delta::UnsendFailed(key) => {
                 if self.state.messages.contains_key(key) {

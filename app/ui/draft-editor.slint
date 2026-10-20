@@ -22,8 +22,6 @@ export component DraftEditor inherits Rectangle {
     // selection while a layer owns focus and restore on programmatic return.
     changed caret => { if input.has-focus { State.editor-caret = root.caret; } }
     changed anchor => { if input.has-focus { State.editor-anchor = root.anchor; } }
-    property <bool> focused: input.has-focus;
-    changed focused => { State.composer-focused = root.focused; }
     background: Tokens.surface-2; border-radius: 18px;
     Rectangle { x: -4px; y: -4px; width: root.width + 8px; height: root.height + 8px; background: transparent; border-radius: 22px; border-width: input.has-focus ? 2px : 0px; border-color: Tokens.accent-strong; }
     Text {

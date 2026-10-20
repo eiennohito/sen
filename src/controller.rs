@@ -440,14 +440,6 @@ impl AppState {
             | Delta::Copy { .. } => {}
         }
     }
-    pub fn unread_boundary_unknown(&self) -> bool {
-        self.unread_divider.is_none()
-            && self
-                .selected
-                .as_ref()
-                .and_then(|id| self.chats.get(id))
-                .is_some_and(|c| c.unread_count > 0)
-    }
 }
 
 #[cfg(test)]
