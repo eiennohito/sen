@@ -46,7 +46,8 @@ Sent (1). No "may not have been sent" state.
 ## Tests are code under review
 
 Passing tests show only that tests and code agree. Tests are audited like
-product code, and every deslop pass covers them.
+product code, and every deslop pass covers them. Test names describe the
+behaviour, never the batch or issue that added them (`b1_…`).
 
 Keep a test only if it pins something a user or the protocol would notice:
 a user-visible flow, a protocol or crypto fact (fixtures, byte-exact
