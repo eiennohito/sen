@@ -74,7 +74,7 @@ pub(crate) mod preview;
 pub(crate) mod spans;
 
 pub(crate) fn install(ui: &AppWindow) {
-    ui.global::<State>().on_rich_source(|rows| {
+    ui.global::<ContentState>().on_rich_source(|rows| {
         rows.model_tracker().track_row_count_changes();
         for i in 0..rows.row_count() {
             rows.model_tracker().track_row_data_changes(i);
@@ -85,7 +85,7 @@ pub(crate) fn install(ui: &AppWindow) {
     let metrics = Rc::new(RefCell::new(flow::Measurements::default()));
     let preview_metrics = metrics.clone();
     let preview_weak = ui.as_weak();
-    ui.global::<State>()
+    ui.global::<ContentState>()
         .on_preview_layout(move |rows, prefix, width, size| {
             let Some(ui) = preview_weak.upgrade() else {
                 return ModelRc::default();
@@ -103,7 +103,7 @@ pub(crate) fn install(ui: &AppWindow) {
             })
         });
     let weak = ui.as_weak();
-    ui.global::<State>()
+    ui.global::<ContentState>()
         .on_rich_layout(move |rows, width, size, previous| {
             weak.upgrade()
                 .map(|ui| flow::reuse(previous, flow::layout(&ui, &rows, width, size, &metrics)))

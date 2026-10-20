@@ -1,13 +1,49 @@
 use super::*;
 
 impl Presenter {
+    pub(super) fn present_members(&mut self, ui: &AppWindow, state: &AppState) {
+        let g = ui.global::<DetailState>();
+        let mut members: Vec<_> = state.members.iter().collect();
+        members.sort_by_key(|m| (m.contact.profile.invited, !m.is_self));
+        let query = g.get_member_query().to_lowercase();
+        self.members.replace(
+            members
+                .into_iter()
+                .filter_map(|m| {
+                    let contact = if m.is_self {
+                        state.contact(&m.contact.id).unwrap_or(&m.contact)
+                    } else {
+                        &m.contact
+                    };
+                    if !text::member_name(contact.name.as_deref())
+                        .to_lowercase()
+                        .contains(&query)
+                        && !contact.status.to_lowercase().contains(&query)
+                        && !(m.is_self && "you".contains(&query))
+                    {
+                        return None;
+                    }
+                    Some((
+                        contact.id.clone(),
+                        (
+                            contact.clone(),
+                            m.is_self,
+                            state.friends.iter().any(|f| f.id == contact.id && !f.group)
+                                || contact.profile.relation == Some(0),
+                        ),
+                        contact.avatar.iter().map(|a| a.key()).collect(),
+                    ))
+                })
+                .collect(),
+        );
+    }
     pub(super) fn present_detail(
         &mut self,
         ui: &AppWindow,
         state: &AppState,
         detail_error: String,
     ) {
-        let g = ui.global::<State>();
+        let g = ui.global::<DetailState>();
         g.set_detail_depth(state.detail.len() as i32);
         g.set_invitee_count(
             state
@@ -46,7 +82,6 @@ impl Presenter {
             };
             g.set_detail_page(kind);
             let room = ChatId(id.into()).is_room();
-            let own = state.profile_own(id);
             let f = state.contact(id);
             let c = state.chats.get(&ChatId(id.into())).map(|c| &c.chat);
             let name = if kind != DetailPageMode::Profile {
@@ -77,7 +112,6 @@ impl Presenter {
             g.set_profile_name(name.into());
             g.set_profile_status(status.into());
             g.set_profile_initial(name_initial(name));
-            g.set_profile_own(own);
             g.set_profile_friend(friend);
             g.set_profile_addable(kind == DetailPageMode::Profile && state.profile_addable(id));
             g.set_profile_available(kind == DetailPageMode::Profile && state.profile_available(id));

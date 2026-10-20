@@ -34,7 +34,7 @@ fn present(
 ) -> MessageRow {
     state.messages.insert(message.key, message.clone());
     presenter.present(ui, state, "", ChatCategory::All);
-    ui.global::<State>()
+    ui.global::<ConversationState>()
         .get_messages()
         .iter()
         .find(|r| r.id == message.key.0.to_string())
@@ -181,7 +181,10 @@ fn reply_rows_keep_full_text_while_composer_quotes_are_compact() {
             state.messages.insert(target.key, target.clone());
             state.composer_reply = reply.reply.as_deref().cloned();
             let row = present(&ui, &mut presenter, &mut state, &reply);
-            assert_eq!(ui.global::<State>().get_composer_reply().body, compact);
+            assert_eq!(
+                ui.global::<ComposerState>().get_composer_reply().body,
+                compact
+            );
             assert_eq!(row.reply_preview, full);
         }
     })

@@ -50,8 +50,8 @@ pub(super) fn install_reset(
                 let ui = window::install_window(d, runtime.clone(), &workers, &options)
                     .expect("recreate demo window");
                 ui.window().set_position(old.window().position());
-                ui.global::<State>()
-                    .set_device_scale(old.global::<State>().get_device_scale());
+                ui.global::<ShellState>()
+                    .set_device_scale(old.global::<ShellState>().get_device_scale());
                 ui.global::<ExtensionState>().set_demo_reset_generation(
                     old.global::<ExtensionState>().get_demo_reset_generation() + 1,
                 );
@@ -91,24 +91,19 @@ pub(crate) fn internal_error(ui: &AppWindow, kind: &str) {
     });
 }
 
-pub(crate) fn inject_attachments(
-    ui: &AppWindow,
-    actions: &Runtime,
-    selection: std::sync::Arc<std::sync::Mutex<crate::callbacks::attachments::Selection>>,
-) {
+pub(crate) fn inject_attachments(ui: &AppWindow, actions: &Runtime) {
     let weak = ui.as_weak();
     let actions = actions.clone();
     ui.global::<ExtensionState>()
         .on_inject_attachments(move |paths| {
             let weak = weak.clone();
-            let selected = selection.clone();
             actions.push(move |d| {
                 if let Some(ui) = weak.upgrade()
                     && ui.global::<ExtensionState>().get_automation_background()
                 {
                     let paths: Vec<std::path::PathBuf> =
                         serde_json::from_str(&paths).unwrap_or_default();
-                    crate::callbacks::attachments::begin(&ui, d, &selected, move || Ok(paths));
+                    crate::callbacks::attachments::begin(&ui, d, &d.attachments, move || Ok(paths));
                 }
             });
         });

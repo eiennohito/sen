@@ -1,29 +1,32 @@
+import { Section } from "globals.slint";
+import { DetailState, FriendsState, ShellState } from "globals.slint";
 import { FocusRing } from "button.slint";
 import { ListRow, RowText } from "list-row.slint";
 import { EmptyState } from "empty-state.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Pane } from "scrollpane.slint";
 import { SearchField } from "search-field.slint";
 export component Friends inherits Rectangle {
+    property <int> friend-result: -1;
+    property <length> friends-y;
     out property <bool> search-focused: friend-search.contains-focus;
     out property <bool> has-focus: friend-search.contains-focus || list-focus.has-focus;
-    visible: State.section == 1;
+    visible: ShellState.section == Section.friends;
     out property <bool> editing: friend-search.has-focus;
     public function focus-connection() { friend-list.focus-connection(); }
     out property <bool> connection-focused: friend-list.connection-focused;
     public function focus-search() { friend-search.focus(); }
     public function focus-list() { list-focus.focus(); }
     public function move-cursor(delta: int) {
-        State.friend-result = max(0, min(State.friends.length - 1, State.friend-result + delta));
+        root.friend-result = max(0, min(FriendsState.friends.length - 1, root.friend-result + delta));
     }
     public function activate() {
-        if State.friend-result < 0 || State.friend-result >= State.friends.length { return; }
-        if State.friends[State.friend-result].header {
-            if State.friends[State.friend-result].group { State.groups-expanded = !State.groups-expanded; }
-            else { State.friends-expanded = !State.friends-expanded; }
-            State.filter-friends();
-        } else { State.open-profile(State.friends[State.friend-result].id); }
+        if root.friend-result < 0 || root.friend-result >= FriendsState.friends.length { return; }
+        if FriendsState.friends[root.friend-result].header {
+            if FriendsState.friends[root.friend-result].group { FriendsState.groups-expanded = !FriendsState.groups-expanded; }
+            else { FriendsState.friends-expanded = !FriendsState.friends-expanded; }
+            FriendsState.filter-friends();
+        } else { DetailState.open-profile(FriendsState.friends[root.friend-result].id); }
     }
     VerticalLayout {
         padding: 12px; spacing: 8px;
@@ -32,39 +35,39 @@ export component Friends inherits Rectangle {
         }
         HorizontalLayout {
             friend-search := SearchField {
-                text <=> State.friend-query; placeholder-text: "Search friends and groups";
+                text <=> FriendsState.friend-query; placeholder-text: "Search friends and groups";
                 label: "Search friends and groups";
-                clear => { State.friend-query = ""; State.filter-friends(); friend-search.focus(); }
-                edited => { State.filter-friends(); }
+                clear => { FriendsState.friend-query = ""; FriendsState.filter-friends(); friend-search.focus(); }
+                edited => { FriendsState.filter-friends(); }
                 key-pressed(event) => {
-                    if State.ime-active { return reject; }
+                    if ShellState.ime-active { return reject; }
                     if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
                     if event.text == Key.Return { root.activate(); return accept; }
-                    if event.text == Key.Escape && State.friend-query != "" { State.friend-query = ""; State.filter-friends(); return accept; }
+                    if event.text == Key.Escape && FriendsState.friend-query != "" { FriendsState.friend-query = ""; FriendsState.filter-friends(); return accept; }
                     reject
                 }
             }
         }
-        if State.friends-error != "": Text { text: State.friends-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
+        if FriendsState.friends-error != "": Text { text: FriendsState.friends-error; color: Tokens.danger; font-size: Tokens.small; wrap: word-wrap; }
         friend-list := Pane {
             connection-dismissed => { list-focus.focus(); }
-            connection-feedback: State.narrow && !State.show-conversation && State.section == 1 && !(State.detail-open && State.profile-sheet);
-            offset <=> State.friends-y;
+            connection-feedback: ShellState.narrow && !ShellState.show-conversation && ShellState.section == Section.friends && !(DetailState.detail-open && ShellState.profile-sheet);
+            offset <=> root.friends-y;
             list-focus := FocusScope {
                 accessible-role: list; accessible-label: "Friends and groups";
                 key-pressed(event) => {
-                    if State.ime-active { return reject; }
+                    if ShellState.ime-active { return reject; }
                     if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
-                    if event.text == Key.Home { State.friend-result = 0; friend-list.jump(0px); return accept; }
-                    if event.text == Key.End { State.friend-result = State.friends.length - 1; friend-list.jump(-friend-list.extent); return accept; }
+                    if event.text == Key.Home { root.friend-result = 0; friend-list.jump(0px); return accept; }
+                    if event.text == Key.End { root.friend-result = FriendsState.friends.length - 1; friend-list.jump(-friend-list.extent); return accept; }
                     if event.text == Key.Return || event.text == " " { root.activate(); return accept; }
                     reject
                 }
                 VerticalLayout {
                     spacing: 0px;
-                    for friend[i] in State.friends: Rectangle {
+                    for friend[i] in FriendsState.friends: Rectangle {
                         width: friend-list.visible-width; height: self.preferred-height;
-                        property <bool> selected: State.friend-result == i;
+                        property <bool> selected: root.friend-result == i;
                         changed selected => { if self.selected { friend-list.centre(self.y); } }
                         VerticalLayout {
                             spacing: 0px;
@@ -76,21 +79,21 @@ export component Friends inherits Rectangle {
                         }
                         states [ hovered when row-touch.has-hover: { background: Tokens.surface-hover; in-out { animate background { duration: 100ms; } } } ]
                         border-radius: 8px;
-                        FocusRing { focused: (list-focus.has-focus || friend-search.has-focus) && State.friend-result == i; border-radius: 8px; border-color: Tokens.accent; }
+                        FocusRing { focused: (list-focus.has-focus || friend-search.has-focus) && root.friend-result == i; border-radius: 8px; border-color: Tokens.accent; }
                         accessible-role: button; accessible-label: friend.header ? friend.name : "Open profile: " + friend.name;
                         accessible-expandable: friend.header;
-                        accessible-expanded: friend.header && (friend.group ? State.groups-expanded : State.friends-expanded);
-                        accessible-action-default => { State.friend-result = i; root.activate(); }
+                        accessible-expanded: friend.header && (friend.group ? FriendsState.groups-expanded : FriendsState.friends-expanded);
+                        accessible-action-default => { root.friend-result = i; root.activate(); }
                         if friend.header: Image {
                             x: parent.width - 28px; y: (parent.height - 20px) / 2; width: 20px; height: 20px;
-                            source: (friend.group ? State.groups-expanded : State.friends-expanded) ? @image-url("../assets/icons/chevron-down.svg") : @image-url("../assets/icons/chevron.svg");
+                            source: (friend.group ? FriendsState.groups-expanded : FriendsState.friends-expanded) ? @image-url("../assets/icons/chevron-down.svg") : @image-url("../assets/icons/chevron.svg");
                             colorize: Tokens.foreground;
                         }
-                        row-touch := TouchArea { mouse-cursor: pointer; clicked => { list-focus.focus(); State.friend-result = i; root.activate(); } }
+                        row-touch := TouchArea { mouse-cursor: pointer; clicked => { list-focus.focus(); root.friend-result = i; root.activate(); } }
                     }
                 }
             }
         }
     }
-    if State.friends.length == 0: EmptyState { signed-out: !State.has-account; y: 100px; height: max(0px, parent.height - 100px); text: State.friend-query != "" ? "No results" : "No friends yet"; icon: State.friend-query == "" ? @image-url("../assets/icons/friends.svg") : @image-url("../assets/icons/search.svg"); }
+    if FriendsState.friends.length == 0: EmptyState { signed-out: (ShellState.account-mid == ""); y: 100px; height: max(0px, parent.height - 100px); text: FriendsState.friend-query != "" ? "No results" : "No friends yet"; icon: FriendsState.friend-query == "" ? @image-url("../assets/icons/friends.svg") : @image-url("../assets/icons/search.svg"); }
 }

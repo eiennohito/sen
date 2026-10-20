@@ -8,9 +8,9 @@ pub(super) enum FriendEntry {
 }
 
 impl Presenter {
-    pub(super) fn present_people(&mut self, ui: &AppWindow, state: &AppState) {
-        let global = ui.global::<State>();
-        let query = global.get_friend_query().to_lowercase();
+    pub(super) fn present_people(&mut self, ui: &AppWindow, state: &AppState, text_size: i32) {
+        let g = ui.global::<FriendsState>();
+        let query = g.get_friend_query().to_lowercase();
         let friends: Vec<_> = state
             .friends
             .iter()
@@ -23,8 +23,8 @@ impl Presenter {
             .collect();
         let mut grouped = Vec::new();
         for (group, label, expanded) in [
-            (true, "Groups", global.get_groups_expanded()),
-            (false, "Friends", global.get_friends_expanded()),
+            (true, "Groups", g.get_groups_expanded()),
+            (false, "Friends", g.get_friends_expanded()),
         ] {
             let rows: Vec<_> = friends.iter().filter(|f| f.group == group).collect();
             if state.friends.is_empty() || (!query.is_empty() && rows.is_empty()) {
@@ -39,46 +39,13 @@ impl Presenter {
                 grouped.extend(rows.into_iter().map(|f| {
                     (
                         f.id.clone(),
-                        FriendEntry::Contact((*f).clone(), global.get_text_size()),
+                        FriendEntry::Contact((*f).clone(), text_size),
                         friend_assets(f),
                     )
                 }));
             }
         }
         self.friends.replace(grouped);
-        let mut members: Vec<_> = state.members.iter().collect();
-        members.sort_by_key(|m| (m.contact.profile.invited, !m.is_self));
-        let query = global.get_member_query().to_lowercase();
-        self.members.replace(
-            members
-                .into_iter()
-                .filter_map(|m| {
-                    let contact = if m.is_self {
-                        state.contact(&m.contact.id).unwrap_or(&m.contact)
-                    } else {
-                        &m.contact
-                    };
-                    if !text::member_name(contact.name.as_deref())
-                        .to_lowercase()
-                        .contains(&query)
-                        && !contact.status.to_lowercase().contains(&query)
-                        && !(m.is_self && "you".contains(&query))
-                    {
-                        return None;
-                    }
-                    Some((
-                        contact.id.clone(),
-                        (
-                            contact.clone(),
-                            m.is_self,
-                            state.friends.iter().any(|f| f.id == contact.id && !f.group)
-                                || contact.profile.relation == Some(0),
-                        ),
-                        contact.avatar.iter().map(|a| a.key()).collect(),
-                    ))
-                })
-                .collect(),
-        );
     }
 }
 

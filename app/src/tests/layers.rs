@@ -8,23 +8,24 @@ fn resizing_layers_keeps_focus_on_visible_content() {
         let ui = test_window();
         ui.show().unwrap();
         for layer in ["profile", "members", "member-profile", "settings"] {
-            ui.global::<State>().set_panel(PanelState::None);
+            ui.global::<ShellState>().set_panel(PanelState::None);
             snapshot::render(&window, (980, 720)).unwrap();
             if layer == "settings" {
-                ui.global::<State>().set_panel(PanelState::Settings);
+                ui.global::<ShellState>().set_panel(PanelState::Settings);
                 ui.invoke_focus_settings_close();
             } else {
-                ui.global::<State>().set_panel(match layer {
+                ui.global::<ShellState>().set_panel(match layer {
                     "profile" => PanelState::Detail,
                     "members" => PanelState::Detail,
                     _ => PanelState::Detail,
                 });
-                ui.global::<State>().set_detail_depth(1);
-                ui.global::<State>().set_detail_page(if layer == "members" {
-                    DetailPageMode::Members
-                } else {
-                    DetailPageMode::Profile
-                });
+                ui.global::<DetailState>().set_detail_depth(1);
+                ui.global::<DetailState>()
+                    .set_detail_page(if layer == "members" {
+                        DetailPageMode::Members
+                    } else {
+                        DetailPageMode::Profile
+                    });
                 ui.invoke_focus_profile_close();
             }
             snapshot::render(&window, (980, 720)).unwrap();
@@ -87,7 +88,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             ui.global::<ExtensionState>().set_demo(true);
             key("\u{f70f}");
             assert!(ui.global::<ExtensionState>().get_demo_scenarios_open());
-            assert!(ui.global::<State>().get_modal_open());
+            assert!(ui.global::<ShellState>().get_modal_open());
             // Reverse Tab wraps to the final action; forward Tab returns to Close.
             ui.window().dispatch_event(WindowEvent::KeyPressed {
                 text: "\u{10}".into(),
@@ -98,7 +99,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             });
             key("\t");
             key("\n");
-            assert!(!ui.global::<State>().get_modal_open());
+            assert!(!ui.global::<ShellState>().get_modal_open());
             events.borrow_mut().clear();
             for index in 0..27 {
                 key("\u{f70f}");
@@ -117,7 +118,7 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
                     !ui.global::<ExtensionState>().get_demo_scenarios_open(),
                     "scenario index {index}"
                 );
-                assert!(!ui.global::<State>().get_modal_open());
+                assert!(!ui.global::<ShellState>().get_modal_open());
             }
             assert_eq!(
                 *events.borrow(),
@@ -130,11 +131,11 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             key("\u{f70f}");
             assert!(ui.global::<ExtensionState>().get_demo_scenarios_open());
             key("\u{1b}");
-            assert!(!ui.global::<State>().get_modal_open());
+            assert!(!ui.global::<ShellState>().get_modal_open());
             // Escape restores the actual search target, with no intervening click.
             key("x");
-            assert_eq!(ui.global::<State>().get_query(), "x");
-            ui.global::<State>().set_query("".into());
+            assert_eq!(search(&ui).accessible_value().unwrap(), "x");
+            search(&ui).set_accessible_value("");
         }
         ui.hide().unwrap();
     })
@@ -149,10 +150,10 @@ fn escape_busy_sign_in_requires_a_decision() {
         let ui = test_window();
         let cancelled = Rc::new(std::cell::Cell::new(0));
         let count = cancelled.clone();
-        ui.global::<State>()
+        ui.global::<AuthState>()
             .on_cancel_sign_in(move || count.set(count.get() + 1));
-        ui.global::<State>().set_panel(PanelState::SignIn);
-        ui.global::<State>()
+        ui.global::<ShellState>().set_panel(PanelState::SignIn);
+        ui.global::<ShellState>()
             .set_connection(ConnectionState::SigningIn);
         ui.invoke_focus_auth_start();
         ui.show().unwrap();
@@ -163,16 +164,16 @@ fn escape_busy_sign_in_requires_a_decision() {
                 .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: text.into() });
         };
         key("\u{1b}");
-        assert!(ui.global::<State>().get_auth_cancel_confirm());
+        assert!(visible(&ui, "Keep waiting"));
         assert_eq!(cancelled.get(), 0);
-        assert!(ui.global::<State>().get_auth_busy());
+        assert!(ui.global::<AuthState>().get_auth_busy());
         key("\n"); // Default action keeps waiting.
-        assert!(!ui.global::<State>().get_auth_cancel_confirm());
+        assert!(!visible(&ui, "Keep waiting"));
         assert_eq!(cancelled.get(), 0);
         key("\u{1b}");
         key("\t");
         key("\n");
-        assert!(!ui.global::<State>().get_auth_cancel_confirm());
+        assert!(!visible(&ui, "Keep waiting"));
         assert_eq!(cancelled.get(), 1);
         ui.hide().unwrap();
     })
@@ -185,14 +186,14 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
     std::thread::spawn(|| {
         let _platform = snapshot::install().unwrap();
         let ui = test_window();
-        ui.global::<State>().set_has_chat(true);
-        ui.global::<State>().set_show_conversation(true);
-        ui.global::<State>()
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.global::<ConversationState>()
             .set_chat_title("Preview conversation".into());
-        ui.global::<State>()
+        ui.global::<DetailState>()
             .set_profile_name("Preview contact".into());
-        ui.global::<State>().set_profile_available(true);
-        ui.global::<State>()
+        ui.global::<DetailState>().set_profile_available(true);
+        ui.global::<ConversationState>()
             .set_messages(ModelRc::from(Rc::new(VecModel::from(vec![MessageRow {
                 body: "日本語の履歴 🐈\nThe reading surface stays usable.".into(),
                 id: "synthetic-profile-message".into(),
@@ -205,23 +206,27 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
             connection: Connection::Online,
             ..Default::default()
         };
-        ui.global::<State>().set_connection(ConnectionState::Online);
-        ui.global::<State>().set_draft(draft.into());
+        ui.global::<ShellState>()
+            .set_connection(ConnectionState::Online);
+        ui.global::<ComposerState>().set_draft(draft.into());
         state.composer = draft.into();
         presenter.present_draft(&ui, &state);
         assert_eq!(
-            ui.global::<State>().get_composer_mode(),
+            ui.global::<ComposerState>().get_composer_mode(),
             ComposerMode::Ready
         );
-        ui.global::<State>().set_draft("".into());
+        ui.global::<ComposerState>().set_draft("".into());
         state.composer.clear();
         presenter.present_draft(&ui, &state);
-        assert_eq!(ui.global::<State>().get_composer_mode(), ComposerMode::Idle);
-        ui.global::<State>().set_draft(draft.into()); // Programmatic restoration emits no typing event.
+        assert_eq!(
+            ui.global::<ComposerState>().get_composer_mode(),
+            ComposerMode::Idle
+        );
+        ui.global::<ComposerState>().set_draft(draft.into()); // Programmatic restoration emits no typing event.
         state.composer = draft.into();
         presenter.present_draft(&ui, &state);
         assert_eq!(
-            ui.global::<State>().get_composer_mode(),
+            ui.global::<ComposerState>().get_composer_mode(),
             ComposerMode::Ready
         );
         ui.show().unwrap();
@@ -232,8 +237,8 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
         )
         .next()
         .unwrap();
-        ui.global::<State>().set_detail_depth(1);
-        ui.global::<State>().set_panel(PanelState::Detail);
+        ui.global::<DetailState>().set_detail_depth(1);
+        ui.global::<ShellState>().set_panel(PanelState::Detail);
         for width in [740, 800] {
             ui.window()
                 .set_size(slint::LogicalSize::new(width as f32, 720.));
@@ -242,19 +247,19 @@ fn profile_panel_preserves_reading_at_wide_boundaries() {
                 history.size().width >= 300.,
                 "profile left an unusable reading width at {width}"
             );
-            assert_eq!(ui.global::<State>().get_draft(), draft);
-            assert!(ui.global::<State>().get_detail_open());
+            assert_eq!(ui.global::<ComposerState>().get_draft(), draft);
+            assert!(ui.global::<DetailState>().get_detail_open());
         }
-        ui.global::<State>().invoke_close_profile();
-        assert!(!ui.global::<State>().get_detail_open());
-        assert_eq!(ui.global::<State>().get_draft(), draft);
-        ui.global::<State>().set_detail_depth(1);
-        ui.global::<State>().set_panel(PanelState::Detail);
-        ui.global::<State>().set_detail_depth(2);
-        ui.global::<State>()
+        ui.global::<DetailState>().invoke_pop_detail(true);
+        assert!(!ui.global::<DetailState>().get_detail_open());
+        assert_eq!(ui.global::<ComposerState>().get_draft(), draft);
+        ui.global::<DetailState>().set_detail_depth(1);
+        ui.global::<ShellState>().set_panel(PanelState::Detail);
+        ui.global::<DetailState>().set_detail_depth(2);
+        ui.global::<DetailState>()
             .set_detail_page(DetailPageMode::Profile);
         ui.invoke_focus_profile_close();
-        assert!(ui.global::<State>().get_member_profile());
+        assert!(visible(&ui, "Profile"));
         use slint::private_unstable_api::re_exports::WindowInner;
         let focused = WindowInner::from_pub(ui.window())
             .focus_item
@@ -356,7 +361,6 @@ fn replacing_feedback_gets_a_full_dismissal_interval() {
         i_slint_backend_testing::init_no_event_loop();
         let ui = test_window();
         ui.show().unwrap();
-        let g = ui.global::<State>();
         let advance = |ms| {
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
             slint::platform::update_timers_and_animations();
@@ -364,17 +368,19 @@ fn replacing_feedback_gets_a_full_dismissal_interval() {
         for reaction in [false, true] {
             let set = |value: &str| {
                 if reaction {
-                    g.set_reaction_error_id(value.into());
+                    ui.global::<ConversationState>()
+                        .set_reaction_error_id(value.into());
                 } else {
-                    g.set_unsend_feedback_id(value.into());
+                    ui.global::<ConversationState>()
+                        .set_unsend_feedback_id(value.into());
                 }
                 slint::platform::update_timers_and_animations();
             };
             let get = || {
                 if reaction {
-                    g.get_reaction_error_id()
+                    ui.global::<ConversationState>().get_reaction_error_id()
                 } else {
-                    g.get_unsend_feedback_id()
+                    ui.global::<ConversationState>().get_unsend_feedback_id()
                 }
             };
             let duration = if reaction { 4000 } else { 3000 };

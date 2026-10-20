@@ -1,60 +1,67 @@
+import { AuthPhase } from "globals.slint";
+import { DetailAction, NotificationPreview, Section, SettingsSection } from "globals.slint";
+import { AuthState, ConversationState, DetailState, SettingsState, ShellState, ViewerState } from "globals.slint";
 import { Dialog, FocusRing, Button } from "button.slint";
-import { FocusOpener, DetailAction } from "types.slint";
+import { FocusOpener } from "types.slint";
 import { RowText } from "list-row.slint";
 import { ComboBox, CheckBox } from "preferences.slint";
 import { ScrollView } from "std-widgets.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { Detail } from "detail.slint";
 import { IconButton } from "icon-button.slint";
 
 component SettingsSections inherits FocusScope {
-    in-out property <int> current;
+    in-out property <SettingsSection> current;
+    property <[SettingsSection]> pages: [SettingsSection.chats, SettingsSection.notifications, SettingsSection.background, SettingsSection.shortcuts, SettingsSection.about];
+    property <int> index: root.current == SettingsSection.chats ? 0 : root.current == SettingsSection.notifications ? 1 : root.current == SettingsSection.background ? 2 : root.current == SettingsSection.shortcuts ? 3 : 4;
     property <length> row-height: max(36px, Tokens.small * 1.5 + 16px);
     preferred-height: 5 * root.row-height;
     accessible-role: tab-list; accessible-label: "Settings section";
     key-pressed(event) => {
-        if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.current = max(0, root.current - 1); return accept; }
-        if event.text == Key.DownArrow || event.text == Key.RightArrow { root.current = min(4, root.current + 1); return accept; }
-        if event.text == Key.Home { root.current = 0; return accept; }
-        if event.text == Key.End { root.current = 4; return accept; }
+        if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.current = root.pages[max(0, root.index - 1)]; return accept; }
+        if event.text == Key.DownArrow || event.text == Key.RightArrow { root.current = root.pages[min(4, root.index + 1)]; return accept; }
+        if event.text == Key.Home { root.current = SettingsSection.chats; return accept; }
+        if event.text == Key.End { root.current = SettingsSection.about; return accept; }
         reject
     }
     for section[i] in ["Chats", "Notifications", "Background", "Shortcuts", "About"]: Rectangle {
         x: 0px;
         y: i * root.row-height;
         width: root.width; height: root.row-height - 4px;
-        border-radius: 8px; background: root.current == i ? Tokens.surface-selected : touch.has-hover ? Tokens.surface-hover : transparent;
-        FocusRing { focused: root.has-focus && root.current == i; border-radius: 8px; border-color: Tokens.accent; }
+        border-radius: 8px; background: root.current == root.pages[i] ? Tokens.surface-selected : touch.has-hover ? Tokens.surface-hover : transparent;
+        FocusRing { focused: root.has-focus && root.current == root.pages[i]; border-radius: 8px; border-color: Tokens.accent; }
         accessible-role: tab; accessible-label: section;
-        accessible-item-selectable: true; accessible-item-selected: root.current == i;
-        accessible-action-default => { root.current = i; root.focus(); }
+        accessible-item-selectable: true; accessible-item-selected: root.current == root.pages[i];
+        accessible-action-default => { root.current = root.pages[i]; root.focus(); }
         RowText { x: 8px; width: parent.width - 16px; height: parent.height; text: section; font-size: Tokens.small; color: Tokens.text; vertical-alignment: center; }
-        touch := TouchArea { mouse-cursor: pointer; clicked => { root.current = i; root.focus(); } }
+        touch := TouchArea { mouse-cursor: pointer; clicked => { root.current = root.pages[i]; root.focus(); } }
     }
 }
 
 export component Layers inherits Rectangle {
-    property <bool> cancel-confirm <=> State.auth-cancel-confirm;
-    property <string> unsend-feedback-id: State.unsend-feedback-id;
+    property <bool> cancel-confirm;
+    property <float> viewer-zoom: 1;
+    property <int> detail-depth: DetailState.detail-depth;
+    changed detail-depth => { if root.detail-depth == 0 { DetailState.detail-dialog = DetailAction.none; } }
+    property <string> unsend-feedback-id: ConversationState.unsend-feedback-id;
     changed unsend-feedback-id => { if root.unsend-feedback-id != "" { unsend-feedback-timer.running = true; unsend-feedback-timer.restart(); } }
-    unsend-feedback-timer := Timer { interval: 3s; running: false; triggered => { self.running = false; State.unsend-feedback-id = ""; } }
-    property <string> reaction-error-id: State.reaction-error-id;
+    unsend-feedback-timer := Timer { interval: 3s; running: false; triggered => { self.running = false; ConversationState.unsend-feedback-id = ""; } }
+    property <string> reaction-error-id: ConversationState.reaction-error-id;
     changed reaction-error-id => { if root.reaction-error-id != "" { reaction-error-timer.running = true; reaction-error-timer.restart(); } }
-    reaction-error-timer := Timer { interval: 4s; running: false; triggered => { self.running = false; State.reaction-error-id = ""; } }
-    Timer { interval: 5s; running: State.viewer-save-status != "" && !State.viewer-saving; triggered => { State.viewer-save-status = ""; } }
-    property <int> settings-section;
-    property <bool> auth-visible: State.auth-open;
+    reaction-error-timer := Timer { interval: 4s; running: false; triggered => { self.running = false; ConversationState.reaction-error-id = ""; } }
+    Timer { interval: 5s; running: ViewerState.viewer-save-status != "" && !ViewerState.viewer-saving; triggered => { ViewerState.viewer-save-status = ""; } }
+    property <SettingsSection> settings-section;
+    property <bool> auth-visible: AuthState.auth-open;
     changed auth-visible => { if !self.auth-visible { root.cancel-confirm = false; } }
-    property <bool> approval-busy: State.auth-busy;
+    property <bool> approval-busy: AuthState.auth-busy;
     changed approval-busy => { if !self.approval-busy && root.cancel-confirm { root.cancel-confirm = false; root.focus-auth(); } }
     public function dismiss-auth() {
-        if State.auth-cancelling { return; }
-        if State.auth-busy { root.cancel-confirm = true; keep-waiting.focus(); }
-        else { State.close-sign-in(); }
+        if (AuthState.auth-phase == AuthPhase.cancelling) { return; }
+        if AuthState.auth-busy { root.cancel-confirm = true; keep-waiting.focus(); }
+        else { AuthState.close-sign-in(); }
     }
     Dialog {
-        full-window: true; visible: State.auth-open;
+        full-window: true; visible: AuthState.auth-open;
         dismissed => { root.dismiss-auth(); }
         VerticalLayout {
             x: (parent.width - self.width) / 2; y: max(24px, (parent.height - self.preferred-height) / 2);
@@ -62,48 +69,48 @@ export component Layers inherits Rectangle {
             spacing: 16px; alignment: start;
             Text { text: "LINE"; font-size: Tokens.heading + 8px; font-weight: 800; color: Tokens.accent; horizontal-alignment: center; }
             Text { text: "Sign in"; font-size: Tokens.heading; font-weight: 600; horizontal-alignment: center; }
-            Text { text: State.auth-prerequisite-missing ? "Sign-in needs a supported LINE for Chrome installation." : "Scan the code with LINE on your phone."; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
-            if State.auth-qr.width > 0: HorizontalLayout { alignment: center;
+            Text { text: AuthState.auth-prerequisite-missing ? "Sign-in needs a supported LINE for Chrome installation." : "Scan the code with LINE on your phone."; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
+            if AuthState.auth-qr.width > 0: HorizontalLayout { alignment: center;
                 Rectangle { width: 252px; height: 252px; background: white; border-radius: 12px;
-                    Image { x: 16px; y: 16px; width: 220px; height: 220px; source: State.auth-qr; image-fit: contain; accessible-role: image; accessible-label: "Scan this QR code with LINE on your phone"; }
+                    Image { x: 16px; y: 16px; width: 220px; height: 220px; source: AuthState.auth-qr; image-fit: contain; accessible-role: image; accessible-label: "Scan this QR code with LINE on your phone"; }
                 }
             }
-            Text { text: State.auth-pin != "" ? "Enter " + State.auth-pin + " on your phone" : State.auth-busy ? (State.auth-stage != "" ? State.auth-stage : State.preparing-sign-in-text) : State.auth-stage == State.signed-in-text ? State.signed-in-text : ""; horizontal-alignment: center; color: Tokens.text; wrap: word-wrap; }
-            if State.auth-error != "": Text { text: State.auth-error; wrap: word-wrap; color: Tokens.danger; horizontal-alignment: center; }
+            Text { text: AuthState.auth-pin != "" ? "Enter " + AuthState.auth-pin + " on your phone" : AuthState.auth-busy ? (AuthState.auth-stage != "" ? AuthState.auth-stage : AuthState.preparing-sign-in-text) : AuthState.auth-phase == AuthPhase.signed-in ? AuthState.auth-stage : ""; horizontal-alignment: center; color: Tokens.text; wrap: word-wrap; }
+            if AuthState.auth-error != "": Text { text: AuthState.auth-error; wrap: word-wrap; color: Tokens.danger; horizontal-alignment: center; }
             HorizontalLayout { alignment: center; spacing: 8px;
-                auth-back := Button { text: State.auth-cancelling ? "Cancelling…" : "Back"; text-button: true; enabled: !State.auth-cancelling; clicked => { root.dismiss-auth(); } }
-                auth-start := Button { text: State.auth-prerequisite-missing ? "Check again" : State.auth-error != "" ? "Try again" : "Start"; primary: true; enabled: !State.auth-busy; clicked => { State.start-sign-in(); } }
+                auth-back := Button { text: (AuthState.auth-phase == AuthPhase.cancelling) ? "Cancelling…" : "Back"; text-button: true; enabled: !(AuthState.auth-phase == AuthPhase.cancelling); clicked => { root.dismiss-auth(); } }
+                auth-start := Button { text: AuthState.auth-prerequisite-missing ? "Check again" : AuthState.auth-error != "" ? "Try again" : "Start"; primary: true; enabled: !AuthState.auth-busy; clicked => { AuthState.start-sign-in(); } }
             }
             Text { text: "Signing in here signs LINE out in Chrome."; color: Tokens.secondary; font-size: Tokens.small; horizontal-alignment: center; wrap: word-wrap; }
         }
     }
 
     profile := Rectangle {
-        x: State.profile-sheet ? (State.narrow ? 0px : State.rail-width + State.browser-width) : parent.width - State.panel-width;
-        width: State.profile-sheet ? parent.width - self.x : State.panel-width; height: parent.height;
-        visible: State.detail-open && !State.auth-open && !State.viewer-open; background: Tokens.background;
+        x: ShellState.profile-sheet ? (ShellState.narrow ? 0px : ShellState.rail-width + ShellState.browser-width) : parent.width - ShellState.panel-width;
+        width: ShellState.profile-sheet ? parent.width - self.x : ShellState.panel-width; height: parent.height;
+        visible: DetailState.detail-open && !AuthState.auth-open && !ViewerState.viewer-open; background: Tokens.background;
         TouchArea { scroll-event(event) => { accept } }
         border-width: 1px; border-color: Tokens.border;
-        detail := Detail { open-dialog(kind) => { State.detail-dialog = kind;  } }
+        detail := Detail { open-dialog(kind) => { DetailState.detail-dialog = kind;  } }
     }
     Dialog {
-        visible: State.settings-open && !State.auth-open && !State.viewer-open;
+        visible: SettingsState.settings-open && !AuthState.auth-open && !ViewerState.viewer-open;
         panel-width: min(640px, root.width - 32px);
         panel-height: min(root.height - 32px, settings-title.height + 56px + max(settings-section.preferred-height, settings-content.preferred-height));
         shadow: true;
-        dismissed => { State.close-settings(); }
+        dismissed => { SettingsState.close-settings(); }
         settings-dialog := VerticalLayout {
             padding: 24px; spacing: 16px;
             settings-title := HorizontalLayout {
                 height: max(settings-heading.preferred-height, settings-close.height);
                 settings-heading := Text { text: "Settings"; font-size: Tokens.heading; font-weight: 700; vertical-alignment: center; }
-                settings-close := IconButton { label: "Close settings"; icon: @image-url("../assets/icons/close.svg"); activated => { State.close-settings(); } }
+                settings-close := IconButton { label: "Close settings"; icon: @image-url("../assets/icons/close.svg"); activated => { SettingsState.close-settings(); } }
             }
             Rectangle {
                 settings-section := SettingsSections {
                     x: 0px; y: 0px;
                     current <=> root.settings-section;
-                    width: State.narrow ? 104px : max(132px, Tokens.small * 7.5);
+                    width: ShellState.narrow ? 104px : max(132px, Tokens.small * 7.5);
                     height: self.preferred-height;
                 }
                 ScrollView {
@@ -114,51 +121,50 @@ export component Layers inherits Rectangle {
                     content-width: self.width;
                     settings-content := VerticalLayout {
                         padding-right: 12px; spacing: 0px; alignment: start;
-                        if root.settings-section == 0: VerticalLayout {
+                        if root.settings-section == SettingsSection.chats: VerticalLayout {
                             spacing: 12px;
                             Text { text: "Message text size"; }
                             text-size := ComboBox {
                                 accessible-label: "Message text size";
                                 model: ["Small", "Default", "Large", "Extra large"];
-                                current-index: State.text-size <= 13 ? 0 : State.text-size <= 15 ? 1 : State.text-size <= 18 ? 2 : 3;
-                                selected(value) => { State.text-size = value == "Small" ? 13 : value == "Default" ? 15 : value == "Large" ? 18 : 22; State.settings-changed(); }
+                                current-index: SettingsState.text-size <= 13 ? 0 : SettingsState.text-size <= 15 ? 1 : SettingsState.text-size <= 18 ? 2 : 3;
+                                selected(value) => { SettingsState.text-size = [13, 15, 18, 22][value]; SettingsState.settings-changed(); }
                             }
-                            if State.storage-error != "": Text { text: State.storage-error; wrap: word-wrap; color: Tokens.danger; }
-                            enter-sends := CheckBox { text: "Enter sends"; checked <=> State.enter-sends; toggled => { State.settings-changed(); } }
+                            if ShellState.storage-error != "": Text { text: ShellState.storage-error; wrap: word-wrap; color: Tokens.danger; }
+                            enter-sends := CheckBox { text: "Enter sends"; checked <=> SettingsState.enter-sends; toggled => { SettingsState.settings-changed(); } }
                         }
-                        if root.settings-section == 1: VerticalLayout {
+                        if root.settings-section == SettingsSection.notifications: VerticalLayout {
                             spacing: 12px;
-                            CheckBox { text: "Desktop notifications"; checked <=> State.notifications-enabled; toggled => { State.settings-changed(); } }
-                            if State.notifications-paused: Text { text: "Notifications are paused from the tray."; wrap: word-wrap; color: Tokens.secondary; }
+                            CheckBox { text: "Desktop notifications"; checked <=> SettingsState.notifications-enabled; toggled => { SettingsState.settings-changed(); } }
+                            if SettingsState.notifications-paused: Text { text: "Notifications are paused from the tray."; wrap: word-wrap; color: Tokens.secondary; }
                             Text { text: "Preview"; }
                             ComboBox {
                                 accessible-label: "Notification preview";
                                 model: ["Name and text", "Name only", "New message only"];
-                                current-index: State.notification-preview;
-                                selected(value) => { State.notification-preview = value == "Name and text" ? 0 : value == "Name only" ? 1 : 2; State.settings-changed(); }
+                                current-index: SettingsState.notification-preview == NotificationPreview.name-and-text ? 0 : SettingsState.notification-preview == NotificationPreview.name-only ? 1 : 2;
+                                selected(value) => { SettingsState.notification-preview = value == 0 ? NotificationPreview.name-and-text : value == 1 ? NotificationPreview.name-only : NotificationPreview.new-message; SettingsState.settings-changed(); }
                             }
-                            CheckBox { text: "Notification sound"; checked <=> State.notification-sound; toggled => { State.settings-changed(); } }
-                            CheckBox { text: "Mentions in muted chats"; checked <=> State.notification-mention-exception; toggled => { State.settings-changed(); } }
-                            CheckBox { text: "Group events"; checked <=> State.notification-group-events; toggled => { State.settings-changed(); } }
-                            notification-test := Button { text: "Send test notification"; clicked => { State.test-notification(); } }
-                            if !State.notification-available: Text { text: "Notification service not available"; color: Tokens.secondary; wrap: word-wrap; }
-                            if State.notification-status != "": Text { text: State.notification-status; wrap: word-wrap; }
+                            CheckBox { text: "Notification sound"; checked <=> SettingsState.notification-sound; toggled => { SettingsState.settings-changed(); } }
+                            CheckBox { text: "Mentions in muted chats"; checked <=> SettingsState.notification-mention-exception; toggled => { SettingsState.settings-changed(); } }
+                            CheckBox { text: "Group events"; checked <=> SettingsState.notification-group-events; toggled => { SettingsState.settings-changed(); } }
+                            notification-test := Button { text: "Send test notification"; clicked => { SettingsState.test-notification(); } }
+                            if !SettingsState.notification-available: Text { text: "Notification service not available"; color: Tokens.secondary; wrap: word-wrap; }
+                            if SettingsState.notification-status != "": Text { text: SettingsState.notification-status; wrap: word-wrap; }
                         }
-                        if root.settings-section == 2: VerticalLayout {
+                        if root.settings-section == SettingsSection.background: VerticalLayout {
                             spacing: 12px;
-                            CheckBox { text: "Keep running in background"; checked <=> State.background-mode; toggled => { State.settings-changed(); } }
+                            CheckBox { text: "Keep running in background"; checked <=> SettingsState.background-mode; toggled => { SettingsState.settings-changed(); } }
                             Text { text: "Closing LINE hides it to the desktop tray. Notifications and sync continue until you choose Quit."; wrap: word-wrap; color: Tokens.secondary; }
-                            if State.background-status != "": Text { text: State.background-status; wrap: word-wrap; color: Tokens.danger; }
-                            autostart-control := CheckBox { text: "Start LINE at login"; checked <=> State.autostart; toggled => { State.settings-changed(); } }
-                            if State.autostart-status != "": Text { text: State.autostart-status; wrap: word-wrap; color: Tokens.secondary; }
+                            autostart-control := CheckBox { text: "Start LINE at login"; checked <=> SettingsState.autostart; toggled => { SettingsState.settings-changed(); } }
+                            if SettingsState.autostart-status != "": Text { text: SettingsState.autostart-status; wrap: word-wrap; color: Tokens.secondary; }
                         }
-                        if root.settings-section == 3: Text { text: "Ctrl+Enter  Send\nEnter  Newline, or Send with Enter sends\nShift+Enter  Always newline\nEscape  Close layer or clear search\nCtrl+F  Search\nCtrl+1  Friends\nCtrl+2  Chats\nAlt+↑ / Alt+↓  Previous / next chat\nAlt+←  Back\nF6  Connection actions\nCtrl+Q  Quit"; wrap: word-wrap; }
-                        if root.settings-section == 4: VerticalLayout {
+                        if root.settings-section == SettingsSection.shortcuts: Text { text: "Ctrl+Enter  Send\nEnter  Newline, or Send with Enter sends\nShift+Enter  Always newline\nEscape  Close layer or clear search\nCtrl+F  Search\nCtrl+1  Friends\nCtrl+2  Chats\nAlt+↑ / Alt+↓  Previous / next chat\nAlt+←  Back\nF6  Connection actions\nCtrl+Q  Quit"; wrap: word-wrap; }
+                        if root.settings-section == SettingsSection.about: VerticalLayout {
                             spacing: 12px;
                             Text { text: "LINE"; font-size: Tokens.heading; }
-                            if State.has-account: Button { text: State.account-name; text-button: true; clicked => { State.open-profile(State.account-mid); } }
+                            if (ShellState.account-mid != ""): Button { text: ShellState.account-name; text-button: true; clicked => { DetailState.open-profile(ShellState.account-mid); } }
                             Text { text: "Native desktop client · 0.1.0"; wrap: word-wrap; color: Tokens.secondary; }
-                            if State.desktop-warning != "": Text { text: State.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
+                            if ShellState.desktop-warning != "": Text { text: ShellState.desktop-warning; color: Tokens.danger; wrap: word-wrap; }
                         }
                     }
                 }
@@ -166,27 +172,27 @@ export component Layers inherits Rectangle {
         }
     }
     Dialog {
-        full-window: true; visible: State.viewer-open;
+        full-window: true; visible: ViewerState.viewer-open;
         changed visible => { if self.visible { root.focus-viewer(); } }
-        dismissed => { State.close-viewer(); }
+        dismissed => { ViewerState.close-viewer(); }
         key-pressed(event) => {
             if event.text == "+" || event.text == "=" { root.zoom(1.25, viewport.width / 2, viewport.height / 2); return accept; }
             if event.text == "-" { root.zoom(0.8, viewport.width / 2, viewport.height / 2); return accept; }
             if event.text == "0" { root.fit-photo(); return accept; }
             if event.text == "1" { root.original-photo(); return accept; }
-            if event.text == Key.LeftArrow { State.viewer-step(-1); root.focus-viewer(); return accept; }
-            if event.text == Key.RightArrow { State.viewer-step(1); root.focus-viewer(); return accept; }
+            if event.text == Key.LeftArrow { ViewerState.viewer-step(-1); root.focus-viewer(); return accept; }
+            if event.text == Key.RightArrow { ViewerState.viewer-step(1); root.focus-viewer(); return accept; }
 
             reject
         }
         viewport := Rectangle {
             width: parent.width; height: parent.height; background: Tokens.viewer-bg;
             clip: true;
-            property <float> fit: min(self.width / max(1px, State.viewer-image.width * 1px), self.height / max(1px, State.viewer-image.height * 1px));
+            property <float> fit: min(self.width / max(1px, ViewerState.viewer-image.width * 1px), self.height / max(1px, ViewerState.viewer-image.height * 1px));
             Image {
-                source: State.viewer-image; accessible-role: image; accessible-label: "Photo in viewer";
-                width: State.viewer-image.width * 1px * viewport.fit * State.viewer-zoom;
-                height: State.viewer-image.height * 1px * viewport.fit * State.viewer-zoom;
+                source: ViewerState.viewer-image; accessible-role: image; accessible-label: "Photo in viewer";
+                width: ViewerState.viewer-image.width * 1px * viewport.fit * root.viewer-zoom;
+                height: ViewerState.viewer-image.height * 1px * viewport.fit * root.viewer-zoom;
                 x: (parent.width - self.width) / 2 + root.pan-x;
                 y: (parent.height - self.height) / 2 + root.pan-y;
                 image-fit: contain;
@@ -209,24 +215,23 @@ export component Layers inherits Rectangle {
         }
         Rectangle { x: 0px; y: 0px; width: parent.width; height: 80px; background: @linear-gradient(180deg, #000000BB, #00000000); }
         HorizontalLayout { x: 16px; y: 12px; width: parent.width - 32px; height: 40px; spacing: 8px;
-            viewer-close := IconButton { label: "Close photo"; icon: @image-url("../assets/icons/close.svg"); icon-color: white; activated => { State.close-viewer(); } }
-            Text { text: State.viewer-status; color: white; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
-            zoom-out := IconButton { label: "Zoom out"; icon: @image-url("../assets/icons/zoom-out.svg"); icon-color: white; enabled: State.viewer-zoom > 0.1; activated => { root.zoom(0.8, viewport.width / 2, viewport.height / 2); } }
-            zoom-in := IconButton { label: "Zoom in"; icon: @image-url("../assets/icons/zoom-in.svg"); icon-color: white; enabled: State.viewer-zoom < 24; activated => { root.zoom(1.25, viewport.width / 2, viewport.height / 2); } }
+            viewer-close := IconButton { label: "Close photo"; icon: @image-url("../assets/icons/close.svg"); icon-color: white; activated => { ViewerState.close-viewer(); } }
+            Text { text: ViewerState.viewer-status; color: white; font-size: Tokens.small; overflow: elide; vertical-alignment: center; }
+            zoom-out := IconButton { label: "Zoom out"; icon: @image-url("../assets/icons/zoom-out.svg"); icon-color: white; enabled: root.viewer-zoom > 0.1; activated => { root.zoom(0.8, viewport.width / 2, viewport.height / 2); } }
+            zoom-in := IconButton { label: "Zoom in"; icon: @image-url("../assets/icons/zoom-in.svg"); icon-color: white; enabled: root.viewer-zoom < 24; activated => { root.zoom(1.25, viewport.width / 2, viewport.height / 2); } }
             viewer-fit := IconButton { label: "Fit"; icon: @image-url("../assets/icons/fit.svg"); icon-color: white; activated => { root.fit-photo(); } }
             original-size := IconButton { label: "Original size"; icon: @image-url("../assets/icons/actual-size.svg"); icon-color: white; activated => { root.original-photo(); } }
-            viewer-save := IconButton { label: "Save photo"; icon: @image-url("../assets/icons/save.svg"); icon-color: white; enabled: !State.viewer-saving && !State.viewer-loading && State.viewer-error == "" && State.viewer-image.width > 0; activated => { State.save-photo(); } }
+            viewer-save := IconButton { label: "Save photo"; icon: @image-url("../assets/icons/save.svg"); icon-color: white; enabled: !ViewerState.viewer-saving && !ViewerState.viewer-loading && ViewerState.viewer-error == "" && ViewerState.viewer-image.width > 0; activated => { ViewerState.save-photo(); } }
         }
-        viewer-previous := IconButton { x: 16px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Previous"; icon: @image-url("../assets/icons/previous.svg"); icon-color: white; visible: State.viewer-has-previous; enabled: self.visible; activated => { State.viewer-step(-1); root.focus-viewer(); } }
-        viewer-next := IconButton { x: parent.width - 56px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Next"; icon: @image-url("../assets/icons/next.svg"); icon-color: white; visible: State.viewer-has-next; enabled: self.visible; activated => { State.viewer-step(1); root.focus-viewer(); } }
+        viewer-previous := IconButton { x: 16px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Previous"; icon: @image-url("../assets/icons/previous.svg"); icon-color: white; visible: ViewerState.viewer-has-previous; enabled: self.visible; activated => { ViewerState.viewer-step(-1); root.focus-viewer(); } }
+        viewer-next := IconButton { x: parent.width - 56px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Next"; icon: @image-url("../assets/icons/next.svg"); icon-color: white; visible: ViewerState.viewer-has-next; enabled: self.visible; activated => { ViewerState.viewer-step(1); root.focus-viewer(); } }
         VerticalLayout { x: 16px; y: parent.height - self.preferred-height - 16px; width: parent.width - 32px; height: self.preferred-height; alignment: start;
-            if State.viewer-error != "": Text { text: State.viewer-error; wrap: word-wrap; color: Tokens.danger; }
-            if State.viewer-error != "" && State.viewer-retryable: Button { text: "Retry"; enabled: !State.viewer-loading; clicked => { State.open-photo(State.viewer-key); } }
-            if State.viewer-save-status != "": Text { text: State.viewer-save-status; wrap: word-wrap; color: white; }
+            if ViewerState.viewer-error != "": Text { text: ViewerState.viewer-error; wrap: word-wrap; color: Tokens.danger; }
+            if ViewerState.viewer-save-status != "": Text { text: ViewerState.viewer-save-status; wrap: word-wrap; color: white; }
         }
     }
     Dialog {
-        visible: root.cancel-confirm && State.auth-open;
+        visible: root.cancel-confirm && AuthState.auth-open;
         panel-height: min(320px, root.height - 32px); shadow: true;
         dismissed => { root.cancel-confirm = false; auth-back.focus(); }
         VerticalLayout {
@@ -236,33 +241,33 @@ export component Layers inherits Rectangle {
             HorizontalLayout {
                 alignment: end; spacing: 8px;
                 keep-waiting := Button { text: "Keep waiting"; clicked => { root.cancel-confirm = false; auth-back.focus(); } }
-                confirm-cancel := Button { text: "Cancel sign-in"; primary: true; danger: true; clicked => { root.cancel-confirm = false; State.cancel-sign-in(); } }
+                confirm-cancel := Button { text: "Cancel sign-in"; primary: true; danger: true; clicked => { root.cancel-confirm = false; AuthState.cancel-sign-in(); } }
             }
         }
     }
     Dialog {
-        visible: State.detail-open && !State.auth-open && !State.viewer-open && State.detail-dialog != DetailAction.none;
-        dismissed => { State.detail-dialog = DetailAction.none; detail.focus-action(); }
+        visible: DetailState.detail-open && !AuthState.auth-open && !ViewerState.viewer-open && DetailState.detail-dialog != DetailAction.none;
+        dismissed => { DetailState.detail-dialog = DetailAction.none; detail.focus-action(); }
         dialog-content := VerticalLayout { padding: 24px; spacing: 16px;
-            HorizontalLayout { dialog-title := Text { text: State.detail-dialog == DetailAction.rename ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
-                dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.detail-dialog = DetailAction.none; detail.focus-action(); } }
+            HorizontalLayout { dialog-title := Text { text: DetailState.detail-dialog == DetailAction.rename ? "Rename" : "Leave group?"; font-size: Tokens.heading; }
+                dialog-close := IconButton { label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { DetailState.detail-dialog = DetailAction.none; detail.focus-action(); } }
             }
-            if State.detail-dialog == DetailAction.rename: VerticalLayout { spacing: 16px;
+            if DetailState.detail-dialog == DetailAction.rename: VerticalLayout { spacing: 16px;
                 Rectangle {
                     height: 36px; border-radius: 8px; background: Tokens.surface-2;
-                    rename-value := TextInput { text: State.profile-name; init => { self.focus(); } x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name"; }
+                    rename-value := TextInput { text: DetailState.profile-name; init => { self.focus(); } x: 12px; y: 8px; width: parent.width - 24px; height: parent.height - 16px; single-line: true; font-size: Tokens.base; color: Tokens.text; accessible-label: "Name"; }
                     FocusRing { outset: 4px; text-entry: true; focused: rename-value.has-focus; }
                 }
                 HorizontalLayout { alignment: end; spacing: 8px;
-                    Button { text: "Cancel"; clicked => { State.detail-dialog = DetailAction.none; detail.focus-action(); } }
-                    Button { text: "Save"; primary: true; clicked => { State.detail-action(DetailAction.rename, rename-value.text); State.detail-dialog = DetailAction.none; detail.focus-first(); } }
+                    Button { text: "Cancel"; clicked => { DetailState.detail-dialog = DetailAction.none; detail.focus-action(); } }
+                    Button { text: "Save"; primary: true; clicked => { DetailState.detail-action(DetailAction.rename, rename-value.text); DetailState.detail-dialog = DetailAction.none; detail.focus-first(); } }
                 }
             }
-            if State.detail-dialog == DetailAction.leave: VerticalLayout { spacing: 16px;
+            if DetailState.detail-dialog == DetailAction.leave: VerticalLayout { spacing: 16px;
                 Text { text: "You will no longer receive messages in this group."; wrap: word-wrap; }
                 HorizontalLayout { alignment: end; spacing: 8px;
-                    Button { text: "Cancel"; init => { self.focus(); } clicked => { State.detail-dialog = DetailAction.none; detail.focus-action(); } }
-                    Button { text: "Leave"; primary: true; danger: true; clicked => { State.detail-action(DetailAction.leave, ""); State.detail-dialog = DetailAction.none; detail.focus-first(); } }
+                    Button { text: "Cancel"; init => { self.focus(); } clicked => { DetailState.detail-dialog = DetailAction.none; detail.focus-action(); } }
+                    Button { text: "Leave"; primary: true; danger: true; clicked => { DetailState.detail-action(DetailAction.leave, ""); DetailState.detail-dialog = DetailAction.none; detail.focus-first(); } }
                 }
             }
         }
@@ -270,27 +275,26 @@ export component Layers inherits Rectangle {
     property <length> pan-x;
     property <length> pan-y;
     public function bound-pan() {
-        root.pan-x = max(-max(0px, (State.viewer-image.width * 1px * viewport.fit * State.viewer-zoom - viewport.width) / 2), min(max(0px, (State.viewer-image.width * 1px * viewport.fit * State.viewer-zoom - viewport.width) / 2), root.pan-x));
-        root.pan-y = max(-max(0px, (State.viewer-image.height * 1px * viewport.fit * State.viewer-zoom - viewport.height) / 2), min(max(0px, (State.viewer-image.height * 1px * viewport.fit * State.viewer-zoom - viewport.height) / 2), root.pan-y));
+        root.pan-x = max(-max(0px, (ViewerState.viewer-image.width * 1px * viewport.fit * root.viewer-zoom - viewport.width) / 2), min(max(0px, (ViewerState.viewer-image.width * 1px * viewport.fit * root.viewer-zoom - viewport.width) / 2), root.pan-x));
+        root.pan-y = max(-max(0px, (ViewerState.viewer-image.height * 1px * viewport.fit * root.viewer-zoom - viewport.height) / 2), min(max(0px, (ViewerState.viewer-image.height * 1px * viewport.fit * root.viewer-zoom - viewport.height) / 2), root.pan-y));
     }
     public function zoom(factor: float, px: length, py: length) {
-        let previous = State.viewer-zoom;
-        State.viewer-zoom = max(0.1, min(24, previous * factor));
-        let ratio = State.viewer-zoom / previous;
+        let previous = root.viewer-zoom;
+        root.viewer-zoom = max(0.1, min(24, previous * factor));
+        let ratio = root.viewer-zoom / previous;
         root.pan-x = px - viewport.width / 2 - (px - viewport.width / 2 - root.pan-x) * ratio;
         root.pan-y = py - viewport.height / 2 - (py - viewport.height / 2 - root.pan-y) * ratio;
         root.bound-pan();
     }
-    public function fit-photo() { State.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
-    public function original-photo() { State.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
-    public function back-to-members() { State.pop-detail(false); }
-    out property <bool> editing: State.detail-open && detail.editing;
-    out property <bool> detail-focused: State.detail-open && detail.focus-opener() != FocusOpener.none;
+    public function fit-photo() { root.viewer-zoom = 1; root.pan-x = 0px; root.pan-y = 0px; }
+    public function original-photo() { root.viewer-zoom = max(0.1, min(24, 1 / max(0.001, viewport.fit))); root.pan-x = 0px; root.pan-y = 0px; }
+    out property <bool> editing: DetailState.detail-open && detail.editing;
+    out property <bool> detail-focused: DetailState.detail-open && detail.focus-opener() != FocusOpener.none;
     public function focus-opener() -> FocusOpener { return detail.focus-opener(); }
     public function restore-opener(opener: FocusOpener) { detail.restore-opener(opener); }
     public function focus-profile-close() { detail.focus-open(); }
-    public function focus-settings() { root.settings-section = 0; settings-close.focus(); }
-    public function focus-auth() { if State.auth-busy { auth-back.focus(); } else { auth-start.focus(); } }
+    public function focus-settings() { root.settings-section = SettingsSection.chats; settings-close.focus(); }
+    public function focus-auth() { if AuthState.auth-busy { auth-back.focus(); } else { auth-start.focus(); } }
     public function focus-viewer() { viewer-close.focus(); }
-    public function reset-viewer() { root.fit-photo(); State.viewer-save-status = ""; }
+    public function reset-viewer() { root.fit-photo(); ViewerState.viewer-save-status = ""; }
 }

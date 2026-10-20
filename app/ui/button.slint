@@ -1,4 +1,4 @@
-import { State } from "state.slint";
+import { ShellState } from "globals.slint";
 import { Tokens } from "tokens.slint";
 
 export component Pressable inherits FocusScope {
@@ -18,7 +18,7 @@ export component Pressable inherits FocusScope {
     callback key-event(KeyEvent) -> EventResult;
     key-event(event) => { reject }
     key-pressed(event) => {
-        if !root.enabled || State.ime-active { return reject; }
+        if !root.enabled || ShellState.ime-active { return reject; }
         if root.key-event(event) == accept { return accept; }
         if event.text == Key.Return || event.text == " " { root.activated(); return accept; }
         reject
@@ -41,7 +41,7 @@ export component FocusRing inherits Rectangle {
         x: -root.outset; y: -root.outset;
         width: root.width + 2 * root.outset; height: root.height + 2 * root.outset;
         border-radius: root.border-radius; border-color: root.border-color;
-        border-width: root.focused && (root.text-entry || State.keyboard-navigation) ? root.thickness : 0px;
+        border-width: root.focused && (root.text-entry || ShellState.keyboard-navigation) ? root.thickness : 0px;
     }
 }
 
@@ -67,15 +67,15 @@ export component Dialog inherits Rectangle {
         content := FocusScope {
             focus-on-tab-navigation: root.traversing;
             capture-key-pressed(event) => {
-                if State.ime-active || event.text != Key.Tab { return reject; }
+                if ShellState.ime-active || event.text != Key.Tab { return reject; }
                 root.traversing = true;
-                State.tab-focus(event.modifiers.shift);
-                if content.has-focus { end.focus(); State.tab-focus(true); }
-                else if end.has-focus { content.focus(); State.tab-focus(false); }
+                ShellState.tab-focus(event.modifiers.shift);
+                if content.has-focus { end.focus(); ShellState.tab-focus(true); }
+                else if end.has-focus { content.focus(); ShellState.tab-focus(false); }
                 root.traversing = false;
                 accept
             }
-            key-pressed(event) => { if root.key-pressed(event) == accept { return accept; } if !State.ime-active && event.text == Key.Escape { root.dismissed(); return accept; } reject }
+            key-pressed(event) => { if root.key-pressed(event) == accept { return accept; } if !ShellState.ime-active && event.text == Key.Escape { root.dismissed(); return accept; } reject }
             @children
             end := FocusScope { width: 0px; height: 0px; focus-on-tab-navigation: root.traversing; }
         }

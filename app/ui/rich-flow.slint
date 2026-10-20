@@ -1,6 +1,6 @@
+import { ContentState } from "globals.slint";
 import { Pressable, FocusRing } from "button.slint";
 import { RichRun } from "types.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
 export component RichFlow inherits Rectangle {
@@ -14,7 +14,7 @@ export component RichFlow inherits Rectangle {
     clip: true;
     callback fallback(bool);
     callback natural-width(float);
-    property <[RichRun]> source: State.rich-source(root.runs);
+    property <[RichRun]> source: ContentState.rich-source(root.runs);
     property <[RichRun]> lines;
     in property <length> text-size: Tokens.base;
     property <bool> measuring;
@@ -22,7 +22,7 @@ export component RichFlow inherits Rectangle {
         if root.source.length == 0 { root.lines = []; return; }
         if !root.measuring && root.width >= 1px {
             root.measuring = true;
-            root.lines = State.rich-layout(root.source, root.width / 1px, root.text-size / 1px, root.lines);
+            root.lines = ContentState.rich-layout(root.source, root.width / 1px, root.text-size / 1px, root.lines);
             root.natural-width(root.lines.length > 0 ? root.lines[0].natural-width : 0);
             root.fallback(root.lines.length == 0);
             root.measuring = false;
@@ -47,14 +47,14 @@ export component RichFlow inherits Rectangle {
             height: parent.height;
             Menu {
                 MenuItem { title: run.url; enabled: false; }
-                MenuItem { title: "Open link"; activated => { State.open-link(run.url); } }
-                MenuItem { title: "Copy link"; activated => { State.copy-text(run.url); } }
+                MenuItem { title: "Open link"; activated => { ContentState.open-link(run.url); } }
+                MenuItem { title: "Copy link"; activated => { ContentState.copy-text(run.url); } }
             }
             Rectangle { y: parent.height - 2px; height: 1px; background: Tokens.accent-strong; }
             link-focus := Pressable {
                 visible: run.link-first;
                 accessible-label: "Open link " + run.url; accessible-description: run.url;
-                activated => { State.open-link(run.url); }
+                activated => { ContentState.open-link(run.url); }
                 FocusRing { focused: parent.has-focus; border-radius: 0px; border-color: Tokens.accent; }
             }
             TouchArea {
@@ -68,7 +68,7 @@ export component RichFlow inherits Rectangle {
                     else if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { parent.show({ x: self.mouse-x, y: self.mouse-y }); }
                     else if event.kind == PointerEventKind.down && event.button == PointerEventButton.left { self.dragged = false; self.start-x = self.mouse-x; self.start-y = self.mouse-y; }
                 }
-                clicked => { if !self.dragged { if run.link-first { link-focus.focus(); } State.open-link(run.url); } }
+                clicked => { if !self.dragged { if run.link-first { link-focus.focus(); } ContentState.open-link(run.url); } }
                 Tooltip { Text { text: run.url; font-size: Tokens.small; color: Tokens.foreground; } }
             }
         }

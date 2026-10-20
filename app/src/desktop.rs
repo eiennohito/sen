@@ -5,6 +5,8 @@ pub(crate) struct Desktop {
     pub(crate) history: crate::reading::Reading,
     pub(crate) shown_composer: String,
     pub(crate) reveal: Option<ChatId>,
+    pub(crate) viewer_name: String,
+    pub(crate) attachments: std::sync::Arc<std::sync::Mutex<callbacks::attachments::Selection>>,
     pub(crate) viewer_asset: Option<String>,
     pub(crate) viewer_source: Option<std::sync::Arc<Vec<u8>>>,
     pub(crate) destination: crate::viewer::Destination,
@@ -22,6 +24,18 @@ mod reading;
 mod viewer;
 
 impl Desktop {
+    pub(crate) fn show_chat(&mut self, ui: &AppWindow, id: ChatId) {
+        self.reveal = Some(id.clone());
+        self.open_chat(ui, id);
+        self.state.detail.clear();
+        self.state.panel = Panel::Chats;
+        let g = ui.global::<ShellState>();
+        g.set_section(Section::Chats);
+        g.set_show_conversation(true);
+        self.render(ui);
+        ui.invoke_focus_composer();
+    }
+
     pub(crate) fn drain_notifications(&mut self, ui: &AppWindow) {
         let events = self
             .notifications
@@ -35,23 +49,23 @@ impl Desktop {
     pub(crate) fn request_sticker_assets(&mut self, ui: &AppWindow) {
         self.assets.stickers(
             &self.state,
-            ui.global::<State>().get_sticker_package() as usize,
+            ui.global::<ComposerState>().get_sticker_package() as usize,
             &self.sender,
         );
     }
     pub(crate) fn render(&mut self, ui: &AppWindow) {
-        ui.global::<State>()
+        ui.global::<ShellState>()
             .set_device_scale(ui.window().scale_factor());
         #[cfg(feature = "demo")]
         dev::rendered();
         // Text typed or set without an edit event stays; only engine changes replace it.
         if self.state.composer == self.shown_composer {
-            self.state.composer = ui.global::<State>().get_draft().to_string();
+            self.state.composer = ui.global::<ComposerState>().get_draft().to_string();
         }
         self.shown_composer = self.state.composer.clone();
         self.assets.visible(
             &self.state,
-            ui.global::<State>().get_sticker_package() as usize,
+            ui.global::<ComposerState>().get_sticker_package() as usize,
             &self.sender,
         );
 
@@ -89,11 +103,10 @@ impl Desktop {
             .as_ref()
             .and_then(|id| self.state.chat_order.iter().position(|c| c == id))
         {
-            let chats = ui.global::<State>().get_chats();
+            let chats = ui.global::<ChatsState>().get_chats();
             if let Some(position) =
                 (0..chats.row_count()).find(|&i| chats.row_data(i).unwrap().index == index as i32)
             {
-                ui.global::<State>().set_result_focus(position as i32);
                 ui.invoke_reveal_chat(position as i32);
                 self.reveal = None;
             }
@@ -106,10 +119,12 @@ impl Desktop {
             }
             self.open_chat(ui, id);
             self.history.reset_for_chat();
-            ui.global::<State>().set_return_visible(false);
-            ui.global::<State>().set_highlight_message("".into());
-            ui.global::<State>().set_show_conversation(true);
-            ui.global::<State>().invoke_show_history(0., false);
+            ui.global::<ConversationState>().set_return_visible(false);
+            ui.global::<ConversationState>()
+                .set_highlight_message("".into());
+            ui.global::<ShellState>().set_show_conversation(true);
+            ui.global::<ConversationState>()
+                .invoke_show_history(0., false);
             self.render(ui);
         }
     }
@@ -121,17 +136,17 @@ impl Desktop {
     pub(crate) fn capture_draft(&mut self, ui: &AppWindow) {
         // A selection can change before the next render updates the editor.
         if self.state.composer != self.shown_composer
-            && ui.global::<State>().get_draft().as_str() == self.shown_composer
+            && ui.global::<ComposerState>().get_draft().as_str() == self.shown_composer
         {
             return;
         }
-        self.state.composer = ui.global::<State>().get_draft().to_string();
+        self.state.composer = ui.global::<ComposerState>().get_draft().to_string();
         if let Some(chat) = &self.state.selected {
             let draft = Draft {
                 reply: self.state.composer_reply.clone(),
                 text: self.state.composer.clone(),
-                cursor: ui.global::<State>().get_editor_caret() as usize,
-                anchor: ui.global::<State>().get_editor_anchor() as usize,
+                cursor: ui.global::<ComposerState>().get_editor_caret() as usize,
+                anchor: ui.global::<ComposerState>().get_editor_anchor() as usize,
                 updated: line::engine::now_ms(),
             };
             self.sender.send(Intent::Draft {
@@ -154,6 +169,8 @@ mod tests {
             reveal: None,
             viewer_asset: None,
             viewer_source: None,
+            viewer_name: String::new(),
+            attachments: Default::default(),
             destination: crate::viewer::save_dialog,
             notifications: None,
             background: Default::default(),
@@ -243,24 +260,24 @@ mod tests {
                 picture_path: Some("/own-photo".into()),
                 ..Default::default()
             }));
-            ui.global::<State>().set_profile_id("self".into());
-            ui.global::<State>().set_profile_name("Me".into());
-            ui.global::<State>()
+            ui.global::<DetailState>().set_profile_id("self".into());
+            ui.global::<DetailState>().set_profile_name("Me".into());
+            ui.global::<DetailState>()
                 .set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
                     slint::Rgba8Pixel,
                 >::new(2, 3)));
             desktop.open_profile_photo(&ui);
             assert_eq!(desktop.viewer_asset, Some(avatar.original().unwrap().key()));
-            assert!(ui.global::<State>().get_viewer_loading());
+            assert!(ui.global::<ViewerState>().get_viewer_loading());
             assert_eq!(
                 (
-                    ui.global::<State>().get_viewer_image().size().width,
-                    ui.global::<State>().get_viewer_image().size().height
+                    ui.global::<ViewerState>().get_viewer_image().size().width,
+                    ui.global::<ViewerState>().get_viewer_image().size().height
                 ),
                 (2, 3)
             );
             assert_eq!(
-                ui.global::<State>().get_viewer_status(),
+                ui.global::<ViewerState>().get_viewer_status(),
                 "Loading original…"
             );
             let source = std::sync::Arc::new(vec![1, 2, 3]);
@@ -276,11 +293,11 @@ mod tests {
                     bytes: source.clone(),
                 },
             );
-            assert!(!ui.global::<State>().get_viewer_loading());
+            assert!(!ui.global::<ViewerState>().get_viewer_loading());
             assert_eq!(
                 (
-                    ui.global::<State>().get_viewer_image().size().width,
-                    ui.global::<State>().get_viewer_image().size().height
+                    ui.global::<ViewerState>().get_viewer_image().size().width,
+                    ui.global::<ViewerState>().get_viewer_image().size().height
                 ),
                 (4, 6)
             );
@@ -300,8 +317,8 @@ mod tests {
             let _window = crate::snapshot::install().unwrap();
             let ui = crate::window::create_app_window().unwrap();
             let mut desktop = desktop(&worker);
-            ui.global::<State>().set_profile_id("missing".into());
-            ui.global::<State>()
+            ui.global::<DetailState>().set_profile_id("missing".into());
+            ui.global::<DetailState>()
                 .set_profile_avatar(slint::Image::from_rgba8(slint::SharedPixelBuffer::<
                     slint::Rgba8Pixel,
                 >::new(2, 3)));
@@ -309,12 +326,12 @@ mod tests {
             assert_eq!(desktop.state.panel, Panel::Viewer);
             assert_eq!(
                 (
-                    ui.global::<State>().get_viewer_image().size().width,
-                    ui.global::<State>().get_viewer_image().size().height
+                    ui.global::<ViewerState>().get_viewer_image().size().width,
+                    ui.global::<ViewerState>().get_viewer_image().size().height
                 ),
                 (2, 3)
             );
-            assert!(!ui.global::<State>().get_viewer_loading());
+            assert!(!ui.global::<ViewerState>().get_viewer_loading());
             assert!(desktop.viewer_asset.is_none());
         })
         .join()
@@ -355,6 +372,54 @@ fn demo_settings_scene_focuses_close() {
                 .unwrap(),
             "Close settings"
         );
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn failed_cancel_restores_sign_in_back_action() {
+    std::thread::spawn(|| {
+        let platform = crate::snapshot::install().unwrap();
+        let ui = crate::window::create_app_window().unwrap();
+        let worker = Worker::start(
+            StoreLocation::Memory,
+            || Ok(line::backend::FakeBackend::canned()),
+            Default::default(),
+        );
+        let mut d = tests::desktop(&worker);
+        ui.show().unwrap();
+        for delta in [
+            Delta::PairFailed {
+                reason: line::client::error::SignInFailure::Network,
+            },
+            Delta::Connection(Connection::Online),
+        ] {
+            d.state.panel = Panel::SignIn;
+            d.state.connection = Connection::SigningIn;
+            ui.global::<AuthState>()
+                .set_auth_phase(AuthPhase::Cancelling);
+            d.render(&ui);
+            crate::snapshot::render(&platform, (980, 720)).unwrap();
+            d.apply(&ui, delta);
+            // Inspect the sign-in controls before dismissing the panel.
+            ui.global::<ShellState>()
+                .set_connection(ConnectionState::Offline);
+            crate::snapshot::render(&platform, (980, 720)).unwrap();
+            let back =
+                i_slint_backend_testing::ElementHandle::find_by_accessible_label(&ui, "Back")
+                    .next()
+                    .expect("cancel left Back labelled Cancelling");
+            assert_eq!(
+                back.accessible_enabled(),
+                Some(true),
+                "cancel left Back disabled"
+            );
+            assert_ne!(
+                ui.global::<AuthState>().get_auth_phase(),
+                AuthPhase::Cancelling
+            );
+        }
     })
     .join()
     .unwrap();

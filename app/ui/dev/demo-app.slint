@@ -1,4 +1,4 @@
-import { State } from "../state.slint";
+import { ShellState } from "../globals.slint";
 import { Tokens } from "../tokens.slint";
 import { DemoScenarios } from "demo-scenarios.slint";
 import { ExtensionState } from "demo-state.slint";
@@ -19,5 +19,5 @@ export component DemoExtension inherits FocusScope {
     }
     public function handle-key(event: KeyEvent) -> EventResult { return scenarios.handle-key(event); }
     key-pressed(event) => { root.handle-key(event) }
-    scenarios := DemoScenarios { width: root.width; height: root.height; scenario-selected => { State.focus-search(); } }
+    scenarios := DemoScenarios { width: root.width; height: root.height; scenario-selected => { ShellState.focus-search(); } }
 }

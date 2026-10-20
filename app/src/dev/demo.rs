@@ -94,7 +94,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                         .map(|url| url.to_string())
                         .collect::<Vec<_>>()
                         .join("\n");
-                    ui.global::<State>().invoke_drop_attachment(paths.into());
+                    callbacks::attachments::drop_files(ui, d, &paths);
                 }
             }
         }
@@ -165,7 +165,8 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
             let intent = d.state.subscribe_window(Anchor::Latest, 80, 0);
             d.sender.send(intent);
             d.history.opening_history = false;
-            ui.global::<State>().invoke_show_history(0., true);
+            ui.global::<ConversationState>()
+                .invoke_show_history(0., true);
         }
         8 => fixture(
             ui,
@@ -288,7 +289,7 @@ pub(super) fn scenario(ui: &AppWindow, d: &mut Desktop, fake: &FakeBackend, kind
                 chat,
                 kind: PageKind::Recent,
             });
-            ui.global::<State>().set_following(true);
+            ui.global::<ConversationState>().set_following(true);
         }
         19 => fake.auth_expired(),
         3 => {
@@ -455,11 +456,11 @@ pub fn install(
 ) {
     let weak = ui.as_weak();
     let links = actions.clone();
-    ui.global::<State>().on_open_link(move |url| {
+    ui.global::<ContentState>().on_open_link(move |url| {
         let weak = weak.clone();
         links.push(move |_| {
             if let Some(ui) = weak.upgrade() {
-                ui.global::<State>()
+                ui.global::<ContentState>()
                     .set_link_feedback(format!("Preview opened: {url}").into());
                 ui.global::<ExtensionState>().set_last_opened_link(url);
             }
@@ -528,8 +529,8 @@ fn fixture(
         draft: Draft {
             reply: None,
             text: d.state.composer.clone(),
-            cursor: ui.global::<State>().get_editor_caret() as usize,
-            anchor: ui.global::<State>().get_editor_anchor() as usize,
+            cursor: ui.global::<ComposerState>().get_editor_caret() as usize,
+            anchor: ui.global::<ComposerState>().get_editor_anchor() as usize,
             updated: line::engine::now_ms(),
         },
     });
@@ -544,7 +545,8 @@ fn fixture(
         kind: PageKind::Recent,
     });
     d.render(ui);
-    ui.global::<State>().invoke_show_history(0., false);
+    ui.global::<ConversationState>()
+        .invoke_show_history(0., false);
 }
 
 pub(crate) fn stage(
@@ -554,7 +556,7 @@ pub(crate) fn stage(
     scene: &str,
     snapshot_profile: bool,
 ) {
-    ui.global::<State>().set_show_conversation(
+    ui.global::<ShellState>().set_show_conversation(
         scene != "chats" && scene != "signed-out" && !scene.starts_with("friends"),
     );
     if scene == "settings" {
@@ -567,10 +569,10 @@ pub(crate) fn stage(
     if scene == "reply-review"
         && let Some(id) = desktop.update(|d| d.state.rows().first().map(|m| m.key.0.to_string()))
     {
-        ui.global::<State>().invoke_reply(id.into());
+        ui.global::<ComposerState>().invoke_reply(id.into());
     }
     if scene == "friends" {
-        ui.global::<State>().invoke_browse(1);
+        ui.global::<ShellState>().invoke_browse(Section::Friends);
     }
     if matches!(
         scene,
@@ -586,15 +588,15 @@ pub(crate) fn stage(
         });
     }
     if scene.starts_with("members") || scene.starts_with("member-profile") {
-        ui.global::<State>().invoke_open_members();
+        ui.global::<DetailState>().invoke_open_members();
     }
     if snapshot_profile || scene == "member-profile" {
-        ui.global::<State>().invoke_browse(1);
+        ui.global::<ShellState>().invoke_browse(Section::Friends);
     }
     if scene.starts_with("message-selected")
         && let Some(key) = desktop.update(|d| d.state.rows().first().map(|m| m.key))
     {
-        ui.global::<State>()
+        ui.global::<ConversationState>()
             .set_highlight_message(key.0.to_string().into());
     }
     if scene == "session-expired"
@@ -620,8 +622,9 @@ pub(crate) fn stage(
                 );
             }
         });
-        ui.global::<State>().set_draft("See you soon! 🐈".into());
-        ui.global::<State>().invoke_send();
+        ui.global::<ComposerState>()
+            .set_draft("See you soon! 🐈".into());
+        ui.global::<ComposerState>().invoke_send();
     }
 }
 
@@ -677,7 +680,8 @@ pub(crate) fn prepare(ui: &AppWindow) {
 }
 pub(crate) fn profile(ui: &AppWindow, scene: &str, snapshot_profile: bool) {
     if snapshot_profile || scene == "member-profile" {
-        ui.global::<State>().invoke_open_profile("alice".into());
+        ui.global::<DetailState>()
+            .invoke_open_profile("alice".into());
     }
 }
 

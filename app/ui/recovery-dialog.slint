@@ -1,30 +1,31 @@
+import { RecoveryAction, RecoveryKind } from "globals.slint";
+import { ConversationState } from "globals.slint";
 import { Dialog, Button } from "button.slint";
-import { RecoveryKind, RecoveryAction } from "types.slint";
+
 import { IconButton } from "icon-button.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 
 export component RecoveryDialog inherits Dialog {
-    visible: State.recovery-kind != RecoveryKind.none;
-    property <bool> opened: State.recovery-kind != RecoveryKind.none;
+    visible: ConversationState.recovery-kind != RecoveryKind.none;
+    property <bool> opened: ConversationState.recovery-kind != RecoveryKind.none;
     changed opened => { if self.opened { cancel.focus(); } }
 
     panel-border: Tokens.border; shadow: true;
-    dismissed => { State.resolve-recovery(RecoveryAction.cancel); }
+    dismissed => { ConversationState.resolve-recovery(RecoveryAction.cancel); }
 
     content := VerticalLayout {
         padding: 24px; spacing: 12px;
         HorizontalLayout { spacing: 8px;
-            Text { text: State.recovery-kind == RecoveryKind.unsend ? "Unsend message?" : "Use message text?"; font-size: Tokens.heading; wrap: word-wrap; }
-            IconButton { focus-on-tab-navigation: false; label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { State.resolve-recovery(RecoveryAction.cancel); } }
+            Text { text: ConversationState.recovery-kind == RecoveryKind.unsend ? "Unsend message?" : "Use message text?"; font-size: Tokens.heading; wrap: word-wrap; }
+            IconButton { focus-on-tab-navigation: false; label: "Close dialog"; icon: @image-url("../assets/icons/close.svg"); activated => { ConversationState.resolve-recovery(RecoveryAction.cancel); } }
         }
-        Text { text: State.recovery-kind == RecoveryKind.unsend ? "It will be removed for everyone." : "There is already a draft in this conversation. Replace it or append this message?"; color: Tokens.foreground; wrap: word-wrap; }
+        Text { text: ConversationState.recovery-kind == RecoveryKind.unsend ? "It will be removed for everyone." : "There is already a draft in this conversation. Replace it or append this message?"; color: Tokens.foreground; wrap: word-wrap; }
         HorizontalLayout {
             spacing: 8px; alignment: end;
-            cancel := Button { text: "Cancel"; clicked => { State.resolve-recovery(RecoveryAction.cancel); } }
-            replace := Button { visible: State.recovery-kind == RecoveryKind.edit; enabled: self.visible; text: "Replace"; clicked => { State.resolve-recovery(RecoveryAction.replace); } }
-            append := Button { visible: State.recovery-kind == RecoveryKind.edit; enabled: self.visible; text: "Append"; primary: true; clicked => { State.resolve-recovery(RecoveryAction.append); } }
-            confirm := Button { visible: State.recovery-kind == RecoveryKind.unsend; enabled: self.visible; text: "Unsend"; primary: true; danger: State.recovery-kind == RecoveryKind.unsend; clicked => { State.resolve-recovery(RecoveryAction.unsend); } }
+            cancel := Button { text: "Cancel"; clicked => { ConversationState.resolve-recovery(RecoveryAction.cancel); } }
+            replace := Button { visible: ConversationState.recovery-kind == RecoveryKind.edit; enabled: self.visible; text: "Replace"; clicked => { ConversationState.resolve-recovery(RecoveryAction.replace); } }
+            append := Button { visible: ConversationState.recovery-kind == RecoveryKind.edit; enabled: self.visible; text: "Append"; primary: true; clicked => { ConversationState.resolve-recovery(RecoveryAction.append); } }
+            confirm := Button { visible: ConversationState.recovery-kind == RecoveryKind.unsend; enabled: self.visible; text: "Unsend"; primary: true; danger: ConversationState.recovery-kind == RecoveryKind.unsend; clicked => { ConversationState.resolve-recovery(RecoveryAction.unsend); } }
         }
     }
 }

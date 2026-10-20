@@ -1,13 +1,15 @@
-import { ComposerMode, MessageKind } from "types.slint";
+import { AttachmentState } from "globals.slint";
+import { ComposerMode } from "globals.slint";
+import { ComposerState, ShellState } from "globals.slint";
+import { MessageKind } from "types.slint";
 import { ReplyQuote } from "reply-quote.slint";
 import { StickerPicker } from "sticker-picker.slint";
 import { IconButton } from "icon-button.slint";
-import { State } from "state.slint";
 import { Tokens } from "tokens.slint";
 import { DraftEditor } from "draft-editor.slint";
 export component Composer inherits Rectangle {
     public function paste-text() { composer.paste-text(); }
-    property <length> reply-height: State.composer-reply.reply-id != "" ? max(44px, Tokens.small * 2.8 + 12px) : 0px;
+    property <length> reply-height: ComposerState.composer-reply.reply-id != "" ? max(44px, Tokens.small * 2.8 + 12px) : 0px;
     height: root.reply-height + max(52px, min(Tokens.base * 8.4 + 32px, composer.text-height + 32px));
     vertical-stretch: 0; background: Tokens.bg;
     Rectangle { x: 0px; y: 0px; height: 1px; width: parent.width; background: Tokens.divider; }
@@ -15,41 +17,41 @@ export component Composer inherits Rectangle {
         width: root.width; height: root.height;
         focus-on-tab-navigation: false;
         key-pressed(event) => {
-            if State.ime-active { return reject; }
-            if event.text == Key.Escape && State.composer-reply.reply-id != "" { State.cancel-reply(); return accept; }
+            if ShellState.ime-active { return reject; }
+            if event.text == Key.Escape && ComposerState.composer-reply.reply-id != "" { ComposerState.cancel-reply(); return accept; }
             reject
         }
-        if State.composer-reply.reply-id != "": ReplyQuote {
+        if ComposerState.composer-reply.reply-id != "": ReplyQuote {
             height: root.reply-height; x: 0px; y: 0px; width: parent.width;
-            sender: "Replying to " + State.composer-reply.sender-name;
-            sender-id: State.composer-reply.sender-id; preview: State.composer-reply.body;
-            picture: State.composer-reply.picture; has-picture: State.composer-reply.has-picture && (State.composer-reply.kind == MessageKind.photo || State.composer-reply.kind == MessageKind.sticker);
-            IconButton { focus-on-tab-navigation: false; label: "Cancel reply"; icon: @image-url("../assets/icons/close.svg"); activated => { State.cancel-reply(); } }
+            sender: "Replying to " + ComposerState.composer-reply.sender-name;
+            sender-id: ComposerState.composer-reply.sender-id; preview: ComposerState.composer-reply.body;
+            picture: ComposerState.composer-reply.picture; has-picture: ComposerState.composer-reply.has-picture && (ComposerState.composer-reply.kind == MessageKind.photo || ComposerState.composer-reply.kind == MessageKind.sticker);
+            IconButton { focus-on-tab-navigation: false; label: "Cancel reply"; icon: @image-url("../assets/icons/close.svg"); activated => { ComposerState.cancel-reply(); } }
         }
         HorizontalLayout {
             cross-axis-alignment: end;
             x: 0px; y: root.reply-height; width: parent.width; height: parent.height - self.y;
             padding: 8px; spacing: 8px;
             VerticalLayout { height: composer.min-height; alignment: center;
-                sticker-button := IconButton { vertical-stretch: 0; label: "Stickers"; icon: @image-url("../assets/icons/sticker.svg"); activated => { State.load-stickers(); picker.show(); } }
+                sticker-button := IconButton { vertical-stretch: 0; label: "Stickers"; icon: @image-url("../assets/icons/sticker.svg"); activated => { ComposerState.load-stickers(); picker.show(); } }
             }
             VerticalLayout { height: composer.min-height; alignment: center;
-                attach-button := IconButton { vertical-stretch: 0; label: "Attach"; icon: @image-url("../assets/icons/attach.svg"); activated => { State.attach(); } }
+                attach-button := IconButton { vertical-stretch: 0; label: "Attach"; icon: @image-url("../assets/icons/attach.svg"); activated => { AttachmentState.attach(); } }
             }
             composer := DraftEditor { height: root.height - root.reply-height - 16px; vertical-stretch: 1; }
             VerticalLayout { height: composer.min-height; alignment: center;
-                send-button := IconButton { vertical-stretch: 0; label: "Send"; icon: @image-url("../assets/icons/send.svg"); icon-color: Tokens.secondary; enabled: false; activated => { composer.focus-editor(); State.send(); } }
+                send-button := IconButton { vertical-stretch: 0; label: "Send"; icon: @image-url("../assets/icons/send.svg"); icon-color: Tokens.secondary; enabled: false; activated => { composer.focus-editor(); ComposerState.send(); } }
             }
         }
     }
     states [
-        unavailable when State.composer-mode == ComposerMode.unavailable: { sticker-button.enabled: false; attach-button.enabled: false; composer.enabled: false; }
-        left when State.composer-mode == ComposerMode.left: { sticker-button.enabled: false; attach-button.enabled: false; composer.placeholder: "You left this group."; composer.read-only: true; }
-        offline when State.composer-mode == ComposerMode.offline: { sticker-button.enabled: false; }
-        ready when State.composer-mode == ComposerMode.ready: { send-button.enabled: true; send-button.icon-color: Tokens.accent; }
+        unavailable when ComposerState.composer-mode == ComposerMode.unavailable: { sticker-button.enabled: false; attach-button.enabled: false; composer.enabled: false; }
+        left when ComposerState.composer-mode == ComposerMode.left: { sticker-button.enabled: false; attach-button.enabled: false; composer.placeholder: "You left this group."; composer.read-only: true; }
+        offline when ComposerState.composer-mode == ComposerMode.offline: { sticker-button.enabled: false; }
+        ready when ComposerState.composer-mode == ComposerMode.ready: { send-button.enabled: true; send-button.icon-color: Tokens.accent; }
     ]
-    picker := PopupWindow { close-policy: close-on-click-outside; x: 0px; y: -320px; width: State.narrow ? root.width : min(360px, root.width); height: 320px;
-        StickerPicker { close => { picker.close(); State.focus-composer(); } }
+    picker := PopupWindow { close-policy: close-on-click-outside; x: 0px; y: -320px; width: ShellState.narrow ? root.width : min(360px, root.width); height: 320px;
+        StickerPicker { close => { picker.close(); ShellState.focus-composer(); } }
     }
     out property <bool> start-focused: sticker-button.has-focus || (!sticker-button.enabled && attach-button.has-focus) || (!sticker-button.enabled && !attach-button.enabled && composer.has-focus);
     out property <bool> editor-focused: composer.has-focus;

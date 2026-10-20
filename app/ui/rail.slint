@@ -1,7 +1,9 @@
+import { PanelState, Section } from "globals.slint";
+enum RailCursor { chats, friends, settings, profile }
+import { DetailState, ShellState } from "globals.slint";
 import { FocusRing } from "button.slint";
 import { Avatar } from "avatar.slint";
-import { PanelState } from "types.slint";
-import { State } from "state.slint";
+
 import { Tokens } from "tokens.slint";
 
 component RailButton inherits Rectangle {
@@ -24,25 +26,27 @@ export component Rail inherits Rectangle {
     background: Tokens.surface;
     out property <bool> has-focus: rail-focus.has-focus;
     public function focus-navigation() { rail-focus.focus(); }
-    property <int> cursor: State.section;
-    public function activate(index: int) {
-        if index < 2 { State.browse(index); }
-        else if index == 2 { State.request-panel(PanelState.settings); }
-        else if index == 3 && State.has-account { State.open-profile(State.account-mid); }
+    property <RailCursor> cursor: ShellState.section == Section.chats ? RailCursor.chats : RailCursor.friends;
+    pure function index(cursor: RailCursor) -> int { return cursor == RailCursor.chats ? 0 : cursor == RailCursor.friends ? 1 : cursor == RailCursor.settings ? 2 : 3; }
+    pure function at(index: int) -> RailCursor { return index == 0 ? RailCursor.chats : index == 1 ? RailCursor.friends : index == 2 ? RailCursor.settings : RailCursor.profile; }
+    public function activate(cursor: RailCursor) {
+        if cursor == RailCursor.chats || cursor == RailCursor.friends { ShellState.browse(cursor == RailCursor.chats ? Section.chats : Section.friends); }
+        else if cursor == RailCursor.settings { ShellState.request-panel(PanelState.settings); }
+        else if cursor == RailCursor.profile && (ShellState.account-mid != "") { DetailState.open-profile(ShellState.account-mid); }
     }
     rail-focus := FocusScope {
         accessible-role: button; accessible-label: "Navigation";
         key-pressed(event) => {
-            if State.ime-active { return reject; }
-            if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.cursor = max(0, root.cursor - 1); return accept; }
-            if event.text == Key.DownArrow || event.text == Key.RightArrow { root.cursor = min(State.narrow || !State.has-account ? 2 : 3, root.cursor + 1); return accept; }
+            if ShellState.ime-active { return reject; }
+            if event.text == Key.UpArrow || event.text == Key.LeftArrow { root.cursor = root.at(max(0, root.index(root.cursor) - 1)); return accept; }
+            if event.text == Key.DownArrow || event.text == Key.RightArrow { root.cursor = root.at(min(ShellState.narrow || (ShellState.account-mid == "") ? 2 : 3, root.index(root.cursor) + 1)); return accept; }
             if event.text == Key.Return || event.text == " " { root.activate(root.cursor); return accept; }
             reject
         }
-        FocusRing { x: State.narrow ? parent.width * root.cursor / 3 + (parent.width / 3 - 44px) / 2 : 4px; y: State.narrow ? 2px : root.cursor < 2 ? 4px + root.cursor * 48px : root.cursor == 3 ? parent.height - 100px : parent.height - 52px; width: 44px; height: 44px; focused: rail-focus.has-focus; border-radius: 8px; }
-        RailButton { x: State.narrow ? (parent.width / 3 - self.width) / 2 : 4px; y: State.narrow ? 2px : 4px; label: "Chats"; selectable: true; stale: State.unread-stale && State.unread-conversations > 0; badge: State.unread-conversations > 0 && !State.unread-stale ? State.unread-conversations > 999 ? "999+" : "" + State.unread-conversations : ""; icon: @image-url("../assets/icons/chats.svg"); selected: State.section == 0; activated => { rail-focus.focus(); root.cursor = 0; root.activate(0); } }
-        RailButton { x: State.narrow ? parent.width / 3 + (parent.width / 3 - self.width) / 2 : 4px; y: State.narrow ? 2px : 52px; label: "Friends"; selectable: true; icon: @image-url("../assets/icons/friends.svg"); selected: State.section == 1; activated => { rail-focus.focus(); root.cursor = 1; root.activate(1); } }
-        if !State.narrow && State.has-account: Avatar { x: 12px; y: parent.height - 96px; width: 32px; height: 32px; identity: State.account-name; initial: State.account-initial; label: "Your avatar"; TouchArea { accessible-role: button; accessible-label: "Your profile"; clicked => { State.open-profile(State.account-mid); } } }
-        RailButton { x: State.narrow ? parent.width * 2 / 3 + (parent.width / 3 - self.width) / 2 : 4px; y: State.narrow ? 2px : parent.height - 52px; label: "Settings"; icon: @image-url("../assets/icons/settings.svg"); activated => { root.cursor = 2; root.activate(2); } }
+        FocusRing { x: ShellState.narrow ? parent.width * root.index(root.cursor) / 3 + (parent.width / 3 - 44px) / 2 : 4px; y: ShellState.narrow ? 2px : root.index(root.cursor) < 2 ? 4px + root.index(root.cursor) * 48px : root.cursor == RailCursor.profile ? parent.height - 100px : parent.height - 52px; width: 44px; height: 44px; focused: rail-focus.has-focus; border-radius: 8px; }
+        RailButton { x: ShellState.narrow ? (parent.width / 3 - self.width) / 2 : 4px; y: ShellState.narrow ? 2px : 4px; label: "Chats"; selectable: true; stale: ShellState.unread-stale && ShellState.unread-conversations > 0; badge: ShellState.unread-conversations > 0 && !ShellState.unread-stale ? ShellState.unread-conversations > 999 ? "999+" : "" + ShellState.unread-conversations : ""; icon: @image-url("../assets/icons/chats.svg"); selected: ShellState.section == Section.chats; activated => { rail-focus.focus(); root.cursor = RailCursor.chats; root.activate(RailCursor.chats); } }
+        RailButton { x: ShellState.narrow ? parent.width / 3 + (parent.width / 3 - self.width) / 2 : 4px; y: ShellState.narrow ? 2px : 52px; label: "Friends"; selectable: true; icon: @image-url("../assets/icons/friends.svg"); selected: ShellState.section == Section.friends; activated => { rail-focus.focus(); root.cursor = RailCursor.friends; root.activate(RailCursor.friends); } }
+        if !ShellState.narrow && (ShellState.account-mid != ""): Avatar { x: 12px; y: parent.height - 96px; width: 32px; height: 32px; identity: ShellState.account-name; initial: ShellState.account-initial; label: "Your avatar"; TouchArea { accessible-role: button; accessible-label: "Your profile"; clicked => { DetailState.open-profile(ShellState.account-mid); } } }
+        RailButton { x: ShellState.narrow ? parent.width * 2 / 3 + (parent.width / 3 - self.width) / 2 : 4px; y: ShellState.narrow ? 2px : parent.height - 52px; label: "Settings"; icon: @image-url("../assets/icons/settings.svg"); activated => { root.cursor = RailCursor.settings; root.activate(RailCursor.settings); } }
     }
 }

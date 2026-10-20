@@ -72,7 +72,7 @@ fn watch_layout(ui: &AppWindow) -> Rc<RefCell<ModelRc<RichRun>>> {
     let recorded = observed.clone();
     let weak = ui.as_weak();
     let metrics = RefCell::new(Measurements::default());
-    ui.global::<State>()
+    ui.global::<ContentState>()
         .on_rich_layout(move |rows, width, size, previous| {
             let output = crate::rich_content::flow::reuse(
                 previous,
@@ -219,12 +219,12 @@ fn layout_failure_keeps_the_native_body_selectable() {
             ..Default::default()
         }]));
         assert_eq!(layout(&ui, &oversized, 1., 24.).row_count(), 0);
-        ui.global::<State>()
+        ui.global::<ContentState>()
             .on_rich_layout(|_, _, _, _| ModelRc::default());
-        ui.global::<State>()
+        ui.global::<ConversationState>()
             .set_messages(ModelRc::new(VecModel::from(vec![row])));
-        ui.global::<State>().set_has_chat(true);
-        ui.global::<State>().set_show_conversation(true);
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
         ui.show().unwrap();
         let pixels = render(&window, (980, 720));
         let (x, y, _) = pixels
@@ -337,14 +337,14 @@ fn maximum_rich_flow_measures_and_reflows_at_narrow_large_text() {
             }],
         );
         assert_eq!(runs.row_count(), 2048);
-        ui.global::<State>()
+        ui.global::<ConversationState>()
             .set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                 id: "stress".into(),
                 body: body.into(),
                 rich_runs: runs.clone(),
                 ..Default::default()
             }])));
-        ui.global::<State>().set_show_conversation(true);
+        ui.global::<ShellState>().set_show_conversation(true);
         ui.show().unwrap();
         let started = std::time::Instant::now();
         render(&window, (980, 720));
@@ -352,7 +352,7 @@ fn maximum_rich_flow_measures_and_reflows_at_narrow_large_text() {
         let before = observed.borrow().iter().last().unwrap().y;
         let resized = std::time::Instant::now();
         assert!(before > 0.0, "native run measurements did not initialize");
-        ui.global::<State>().set_text_size(24);
+        ui.global::<SettingsState>().set_text_size(24);
         render(&window, (360, 520));
         let last = observed.borrow().iter().last().unwrap();
         assert!(last.y > before, "narrow large text did not reflow");
@@ -397,14 +397,14 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
         let observed = watch_layout(&ui);
         let opened = Rc::new(RefCell::new(Vec::new()));
         let recorded = opened.clone();
-        ui.global::<State>()
+        ui.global::<ContentState>()
             .on_open_link(move |url| recorded.borrow_mut().push(url));
-        ui.global::<State>().set_has_chat(true);
-        ui.global::<State>().set_show_conversation(true);
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
         ui.show().unwrap();
         for size in [(980, 720), (360, 520)] {
             for text_size in [15, 24] {
-                ui.global::<State>().set_text_size(text_size);
+                ui.global::<SettingsState>().set_text_size(text_size);
                 for linked in [false, true] {
                     let mut row = MessageRow {
                         id: "long-run".into(),
@@ -421,7 +421,7 @@ fn unbroken_bodies_and_inline_links_stay_inside_narrow_bubbles() {
                         ..Default::default()
                     };
                     if linked { rich_content::links::decorate_message(&mut row); }
-                    ui.global::<State>().set_messages(ModelRc::new(VecModel::from(vec![row])));
+                    ui.global::<ConversationState>().set_messages(ModelRc::new(VecModel::from(vec![row])));
                     let pixels = render(&window, size);
                     let runs = observed.borrow().clone();
                     if linked {
@@ -534,14 +534,14 @@ fn emoji_click_keeps_images() {
         });
         emoji.picture = slint::Image::from_rgb8(buffer.clone());
         model.set_row_data(emoji_index, emoji);
-        ui.global::<State>()
+        ui.global::<ConversationState>()
             .set_messages(ModelRc::new(VecModel::from(vec![row])));
-        ui.global::<State>().set_has_chat(true);
-        ui.global::<State>().set_show_conversation(true);
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
         ui.show().unwrap();
         for size in [(980, 720), (360, 520)] {
             for text_size in [15, 24] {
-                ui.global::<State>().set_text_size(text_size);
+                ui.global::<SettingsState>().set_text_size(text_size);
                 let before = render(&window, size);
                 let red: Vec<_> = before
                     .enumerate_pixels()
@@ -595,16 +595,16 @@ fn outgoing_selection_contrasts_in_both_color_schemes() {
     std::thread::spawn(|| {
         let window = snapshot::install().unwrap();
         let ui = create_app_window().unwrap();
-        ui.global::<State>()
+        ui.global::<ConversationState>()
             .set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                 id: "selection".into(),
                 body: "Select this message".into(),
                 outgoing: true,
                 ..Default::default()
             }])));
-        ui.global::<State>().set_has_chat(true);
-        ui.global::<State>().set_show_conversation(true);
-        ui.global::<State>().set_text_size(24);
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.global::<SettingsState>().set_text_size(24);
         ui.show().unwrap();
         for (theme, scheme, ink, selection) in [
             (
@@ -622,7 +622,7 @@ fn outgoing_selection_contrasts_in_both_color_schemes() {
         ] {
             ui.global::<Palette>().set_color_scheme(scheme);
             for size in [(980, 720), (360, 520)] {
-                ui.global::<State>()
+                ui.global::<ConversationState>()
                     .set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                         id: format!("selection-{theme}-{}", size.0).into(),
                         body: "Select this message".into(),
@@ -697,13 +697,13 @@ fn failure_marks_stay_beside_the_bubble() {
     std::thread::spawn(|| {
         let window = snapshot::install().unwrap();
         let ui = create_app_window().unwrap();
-        ui.global::<State>().set_has_chat(true);
-        ui.global::<State>().set_show_conversation(true);
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
         ui.show().unwrap();
         for size in [(980, 720), (360, 520)] {
             for text_size in [15, 24] {
-                ui.global::<State>().set_text_size(text_size);
-                ui.global::<State>()
+                ui.global::<SettingsState>().set_text_size(text_size);
+                ui.global::<ConversationState>()
                     .set_messages(ModelRc::new(VecModel::from(vec![MessageRow {
                         id: "failed".into(),
                         body: "Meet at eleven.".into(),
@@ -714,7 +714,8 @@ fn failure_marks_stay_beside_the_bubble() {
                         clock: "12:01".into(),
                         ..Default::default()
                     }])));
-                ui.global::<State>().invoke_show_history(0., false);
+                ui.global::<ConversationState>()
+                    .invoke_show_history(0., false);
                 let pixels = render(&window, size);
                 let green: Vec<_> = pixels
                     .enumerate_pixels()
@@ -893,9 +894,9 @@ fn first_frame_never_paints_unpositioned_or_overlapping_runs() {
                 window.set_size(slint::PhysicalSize::new(size.0, size.1));
                 let ui = create_app_window().unwrap();
                 install(&ui);
-                ui.global::<State>().set_has_chat(true);
-                ui.global::<State>().set_show_conversation(true);
-                ui.global::<State>().set_text_size(size.2);
+                ui.global::<ConversationState>().set_has_chat(true);
+                ui.global::<ShellState>().set_show_conversation(true);
+                ui.global::<SettingsState>().set_text_size(size.2);
                 let mut row = if emoji {
                     rich_fixture().remove(1)
                 } else {
@@ -908,7 +909,7 @@ fn first_frame_never_paints_unpositioned_or_overlapping_runs() {
                 row.reply_id = "".into();
                 rich_content::links::decorate_message(&mut row);
                 let observed = watch_layout(&ui);
-                ui.global::<State>()
+                ui.global::<ConversationState>()
                     .set_messages(ModelRc::new(VecModel::from(vec![row])));
                 ui.show().unwrap();
                 let mut first_ink = Vec::new();

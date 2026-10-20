@@ -14,15 +14,14 @@ fn keyboard_rings_follow_buttons_and_whole_friend_rows() {
         let ui = test_window();
         ui.show().unwrap();
         ui.window().set_size(slint::LogicalSize::new(980., 720.));
-        let g = ui.global::<State>();
         let weak = ui.as_weak();
-        g.on_open_new_chat(move || {
+        ui.global::<NewChatState>().on_open_new_chat(move || {
             weak.upgrade()
                 .unwrap()
-                .global::<State>()
+                .global::<NewChatState>()
                 .set_new_chat_open(true)
         });
-        g.set_new_chat_friends(
+        ui.global::<NewChatState>().set_new_chat_friends(
             Rc::new(VecModel::from(vec![ComposeFriend {
                 id: "friend".into(),
                 name: "Friend".into(),
@@ -32,7 +31,7 @@ fn keyboard_rings_follow_buttons_and_whole_friend_rows() {
         );
         let toggled = Rc::new(std::cell::Cell::new(0));
         let recorded = toggled.clone();
-        g.on_new_chat_toggle(move |id| {
+        ui.global::<NewChatState>().on_new_chat_toggle(move |id| {
             assert_eq!(id, "friend");
             recorded.set(recorded.get() + 1);
         });
@@ -255,12 +254,15 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
         presenter.images.insert(asset.key(), image.clone());
         presenter.patch_asset(&ui, &state, &asset.key());
         assert!(state.chats.is_empty());
-        assert_eq!(ui.global::<State>().get_chat_title(), "Friend");
-        let friends = ui.global::<State>().get_friends();
+        assert_eq!(ui.global::<ConversationState>().get_chat_title(), "Friend");
+        let friends = ui.global::<FriendsState>().get_friends();
         let friend_row = friends.iter().find(|r| r.id == "friend").unwrap();
         assert_eq!(friend_row.avatar_key, asset.key());
         assert_eq!(friend_row.avatar, image);
-        assert_eq!(ui.global::<State>().get_chat_avatar(), friend_row.avatar);
+        assert_eq!(
+            ui.global::<ConversationState>().get_chat_avatar(),
+            friend_row.avatar
+        );
 
         // The conversation arrives after the friend's picture is already cached.
         let id = ChatId("friend".into());
@@ -281,10 +283,13 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
             },
         );
         presenter.present(&ui, &state, "", ChatCategory::All);
-        let chat = ui.global::<State>().get_chats().row_data(0).unwrap();
+        let chat = ui.global::<ChatsState>().get_chats().row_data(0).unwrap();
         assert_eq!(chat.avatar_key, asset.key());
         assert_eq!(chat.avatar, image);
-        assert_eq!(ui.global::<State>().get_chat_avatar(), chat.avatar);
+        assert_eq!(
+            ui.global::<ConversationState>().get_chat_avatar(),
+            chat.avatar
+        );
     })
     .join()
     .unwrap();
@@ -299,16 +304,16 @@ fn detail_focus_restores_the_opener_without_demo() {
         ui.show().unwrap();
         snapshot::render(&window, (980, 720)).unwrap();
         for already_open in [false, true] {
-            ui.global::<State>().set_query("".into());
+            search(&ui).set_accessible_value("");
             if already_open {
-                ui.global::<State>().set_panel(PanelState::Detail);
-                ui.global::<State>().set_detail_depth(1);
+                ui.global::<ShellState>().set_panel(PanelState::Detail);
+                ui.global::<DetailState>().set_detail_depth(1);
                 snapshot::render(&window, (980, 720)).unwrap();
             }
             ui.invoke_focus_search();
-            ui.global::<State>().invoke_remember_detail_focus(true);
-            ui.global::<State>().set_panel(PanelState::Detail);
-            ui.global::<State>().set_detail_depth(1);
+            focus::remember_detail(&ui, true);
+            ui.global::<ShellState>().set_panel(PanelState::Detail);
+            ui.global::<DetailState>().set_detail_depth(1);
             if !already_open {
                 snapshot::render(&window, (980, 720)).unwrap();
             }
@@ -317,26 +322,26 @@ fn detail_focus_restores_the_opener_without_demo() {
                 .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
             ui.window()
                 .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "x".into() });
-            assert_eq!(ui.global::<State>().get_query(), "");
-            ui.global::<State>().set_panel(PanelState::None);
-            ui.global::<State>().set_detail_depth(0);
+            assert_eq!(search(&ui).accessible_value().unwrap(), "");
+            ui.global::<ShellState>().set_panel(PanelState::None);
+            ui.global::<DetailState>().set_detail_depth(0);
             snapshot::render(&window, (980, 720)).unwrap();
-            ui.global::<State>().invoke_restore_detail_focus(true);
+            focus::restore_detail(&ui, true);
             ui.window()
                 .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: "x".into() });
             ui.window()
                 .dispatch_event(slint::platform::WindowEvent::KeyReleased { text: "x".into() });
             assert_eq!(
-                ui.global::<State>().get_query(),
+                search(&ui).accessible_value().unwrap(),
                 "x",
                 "closing detail must restore its opener"
             );
         }
-        let g = ui.global::<State>();
-        g.set_has_account(true);
-        g.set_has_chat(true);
-        g.set_show_conversation(true);
-        g.set_composer_mode(ComposerMode::Idle);
+        ui.global::<ShellState>().set_account_mid("self".into());
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.global::<ComposerState>()
+            .set_composer_mode(ComposerMode::Idle);
         for width in [1280, 420] {
             snapshot::render(&window, (width, 720)).unwrap();
             let mut openers = vec![
@@ -398,19 +403,20 @@ fn gap_before_unread_message_keeps_its_geometry() {
         state.messages.insert(message.key, message);
         let geometry = Rc::new(RefCell::new(None));
         let reported = geometry.clone();
-        ui.global::<State>()
+        ui.global::<ConversationState>()
             .on_row_geometry(move |kind, _, top, height| {
                 if kind == HistoryRowKind::Gap {
                     *reported.borrow_mut() = Some((top, height));
                 }
             });
         presenter.present(&ui, &state, "", ChatCategory::All);
-        ui.global::<State>().set_show_conversation(true);
-        ui.global::<State>().set_history_virtual(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.global::<ConversationState>().set_history_virtual(true);
         ui.show().unwrap();
         snapshot::render(&window, (980, 720)).unwrap();
         let without_divider = geometry.borrow().expect("gap geometry was not reported");
-        ui.global::<State>().set_unread_divider("1".into());
+        ui.global::<ConversationState>()
+            .set_unread_divider("1".into());
         snapshot::render(&window, (980, 720)).unwrap();
         assert_eq!(
             geometry.borrow().unwrap(),
@@ -436,10 +442,10 @@ fn copy_message_preserves_the_selected_text() {
         let message = message("keep this selection");
         state.messages.insert(message.key, message);
         presenter.present(&ui, &state, "", ChatCategory::All);
-        ui.global::<State>().set_show_conversation(true);
+        ui.global::<ShellState>().set_show_conversation(true);
         let copied = Rc::new(RefCell::new(String::new()));
         let capture = copied.clone();
-        ui.global::<State>()
+        ui.global::<ContentState>()
             .on_copy_text(move |text| *capture.borrow_mut() = text.to_string());
         ui.show().unwrap();
         slint::platform::update_timers_and_animations();
@@ -473,10 +479,10 @@ fn copy_message_preserves_the_selected_text() {
         };
         ctrl("c");
         ui.invoke_focus_composer();
-        ui.global::<State>().on_paste_attachment(|| false);
+        ui.global::<AttachmentState>().on_paste_attachment(|| false);
         ctrl("v");
         assert_eq!(
-            ui.global::<State>().get_draft(),
+            ui.global::<ComposerState>().get_draft(),
             "this",
             "Copy message changed the selection"
         );
@@ -506,14 +512,15 @@ fn members_search_keeps_alt_arrows_for_editing() {
         let ui = window::create_app_window().unwrap();
         ui.show().unwrap();
         ui.window().set_size(slint::LogicalSize::new(1280., 900.));
-        let g = ui.global::<State>();
-        g.set_panel(PanelState::Detail);
-        g.set_detail_depth(1);
-        g.set_detail_page(DetailPageMode::Members);
+        ui.global::<ShellState>().set_panel(PanelState::Detail);
+        ui.global::<DetailState>().set_detail_depth(1);
+        ui.global::<DetailState>()
+            .set_detail_page(DetailPageMode::Members);
         slint::platform::update_timers_and_animations();
         let switches = Rc::new(std::cell::Cell::new(0));
         let recorded = switches.clone();
-        g.on_switch_chat(move |_| recorded.set(recorded.get() + 1));
+        ui.global::<ChatsState>()
+            .on_switch_chat(move |_| recorded.set(recorded.get() + 1));
         ElementHandle::find_by_accessible_label(&ui, "Search members")
             .next()
             .unwrap()
@@ -539,11 +546,11 @@ fn notice_banner_f6_leaves_for_history() {
         use slint::platform::{Key, WindowEvent};
         i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
-        let g = ui.global::<State>();
-        g.set_has_account(true);
-        g.set_has_chat(true);
-        g.set_show_conversation(true);
-        g.set_connection(ConnectionState::SignedOut);
+        ui.global::<ShellState>().set_account_mid("self".into());
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.global::<ShellState>()
+            .set_connection(ConnectionState::SignedOut);
         ui.show().unwrap();
         ui.window().set_size(slint::LogicalSize::new(980., 720.));
         slint::platform::update_timers_and_animations();
@@ -568,9 +575,9 @@ fn narrow_to_medium_detail_keeps_focus_inside_detail() {
     std::thread::spawn(|| {
         let window = snapshot::install().unwrap();
         let ui = window::create_app_window().unwrap();
-        ui.global::<State>().set_panel(PanelState::Detail);
-        ui.global::<State>().set_detail_depth(1);
-        ui.global::<State>()
+        ui.global::<ShellState>().set_panel(PanelState::Detail);
+        ui.global::<DetailState>().set_detail_depth(1);
+        ui.global::<DetailState>()
             .set_detail_page(DetailPageMode::Members);
         ui.show().unwrap();
         snapshot::render(&window, (739, 720)).unwrap();
@@ -588,9 +595,8 @@ fn viewer_returns_to_current_photo_key_or_history_after_recycling() {
         use slint::platform::{Key, WindowEvent};
         i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
-        let g = ui.global::<State>();
-        g.set_has_chat(true);
-        g.set_show_conversation(true);
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
         let photo = |key: &str| MessageRow {
             kind: MessageKind::Photo,
             id: key.into(),
@@ -604,14 +610,16 @@ fn viewer_returns_to_current_photo_key_or_history_after_recycling() {
             ..Default::default()
         };
         let rows = Rc::new(slint::VecModel::from(vec![photo("first"), photo("second")]));
-        g.set_messages(rows.clone().into());
+        ui.global::<ConversationState>()
+            .set_messages(rows.clone().into());
         let opened = Rc::new(RefCell::new(String::new()));
         let recorded = opened.clone();
-        g.on_open_photo(move |key| *recorded.borrow_mut() = key.to_string());
+        ui.global::<ViewerState>()
+            .on_open_photo(move |key| *recorded.borrow_mut() = key.to_string());
         let weak = ui.as_weak();
-        g.on_request_panel(move |panel| {
+        ui.global::<ShellState>().on_request_panel(move |panel| {
             let ui = weak.upgrade().unwrap();
-            ui.global::<State>().set_panel(panel);
+            ui.global::<ShellState>().set_panel(panel);
             if panel == PanelState::None {
                 ui.invoke_focus_history();
             }
@@ -621,13 +629,13 @@ fn viewer_returns_to_current_photo_key_or_history_after_recycling() {
         slint::platform::update_timers_and_animations();
         for recycled in [false, true] {
             ui.invoke_focus_history();
-            g.invoke_show_viewer("first".into());
+            ui.invoke_show_viewer("first".into());
             slint::platform::update_timers_and_animations();
-            g.set_viewer_key("second".into());
+            ui.global::<ViewerState>().set_viewer_key("second".into());
             if recycled {
                 rows.set_row_data(1, photo("replacement"));
             }
-            g.invoke_close_viewer();
+            ui.global::<ViewerState>().invoke_close_viewer();
             slint::platform::update_timers_and_animations();
             if recycled {
                 assert_eq!(
@@ -659,11 +667,10 @@ fn virtual_wheel_frames_update_latest_and_top_paging() {
     std::thread::spawn(|| {
         i_slint_backend_testing::init_no_event_loop();
         let ui = window::create_app_window().unwrap();
-        let g = ui.global::<State>();
-        g.set_has_chat(true);
-        g.set_show_conversation(true);
-        g.set_history_virtual(true);
-        g.set_messages(
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.global::<ConversationState>().set_history_virtual(true);
+        ui.global::<ConversationState>().set_messages(
             Rc::new(slint::VecModel::from(
                 (0..100)
                     .map(|i| MessageRow {
@@ -678,11 +685,18 @@ fn virtual_wheel_frames_update_latest_and_top_paging() {
         let pages = Rc::new(std::cell::Cell::new(0));
         let recorded = pages.clone();
         let weak = ui.as_weak();
-        g.on_history_scrolled(move || {
-            if weak.upgrade().unwrap().global::<State>().get_history_y() >= -30. {
-                recorded.set(recorded.get() + 1);
-            }
-        });
+        ui.global::<ConversationState>()
+            .on_history_scrolled(move || {
+                if weak
+                    .upgrade()
+                    .unwrap()
+                    .global::<ConversationState>()
+                    .get_history_y()
+                    >= -30.
+                {
+                    recorded.set(recorded.get() + 1);
+                }
+            });
         let frame = || {
             i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(20));
             slint::platform::update_timers_and_animations();
@@ -696,24 +710,25 @@ fn virtual_wheel_frames_update_latest_and_top_paging() {
         for _ in 0..10 {
             frame();
         }
-        let bottom = g.get_history_y();
+        let bottom = ui.global::<ConversationState>().get_history_y();
         assert!(bottom < -1000.);
         // Wheel frames update content-y after Flickable's single, pre-motion flicked callback.
-        g.set_history_y(bottom + 120.);
+        ui.global::<ConversationState>()
+            .set_history_y(bottom + 120.);
         frame();
         assert!(
-            !g.get_following(),
+            !ui.global::<ConversationState>().get_following(),
             "a wheel frame away from bottom must show Latest"
         );
-        g.set_new_count(3);
-        g.set_history_y(bottom);
+        ui.global::<ConversationState>().set_new_count(3);
+        ui.global::<ConversationState>().set_history_y(bottom);
         frame();
         assert!(
-            g.get_following(),
+            ui.global::<ConversationState>().get_following(),
             "the final wheel frame must resume following"
         );
-        assert_eq!(g.get_new_count(), 0);
-        g.set_history_y(0.);
+        assert_eq!(ui.global::<ConversationState>().get_new_count(), 0);
+        ui.global::<ConversationState>().set_history_y(0.);
         frame();
         assert!(
             pages.get() > 0,
@@ -734,7 +749,6 @@ fn busy_controls_refuse_focus_and_activation() {
         ui.show().unwrap();
         ui.window().set_size(slint::LogicalSize::new(360., 720.));
         slint::platform::update_timers_and_animations();
-        let g = ui.global::<State>();
         let focused = || focus_label(&ui);
         let key = |text: slint::SharedString| {
             ui.window()
@@ -742,16 +756,19 @@ fn busy_controls_refuse_focus_and_activation() {
             ui.window()
                 .dispatch_event(WindowEvent::KeyReleased { text });
         };
-        g.set_panel(PanelState::SignIn);
-        g.set_connection(ConnectionState::SigningIn);
-        g.set_auth_cancelling(true);
+        ui.global::<ShellState>().set_panel(PanelState::SignIn);
+        ui.global::<ShellState>()
+            .set_connection(ConnectionState::SigningIn);
+        ui.global::<AuthState>()
+            .set_auth_phase(AuthPhase::Cancelling);
         ui.invoke_focus_search();
         ui.invoke_focus_auth_start();
         assert_ne!(focused(), "Cancelling…", "cancelling Back accepted focus");
 
-        g.set_panel(PanelState::None);
-        g.set_connection(ConnectionState::SigningIn);
-        g.set_has_account(true);
+        ui.global::<ShellState>().set_panel(PanelState::None);
+        ui.global::<ShellState>()
+            .set_connection(ConnectionState::SigningIn);
+        ui.global::<ShellState>().set_account_mid("self".into());
         ui.invoke_focus_search();
         ui.invoke_focus_connection_first();
         assert_ne!(
@@ -760,8 +777,10 @@ fn busy_controls_refuse_focus_and_activation() {
             "unavailable sign-in accepted focus"
         );
 
-        g.set_connection(ConnectionState::Online);
-        g.set_composer_mode(ComposerMode::Unavailable);
+        ui.global::<ShellState>()
+            .set_connection(ConnectionState::Online);
+        ui.global::<ComposerState>()
+            .set_composer_mode(ComposerMode::Unavailable);
         ui.invoke_focus_search();
         let opener = focused();
         ui.invoke_focus_composer();
@@ -770,15 +789,15 @@ fn busy_controls_refuse_focus_and_activation() {
             opener,
             "disabled draft moved focus out to the rail"
         );
-        g.set_panel(PanelState::Detail);
-        g.set_detail_depth(1);
-        g.set_profile_friend(true);
-        g.set_detail_busy(true);
+        ui.global::<ShellState>().set_panel(PanelState::Detail);
+        ui.global::<DetailState>().set_detail_depth(1);
+        ui.global::<DetailState>().set_profile_friend(true);
+        ui.global::<DetailState>().set_detail_busy(true);
         for (page, label) in [
             (DetailPageMode::Profile, "Rename"),
             (DetailPageMode::Group, "Leave group"),
         ] {
-            g.set_detail_page(page);
+            ui.global::<DetailState>().set_detail_page(page);
             slint::platform::update_timers_and_animations();
             ui.invoke_focus_profile_close();
             let focusable = ElementQuery::from_root(&ui)
@@ -800,7 +819,7 @@ fn busy_controls_refuse_focus_and_activation() {
                 })
                 .count();
             for _ in 0..focusable {
-                g.invoke_tab_focus(true);
+                ui.global::<ShellState>().invoke_tab_focus(true);
                 assert_ne!(focused(), label, "busy {label} accepted focus");
                 if focused() == "Close details" {
                     break;
@@ -818,14 +837,18 @@ fn busy_controls_refuse_focus_and_activation() {
             assert!(control.computed_opacity() < 1.);
             control.invoke_accessible_default_action();
             control.mock_single_click(slint::platform::PointerEventButton::Left);
-            assert_eq!(g.get_detail_dialog(), DetailAction::None);
+            assert!(
+                ElementHandle::find_by_element_id(&ui, "Layers::dialog-title")
+                    .next()
+                    .is_none()
+            );
         }
 
-        g.set_panel(PanelState::None);
-        g.set_new_chat_open(true);
+        ui.global::<ShellState>().set_panel(PanelState::None);
+        ui.global::<NewChatState>().set_new_chat_open(true);
         slint::platform::update_timers_and_animations();
         assert_eq!(focus_label(&ui), "Find friends for new chat");
-        g.set_new_chat_busy(true);
+        ui.global::<NewChatState>().set_new_chat_busy(true);
         // Keep Shift held while the dialog attempts to focus its disabled close button.
         ui.window().dispatch_event(WindowEvent::KeyPressed {
             text: Key::Shift.into(),
@@ -840,7 +863,7 @@ fn busy_controls_refuse_focus_and_activation() {
             .unwrap();
         close.invoke_accessible_default_action();
         close.mock_single_click(slint::platform::PointerEventButton::Left);
-        assert!(g.get_new_chat_open());
+        assert!(ui.global::<NewChatState>().get_new_chat_open());
     })
     .join()
     .unwrap();
@@ -855,7 +878,7 @@ fn checkbox_uses_space_but_not_return() {
         let ui = window::create_app_window().unwrap();
         ui.show().unwrap();
         ui.window().set_size(slint::LogicalSize::new(980., 720.));
-        ui.global::<State>().set_panel(PanelState::Settings);
+        ui.global::<ShellState>().set_panel(PanelState::Settings);
         let checkbox = ElementHandle::find_by_accessible_label(&ui, "Enter sends")
             .next()
             .unwrap();
@@ -879,10 +902,15 @@ fn dialog_scrim_blocks_wheel_scrolling() {
         use slint::platform::WindowEvent;
         let platform = snapshot::install().unwrap();
         let ui = window::create_app_window().unwrap();
-        let g = ui.global::<State>();
-        g.set_has_account(true);
-        let chats = vec![ChatRow::default(); 30];
-        g.set_chats(ModelRc::from(Rc::new(VecModel::from(chats))));
+        ui.global::<ShellState>().set_account_mid("self".into());
+        let chats = (0..30)
+            .map(|i| ChatRow {
+                title: format!("Chat {i}").into(),
+                ..Default::default()
+            })
+            .collect::<Vec<_>>();
+        ui.global::<ChatsState>()
+            .set_chats(ModelRc::from(Rc::new(VecModel::from(chats))));
         ui.show().unwrap();
         snapshot::render(&platform, (1280, 900)).unwrap();
         let scroll = || {
@@ -892,17 +920,30 @@ fn dialog_scrim_blocks_wheel_scrolling() {
                 delta_y: -120.,
             })
         };
+        let position = || {
+            element(&ui, "Conversations")
+                .query_descendants()
+                .match_predicate(|item| {
+                    item.accessible_label()
+                        .is_some_and(|label| label.starts_with("Chat 5, "))
+                })
+                .find_first()
+                .expect("Conversations has no visible fixture row")
+                .absolute_position()
+                .y
+        };
+        let initial = position();
         scroll();
         assert!(
-            g.get_list_y() < 0.,
+            position() < initial,
             "wheel fixture did not scroll the underlying list"
         );
-        g.set_panel(PanelState::Settings);
+        ui.global::<ShellState>().set_panel(PanelState::Settings);
         snapshot::render(&platform, (1280, 900)).unwrap();
-        let before = g.get_list_y();
+        let before = position();
         scroll();
         assert_eq!(
-            g.get_list_y(),
+            position(),
             before,
             "wheel leaked through the settings scrim"
         );

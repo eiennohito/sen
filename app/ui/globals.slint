@@ -1,0 +1,332 @@
+import { ExtensionState } from "@demo/demo-state.slint";
+import { ReadingGeometry, ReadingViewport, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
+export enum Section { chats, friends }
+export enum PanelState { none, settings, detail, viewer, sign-in }
+export enum ConnectionState { local, connecting, online, offline, signed-out, fatal, signing-in }
+export global ShellState {
+    in-out property <bool> keyboard-navigation;
+    in-out property <float> device-scale: 1;
+    in-out property <string> account-initial;
+    in-out property <PanelState> panel: none;
+    callback request-panel(PanelState);
+    in-out property <bool> window-active: false;
+    in-out property <int> unread-conversations;
+    in-out property <bool> unread-stale;
+    in-out property <Section> section: Section.chats;
+    public function browser-key(event: KeyEvent) -> EventResult {
+        if self.ime-active { return reject; }
+        if event.text == Key.Escape && ComposerState.composer-reply.reply-id != "" && !self.window-modal-open && !DetailState.detail-open { ComposerState.cancel-reply(); return accept; }
+        if event.text == Key.Escape && DetailState.detail-open && !self.window-modal-open { DetailState.pop-detail(false); return accept; }
+        if !self.window-modal-open && !(DetailState.detail-open && self.profile-sheet) && self.connection-actions-enabled && event.text == Key.F6 { self.focus-connection-first(); return accept; }
+        if self.window-modal-open || (self.narrow && DetailState.detail-open) { return reject; }
+        if event.modifiers.control && !event.modifiers.alt && !event.modifiers.meta {
+            if event.text == "f" || event.text == "F" { self.show-conversation = false; if self.section == Section.friends { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
+            if event.text == "1" || event.text == "2" { self.browse(event.text == "1" ? Section.friends : Section.chats); if self.section == Section.friends { self.focus-friend-search(); } else { self.focus-search(); } return accept; }
+            if event.text == "q" || event.text == "Q" { if !event.repeat { self.quit(); } return accept; }
+        }
+        if event.modifiers.alt && event.text == Key.LeftArrow && self.narrow && self.show-conversation {
+            self.show-conversation = false;
+            if self.section == Section.friends { self.focus-friend-search(); } else { self.focus-search(); }
+            return accept;
+        }
+        if event.modifiers.alt && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+            ChatsState.switch-chat(event.text == Key.DownArrow ? 1 : -1);
+            return accept;
+        }
+        return reject;
+    }
+    out property <length> rail-width: 56px;
+    out property <length> browser-width: 286px;
+    out property <length> panel-width: 320px;
+    out property <length> narrow-width: 740px;
+    out property <length> conversation-min-width: self.narrow-width - self.rail-width - self.browser-width;
+    out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
+    in-out property <bool> ime-active: false;
+    callback quit();
+    out property <bool> window-modal-open: ExtensionState.modal-open || AttachmentState.attachments-open || NewChatState.new-chat-open || AuthState.auth-open || ViewerState.viewer-open || SettingsState.settings-open || ConversationState.recovery-kind != RecoveryKind.none || DetailState.detail-dialog != DetailAction.none;
+    out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && DetailState.detail-open);
+    in-out property <ConnectionState> connection: local;
+    out property <bool> connected: self.connection == ConnectionState.online;
+    out property <bool> connection-failed: self.connection == ConnectionState.offline || self.signed-out || self.fatal;
+    out property <bool> signed-out: self.connection == ConnectionState.signed-out;
+    out property <bool> fatal: self.connection == ConnectionState.fatal;
+    out property <bool> sign-in-available: self.account-mid == "" || self.signed-out || self.fatal;
+    out property <bool> connection-feedback-visible: self.account-mid != "" && self.connection-failed && !self.window-modal-open && !(DetailState.detail-open && self.profile-sheet);
+    out property <bool> connection-actions-enabled: self.sign-in-available && self.connection-feedback-visible && !self.retrying-connection && !AuthState.auth-busy;
+    out property <length> connection-notice-height: 36px;
+    out property <bool> retrying-connection: self.connection == ConnectionState.connecting;
+    in-out property <string> storage-error;
+    in-out property <string> desktop-warning;
+    in-out property <string> account-mid;
+    in-out property <string> account-name;
+    in-out property <bool> show-conversation: false;
+    out property <bool> narrow: self.window-width < self.narrow-width;
+    in-out property <length> window-width;
+    in-out property <length> window-height;
+    callback browse(Section);
+    callback tab-focus(bool);
+    callback focus-composer();
+    callback focus-search();
+    callback focus-friend-search();
+    callback focus-settings-opener();
+    callback focus-connection-first();
+}
+export enum ChatCategory { all, friends, groups }
+export global ChatsState {
+    in-out property <ChatCategory> category: ChatCategory.all;
+    callback filter-category();
+    callback switch-chat(int);
+    in-out property <string> chat-list-error;
+    in-out property <[ChatRow]> chats;
+    in-out property <int> selected-chat: -1;
+    in-out property <bool> more-chats;
+    callback select-chat(int);
+    callback search-changed(string);
+    callback more();
+}
+export global FriendsState {
+    in-out property <[FriendRow]> friends;
+    in-out property <string> friend-query;
+    in-out property <bool> groups-expanded: true;
+    in-out property <bool> friends-expanded: true;
+    in-out property <string> friends-error;
+    callback filter-friends();
+}
+export enum RecoveryKind { none, edit, unsend }
+export enum RecoveryAction { cancel, replace, append, unsend }
+export global ConversationState {
+    in-out property <bool> history-virtual;
+    in-out property <string> chat-id;
+    in-out property <int> window-sub;
+    in-out property <string> chat-initial;
+    in-out property <image> chat-avatar;
+    in-out property <string> unread-divider;
+    in property <ReadingViewport> reading-viewport;
+    out property <ReadingGeometry> reading: {
+        y: self.history-y, at-bottom: self.following && self.reading-viewport.extent + self.history-y <= SettingsState.text-size * 1px,
+        visible-top: self.reading-viewport.visible-top, height: self.reading-viewport.height, pill-height: self.reading-viewport.pill-height,
+        active: ShellState.window-active, modal: ShellState.modal-open, dragging: self.reading-viewport.dragging,
+        interacting: self.history-interacting, narrow: ShellState.narrow, conversation: ShellState.show-conversation,
+    };
+    callback read-state-changed();
+    changed reading => { self.read-state-changed(); }
+    callback react(string, int);
+    in-out property <string> reaction-error-id;
+    in-out property <string> conversation-error;
+    in-out property <bool> chat-group;
+    in-out property <int> member-count: -1;
+    in-out property <[MessageRow]> messages;
+    in-out property <string> chat-title;
+    in-out property <string> unsend-feedback-id;
+    in-out property <RecoveryKind> recovery-kind;
+    in-out property <string> recovery-id;
+    callback discard-message(string);
+    callback retry-message(string);
+    callback resolve-recovery(RecoveryAction);
+    in-out property <bool> window-loading;
+    in-out property <bool> has-chat;
+    in-out property <bool> following: true;
+    in-out property <int> new-count;
+    in-out property <length> history-y;
+    callback recover-message(string);
+    public function show-history(y: length, latest: bool) {
+        self.following = latest;
+        self.history-y = y;
+        if latest { self.history-jump(-self.reading-viewport.extent); }
+    }
+    public function latest() {
+        self.latest-request();
+        self.following = true;
+        self.new-count = 0;
+        self.history-jump(-self.reading-viewport.extent);
+    }
+    public function reading-key(event: KeyEvent) -> EventResult {
+        if ShellState.ime-active { return reject; }
+        if self.recovery-kind != RecoveryKind.none { return reject; }
+        if event.text == Key.End { self.latest(); self.focus-history(); return accept; }
+        if event.text == Key.UpArrow { self.history-scroll(SettingsState.text-size * 1.4px); }
+        else if event.text == Key.DownArrow { self.history-scroll(-SettingsState.text-size * 1.4px); }
+        else if event.text == Key.PageUp { self.history-scroll(self.reading.height * 0.9); }
+        else if event.text == Key.PageDown { self.history-scroll(-self.reading.height * 0.9); }
+        else if event.text == Key.Home { self.history-jump(0px); }
+        else { return reject; }
+        if event.text == Key.Home {
+            self.following = self.history-can-follow && !self.reading-viewport.dragging && self.reading-viewport.extent + self.history-y <= SettingsState.text-size * 1px;
+            if self.following { self.new-count = 0; }
+            self.history-scrolled();
+        }
+        self.focus-history();
+        return accept;
+    }
+    callback focus-history();
+    in-out property <string> older-status;
+    in-out property <string> highlight-message;
+    in-out property <bool> return-visible;
+    in-out property <bool> history-can-follow: true;
+    in-out property <bool> history-interacting;
+    callback row-geometry(HistoryRowKind, string, length, length);
+    callback history-scrolled();
+    callback latest-request();
+    callback jump-message(string);
+    callback return-to-message();
+    callback history-scroll(length);
+    callback history-jump(length);
+}
+export enum ComposerMode { idle, unavailable, left, offline, ready }
+export global ComposerState {
+    in-out property <MessageRow> composer-reply;
+    callback reply(string);
+    callback cancel-reply();
+    in-out property <[StickerTab]> sticker-tabs;
+    in-out property <[StickerItem]> sticker-items;
+    in-out property <int> sticker-package;
+    in-out property <bool> stickers-failed;
+    callback load-stickers();
+    callback select-sticker-package(int);
+    callback send-sticker(int);
+    in-out property <string> draft;
+    in-out property <int> editor-caret;
+    in-out property <int> editor-anchor;
+    in-out property <ComposerMode> composer-mode;
+    callback draft-edited();
+    callback send();
+}
+export enum DetailPageMode { profile, group, members }
+export enum DetailAction { none, rename, add, mute, leave, member-chat }
+export global DetailState {
+    in-out property <DetailAction> detail-dialog;
+    callback pop-detail(bool);
+    callback detail-action(DetailAction, string);
+    callback profile-photo();
+    in-out property <int> detail-depth;
+    in-out property <DetailPageMode> detail-page;
+    in-out property <bool> detail-busy;
+    in-out property <DetailAction> detail-running;
+    in-out property <string> detail-error;
+    in-out property <bool> profile-friend;
+    in-out property <bool> profile-addable;
+    in-out property <bool> profile-favourite;
+    in-out property <string> profile-original;
+    in-out property <string> profile-notice;
+    in-out property <[RichRun]> profile-name-runs;
+    in-out property <[RichRun]> profile-status-runs;
+    in-out property <bool> group-room;
+    in-out property <bool> group-muted;
+    in-out property <bool> group-left;
+    in-out property <bool> group-writable;
+    in-out property <int> group-count;
+    in-out property <int> invitee-count;
+    in-out property <[MemberRow]> members;
+    in-out property <string> member-query;
+    callback open-members();
+    callback filter-members();
+    callback open-member(string);
+    out property <bool> detail-open: ShellState.panel == PanelState.detail && self.detail-depth > 0;
+    in-out property <string> profile-initial;
+    in-out property <string> profile-name;
+    in-out property <string> profile-id;
+    in-out property <string> profile-status;
+    in-out property <image> profile-avatar;
+    in-out property <bool> profile-available;
+    callback open-profile(string);
+    callback start-friend-chat();
+}
+export global ViewerState {
+    out property <bool> viewer-open: ShellState.panel == PanelState.viewer;
+    in-out property <image> viewer-image;
+    in-out property <string> viewer-status;
+    in-out property <string> viewer-error;
+    in-out property <bool> viewer-loading;
+    in-out property <string> viewer-key;
+    in-out property <bool> viewer-has-previous;
+    in-out property <bool> viewer-has-next;
+    in-out property <string> viewer-save-status;
+    in-out property <bool> viewer-saving;
+    callback viewer-step(int);
+    callback save-photo();
+    callback open-photo(string);
+    public function close-viewer() { ShellState.request-panel(PanelState.none); }
+}
+export enum NotificationPreview { name-and-text, name-only, new-message }
+export enum SettingsSection { chats, notifications, background, shortcuts, about }
+export global SettingsState {
+    in-out property <int> text-size: 15;
+    in-out property <bool> enter-sends: false;
+    in-out property <bool> background-mode;
+    in-out property <bool> autostart;
+    in-out property <string> autostart-status;
+    in-out property <bool> notifications-paused;
+    in-out property <bool> notifications-enabled;
+    in-out property <NotificationPreview> notification-preview: NotificationPreview.name-only;
+    in-out property <bool> notification-sound;
+    in-out property <bool> notification-mention-exception;
+    in-out property <bool> notification-group-events;
+    in-out property <bool> notification-available;
+    in-out property <string> notification-status;
+    callback test-notification();
+    out property <bool> settings-open: ShellState.panel == PanelState.settings;
+    public function close-settings() { ShellState.request-panel(PanelState.none); ShellState.focus-settings-opener(); }
+    callback settings-changed();
+}
+export enum AuthPhase { preparing, pairing, signed-in, cancelling }
+export global AuthState {
+    in-out property <AuthPhase> auth-phase;
+    out property <bool> auth-open: ShellState.panel == PanelState.sign-in;
+    out property <bool> auth-busy: ShellState.connection == ConnectionState.signing-in;
+    in-out property <image> auth-qr;
+    in-out property <string> auth-pin;
+    in property <string> preparing-sign-in-text;
+    in-out property <string> auth-stage;
+    in-out property <string> auth-error;
+    in-out property <string> session-cause;
+    in-out property <bool> auth-prerequisite-missing;
+    callback start-sign-in();
+    callback cancel-sign-in();
+    public function close-sign-in() { ShellState.request-panel(PanelState.none); ShellState.focus-connection-first(); }
+    public function open-sign-in() { if ShellState.sign-in-available { ShellState.request-panel(PanelState.sign-in); } }
+}
+export global ContentState {
+    in-out property <[ReactionRow]> reaction-kinds;
+    pure callback avatar-picture(image, float, float) -> image;
+    pure callback name-tint(string, color, bool) -> color;
+    pure callback avatar-tint(string) -> color;
+    in-out property <string> link-feedback;
+    callback copy-text(string);
+    callback open-link(string);
+    pure callback rich-source([RichRun]) -> [RichRun];
+    callback preview-layout([RichRun], string, float, float) -> [RichRun];
+    callback rich-layout([RichRun], float, float, [RichRun]) -> [RichRun];
+    callback save-file(string);
+    in-out property <string> file-save-id;
+    in-out property <string> file-save-status;
+    in-out property <bool> file-saving;
+    callback retry-image(string);
+}
+export global NewChatState {
+    in-out property <bool> new-chat-open;
+    in-out property <bool> new-chat-busy;
+    in-out property <bool> new-chat-uncertain;
+    in-out property <string> new-chat-error;
+    in-out property <string> new-chat-query;
+    in-out property <string> new-chat-name;
+    in-out property <string> new-chat-placeholder;
+    in-out property <int> new-chat-count;
+    in-out property <[ComposeFriend]> new-chat-friends;
+    in-out property <[ComposeFriend]> new-chat-selected;
+    callback new-chat-filter();
+    callback new-chat-toggle(string);
+    callback new-chat-submit();
+    callback open-new-chat();
+}
+export global AttachmentState {
+    in-out property <bool> attachments-open;
+    in-out property <string> attachments-chat;
+    in-out property <string> attachments-error;
+    in-out property <int> attachments-count;
+    in-out property <[AttachmentItem]> attachment-items;
+    callback attach();
+    callback paste-attachment() -> bool;
+    callback remove-attachment(int);
+    callback cancel-attachments();
+    callback send-attachments();
+}

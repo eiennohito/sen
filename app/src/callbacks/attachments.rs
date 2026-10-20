@@ -1,4 +1,5 @@
 //! Selection and local preparation. Only the dialog's Send callback enqueues uploads.
+use crate::AttachmentState as G;
 use crate::*;
 use line::attachments::Attachment;
 use std::{
@@ -32,9 +33,9 @@ fn picture(bytes: &[u8]) -> slint::Image {
     }
 }
 fn present(ui: &AppWindow, selection: &Selection) {
-    let global = ui.global::<State>();
-    global.set_attachments_count(selection.items.iter().filter(|i| !i.too_large()).count() as i32);
-    global.set_attachment_items(ModelRc::new(VecModel::from(
+    let g = ui.global::<G>();
+    g.set_attachments_count(selection.items.iter().filter(|i| !i.too_large()).count() as i32);
+    g.set_attachment_items(ModelRc::new(VecModel::from(
         selection
             .items
             .iter()
@@ -55,8 +56,8 @@ pub(crate) fn begin(
     input: impl FnOnce() -> Result<Vec<PathBuf>, String> + Send + 'static,
 ) {
     if desktop.state.selected.is_none()
-        || ui.global::<State>().get_modal_open()
-        || ui.global::<State>().get_composer_mode() == ComposerMode::Left
+        || ui.global::<ShellState>().get_modal_open()
+        || ui.global::<ComposerState>().get_composer_mode() == ComposerMode::Left
     {
         return;
     }
@@ -67,9 +68,9 @@ pub(crate) fn begin(
         item.delete_clipboard();
     }
     let generation = selection.generation;
-    let global = ui.global::<State>();
-    global.set_attachments_error("".into());
-    global.set_attachments_chat(
+    let g = ui.global::<G>();
+    g.set_attachments_error("".into());
+    g.set_attachments_chat(
         desktop
             .state
             .selected
@@ -116,16 +117,15 @@ pub(crate) fn begin(
     });
 }
 fn complete(ui: &AppWindow, selection: &mut Selection, prepared: Prepared) {
+    let g = ui.global::<G>();
     if selection.generation == prepared.generation {
         for item in selection.items.drain(..) {
             item.delete_clipboard();
         }
         selection.items = prepared.items;
         present(ui, selection);
-        ui.global::<State>()
-            .set_attachments_error(prepared.errors.join("\n").into());
-        ui.global::<State>()
-            .set_attachments_open(!selection.items.is_empty() || !prepared.errors.is_empty());
+        g.set_attachments_error(prepared.errors.join("\n").into());
+        g.set_attachments_open(!selection.items.is_empty() || !prepared.errors.is_empty());
     } else {
         for item in prepared.items {
             item.delete_clipboard();
@@ -153,47 +153,31 @@ fn chooser() -> Result<Vec<PathBuf>, String> {
     .map_err(|_| "Couldn't open file chooser.".into())
 }
 pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
-    let selection = std::sync::Arc::new(std::sync::Mutex::new(Selection::default()));
-    let selected = selection.clone();
-    global_callback!(ui, actions, on_attach, [selected], |ui, d| {
-        begin(&ui, d, &selected, chooser);
-    });
-    let selected = selection.clone();
-    global_callback!(ui, actions, on_drop_attachment, [selected], |ui, d, uri| {
-        let paths = uri_paths(&uri);
-        if !paths.is_empty() {
-            begin(&ui, d, &selected, move || Ok(paths));
-        }
+    global_callback!(ui, actions, G, on_attach, |ui, d| {
+        begin(&ui, d, &d.attachments, chooser);
     });
     #[cfg(feature = "ui-debug")]
-    dev::automation::inject_attachments(ui, actions, selection.clone());
-    let selected = selection.clone();
-    global_callback!(
-        ui,
-        actions,
-        on_remove_attachment,
-        [selected],
-        |ui, _d, index| {
-            let mut selection = selected.lock().unwrap();
-            if (index as usize) < selection.items.len() {
-                selection.items.remove(index as usize).delete_clipboard();
-            }
-            present(&ui, &selection);
+    dev::automation::inject_attachments(ui, actions);
+    global_callback!(ui, actions, G, on_remove_attachment, |ui, d, index| {
+        let mut selection = d.attachments.lock().unwrap();
+        if (index as usize) < selection.items.len() {
+            selection.items.remove(index as usize).delete_clipboard();
         }
-    );
-    let selected = selection.clone();
-    global_callback!(ui, actions, on_cancel_attachments, [selected], |ui, _d| {
-        let mut selection = selected.lock().unwrap();
+        present(&ui, &selection);
+    });
+    global_callback!(ui, actions, G, on_cancel_attachments, |ui, d| {
+        let g = ui.global::<G>();
+        let mut selection = d.attachments.lock().unwrap();
         selection.generation += 1;
         for item in selection.items.drain(..) {
             item.delete_clipboard();
         }
-        ui.global::<State>().set_attachments_open(false);
+        g.set_attachments_open(false);
         ui.invoke_focus_composer();
     });
-    let selected = selection.clone();
-    global_callback!(ui, actions, on_send_attachments, [selected], |ui, d| {
-        let mut selection = selected.lock().unwrap();
+    global_callback!(ui, actions, G, on_send_attachments, |ui, d| {
+        let g = ui.global::<G>();
+        let mut selection = d.attachments.lock().unwrap();
         if let Some(chat) = selection.chat.take() {
             let items = std::mem::take(&mut selection.items)
                 .into_iter()
@@ -207,25 +191,20 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
                 })
                 .collect();
             d.sender.send(Intent::SendAttachments { chat, items });
-            ui.global::<State>().set_attachments_open(false);
+            g.set_attachments_open(false);
             ui.invoke_focus_composer();
         }
     });
-    let selected = selection.clone();
-    global_callback!(ui, actions, on_paste_text, [selected], |ui, d| {
-        if d.state.selected == selected.lock().unwrap().chat
-            && !ui.global::<State>().get_modal_open()
-        {
-            ui.invoke_paste_text();
-        }
-    });
-    let selected = selection.clone();
-    global_callback!(ui, actions, on_paste_attachment, [selected], |ui, d| {
+    global_callback!(ui, actions, G, on_paste_attachment, |ui, d| {
         let weak = ui.as_weak();
         let root = d.clipboard_root.clone();
-        begin(&ui, d, &selected, move || {
+        let selected = d.attachments.clone();
+        begin(&ui, d, &d.attachments, move || {
             let paste_text = || {
-                weak.upgrade_in_event_loop(|ui| ui.global::<State>().invoke_paste_text())
+                weak.upgrade_in_event_loop({
+                    let selected = selected.clone();
+                    move |ui| paste_text(&ui, &selected)
+                })
             };
             let Ok(mut clipboard) = arboard::Clipboard::new() else {
                 let _ = paste_text();
@@ -262,4 +241,24 @@ pub(crate) fn install(ui: &AppWindow, actions: &Runtime) {
             }
         });
     } => true);
+}
+
+pub(crate) fn drop_files(ui: &AppWindow, d: &Desktop, uris: &str) {
+    let paths = uri_paths(uris);
+    if !paths.is_empty() {
+        begin(ui, d, &d.attachments, move || Ok(paths));
+    }
+}
+
+fn paste_text(ui: &AppWindow, selected: &std::sync::Mutex<Selection>) {
+    if selected
+        .lock()
+        .unwrap()
+        .chat
+        .as_ref()
+        .is_some_and(|chat| chat.0 == ui.global::<ConversationState>().get_chat_id().as_str())
+        && !ui.global::<ShellState>().get_modal_open()
+    {
+        ui.invoke_paste_text();
+    }
 }

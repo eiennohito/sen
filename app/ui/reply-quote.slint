@@ -1,9 +1,9 @@
+import { ContentState } from "globals.slint";
 import { Tokens } from "tokens.slint";
-import { State } from "state.slint";
 import { RowText } from "list-row.slint";
 export component ReplyQuote inherits Rectangle {
     in property <color> surface: Tokens.bg;
-    property <color> name-tint: State.name-tint(root.sender-id, root.surface, Tokens.dark);
+    property <color> name-tint: ContentState.name-tint(root.sender-id, root.surface, Tokens.dark);
     in property <string> sender;
     in property <string> sender-id;
     in property <string> preview;

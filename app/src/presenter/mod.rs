@@ -5,6 +5,7 @@ mod compose;
 pub(crate) mod detail;
 pub(crate) mod format;
 pub(crate) mod messages;
+mod new_chat;
 mod people;
 mod shell;
 pub(crate) mod system_events;
@@ -62,6 +63,108 @@ enum RowKey {
     Gap(Key),
 }
 impl Presenter {
+    pub(super) fn present_errors(&mut self, ui: &AppWindow, state: &AppState) -> String {
+        let conversation = ui.global::<ConversationState>();
+        let friends = ui.global::<FriendsState>();
+        let chats = ui.global::<ChatsState>();
+        let mut conversation_error = String::new();
+        let mut friends_error = String::new();
+        let mut chat_list_error = String::new();
+        let mut detail_error = String::new();
+        let detail_id = state.detail.last().map(|page| match page {
+            line::controller::DetailPage::Profile(id) => id.as_str(),
+            line::controller::DetailPage::GroupInfo(id)
+            | line::controller::DetailPage::Members(id) => id.0.as_str(),
+        });
+        for (request, failure) in &state.refresh_failures {
+            use line::{client::error::Failure, engine::Refresh};
+            let message = if matches!(request, Refresh::Session) {
+                match failure {
+                    Failure::Refused(_) | Failure::Bug(_) => {
+                        "Couldn't check your saved session.".into()
+                    }
+                    _ => continue,
+                }
+            } else {
+                match failure {
+                    Failure::Refused(reason) => {
+                        format!("Couldn't load this item: {}", text::rejection(reason))
+                    }
+                    Failure::Bug(_) => "Couldn't load this item.".into(),
+                    _ => continue,
+                }
+            };
+            match request {
+                Refresh::Friends => friends_error = message,
+                Refresh::Session | Refresh::Profile | Refresh::ChatList | Refresh::MoreChats => {
+                    chat_list_error = message
+                }
+                Refresh::Recent(chat)
+                | Refresh::Older(chat, _)
+                | Refresh::Receipts(chat)
+                | Refresh::Details(chat)
+                    if state.selected.as_ref() == Some(chat) =>
+                {
+                    conversation_error = message
+                }
+                Refresh::Contact(mid) | Refresh::Notice(mid) if detail_id == Some(mid.as_str()) => {
+                    detail_error = message
+                }
+                Refresh::GroupInfo(chat) | Refresh::Members(chat)
+                    if detail_id == Some(chat.0.as_str()) =>
+                {
+                    detail_error = message
+                }
+                Refresh::Stream if state.selected.is_some() => {
+                    conversation_error = format!("Couldn't receive updates. {message}")
+                }
+                _ => {}
+            }
+        }
+        conversation.set_conversation_error(conversation_error.into());
+        friends.set_friends_error(friends_error.into());
+        chats.set_chat_list_error(chat_list_error.into());
+        detail_error
+    }
+    pub fn install(&self, ui: &AppWindow) {
+        let content = ui.global::<ContentState>();
+        let auth = ui.global::<AuthState>();
+        let chats = ui.global::<ChatsState>();
+        let conversation = ui.global::<ConversationState>();
+        let friends = ui.global::<FriendsState>();
+        let detail = ui.global::<DetailState>();
+        let new_chat = ui.global::<NewChatState>();
+        let composer = ui.global::<ComposerState>();
+        content.set_reaction_kinds(ModelRc::new(VecModel::from(
+            PREDEFINED_REACTIONS
+                .iter()
+                .map(|(id, label, glyph)| ReactionRow {
+                    id: *id as i32,
+                    label: (*label).into(),
+                    glyph: (*glyph).into(),
+                    ..Default::default()
+                })
+                .collect::<Vec<_>>(),
+        )));
+        auth.set_preparing_sign_in_text(text::PREPARING_SIGN_IN.into());
+        chats.set_chats(self.images.map(self.chats.clone(), chats::chat_row));
+        conversation.set_messages(self.images.map(self.messages.clone(), messages::project));
+        friends.set_friends(self.images.map(self.friends.clone(), people::friend_row));
+        detail.set_members(self.images.map(self.members.clone(), people::member_row));
+        new_chat.set_new_chat_friends(
+            self.images
+                .map(self.compose_friends.clone(), compose::compose_row),
+        );
+        new_chat.set_new_chat_selected(
+            self.images
+                .map(self.compose_selected.clone(), compose::compose_row),
+        );
+        composer.set_sticker_tabs(self.images.map(self.sticker_tabs.clone(), compose::tab_row));
+        composer.set_sticker_items(
+            self.images
+                .map(self.sticker_items.clone(), compose::sticker_row),
+        );
+    }
     pub fn present(
         &mut self,
         ui: &AppWindow,
@@ -69,11 +172,15 @@ impl Presenter {
         query: &str,
         category: ChatCategory,
     ) {
+        let g = ui.global::<SettingsState>();
+        self.present_new_chat(ui, state);
         self.present_compose(ui, state);
-        self.present_people(ui, state);
+        let text_size = g.get_text_size();
+        self.present_people(ui, state, text_size);
+        self.present_members(ui, state);
         let detail_error = self.present_errors(ui, state);
         self.present_detail(ui, state, detail_error);
-        self.present_chats(ui, state, query, category);
+        self.present_chats(ui, state, query, category, text_size);
         self.present_messages(ui, state);
         self.present_shell(ui, state);
         self.present_header(ui, state);
