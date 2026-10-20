@@ -1,7 +1,9 @@
+import { ShellState } from "../globals.slint";
+
+export enum DemoScenario { media-menu, history, arrivals, unanswered, photo, sticker, group, reading, rejected, rich, unread, chat-list, reconnect, offline, expired, reject-next, protocol, reaction, attachments, sign-in-crypto, sign-in-state, sign-in-keyring, sign-in-network, sign-in-server, sign-in-phone, sign-in-cancelled, actions, media-timeout, media-network, media-not-found, media-forbidden, media-server, media-unsupported, media-path, media-large, media-decode, media-cancelled }
 export enum DemoAutomation { reset }
-export global ExtensionState {
+export global DemoState {
     in-out property <bool> demo;
-    out property <bool> modal-open: self.demo-scenarios-open;
     // Slint MCP has no focus property and omits embedded popup offsets.
     // Geometry identifies repeated labels and checks popup bounds against the window.
     pure callback focused-control() -> string;
@@ -13,11 +15,10 @@ export global ExtensionState {
     in-out property <int> demo-reset-generation;
     in-out property <bool> demo-reset-enabled;
     callback demo-automation(DemoAutomation);
-    in-out property <string> title-override;
-    in-out property <bool> demo-scenarios-open: false;
+    in-out property <bool> demo-scenarios-open <=> ShellState.extension-modal-open;
     callback remember-demo-focus();
     callback restore-demo-focus();
     in-out property <bool> automation-background;
     in-out property <string> last-opened-link;
-    callback demo-event(int);
+    callback demo-event(DemoScenario);
 }

@@ -61,12 +61,12 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
         let events = Rc::new(RefCell::new(Vec::new()));
         let captured = events.clone();
         let weak = ui.as_weak();
-        ui.global::<ExtensionState>().on_demo_event(move |kind| {
+        ui.global::<DemoState>().on_demo_event(move |kind| {
             assert!(
                 !weak
                     .upgrade()
                     .unwrap()
-                    .global::<ExtensionState>()
+                    .global::<DemoState>()
                     .get_demo_scenarios_open()
             );
             captured.borrow_mut().push(kind);
@@ -82,12 +82,12 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
         for (width, height) in [(980., 720.), (760., 600.), (360., 520.)] {
             ui.window().set_size(slint::LogicalSize::new(width, height));
             ui.invoke_focus_search();
-            ui.global::<ExtensionState>().set_demo(false);
+            ui.global::<DemoState>().set_demo(false);
             key("\u{f70f}"); // F12 is unavailable in account windows.
-            assert!(!ui.global::<ExtensionState>().get_demo_scenarios_open());
-            ui.global::<ExtensionState>().set_demo(true);
+            assert!(!ui.global::<DemoState>().get_demo_scenarios_open());
+            ui.global::<DemoState>().set_demo(true);
             key("\u{f70f}");
-            assert!(ui.global::<ExtensionState>().get_demo_scenarios_open());
+            assert!(ui.global::<DemoState>().get_demo_scenarios_open());
             assert!(ui.global::<ShellState>().get_modal_open());
             // Reverse Tab wraps to the final action; forward Tab returns to Close.
             ui.window().dispatch_event(WindowEvent::KeyPressed {
@@ -109,13 +109,13 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
                 key("\n");
                 if index == 2 {
                     // Media failures has a separate bounded scenario list.
-                    assert!(ui.global::<ExtensionState>().get_demo_scenarios_open());
+                    assert!(ui.global::<DemoState>().get_demo_scenarios_open());
                     key("\t"); // Back
                     key("\t"); // First failure fixture
                     key("\n");
                 }
                 assert!(
-                    !ui.global::<ExtensionState>().get_demo_scenarios_open(),
+                    !ui.global::<DemoState>().get_demo_scenarios_open(),
                     "scenario index {index}"
                 );
                 assert!(!ui.global::<ShellState>().get_modal_open());
@@ -123,13 +123,38 @@ fn demo_scenarios_keep_keyboard_input_inside_the_dialog() {
             assert_eq!(
                 *events.borrow(),
                 [
-                    0, 1, 20, 10, 31, 3, 8, 12, 5, 6, 15, 7, 14, 47, 34, 32, 33, 40, 41, 42, 43,
-                    44, 45, 46, 19, 16, 17
+                    DemoScenario::History,
+                    DemoScenario::Arrivals,
+                    DemoScenario::MediaTimeout,
+                    DemoScenario::Rejected,
+                    DemoScenario::RejectNext,
+                    DemoScenario::Unanswered,
+                    DemoScenario::Reading,
+                    DemoScenario::Rich,
+                    DemoScenario::Photo,
+                    DemoScenario::Sticker,
+                    DemoScenario::ChatList,
+                    DemoScenario::Group,
+                    DemoScenario::Unread,
+                    DemoScenario::Actions,
+                    DemoScenario::Attachments,
+                    DemoScenario::Protocol,
+                    DemoScenario::Reaction,
+                    DemoScenario::SignInCrypto,
+                    DemoScenario::SignInState,
+                    DemoScenario::SignInKeyring,
+                    DemoScenario::SignInNetwork,
+                    DemoScenario::SignInServer,
+                    DemoScenario::SignInPhone,
+                    DemoScenario::SignInCancelled,
+                    DemoScenario::Expired,
+                    DemoScenario::Reconnect,
+                    DemoScenario::Offline
                 ]
             );
             ui.invoke_focus_search();
             key("\u{f70f}");
-            assert!(ui.global::<ExtensionState>().get_demo_scenarios_open());
+            assert!(ui.global::<DemoState>().get_demo_scenarios_open());
             key("\u{1b}");
             assert!(!ui.global::<ShellState>().get_modal_open());
             // Escape restores the actual search target, with no intervening click.

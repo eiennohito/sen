@@ -57,7 +57,6 @@ impl App {
                         offline_after: Duration::from_millis(100),
                         health_now: Instant::now,
                     },
-                    ..Default::default()
                 },
             ),
             state: AppState::default(),

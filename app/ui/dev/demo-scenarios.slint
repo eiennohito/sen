@@ -1,11 +1,11 @@
 import { ShellState } from "../globals.slint";
 import { Dialog } from "../button.slint";
-import { DemoAutomation } from "demo-state.slint";
-import { ExtensionState } from "demo-state.slint";
+import { DemoAutomation, DemoScenario } from "demo-state.slint";
+import { DemoState } from "demo-state.slint";
 import { ScrollView, Button } from "std-widgets.slint";
 import { Tokens } from "../tokens.slint";
 
-struct Scenario { text: string, label: string, kind: int }
+struct Scenario { text: string, label: string, kind: DemoScenario }
 
 export component DemoScenarios inherits Rectangle {
     // Keep the scenario surface in the main window on every backend.
@@ -18,32 +18,32 @@ export component DemoScenarios inherits Rectangle {
     }
     // Keyboard navigation can scroll to the final scenario. Reopen at the first row.
     public function open() -> bool {
-        if ExtensionState.demo && !ShellState.modal-open { root.media-menu = false; ExtensionState.remember-demo-focus(); ExtensionState.demo-scenarios-open = true; scenario-scroll.content-y = 0px; close.focus(); return true; }
+        if DemoState.demo && !ShellState.modal-open { root.media-menu = false; DemoState.remember-demo-focus(); DemoState.demo-scenarios-open = true; scenario-scroll.content-y = 0px; close.focus(); return true; }
         return false;
     }
-    public function dismiss() { ExtensionState.demo-scenarios-open = false; root.media-menu = false; ExtensionState.restore-demo-focus(); }
+    public function dismiss() { DemoState.demo-scenarios-open = false; root.media-menu = false; DemoState.restore-demo-focus(); }
     // A fixture may replace the previously focused message or button.
-    callback run(int);
-    run(kind) => { root.dismiss(); root.scenario-selected(); ExtensionState.demo-event(kind); }
+    callback run(DemoScenario);
+    run(kind) => { root.dismiss(); root.scenario-selected(); DemoState.demo-event(kind); }
     property <[[Scenario]]> scenarios: [
-        [{text:"History",label:"Long history",kind:0},{text:"Arrivals",label:"Receive 3",kind:1}],
-        [{text:"Media",label:"Media failures",kind:-1}],
-        [{text:"Rejected",label:"Rejected send",kind:10},{text:"Reject next send",label:"Reject next send",kind:31}],
-        [{text:"Send state",label:"Unanswered send",kind:3}],
-        [{text:"Reading fixtures",label:"Reading fixtures",kind:8},{text:"Rich content",label:"Rich content",kind:12}],
-        [{text:"Photo preview",label:"Photo preview",kind:5},{text:"Sticker preview",label:"Sticker preview",kind:6}],
-        [{text:"Long chat list",label:"Long chat list",kind:15}],
-        [{text:"Group preview",label:"Group preview",kind:7},{text:"Unread scenario",label:"Unread scenario",kind:14}],
-        [{text:"Message actions",label:"Message actions",kind:47}],
-        [{text:"Attachments",label:"Synthetic attachments",kind:34}],
-        [{text:"Protocol fixtures",label:"Protocol fixtures",kind:32},{text:"Live reaction",label:"Live reaction",kind:33}],
-        [{text:"Crypto",label:"Sign-in crypto failure",kind:40},{text:"State",label:"Sign-in state failure",kind:41},{text:"Keyring",label:"Sign-in keyring failure",kind:42}],
-        [{text:"Network",label:"Sign-in network failure",kind:43},{text:"Server",label:"Sign-in server failure",kind:44},{text:"Phone",label:"Sign-in phone failure",kind:45},{text:"Cancelled",label:"Sign-in cancelled",kind:46}],
-        [{text:"Expired sign-in",label:"Expired sign-in",kind:19}],
-        [{text:"Reconnect",label:"Reconnect blip",kind:16},{text:"Offline",label:"Offline",kind:17}],
+        [{text:"History",label:"Long history",kind:DemoScenario.history},{text:"Arrivals",label:"Receive 3",kind:DemoScenario.arrivals}],
+        [{text:"Media",label:"Media failures",kind:DemoScenario.media-menu}],
+        [{text:"Rejected",label:"Rejected send",kind:DemoScenario.rejected},{text:"Reject next send",label:"Reject next send",kind:DemoScenario.reject-next}],
+        [{text:"Send state",label:"Unanswered send",kind:DemoScenario.unanswered}],
+        [{text:"Reading fixtures",label:"Reading fixtures",kind:DemoScenario.reading},{text:"Rich content",label:"Rich content",kind:DemoScenario.rich}],
+        [{text:"Photo preview",label:"Photo preview",kind:DemoScenario.photo},{text:"Sticker preview",label:"Sticker preview",kind:DemoScenario.sticker}],
+        [{text:"Long chat list",label:"Long chat list",kind:DemoScenario.chat-list}],
+        [{text:"Group preview",label:"Group preview",kind:DemoScenario.group},{text:"Unread scenario",label:"Unread scenario",kind:DemoScenario.unread}],
+        [{text:"Message actions",label:"Message actions",kind:DemoScenario.actions}],
+        [{text:"Attachments",label:"Synthetic attachments",kind:DemoScenario.attachments}],
+        [{text:"Protocol fixtures",label:"Protocol fixtures",kind:DemoScenario.protocol},{text:"Live reaction",label:"Live reaction",kind:DemoScenario.reaction}],
+        [{text:"Crypto",label:"Sign-in crypto failure",kind:DemoScenario.sign-in-crypto},{text:"State",label:"Sign-in state failure",kind:DemoScenario.sign-in-state},{text:"Keyring",label:"Sign-in keyring failure",kind:DemoScenario.sign-in-keyring}],
+        [{text:"Network",label:"Sign-in network failure",kind:DemoScenario.sign-in-network},{text:"Server",label:"Sign-in server failure",kind:DemoScenario.sign-in-server},{text:"Phone",label:"Sign-in phone failure",kind:DemoScenario.sign-in-phone},{text:"Cancelled",label:"Sign-in cancelled",kind:DemoScenario.sign-in-cancelled}],
+        [{text:"Expired sign-in",label:"Expired sign-in",kind:DemoScenario.expired}],
+        [{text:"Reconnect",label:"Reconnect blip",kind:DemoScenario.reconnect},{text:"Offline",label:"Offline",kind:DemoScenario.offline}],
     ];
     dialog := Dialog {
-        visible: ExtensionState.demo-scenarios-open;
+        visible: DemoState.demo-scenarios-open;
         width: root.width; height: root.height;
         background: Tokens.foreground.with-alpha(0.32);
         panel-width: ShellState.narrow ? root.width : min(560px, root.width - 48px);
@@ -59,17 +59,17 @@ export component DemoScenarios inherits Rectangle {
                 VerticalLayout {
                     padding-right: 12px; spacing: 8px; alignment: start;
                     // Skip automation controls only while the dialog traverses Tab stops.
-                    if ExtensionState.automation-background && !root.media-menu: HorizontalLayout { spacing: 8px;
+                    if DemoState.automation-background && !root.media-menu: HorizontalLayout { spacing: 8px;
                         Rectangle { height: 32px; background: Tokens.surface-2;
-                            TextInput { enabled: !dialog.traversing; text <=> ExtensionState.attachment-injection-paths; accessible-label: "Attachment paths"; single-line: true; color: Tokens.text; font-size: Tokens.small; }
+                            TextInput { enabled: !dialog.traversing; text <=> DemoState.attachment-injection-paths; accessible-label: "Attachment paths"; single-line: true; color: Tokens.text; font-size: Tokens.small; }
                         }
                         Rectangle { width: 140px; height: 32px; background: Tokens.surface-2;
                             Text { text: "Preview attachments"; color: Tokens.text; font-size: Tokens.small; horizontal-alignment: center; vertical-alignment: center; }
-                            TouchArea { accessible-role: button; accessible-label: "Preview attachments"; clicked => { root.dismiss(); ExtensionState.inject-attachments(ExtensionState.attachment-injection-paths); } }
+                            TouchArea { accessible-role: button; accessible-label: "Preview attachments"; clicked => { root.dismiss(); DemoState.inject-attachments(DemoState.attachment-injection-paths); } }
                         }
                     }
-                    if ExtensionState.demo-reset-enabled && !root.media-menu: Button { enabled: !dialog.traversing; text: "Reset demo"; clicked => { root.dismiss(); ExtensionState.demo-automation(DemoAutomation.reset); } }
-                    demo-marker := Text { text: "Synthetic interaction scenarios"; accessible-value: ExtensionState.demo-instance; accessible-description: "Reset generation " + ExtensionState.demo-reset-generation; color: Tokens.secondary; font-size: Tokens.small; }
+                    if DemoState.demo-reset-enabled && !root.media-menu: Button { enabled: !dialog.traversing; text: "Reset demo"; clicked => { root.dismiss(); DemoState.demo-automation(DemoAutomation.reset); } }
+                    Text { text: "Synthetic interaction scenarios"; color: Tokens.secondary; font-size: Tokens.small; }
                     if !root.media-menu: VerticalLayout {
                         spacing: 8px; alignment: start;
                         for row in root.scenarios: VerticalLayout {
@@ -78,7 +78,7 @@ export component DemoScenarios inherits Rectangle {
                                 for scenario in row: Button {
                                     text: scenario.text; accessible-label: scenario.label;
                                     horizontal-stretch: row.length == 1 ? 1 : 0;
-                                    clicked => { if scenario.kind == -1 { root.media-menu = true; close.focus(); } else { root.run(scenario.kind); } }
+                                    clicked => { if scenario.kind == DemoScenario.media-menu { root.media-menu = true; close.focus(); } else { root.run(scenario.kind); } }
                                 }
                             }
                         }
@@ -88,11 +88,19 @@ export component DemoScenarios inherits Rectangle {
                         media-options := VerticalLayout {
                             spacing: 8px; alignment: start;
                             Button { text: "Back to scenarios"; clicked => { root.media-menu = false; close.focus(); } }
-                            for label[index] in ["Media timeout", "Media network", "Media 404", "Media 403", "Media 500", "Media unsupported sender", "Media rejected path", "Media too large", "Media decode failure"]: Button { text: label; clicked => { root.run(20 + index); } }
-                            Button {
-                                text: "Media cancelled";
-                                clicked => { root.run(29); }
-                            }
+                            for option in [
+                                {label: "Media timeout", scenario: DemoScenario.media-timeout},
+                                {label: "Media network", scenario: DemoScenario.media-network},
+                                {label: "Media 404", scenario: DemoScenario.media-not-found},
+                                {label: "Media 403", scenario: DemoScenario.media-forbidden},
+                                {label: "Media 500", scenario: DemoScenario.media-server},
+                                {label: "Media unsupported sender", scenario: DemoScenario.media-unsupported},
+                                {label: "Media rejected path", scenario: DemoScenario.media-path},
+                                {label: "Media too large", scenario: DemoScenario.media-large},
+                                {label: "Media decode failure", scenario: DemoScenario.media-decode},
+                                {label: "Media cancelled", scenario: DemoScenario.media-cancelled}
+                            ]: Button { text: option.label; clicked => { root.run(option.scenario); } }
+
                         }
                     }
                 }

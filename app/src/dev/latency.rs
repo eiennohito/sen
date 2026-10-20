@@ -155,7 +155,7 @@ pub fn run(d: &mut Desktop, ui: &AppWindow, window: &MinimalSoftwareWindow) {
                 })
                 .collect();
             d.state
-                .push_detail(DetailPage::Members(d.state.selected.clone().unwrap()));
+                .push_detail(DetailPage::Members(ChatId("latency-members".into())));
         }
         d.render(ui);
         draw();

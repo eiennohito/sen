@@ -9,7 +9,6 @@ pub(crate) struct Desktop {
     pub(crate) attachments: std::sync::Arc<std::sync::Mutex<callbacks::attachments::Selection>>,
     pub(crate) viewer_asset: Option<String>,
     pub(crate) viewer_source: Option<std::sync::Arc<Vec<u8>>>,
-    pub(crate) destination: crate::viewer::Destination,
     pub(crate) notifications: Option<notifications::Notifications>,
     pub(crate) background: desktop_env::background::Background,
     pub(crate) assets: assets::Assets,
@@ -169,7 +168,6 @@ mod tests {
             viewer_source: None,
             viewer_name: String::new(),
             attachments: Default::default(),
-            destination: crate::viewer::save_dialog,
             notifications: None,
             background: Default::default(),
             assets: Default::default(),
@@ -439,7 +437,6 @@ fn demo_settings_scene_focuses_close() {
             Default::default(),
         );
         let runtime = crate::Runtime {
-            window: Default::default(),
             desktop: std::rc::Rc::new(std::cell::RefCell::new(Some(tests::desktop(&worker)))),
             actions: Default::default(),
             draining: Default::default(),

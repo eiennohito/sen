@@ -11,12 +11,7 @@ use std::{
 };
 use zbus::zvariant::Str;
 
-pub(crate) type Destination = fn(&[u8], &str) -> Result<Option<PathBuf>, String>;
-pub(crate) fn save_photo(
-    ui: &AppWindow,
-    destination: Destination,
-    source: Option<std::sync::Arc<Vec<u8>>>,
-) {
+pub(crate) fn save_photo(ui: &AppWindow, source: Option<std::sync::Arc<Vec<u8>>>) {
     if ui.global::<ViewerState>().get_viewer_saving()
         || ui.global::<ViewerState>().get_viewer_loading()
         || !ui.global::<ViewerState>().get_viewer_error().is_empty()
@@ -31,11 +26,7 @@ pub(crate) fn save_photo(
     let key = ui.global::<ViewerState>().get_viewer_key();
     let weak = ui.as_weak();
     std::thread::spawn(move || {
-        let result = export_photo(
-            &pixels,
-            source.as_deref().map(|b| b.as_slice()),
-            destination,
-        );
+        let result = export_photo(&pixels, source.as_deref().map(|b| b.as_slice()));
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ui.global::<ViewerState>().set_viewer_saving(false);
             if !ui.global::<ViewerState>().get_viewer_open()
@@ -57,16 +48,15 @@ pub(crate) fn save_photo(
 fn export_photo(
     pixels: &SharedPixelBuffer<Rgba8Pixel>,
     source: Option<&[u8]>,
-    destination: Destination,
 ) -> Result<Option<PathBuf>, String> {
     if let Some(bytes) = source {
         let extension = image::guess_format(bytes)
             .ok()
             .and_then(|f| f.extensions_str().first().copied())
             .unwrap_or("img");
-        save_bytes(bytes, &format!("LINE photo.{extension}"), destination)
+        save_bytes(bytes, &format!("LINE photo.{extension}"))
     } else {
-        encode_png(pixels).and_then(|bytes| save_bytes(&bytes, "LINE photo.png", destination))
+        encode_png(pixels).and_then(|bytes| save_bytes(&bytes, "LINE photo.png"))
     }
 }
 fn encode_png(pixels: &SharedPixelBuffer<Rgba8Pixel>) -> Result<Vec<u8>, String> {
@@ -84,19 +74,19 @@ fn encode_png(pixels: &SharedPixelBuffer<Rgba8Pixel>) -> Result<Vec<u8>, String>
 
 /// Blocking: call from an export helper, never from the UI or account worker.
 /// A cancelled chooser writes nothing. The fallback always creates a new file.
-pub(crate) fn save_bytes(
-    bytes: &[u8],
-    suggested_name: &str,
-    destination: Destination,
-) -> Result<Option<PathBuf>, String> {
+pub(crate) fn save_bytes(bytes: &[u8], suggested_name: &str) -> Result<Option<PathBuf>, String> {
     let name = Path::new(suggested_name)
         .file_name()
         .and_then(|v| v.to_str())
         .filter(|name| !name.is_empty() && !name.contains(['\r', '\n']))
         .unwrap_or("LINE attachment");
-    destination(bytes, name)
+    save_dialog(bytes, name)
 }
 pub(crate) fn save_dialog(bytes: &[u8], name: &str) -> Result<Option<PathBuf>, String> {
+    #[cfg(feature = "demo")]
+    if crate::dev::DEMO_SESSION.get().is_some() {
+        return write_unique(&crate::dev::demo::directory().join("exports"), name, bytes).map(Some);
+    }
     match portal_destination(name) {
         Ok(Some(path)) => {
             use std::os::unix::fs::OpenOptionsExt;
@@ -214,12 +204,12 @@ mod tests {
                     SharedPixelBuffer::<Rgba8Pixel>::new(1, 1),
                 ));
             ui.global::<ViewerState>().set_viewer_loading(true);
-            save_photo(&ui, crate::dev::demo::destination(), None);
+            save_photo(&ui, None);
             assert!(!ui.global::<ViewerState>().get_viewer_saving());
             ui.global::<ViewerState>().set_viewer_loading(false);
             ui.global::<ViewerState>()
                 .set_viewer_error("Original unavailable".into());
-            save_photo(&ui, crate::dev::demo::destination(), None);
+            save_photo(&ui, None);
             assert!(!ui.global::<ViewerState>().get_viewer_saving());
         })
         .join()
@@ -227,21 +217,13 @@ mod tests {
     }
     #[cfg(feature = "demo")]
     #[test]
-    fn source_export_preserves_bytes_instead_of_encoding_display_pixels() {
+    fn writing_original_photo_preserves_bytes() {
         let root = std::env::temp_dir().join(format!("line-source-export-{}", std::process::id()));
-        let pixels = SharedPixelBuffer::<Rgba8Pixel>::new(2, 3);
         let mut jpeg = Vec::new();
         image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
             .encode_image(&image::RgbImage::new(3, 2))
             .unwrap();
-        fn test_destination(bytes: &[u8], name: &str) -> Result<Option<PathBuf>, String> {
-            let root =
-                std::env::temp_dir().join(format!("line-source-export-{}", std::process::id()));
-            write_unique(&root, name, bytes).map(Some)
-        }
-        let path = export_photo(&pixels, Some(&jpeg), test_destination)
-            .unwrap()
-            .unwrap();
+        let path = write_unique(&root, "LINE photo.jpg", &jpeg).unwrap();
         assert_eq!(fs::read(path).unwrap(), jpeg);
         fs::remove_dir_all(root).unwrap();
     }

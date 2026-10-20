@@ -1,9 +1,10 @@
-import { ExtensionState } from "@demo/demo-state.slint";
 import { ReadingGeometry, ReadingViewport, HistoryRowKind, ReactionRow, AttachmentItem, StickerTab, StickerItem, ComposeFriend, ChatRow, MemberRow, FriendRow, MessageRow, RichRun } from "types.slint";
 export enum Section { chats, friends }
 export enum PanelState { none, settings, detail, viewer, sign-in }
 export enum ConnectionState { local, connecting, online, offline, signed-out, fatal, signing-in }
 export global ShellState {
+    in-out property <bool> extension-modal-open;
+    in-out property <string> title-override;
     in-out property <bool> keyboard-navigation;
     in-out property <float> device-scale: 1;
     in-out property <string> account-initial;
@@ -45,7 +46,7 @@ export global ShellState {
     out property <bool> profile-sheet: self.window-width < self.rail-width + self.browser-width + self.conversation-min-width + self.panel-width;
     in-out property <bool> ime-active: false;
     callback quit();
-    out property <bool> window-modal-open: ExtensionState.modal-open || AttachmentState.attachments-open || NewChatState.new-chat-open || AuthState.auth-open || ViewerState.viewer-open || SettingsState.settings-open || ConversationState.recovery-kind != RecoveryKind.none || DetailState.detail-dialog != DetailAction.none;
+    out property <bool> window-modal-open: self.extension-modal-open || AttachmentState.attachments-open || NewChatState.new-chat-open || AuthState.auth-open || ViewerState.viewer-open || SettingsState.settings-open || ConversationState.recovery-kind != RecoveryKind.none || DetailState.detail-dialog != DetailAction.none;
     out property <bool> modal-open: self.window-modal-open || (self.profile-sheet && DetailState.detail-open);
     in-out property <ConnectionState> connection: local;
     out property <bool> connected: self.connection == ConnectionState.online;

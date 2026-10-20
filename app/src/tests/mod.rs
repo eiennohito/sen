@@ -39,7 +39,6 @@ fn test_window() -> AppWindow {
         viewer_source: None,
         viewer_name: String::new(),
         attachments: Default::default(),
-        destination: viewer::save_dialog,
         notifications: None,
         background: Default::default(),
         assets: Default::default(),
@@ -49,7 +48,6 @@ fn test_window() -> AppWindow {
         category: ChatCategory::All,
     };
     let runtime = Runtime {
-        window: Default::default(),
         desktop: Rc::new(RefCell::new(Some(desktop))),
         actions: Default::default(),
         draining: Default::default(),

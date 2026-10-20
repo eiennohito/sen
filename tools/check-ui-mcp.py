@@ -4,11 +4,13 @@ import argparse
 import base64
 import datetime
 import json
+import os
 from pathlib import Path
 import random
 import secrets
 import shlex
 import socket
+import subprocess
 import sys
 import tempfile
 import time
@@ -311,6 +313,23 @@ def check_idle():
     measure("chat list")
     click("葵", "Button")
     measure("open chat")
+
+
+def check_latency(log):
+    with tempfile.TemporaryDirectory(dir=UI_TEMP, prefix='latency-') as directory:
+        environment = os.environ.copy()
+        environment.update(LINE_UI_LATENCY='1', LINE_DEMO_DIRECTORY=directory, TMPDIR=directory,
+                           LINE_EMOJI_FONT=str(ROOT / 'fonts/NotoColorEmoji.ttf'))
+        subprocess.run(
+            [str(args.binary.resolve()), '--demo', '--snapshot', str(Path(directory) / 'latency.ppm')],
+            env=environment, text=True, stdout=log, stderr=subprocess.STDOUT,
+            timeout=120, check=True)
+        log.flush()
+        log.seek(0)
+        output = log.read()
+        lines = [line for line in output.splitlines() if line.startswith('LATENCY ')]
+        assert any(line.startswith('LATENCY members rows=300 ') for line in lines), output
+        print('\n'.join(lines), flush=True)
 
 
 def check_smoke():
@@ -1660,6 +1679,7 @@ def check_action_geometry():
 SCENES = {'virtual-wheel': 'paging'}
 
 GROUPS = {
+    'latency': check_latency,
     'virtual-wheel': check_virtual_wheel,
     'action-geometry': check_action_geometry,
     'smoke': check_smoke,
@@ -1761,6 +1781,8 @@ def main():
     if args.all and (args.group or args.wide):
         parser.error('--all supplies the groups and window sizes')
     selected = args.group or ['smoke']
+    if 'smoke' in selected and 'latency' not in selected:
+        selected = ['latency', *selected]
     if args.all:
         matrix = [(980, [g for g in GROUPS if g not in ('signed-out', 'missing-module') and g not in SCENES]),
                   (1280, list(WIDE_GROUPS)), (420, ["focus"])]
@@ -1835,6 +1857,8 @@ def main():
                                 reset_demo()
                             if group == 'focus' and width < 740:
                                 check_narrow_chats_focus()
+                            elif group == 'latency':
+                                check_latency(log)
                             else:
                                 GROUPS[group]()
                             screenshot('complete')

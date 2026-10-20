@@ -20,6 +20,6 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
         }
     });
     global_callback!(ui, actions, G, on_save_photo, |ui, d| {
-        viewer::save_photo(&ui, d.destination, d.viewer_source.clone());
+        viewer::save_photo(&ui, d.viewer_source.clone());
     });
 }

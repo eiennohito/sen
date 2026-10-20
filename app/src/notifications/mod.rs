@@ -163,7 +163,6 @@ mod tests {
                 viewer_source: None,
                 viewer_name: String::new(),
                 attachments: Default::default(),
-                destination: viewer::save_dialog,
                 notifications: None,
                 background: Default::default(),
                 assets: Default::default(),

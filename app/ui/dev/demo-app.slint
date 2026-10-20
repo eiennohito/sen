@@ -1,21 +1,21 @@
 import { ShellState } from "../globals.slint";
 import { Tokens } from "../tokens.slint";
 import { DemoScenarios } from "demo-scenarios.slint";
-import { ExtensionState } from "demo-state.slint";
+import { DemoState } from "demo-state.slint";
 
 export component DemoExtension inherits FocusScope {
     focus-on-click: false;
     focus-on-tab-navigation: false;
     @children
     property <string> focus-value;
-    focus-marker := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: "Demo focused control"; accessible-value: root.focus-value; accessible-action-default => { root.focus-value = ExtensionState.focused-control(); } }
-    if ExtensionState.demo-reset-enabled: demo-reset-marker := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: ExtensionState.demo-instance; accessible-value: ExtensionState.demo-instance + ":" + ExtensionState.demo-reset-generation; }
-    Text { width: 1px; height: 1px; accessible-role: text; accessible-label: "Recorded link activation"; accessible-value: ExtensionState.last-opened-link; }
-    Text { width: 1px; height: 1px; text: ""; accessible-description: ExtensionState.internal-error-seen ? "Internal error: see log" : ""; }
-    if ExtensionState.internal-error != "": Rectangle {
+    focus-marker := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: "Demo focused control"; accessible-value: root.focus-value; accessible-action-default => { root.focus-value = DemoState.focused-control(); } }
+    if DemoState.demo-reset-enabled: demo-reset-marker := Text { width: 1px; height: 1px; accessible-role: text; accessible-label: DemoState.demo-instance; accessible-value: DemoState.demo-instance + ":" + DemoState.demo-reset-generation; }
+    Text { width: 1px; height: 1px; accessible-role: text; accessible-label: "Recorded link activation"; accessible-value: DemoState.last-opened-link; }
+    Text { width: 1px; height: 1px; text: ""; accessible-description: DemoState.internal-error-seen ? "Internal error: see log" : ""; }
+    if DemoState.internal-error != "": Rectangle {
         x: 16px; y: 16px; width: parent.width - 32px; height: 48px;
         background: Tokens.background; border-width: 1px; border-color: Tokens.danger;
-        Text { text: ExtensionState.internal-error; color: Tokens.danger; vertical-alignment: center; }
+        Text { text: DemoState.internal-error; color: Tokens.danger; vertical-alignment: center; }
     }
     public function handle-key(event: KeyEvent) -> EventResult { return scenarios.handle-key(event); }
     key-pressed(event) => { root.handle-key(event) }

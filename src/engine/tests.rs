@@ -37,7 +37,6 @@ impl App {
                     offline_after: Duration::from_millis(100),
                     health_now: Instant::now,
                 },
-                ..Default::default()
             },
         );
         let mut app = Self {
@@ -693,7 +692,6 @@ fn startup_probe_preserves_failure_classes_and_can_recover_offline() {
                     retry_initial: Duration::ZERO,
                     ..Default::default()
                 },
-                ..Default::default()
             },
         );
         let mut app = App {

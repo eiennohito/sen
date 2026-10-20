@@ -521,11 +521,10 @@ type DeltaWake = Arc<Mutex<Option<Box<dyn Fn() + Send + Sync>>>>;
 struct DeltaSender {
     tx: mpsc::Sender<Delta>,
     wake: DeltaWake,
-    project: Arc<dyn Fn(Delta) -> Delta + Send + Sync>,
 }
 impl DeltaSender {
     fn send(&self, delta: Delta) -> bool {
-        if self.tx.send((self.project)(delta)).is_err() {
+        if self.tx.send(delta).is_err() {
             return false;
         }
         if let Some(wake) = self.wake.lock().unwrap().as_ref() {
@@ -534,21 +533,9 @@ impl DeltaSender {
         true
     }
 }
-#[cfg_attr(not(feature = "demo"), derive(Default))]
+#[derive(Default)]
 pub struct WorkerOptions {
     pub timing: Timing,
-    /// Project output on its publishing worker, before enqueueing or waking the UI.
-    #[cfg(feature = "demo")]
-    pub project: Arc<dyn Fn(Delta) -> Delta + Send + Sync>,
-}
-#[cfg(feature = "demo")]
-impl Default for WorkerOptions {
-    fn default() -> Self {
-        Self {
-            timing: Timing::default(),
-            project: Arc::new(|delta| delta),
-        }
-    }
 }
 pub struct Worker {
     wake: DeltaWake,
@@ -573,10 +560,6 @@ impl Worker {
     ) -> Self {
         crate::reporting::install_panic_hook();
         let timing = options.timing;
-        #[cfg(feature = "demo")]
-        let project = options.project;
-        #[cfg(not(feature = "demo"))]
-        let project = Arc::new(|delta| delta);
         let inbox = Arc::new(Inbox {
             pair_cancel: Mutex::default(),
             lanes: Mutex::default(),
@@ -588,7 +571,6 @@ impl Worker {
         let tx = DeltaSender {
             tx,
             wake: wake.clone(),
-            project,
         };
         let cancel = Arc::new(CancelToken::new());
         let worker_cancel = cancel.clone();

@@ -2760,6 +2760,7 @@ dependencies = [
  "serde",
  "serde_json",
  "slint",
+ "tempfile",
  "unicode-linebreak",
  "unicode-segmentation",
  "url",
