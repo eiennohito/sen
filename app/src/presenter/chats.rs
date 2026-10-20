@@ -6,11 +6,11 @@ impl Presenter {
         &mut self,
         ui: &AppWindow,
         state: &AppState,
-        query: &str,
         category: ChatCategory,
         text_size: i32,
     ) {
         let g = ui.global::<ChatsState>();
+        let query = Query::new(&g.get_chat_query());
         g.set_selected_chat(
             state
                 .selected
@@ -25,7 +25,7 @@ impl Presenter {
             let item = &state.chats[id];
             let c = &item.chat;
             let title = chat_title(c, state);
-            if !title.to_lowercase().contains(query)
+            if !query.matches([title])
                 || (category == ChatCategory::Friends && c.is_group)
                 || (category == ChatCategory::Groups && !c.is_group)
             {

@@ -37,7 +37,6 @@ pub(super) fn install_reset(
                 d.assets = assets::Assets::default();
                 d.presenter = presenter::Presenter::default();
                 d.shown_composer.clear();
-                d.query.clear();
                 d.category = ChatCategory::All;
                 d.reveal = None;
                 d.viewer_asset = None;

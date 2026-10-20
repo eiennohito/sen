@@ -33,7 +33,7 @@ fn present(
     message: &StoredMessage,
 ) -> MessageRow {
     state.messages.insert(message.key, message.clone());
-    presenter.present(ui, state, "", ChatCategory::All);
+    presenter.present(ui, state, ChatCategory::All);
     ui.global::<ConversationState>()
         .get_messages()
         .iter()

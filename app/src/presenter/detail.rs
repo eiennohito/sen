@@ -5,7 +5,7 @@ impl Presenter {
         let g = ui.global::<DetailState>();
         let mut members: Vec<_> = state.members.iter().collect();
         members.sort_by_key(|m| (m.contact.profile.invited, !m.is_self));
-        let query = g.get_member_query().to_lowercase();
+        let query = Query::new(&g.get_member_query());
         self.members.replace(
             members
                 .into_iter()
@@ -15,12 +15,7 @@ impl Presenter {
                     } else {
                         &m.contact
                     };
-                    if !text::member_name(contact.name.as_deref())
-                        .to_lowercase()
-                        .contains(&query)
-                        && !contact.status.to_lowercase().contains(&query)
-                        && !(m.is_self && "you".contains(&query))
-                    {
+                    if !query.matches([text::member_name(contact.name.as_deref())]) {
                         return None;
                     }
                     Some((

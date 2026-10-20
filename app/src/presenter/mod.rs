@@ -7,6 +7,7 @@ pub(crate) mod format;
 pub(crate) mod messages;
 mod new_chat;
 mod people;
+mod search;
 mod shell;
 pub(crate) mod system_events;
 
@@ -19,6 +20,7 @@ use line::client::desktop::{
 };
 use messages::compact_text;
 use model::KeyedModel;
+use search::Query;
 pub(crate) mod model;
 #[derive(Default)]
 pub struct Presenter {
@@ -163,13 +165,7 @@ impl Presenter {
                 .map(self.sticker_items.clone(), compose::sticker_row),
         );
     }
-    pub fn present(
-        &mut self,
-        ui: &AppWindow,
-        state: &AppState,
-        query: &str,
-        category: ChatCategory,
-    ) {
+    pub fn present(&mut self, ui: &AppWindow, state: &AppState, category: ChatCategory) {
         let g = ui.global::<SettingsState>();
         self.present_new_chat(ui, state);
         self.present_compose(ui, state);
@@ -178,7 +174,7 @@ impl Presenter {
         self.present_members(ui, state);
         let detail_error = self.present_errors(ui, state);
         self.present_detail(ui, state, detail_error);
-        self.present_chats(ui, state, query, category, text_size);
+        self.present_chats(ui, state, category, text_size);
         self.present_messages(ui, state);
         self.present_shell(ui, state);
         self.present_header(ui, state);

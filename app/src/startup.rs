@@ -88,7 +88,6 @@ pub(crate) fn start(options: Options) -> Result<(), Box<dyn std::error::Error>> 
         state: AppState::default(),
         presenter: Default::default(),
         sender: worker.sender.clone(),
-        query: String::new(),
         category: ChatCategory::All,
     };
     let current_window = Rc::new(RefCell::new(None));

@@ -290,14 +290,14 @@ fn loading_history_never_renders_the_loaded_empty_identity() {
         let advance =
             |ms| i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
         state.select(ChatId("empty".into()));
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         slint::platform::update_timers_and_animations();
         assert!(!visible("Loading history…"));
         assert!(!visible("No messages yet"));
         advance(300);
         assert!(visible("Loading history…"));
         state.window_loading = false;
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         slint::platform::update_timers_and_animations();
         assert!(!visible("Loading history…"));
         assert!(visible("No messages yet"));
@@ -326,18 +326,18 @@ fn selecting_another_loading_chat_restarts_the_indicator_delay() {
         let advance =
             |ms| i_slint_backend_testing::mock_elapsed_time(std::time::Duration::from_millis(ms));
         state.select(ChatId("a".into()));
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         slint::platform::update_timers_and_animations();
         advance(200);
         state.select(ChatId("b".into()));
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         slint::platform::update_timers_and_animations();
         advance(100);
         assert!(!visible(), "B inherited A's elapsed delay");
         advance(200);
         assert!(visible());
         state.select(ChatId("c".into()));
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         slint::platform::update_timers_and_animations();
         assert!(!visible(), "C inherited the visible indicator");
         advance(299);
@@ -345,7 +345,7 @@ fn selecting_another_loading_chat_restarts_the_indicator_delay() {
         advance(1);
         assert!(visible());
         state.select(ChatId("c".into()));
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         slint::platform::update_timers_and_animations();
         assert!(!visible(), "reselecting C must restart its loading delay");
         advance(300);

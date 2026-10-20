@@ -293,7 +293,7 @@ mod tests {
             let ui = crate::window::create_app_window().unwrap();
             let mut presenter = crate::presenter::Presenter::default();
             presenter.install(&ui);
-            presenter.present(&ui, &state, "", ChatCategory::All);
+            presenter.present(&ui, &state, ChatCategory::All);
             assert!(
                 ui.global::<ChatsState>()
                     .get_chats()
@@ -324,7 +324,7 @@ mod tests {
                         .unwrap(),
                 );
             }
-            presenter.present(&ui, &state, "", ChatCategory::All);
+            presenter.present(&ui, &state, ChatCategory::All);
             let row = ui
                 .global::<ChatsState>()
                 .get_chats()

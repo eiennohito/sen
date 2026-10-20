@@ -188,7 +188,7 @@ mod tests {
                     .collect(),
                 ..Default::default()
             };
-            presenter.present(&ui, &state, "", crate::ChatCategory::All);
+            presenter.present(&ui, &state, crate::ChatCategory::All);
             let view = ui.global::<crate::FriendsState>().get_friends();
             let peer = Box::pin(ModelChangeListenerContainer::new(Peer::default()));
             view.model_tracker().attach_peer(peer.as_ref().model_peer());
@@ -201,12 +201,12 @@ mod tests {
             assert_eq!(view.row_data(4).unwrap().avatar, image);
             assert_ne!(view.row_data(3).unwrap().avatar, image);
             state.friends.rotate_right(1);
-            presenter.present(&ui, &state, "", crate::ChatCategory::All);
+            presenter.present(&ui, &state, crate::ChatCategory::All);
             peer.0.take();
             presenter.patch_asset(&ui, &state, &asset.key());
             assert_eq!(peer.0.take(), [Changed(2), Changed(3)]);
             state.friends.retain(|f| f.id != "a");
-            presenter.present(&ui, &state, "", crate::ChatCategory::All);
+            presenter.present(&ui, &state, crate::ChatCategory::All);
             peer.0.take();
             presenter.patch_asset(&ui, &state, &asset.key());
             assert_eq!(peer.0.take(), [Changed(2)]);
@@ -236,7 +236,7 @@ mod tests {
             message.sender_id = "sender".into();
             message.sort.sort_ts = now_millis();
             state.messages.insert(message.key, message.clone());
-            presenter.present(&ui, &state, "", ChatCategory::All);
+            presenter.present(&ui, &state, ChatCategory::All);
             let view = ui.global::<ConversationState>().get_messages();
             let peer = Box::pin(ModelChangeListenerContainer::new(Peer::default()));
             view.model_tracker().attach_peer(peer.as_ref().model_peer());
@@ -248,13 +248,13 @@ mod tests {
                     .unwrap()
                     .timestamp_millis()
             });
-            presenter.present(&ui, &state, "", ChatCategory::All);
+            presenter.present(&ui, &state, ChatCategory::All);
             assert_eq!(peer.0.take(), [Changed(0)]);
             assert_eq!(view.row_data(0).unwrap().day_label, "Yesterday");
             message.key = Key(2);
             message.sort.sort_ts -= 1;
             state.messages.insert(message.key, message);
-            presenter.present(&ui, &state, "", ChatCategory::All);
+            presenter.present(&ui, &state, ChatCategory::All);
             assert_eq!(peer.0.take(), [Added(0, 1), Changed(1)]);
             assert_eq!(view.row_data(0).unwrap().run_position, RunPosition::First);
             assert_eq!(view.row_data(1).unwrap().run_position, RunPosition::Last);
