@@ -1384,27 +1384,16 @@ impl Engine {
                     && let Some(root) = &engine.account_root
                 {
                     let directory = crate::locations::account_directory(root, &p.mid)?;
-                    let copy = Store::copy_first_start(root, &p.mid, &directory);
-                    if let Err(error) = &copy {
-                        crate::reporting::log("store-copy", "first-start", error);
-                    }
                     let first_identity =
                         engine.store_mid.is_none() && !directory.join("store.sqlite3").exists();
-                    if copy.is_ok() {
-                        let target = if first_identity {
-                            engine.store.persist_to(&directory)?
-                        } else {
-                            let mut target = Store::open(&directory)?;
-                            reject_pending(
-                                &p.mid,
-                                &engine.in_flight,
-                                &mut target,
-                                Refusal::AppClosed,
-                            )?;
-                            target
-                        };
-                        engine.store = target;
-                    }
+                    let target = if first_identity {
+                        engine.store.persist_to(&directory)?
+                    } else {
+                        let mut target = Store::open(&directory)?;
+                        reject_pending(&p.mid, &engine.in_flight, &mut target, Refusal::AppClosed)?;
+                        target
+                    };
+                    engine.store = target;
                     engine.store_mid = Some(p.mid.clone());
                     engine
                         .inbox

@@ -34,7 +34,7 @@ component ProfileActionButton inherits Rectangle {
     callback activated();
     forward-focus: button;
     width: 72px; height: 72px;
-    button := IconButton { x: (parent.width - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: root.label; icon: root.icon; enabled: root.enabled; activated => { root.activated(); } }
+    button := IconButton { y: 0px; x: (parent.width - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: root.label; icon: root.icon; enabled: root.enabled; activated => { root.activated(); } }
     Text { y: 48px; width: parent.width; text: root.label; horizontal-alignment: center; font-size: Tokens.small; color: Tokens.text.transparentize(root.enabled ? 0 : 0.6); }
 }
 export component Detail inherits FocusScope {

@@ -59,15 +59,6 @@ pub enum Launch {
     Forwarded,
 }
 impl Instance {
-    // remove after the first release
-    pub fn old_app_notice(&self) -> Option<&'static str> {
-        let connection = self._connection.as_ref()?;
-        old_app_notice(|name| {
-            Ok(zbus::blocking::fdo::DBusProxy::new(connection)?
-                .name_has_owner(name.try_into().unwrap())?)
-        })
-    }
-
     pub fn take_events(&self) -> mpsc::Receiver<Activation> {
         let (_, empty) = mpsc::channel();
         self.events.replace(empty)
@@ -198,30 +189,4 @@ mod tests {
         drop(first);
         assert!(lock_file(&path).unwrap().is_some());
     }
-}
-
-// remove after the first release
-fn old_app_notice(check: impl FnOnce(&str) -> zbus::Result<bool>) -> Option<&'static str> {
-    match check("org.lineclient.Desktop") {
-        Ok(true) => Some("Quit line-desktop first, then reopen Sen to connect to your account."),
-        Ok(false) => None,
-        Err(error) => {
-            sen::reporting::log("desktop", "old-app-check", &error);
-            None
-        }
-    }
-}
-
-#[cfg(test)]
-#[test]
-fn old_app_blocks_account_start_until_next_launch() {
-    let notice = old_app_notice(|name| {
-        assert_eq!(name, "org.lineclient.Desktop");
-        Ok(true)
-    })
-    .unwrap();
-    assert!(notice.contains("Quit line-desktop first"));
-    assert!(notice.contains("reopen Sen"));
-    assert!(old_app_notice(|_| Ok(false)).is_none());
-    assert!(old_app_notice(|_| Err(zbus::Error::Failure("no bus".into()))).is_none());
 }

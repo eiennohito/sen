@@ -83,19 +83,6 @@ Keywords=chat;messaging;
 X-Sen-Managed=true
 """)
 launcher.chmod(0o644)
-# remove after the first release
-old_launcher = launcher.with_name("org.lineclient.Desktop.desktop")
-if old_launcher.is_file():
-    old_text = old_launcher.read_text()
-    if "X-Sen-Managed=true" in old_text.splitlines() or "X-LINE-Managed=true" in old_text.splitlines():
-        old_launcher.unlink()
-old_service = service.with_name("org.lineclient.Desktop.service")
-if old_service.is_file():
-    old_lines = old_service.read_text().splitlines()
-    if ("X-Sen-Managed=true" in old_lines or "X-LINE-Managed=true" in old_lines
-            or old_lines == ["[D-BUS Service]", "Name=org.lineclient.Desktop",
-                             "Exec=" + shlex.quote(str(bin_dir / "line-desktop"))]):
-        old_service.unlink()
 print(f"Installed app: {destination}")
 print(f"Installed launcher: {launcher}")
 print(f"Installed icon: {icon}")
