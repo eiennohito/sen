@@ -75,6 +75,7 @@ export global ShellState {
 }
 export enum ChatCategory { all, friends, groups }
 export global ChatsState {
+    in-out property <string> chat-query;
     in-out property <ChatCategory> category: ChatCategory.all;
     callback filter-category();
     callback switch-chat(int);
@@ -83,7 +84,7 @@ export global ChatsState {
     in-out property <int> selected-chat: -1;
     in-out property <bool> more-chats;
     callback select-chat(int);
-    callback search-changed(string);
+    callback search-changed();
     callback more();
 }
 export global FriendsState {

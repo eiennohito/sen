@@ -39,7 +39,7 @@ fn grouping_uses_identity_time_and_delivery() {
                     before: None,
                 })
                 .collect();
-            presenter.present(&ui, &state, "", ChatCategory::All);
+            presenter.present(&ui, &state, ChatCategory::All);
             ui.global::<ConversationState>()
                 .get_messages()
                 .iter()
@@ -111,7 +111,7 @@ fn own_member_uses_account_profile_and_keeps_you_note() {
             },
             is_self: true,
         });
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         let member = ui
             .global::<DetailState>()
             .get_members()

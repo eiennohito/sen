@@ -10,11 +10,11 @@ pub(super) enum FriendEntry {
 impl Presenter {
     pub(super) fn present_people(&mut self, ui: &AppWindow, state: &AppState, text_size: i32) {
         let g = ui.global::<FriendsState>();
-        let query = g.get_friend_query().to_lowercase();
+        let query = Query::new(&g.get_friend_query());
         let friends: Vec<_> = state
             .friends
             .iter()
-            .filter(|f| text::friend_name(f).to_lowercase().contains(&query))
+            .filter(|f| query.matches([text::friend_name(f)]))
             .collect();
         self.status_assets = friends
             .iter()

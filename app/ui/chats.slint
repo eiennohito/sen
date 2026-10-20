@@ -10,7 +10,6 @@ import { IconButton } from "icon-button.slint";
 import { Pane } from "scrollpane.slint";
 import { SearchField } from "search-field.slint";
 export component Chats inherits Rectangle {
-    property <string> query;
     property <length> list-y;
     property <length> search-list-y;
     property <bool> searching;
@@ -41,19 +40,19 @@ export component Chats inherits Rectangle {
                 }
                 HorizontalLayout {
                     search := SearchField {
-                        text <=> root.query;
+                        text <=> ChatsState.chat-query;
                         placeholder-text: "Find a conversation"; label: "Find a conversation";
-                        clear => { root.query = ""; ChatsState.search-changed(""); root.list-y = root.search-list-y; root.result-focus = -1; root.searching = false; ShellState.focus-search(); }
+                        clear => { ChatsState.chat-query = ""; ChatsState.search-changed(); root.list-y = root.search-list-y; root.result-focus = -1; root.searching = false; ShellState.focus-search(); }
                         edited(query) => {
                             if query != "" && !root.searching { root.search-list-y = root.list-y; root.searching = true; }
-                            ChatsState.search-changed(query);
+                            ChatsState.search-changed();
                             root.result-focus = -1;
                             if query == "" { root.list-y = root.search-list-y; root.searching = false; }
                         }
                         key-pressed(event) => {
                             if ShellState.ime-active { return reject; }
-                            if event.text == Key.Escape && root.query != "" {
-                                root.query = ""; ChatsState.search-changed(""); root.list-y = root.search-list-y; root.result-focus = -1; root.searching = false; return accept;
+                            if event.text == Key.Escape && ChatsState.chat-query != "" {
+                                ChatsState.chat-query = ""; ChatsState.search-changed(); root.list-y = root.search-list-y; root.result-focus = -1; root.searching = false; return accept;
                             }
                             if event.text == Key.DownArrow || event.text == Key.UpArrow { root.move-cursor(event.text == Key.DownArrow ? 1 : -1); return accept; }
                             if event.text == Key.Return { root.open-result(); return accept; }
@@ -138,7 +137,7 @@ export component Chats inherits Rectangle {
                 }
                 if ChatsState.more-chats: Button { text: "Load more"; clicked => { ChatsState.more(); } }
             }
-    if ChatsState.chats.length == 0: EmptyState { signed-out: (ShellState.account-mid == ""); y: 160px; height: max(0px, parent.height - 160px); text: root.query == "" ? "No conversations yet" : "No results"; icon: root.query == "" ? @image-url("../assets/icons/chats.svg") : @image-url("../assets/icons/search.svg"); }
+    if ChatsState.chats.length == 0: EmptyState { signed-out: (ShellState.account-mid == ""); y: 160px; height: max(0px, parent.height - 160px); text: ChatsState.chat-query == "" ? "No conversations yet" : "No results"; icon: ChatsState.chat-query == "" ? @image-url("../assets/icons/chats.svg") : @image-url("../assets/icons/search.svg"); }
     public function focus-connection() { chat-list.focus-connection(); }
     out property <bool> connection-focused: chat-list.connection-focused;
     public function focus-search() { search.focus(); }

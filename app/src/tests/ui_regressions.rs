@@ -245,7 +245,7 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
         state.friends.push(friend.clone());
         state.contacts.insert(friend.id.clone(), friend);
         state.select(ChatId("friend".into()));
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         let image = slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(
             &[0, 180, 100, 255],
             1,
@@ -282,7 +282,7 @@ fn new_contact_header_uses_friends_cached_avatar_before_send() {
                 draft: None,
             },
         );
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         let chat = ui.global::<ChatsState>().get_chats().row_data(0).unwrap();
         assert_eq!(chat.avatar_key, asset.key());
         assert_eq!(chat.avatar, image);
@@ -409,7 +409,7 @@ fn gap_before_unread_message_keeps_its_geometry() {
                     *reported.borrow_mut() = Some((top, height));
                 }
             });
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         ui.global::<ShellState>().set_show_conversation(true);
         ui.global::<ConversationState>().set_history_virtual(true);
         ui.show().unwrap();
@@ -441,7 +441,7 @@ fn copy_message_preserves_the_selected_text() {
         state.select(ChatId("chat".into()));
         let message = message("keep this selection");
         state.messages.insert(message.key, message);
-        presenter.present(&ui, &state, "", ChatCategory::All);
+        presenter.present(&ui, &state, ChatCategory::All);
         ui.global::<ShellState>().set_show_conversation(true);
         let copied = Rc::new(RefCell::new(String::new()));
         let capture = copied.clone();

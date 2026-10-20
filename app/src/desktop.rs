@@ -16,7 +16,6 @@ pub(crate) struct Desktop {
     pub(crate) state: AppState,
     pub(crate) presenter: presenter::Presenter,
     pub(crate) sender: Sender,
-    pub(crate) query: String,
     pub(crate) category: ChatCategory,
 }
 mod deltas;
@@ -86,8 +85,7 @@ impl Desktop {
             );
         }
 
-        self.presenter
-            .present(ui, &self.state, &self.query, self.category);
+        self.presenter.present(ui, &self.state, self.category);
         self.presenter
             .request_status_assets(&mut self.assets, &self.sender);
         if let Some(id) = &self.history.jump_target
@@ -178,7 +176,6 @@ mod tests {
             state: AppState::default(),
             presenter: Default::default(),
             sender: worker.sender.clone(),
-            query: String::new(),
             category: ChatCategory::All,
         }
     }

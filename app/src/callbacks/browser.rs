@@ -16,8 +16,7 @@ pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
             d.select(&ui, i as usize);
         }
     });
-    global_callback!(ui, actions, G, on_search_changed, |ui, d, query| {
-        d.query = query.to_lowercase();
+    global_callback!(ui, actions, G, on_search_changed, |ui, d| {
         d.render(&ui);
     });
     global_callback!(ui, actions, G, on_filter_category, |ui, d| {

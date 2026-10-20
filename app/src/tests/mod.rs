@@ -46,7 +46,6 @@ fn test_window() -> AppWindow {
         state: AppState::default(),
         presenter: Default::default(),
         sender: worker.sender.clone(),
-        query: String::new(),
         category: ChatCategory::All,
     };
     let runtime = Runtime {
@@ -61,6 +60,7 @@ fn test_window() -> AppWindow {
 mod grouping;
 mod layers;
 pub(crate) mod previews;
+mod search;
 
 mod rich_flow;
 

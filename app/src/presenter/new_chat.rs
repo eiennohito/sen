@@ -12,7 +12,7 @@ impl Presenter {
     pub fn present_new_chat(&mut self, ui: &AppWindow, state: &AppState) {
         let new_chat = ui.global::<NewChatState>();
         if new_chat.get_new_chat_open() {
-            let query = new_chat.get_new_chat_query().to_lowercase();
+            let query = Query::new(&new_chat.get_new_chat_query());
             let (mut friends, mut chosen, mut names) = (Vec::new(), Vec::new(), Vec::new());
             for f in state
                 .friends
@@ -30,7 +30,7 @@ impl Presenter {
                     names.push(name.clone());
                     chosen.push(row.clone());
                 }
-                if name.to_lowercase().contains(&query) {
+                if query.matches([text::friend_name(f)]) {
                     friends.push(row);
                 }
             }

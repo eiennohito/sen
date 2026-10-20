@@ -170,7 +170,6 @@ mod tests {
                 state: AppState::default(),
                 presenter: Default::default(),
                 sender: worker.sender.clone(),
-                query: String::new(),
                 category: ChatCategory::All,
             };
             let receive = |reason: &str| {
