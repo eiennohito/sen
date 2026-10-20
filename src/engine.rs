@@ -3071,11 +3071,6 @@ impl Engine {
                     rows.push(row);
                 }
             }
-            if self.connection != Connection::Online {
-                for c in &mut rows {
-                    c.chat.unread_stale = true;
-                }
-            }
             let keys = all
                 .iter()
                 .map(|r| r.chat.id.clone())
