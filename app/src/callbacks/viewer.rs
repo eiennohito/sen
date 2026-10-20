@@ -2,6 +2,9 @@ use crate::ViewerState as G;
 use crate::*;
 
 pub(super) fn install(ui: &AppWindow, actions: &Runtime) {
+    global_callback!(ui, actions, G, on_retry_original, |ui, d| {
+        d.retry_original(&ui);
+    });
     global_callback!(ui, actions, G, on_open_photo, |ui, d, key| {
         d.open_photo(&ui, key.as_str());
     });

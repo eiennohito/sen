@@ -293,6 +293,15 @@ impl Fetchers {
         }
     }
 
+    pub fn retry_original(&self, asset: Asset) -> bool {
+        self.shared.failures.clear(&asset.key());
+        self.enqueue_job(Job {
+            asset,
+            purpose: Purpose::Original,
+            bypass: true,
+        })
+    }
+
     pub fn failure(&self, key: &str) -> Option<Failure> {
         self.shared
             .failures
@@ -437,7 +446,9 @@ fn fetch(
             Ok(Payload::Image(path))
         }
         Purpose::Original => {
-            if let Some((path, source)) = cache.lock().unwrap().read_original(&job.asset)? {
+            if !job.bypass
+                && let Some((path, source)) = cache.lock().unwrap().read_original(&job.asset)?
+            {
                 return Ok(Payload::Original { path, source });
             }
             let bytes = download()?;

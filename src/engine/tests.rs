@@ -1022,7 +1022,7 @@ fn logout_deletes_only_the_requested_account_after_joining_writers() -> anyhow::
         e.in_flight.insert(("self".into(), key));
         e.media = Some(AssetRequests {
             stop: Arc::new(CancelToken::new()),
-            request: Arc::new(|_, _| {}),
+            request: Arc::new(|_, _, _| {}),
             retry: Arc::new(|_| {}),
             join: Arc::new(move || {
                 fs::create_dir_all(output.parent().unwrap()).unwrap();

@@ -49,7 +49,7 @@ pub struct AssetRequests {
     pub join: Arc<dyn Fn() + Send + Sync>,
     pub stop: Arc<CancelToken>,
     pub request: Arc<
-        dyn Fn(crate::client::desktop::assets::Asset, crate::client::desktop::assets::Purpose)
+        dyn Fn(crate::client::desktop::assets::Asset, crate::client::desktop::assets::Purpose, bool)
             + Send
             + Sync,
     >,
@@ -423,8 +423,12 @@ impl Backend for LineBackend {
         deliver(StreamEvent::AssetRequests(AssetRequests {
             join: Arc::new(move || join.stop_and_join()),
             stop: queue_stop,
-            request: Arc::new(move |asset, purpose| {
-                requests.enqueue(asset, purpose);
+            request: Arc::new(move |asset, purpose, retry| {
+                if retry {
+                    requests.retry_original(asset);
+                } else {
+                    requests.enqueue(asset, purpose);
+                }
             }),
             retry: Arc::new(move |key| {
                 retry.retry(&key);
@@ -846,7 +850,7 @@ mod tests {
             let StreamEvent::AssetRequests(queue) = pending.recv_timeout(WAIT).unwrap() else {
                 panic!("missing asset request queue");
             };
-            (queue.request)(asset.clone(), assets::Purpose::Thumbnail);
+            (queue.request)(asset.clone(), assets::Purpose::Thumbnail, false);
             let StreamEvent::Asset(done) = pending.recv_timeout(WAIT).unwrap() else {
                 panic!("missing asset completion");
             };

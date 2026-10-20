@@ -945,3 +945,46 @@ fn unauthorized_download_renews_and_retries_only_once() {
         assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 }
+
+#[test]
+fn retrying_original_clears_only_its_retained_failure() {
+    let count = Arc::new(AtomicU64::new(0));
+    let seen = count.clone();
+    let (base, http, requests, server) = local_server(3, move |_, stream| {
+        if seen.fetch_add(1, Ordering::SeqCst) < 2 {
+            respond(stream, b"broken image");
+        } else {
+            respond(stream, &png());
+        }
+    });
+    let (_root, cache) = Cache::new();
+    let (tx, rx) = mpsc::channel();
+    let fetchers = Fetchers::start(
+        http,
+        cache.clone(),
+        Arc::default(),
+        Failures::default(),
+        |_, _| Ok(None),
+        move |done, _| {
+            tx.send(done).unwrap();
+        },
+    );
+    let first = avatar(&base, 1).original().unwrap();
+    let other = avatar(&base, 2).original().unwrap();
+    for asset in [&first, &other] {
+        fetchers.enqueue(asset.clone(), Purpose::Original);
+        assert!(matches!(
+            rx.recv_timeout(WAIT).unwrap().result,
+            Err(Failure::Decode)
+        ));
+        requests.recv_timeout(WAIT).unwrap();
+    }
+    cache.lock().unwrap().original(&first, &png()).unwrap();
+    fetchers.retry_original(first.clone());
+    let done = rx.recv_timeout(WAIT).unwrap();
+    assert_eq!(done.key, first.key());
+    assert!(matches!(done.result, Ok(Payload::Original { .. })));
+    assert_eq!(fetchers.failure(&other.key()), Some(Failure::Decode));
+    requests.recv_timeout(WAIT).unwrap();
+    server.join().unwrap();
+}

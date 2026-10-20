@@ -1251,6 +1251,11 @@ def check_layers():
     click("Chats", "Button")
     demo_scenario("Photo preview")
     click("Open photo", "Button")
+    wait_element("Retry", "Button")
+    assert is_focused(element("Retry", "Button")), "failed original did not focus Retry"
+    key("\n")
+    wait_for(lambda: any("1200 × 800" in item.get("accessibleLabel", "") for item in tree()), "Retry did not load the original")
+    assert not any(item.get("accessibleLabel") == "Retry" for item in tree()), "Retry remained after success"
     click("Next", "Button")
     wait_for(lambda: any("800 × 1200" in item.get("accessibleLabel", "") for item in tree()), "Next left the loaded photo scope")
     click("Previous", "Button")

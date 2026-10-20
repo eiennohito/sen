@@ -128,7 +128,10 @@ pub enum Intent {
     ProfileAction(ProfileAction),
     Members(ChatId),
     Asset(crate::client::desktop::assets::Asset),
-    Original(crate::client::desktop::assets::Asset),
+    Original {
+        asset: crate::client::desktop::assets::Asset,
+        retry: bool,
+    },
     File {
         asset: crate::client::desktop::assets::Asset,
         name: String,
@@ -191,7 +194,7 @@ impl Intent {
             Self::ProfileAction(_) => "profile-action",
             Self::Members(_) => "members",
             Self::Asset(_) => "asset",
-            Self::Original(_) => "original",
+            Self::Original { .. } => "original",
             Self::File { .. } => "file",
             Self::RetryAsset(_) => "retry-asset",
             Self::Page { .. } => "page",
@@ -226,7 +229,7 @@ fn account_allows(intent: &Intent, ready: bool, known: bool) -> bool {
         | Intent::Window(_)
         | Intent::Page { .. }
         | Intent::Asset(_)
-        | Intent::Original(_)
+        | Intent::Original { .. }
         | Intent::File { .. }
         | Intent::Draft { .. }
         | Intent::Copy(_)
@@ -765,6 +768,7 @@ struct Engine {
     waiting_assets: VecDeque<(
         crate::client::desktop::assets::Asset,
         crate::client::desktop::assets::Purpose,
+        bool,
     )>,
     waiting_retries: Vec<String>,
     refresh_failures: BTreeSet<Refresh>,
@@ -1804,15 +1808,20 @@ impl Engine {
                 });
                 self.inbox.refresh(Refresh::Members(chat));
             }
-            Intent::Asset(asset) => {
-                self.asset(asset, crate::client::desktop::assets::Purpose::Thumbnail)?
-            }
-            Intent::Original(asset) => {
-                self.asset(asset, crate::client::desktop::assets::Purpose::Original)?
-            }
+            Intent::Asset(asset) => self.asset(
+                asset,
+                crate::client::desktop::assets::Purpose::Thumbnail,
+                false,
+            )?,
+            Intent::Original { asset, retry } => self.asset(
+                asset,
+                crate::client::desktop::assets::Purpose::Original,
+                retry,
+            )?,
             Intent::File { asset, name } => self.asset(
                 asset,
                 crate::client::desktop::assets::Purpose::File { name },
+                false,
             )?,
             Intent::RetryAsset(key) => {
                 if let Some(media) = &self.media {
@@ -2694,6 +2703,7 @@ impl Engine {
         &mut self,
         asset: crate::client::desktop::assets::Asset,
         purpose: crate::client::desktop::assets::Purpose,
+        retry: bool,
     ) -> Result<()> {
         if !self.known() {
             let mid = self.store.account()?.own_mid;
@@ -2724,9 +2734,9 @@ impl Engine {
                 },
             );
         } else if let Some(media) = &self.media {
-            (media.request)(asset, purpose);
+            (media.request)(asset, purpose, retry);
         } else {
-            self.waiting_assets.push_back((asset, purpose));
+            self.waiting_assets.push_back((asset, purpose, retry));
         }
         Ok(())
     }
@@ -2771,8 +2781,8 @@ impl Engine {
                 self.resync(revision, complete)?;
             }
             StreamEvent::AssetRequests(media) => {
-                for (asset, purpose) in self.waiting_assets.drain(..) {
-                    (media.request)(asset, purpose);
+                for (asset, purpose, retry) in self.waiting_assets.drain(..) {
+                    (media.request)(asset, purpose, retry);
                 }
                 for key in self.waiting_retries.drain(..) {
                     (media.retry)(key);
