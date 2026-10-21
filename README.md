@@ -2,10 +2,14 @@
 
 ![閃 icon](app/assets/icon.svg)
 
-An unofficial, fast desktop client for the [LINE](https://line.me) messenger on
-Linux, written in Rust with [Slint](https://slint.dev).
+An unofficial, fast desktop client for the [LINE](https://line.me) (not 線)
+messenger on Linux, written in Rust with [Slint](https://slint.dev).
 
-閃 (*sen*) is a flash, a fast sword cut: a play on 線 (also *sen*, "line").
+<p>
+<a href="docs/screenshots/chat.webp"><img src="docs/screenshots/chat.webp" width="41%" alt="A conversation in Japanese and English"></a>
+<a href="docs/screenshots/narrow.webp"><img src="docs/screenshots/narrow.webp" width="15%" alt="The same conversation in a narrow window"></a>
+<a href="docs/screenshots/group-dark.webp"><img src="docs/screenshots/group-dark.webp" width="41%" alt="A group chat in the dark theme"></a>
+</p>
 
 ## tl;dr
 
@@ -38,6 +42,11 @@ directed them, tested the app and fixed what was broken, but I mostly did not
 read the source, apart from the worst problems. Expect it to look like that in
 places. Bug reports with steps to reproduce are welcome.
 
+| | |
+|---|---|
+| [![Reactions and who reacted, with Remove your reaction](docs/screenshots/reactions.webp)](docs/screenshots/reactions.webp) | [![Friends and a profile](docs/screenshots/friends.webp)](docs/screenshots/friends.webp) |
+| [![Sign in with a QR code](docs/screenshots/sign-in.webp)](docs/screenshots/sign-in.webp) | [![Settings](docs/screenshots/settings.webp)](docs/screenshots/settings.webp) |
+
 ## What works
 
 - Chats, groups and friends, with search across kana and romaji.
@@ -61,8 +70,7 @@ supported yet".
 LINE for Chrome talks JSON over HTTPS to LINE's Chrome gateway and does
 end-to-end encryption (Letter Sealing) in a WebAssembly module. 閃 implements
 that protocol in Rust and runs the extension's unmodified `ltsm.wasm` with
-[wasmi](https://github.com/wasmi-labs/wasmi) for the crypto. The module is
-never copied or redistributed. At startup 閃 looks for the newest installed
+[wasmi](https://github.com/wasmi-labs/wasmi) for the crypto. At startup 閃 looks for the newest installed
 extension (`ophjlpahpchlmihnnnihgmmeilfjmjjc`) in Chrome and Chromium profiles
 under `$XDG_CONFIG_HOME` (default `~/.config`), loads `static/js/ltsm.wasm` and
 uses the extension's version for requests. Reaction artwork is also loaded from
@@ -79,20 +87,20 @@ hyper with rustls and WebPKI roots. SQLite holds the local history. See
   (`application=sen`). Deleting that keyring item signs you out.
 - **History, drafts, preferences and the outbox**: one unencrypted SQLite
   database per account at `$XDG_DATA_HOME/sen/<mid>/store.sqlite3`, with no age
-  or size limit. Store format changes are migrated, never wiped.
+  or size limit.
 - **Image cache**: `$XDG_CACHE_HOME/sen/<mid>/` (default `~/.cache/sen/`),
   private files, 128 MiB LRU. It is safe to delete.
 - **Emoji font**: colour emoji use Noto Color Emoji (OFL-1.1). If your system
   doesn't have a usable copy, 閃 downloads it once from jsDelivr into
-  `$XDG_DATA_HOME/sen/fonts/` and checks for updates at most every 30 days. No
-  account information is sent. Without it, emoji fall back to system fonts.
+  `$XDG_DATA_HOME/sen/fonts/` and checks for updates at most every 30 days.
+  Without it, emoji fall back to system fonts.
 
 閃 talks only to LINE's servers and, for the font, to jsDelivr.
 
 ## Install details
 
-`tools/install-desktop.py` installs a plain release build (it refuses demo and
-debug builds) to XDG locations for the current user: the `sen` binary, the
+`tools/install-desktop.py` installs a release build to XDG locations for the
+current user: the `sen` binary, the
 icon, a `.desktop` launcher and a D-Bus activation service. `--destdir DIR`
 stages `bin/` and `share/` instead, without refreshing desktop caches. The
 Wayland app id and X11 class are `org.senclient.Sen`.
@@ -113,7 +121,8 @@ cargo run --release -p sen-desktop --features demo -- --demo
 
 F12 opens demo scenarios and `--demo-dark` selects the dark palette.
 `--snapshot FILE` renders headless, for example
-`--demo --snapshot-scene photos --snapshot shot.ppm --snapshot-size 360x520`.
+`--demo --snapshot-scene photos --snapshot shot.ppm --snapshot-size 360x520`;
+`--demo-scale 2` renders at HiDPI (`--scale 2` for the UI checker).
 
 Checks:
 
@@ -130,8 +139,7 @@ Desktop service tests are ignored by default. Run them only on a private bus:
 dbus-run-session -- env SEN_TEST_BUS=1 cargo test -p sen-desktop -- --ignored
 ```
 
-The UI checker drives a headless `ui-debug` build (MCP on loopback, synthetic
-accounts, private D-Bus and XDG directories) and builds nothing itself:
+The UI checker drives a headless `ui-debug` build:
 
 ```sh
 cargo build --profile fast -p sen-desktop --features ui-debug
@@ -141,30 +149,27 @@ python3 tools/check-ui-mcp.py --group rich --screenshots target/shots --binary t
 
 It prints a seed (`--seed N` reproduces the order) and per-group results.
 `python3 tools/run_ui_debug.py --binary target/fast/sen --port 9447 -- --demo`
-starts the same private headless instance for manual inspection.
+starts a headless instance for manual inspection.
 
 For emoji in development builds, `python3 tools/fetch_emoji_font.py` (needs
 python3-fonttools) fetches the font into the gitignored `fonts/`, and
 `SEN_EMOJI_FONT="$PWD/fonts/NotoColorEmoji.ttf"` uses it without downloading.
 The checker and launcher set this automatically.
 
-The crypto harness tests the module against synthetic fixtures:
+The crypto harness tests the module against the fixtures:
 
 ```sh
 cargo run --release --features harness --example crypto-harness
 ```
 
-Never commit credentials, captures or HAR files: `artifacts/` and `dumps/` are
-gitignored for that. Checked-in fixtures are synthetic.
-
 ## Licence
 
-閃 is licensed under the [GNU GPL v3](LICENSE) (`GPL-3.0-only`), in line with
-Slint's GPL option. Vendored and patched crates keep their own licences: Slint's
-software renderer (GPL-3.0-only among its options) and parley (Apache-2.0 or
-MIT) under [third_party/](third_party/README.md). The WASM binding conventions
-are informed by beeper/line (MIT, [licence](licenses/beeper-line-MIT.txt)).
-Noto Color Emoji is OFL-1.1 and is downloaded, never bundled.
+閃 is licensed under the [GNU GPL v3](LICENSE) (`GPL-3.0-only`). Vendored and
+patched crates keep their own licences: Slint's software renderer
+(GPL-3.0-only among its options) and parley (Apache-2.0 or MIT) under
+[third_party/](third_party/README.md). The WASM binding conventions follow
+beeper/line (MIT, [licence](licenses/beeper-line-MIT.txt)). Noto Color Emoji
+is OFL-1.1.
 
 LINE is a trademark of LY Corporation. 閃 is not affiliated with or endorsed by
 LY Corporation.
