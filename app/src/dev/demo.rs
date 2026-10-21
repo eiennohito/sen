@@ -11,6 +11,7 @@ pub(crate) struct Args {
     pub snapshot_path: Option<String>,
     pub size: (u32, u32),
     pub text_size: i32,
+    pub scale: f32,
     pub scene: String,
     pub case: Option<String>,
     pub dark: bool,
@@ -24,6 +25,7 @@ impl Default for Args {
             snapshot_path: None,
             size: (980, 720),
             text_size: 15,
+            scale: 1.0,
             scene: String::new(),
             case: None,
             dark: false,
@@ -60,6 +62,7 @@ impl Args {
                 self.text_size = args.next().ok_or("missing text size")?.parse()?
             }
             "--snapshot-scene" => self.scene = args.next().ok_or("missing scene")?,
+            "--demo-scale" => self.scale = args.next().ok_or("missing scale")?.parse()?,
             _ => return Ok(false),
         }
         Ok(true)

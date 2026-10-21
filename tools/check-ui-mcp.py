@@ -1975,6 +1975,7 @@ def main():
     parser.add_argument('--wide', action='store_true', help='Use a 1280×900 demo for selected groups')
     parser.add_argument('--binary', type=Path, default=ROOT / 'target/release/sen')
     parser.add_argument('--screenshots', type=Path, help='Save group and intermediate surface screenshots in this directory')
+    parser.add_argument('--scale', type=float, default=1, help='Device scale, e.g. 2 for HiDPI screenshots; pixel geometry checks assume 1')
     args = parser.parse_args()
     if args.all and (args.group or args.wide):
         parser.error('--all supplies the groups and window sizes')
@@ -2010,6 +2011,8 @@ def main():
             command += ['--dark']
         if args.screenshots:
             command += ['--screenshots', str(args.screenshots)]
+        if args.scale != 1:
+            command += ['--scale', str(args.scale)]
         if args.screenshots and capture:
             try:
                 screenshot('failure')
@@ -2028,6 +2031,8 @@ def main():
             reservation.bind(('127.0.0.1', 0))
             args.port = reservation.getsockname()[1]
         flags = ['--demo-size', f'{width}x{900 if args.wide else 720}']
+        if args.scale != 1:
+            flags += ['--demo-scale', str(args.scale)]
         if args.dark:
             flags += ['--demo-dark']
         if groups[0] in ('signed-out', 'missing-module'):

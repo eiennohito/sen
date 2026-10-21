@@ -118,10 +118,23 @@ impl Session {
         fake: Option<&FakeBackend>,
     ) -> Result<AppWindow, slint::PlatformError> {
         let ui = window::create_app_window()?;
-        ui.window().set_size(slint::LogicalSize::new(
-            self.args.size.0 as f32,
-            self.args.size.1 as f32,
-        ));
+        let (width, height) = (self.args.size.0 as f32, self.args.size.1 as f32);
+        // Headless snapshots and UI checks render at --demo-scale (2 for HiDPI captures),
+        // sized in physical pixels: the testing backend converts logical sizes at scale 1.
+        // Desktop windows keep the system's scale.
+        if self.snapshot.is_some() || self.args.background {
+            let scale = self.args.scale;
+            ui.window()
+                .dispatch_event(slint::platform::WindowEvent::ScaleFactorChanged {
+                    scale_factor: scale,
+                });
+            ui.window().set_size(slint::PhysicalSize::new(
+                (width * scale).round() as u32,
+                (height * scale).round() as u32,
+            ));
+        } else {
+            ui.window().set_size(slint::LogicalSize::new(width, height));
+        }
         window::configure(
             &ui,
             d,
@@ -200,7 +213,9 @@ impl Session {
         }
         if let (Some(window), Some(path)) = (self.snapshot.as_ref(), args.snapshot_path.as_ref()) {
             ui.show()?;
-            snapshot::save(window, path, args.size)?;
+            let (width, height) = args.size;
+            let scaled = |v: u32| (v as f32 * args.scale).round() as u32;
+            snapshot::save(window, path, (scaled(width), scaled(height)))?;
             ui.hide()?;
         }
         Ok(false)
