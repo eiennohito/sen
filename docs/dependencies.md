@@ -1,7 +1,8 @@
 # Dependencies
 
-閃 is a single statically linked binary. Every direct dependency adds code,
-build time and an update surface, so each one has to earn its place.
+The rules for adding crates and why each direct dependency is there. Every
+direct dependency adds code, build time and an update surface, so each one
+has to earn its place.
 
 ## Rules
 
@@ -18,7 +19,7 @@ build time and an update surface, so each one has to earn its place.
   and crypto path keep their exact pins.
 - **Nothing is embedded that can be loaded.** LINE's crypto WASM and
   reaction artwork come from the installed Chrome extension at runtime. The
-  emoji font is installed on the system or downloaded (#68). None of these
+  emoji font is installed on the system or downloaded. None of these
   is copied into the repository.
 - **Test-only crates go in `[dev-dependencies]`**, never in the product
   dependency list.
@@ -58,7 +59,7 @@ certificate), `zbus` with `p2p` (private-bus keyring tests).
 | slint, i-slint-core | UI: software renderer, winit backend, accessibility; `i-slint-core` for the keyboard-focus hook, window adapter access and font cache invalidation that Slint does not expose publicly |
 | i-slint-backend-selector (`ui-debug` only) | The MCP automation server used by `tools/check-ui-mcp.py` |
 | sen, sen-ui | Core and the generated UI |
-| icu_normalizer | NFKC for Japanese search (#56); already in the graph, pinned to that version |
+| icu_normalizer | NFKC for Japanese search; already in the graph, pinned to that version |
 | unicode-segmentation, unicode-linebreak | Grapheme-safe eliding and line breaking in rich text |
 | chrono | Local dates and times in the message list |
 | image (png) | Pasted clipboard images (decoding and re-encoding) |

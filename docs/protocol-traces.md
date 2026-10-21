@@ -1,12 +1,12 @@
 # Protocol traces (LINE Chrome 3.7.2, 2026-10-18)
 
-Captured live from the user-driven Chrome extension with
-`tools/capture-line-protocol.mjs` (two passes). Shapes only: `<str:N>` is a
-string of N characters, `<digits:N>` a numeric string, `<num>` a large number,
-`<mid>`/44-character strings are opaque encrypted MIDs as returned by the API.
-The raw shape traces and reference screenshots are local in
-`artifacts/captures/2026-10-18T07-*` (ignored by Git; screenshots contain
-account content). All RPCs are `POST https://line-chrome-gw.line-apps.com/api/talk/thrift/<Service>/<method>`
+The LINE for Chrome protocol as 閃 implements it: shapes captured from the
+extension and call shapes read from its public `main.js`. Captures were taken
+live from a manually driven extension with `tools/capture-line-protocol.mjs`
+(two passes). Shapes only: `<str:N>` is a string of N characters, `<digits:N>`
+a numeric string, `<num>` a large number, `<mid>`/44-character strings are
+opaque encrypted MIDs as returned by the API. Raw traces and reference
+screenshots contain account content and are not in the repository. All RPCs are `POST https://line-chrome-gw.line-apps.com/api/talk/thrift/<Service>/<method>`
 with a JSON array body, unless a full URL is given; responses are
 `{"code":0,"message":"OK","data":…}`. Method names hidden by the first pass
 were recovered from the extension's own path table (`SD("…")` in `main.js`).
@@ -37,23 +37,23 @@ From the extension's `OpType` enum; ✓ = observed in this capture.
 | 139 ✓ | SEND_REACTION | `param1` message id, `param2` JSON string `{"chatMid", "curr":{"predefinedReactionType":N}}` |
 | 140 | NOTIFIED_SEND_REACTION | expected same shape as 139 for others' reactions (inferred) |
 
-## Reactions (T5)
+## Reactions
 
 `TalkService/react` `[{"reqSeq":<num>,"messageId":"<digits:18>","reactionType":{"predefinedReactionType":2}}]` → `{}`.
 Live: operation 139 (own, any device), 140 (others, inferred). Message pages
 carry `reactions: [{fromUserMid, atMillis, reactionType:{predefinedReactionType | paidReactionType:{productId, emojiId, resourceType, version}}}]`.
 
-## Official-account images (P1)
+## Official-account images
 
 OA image messages (`contentType` 1, `toType` 0, no `chunks`, no `SID`/`OID`)
 carry `contentMetadata` keys `PREVIEW_URL`, `DOWNLOAD_URL` (both on
 `manager.line-scdn.net`), `PUBLIC`, `BOT_CHECK`, `BOT_TRACK`,
 `NOTIFICATION_DISABLED`, `seq`. Chrome fetches `PREVIEW_URL`
 (`https://manager.line-scdn.net/<id>/clearpreview`) directly, without the obs
-route. The current client builds `obs.line-apps.com/r/talk/m/<id>/preview` for
-these and gets 404.
+route (the obs preview route returns 404 for these). 閃 does the same,
+accepting only `manager.line-scdn.net` URLs.
 
-## Stickers (P2)
+## Stickers
 
 Send: `TalkService/sendMessage` `[<reqSeq>, {"from","to","toType":0,"id":"<str:15 local>","createdTime","sessionId":0,"contentType":7,"contentMetadata":{"STKPKGID":"617","STKID":"<digits>","STKTXT":"<str>","STKVER":"9"},"hasContent":true}]`
 (no E2EE chunks) → the stored message with server `id`. Echo: operation 25.
@@ -77,7 +77,7 @@ Products have
 images: `…/stickershop/v1/sticker/<id>/android/sticker.png`, emoji
 `…/sticonshop/v1/sticon/<product>/android/<nnn>.png` (`_animation.png` variant).
 
-## Image and file sending (P3)
+## Image and file sending
 
 Image, E2EE (flow observed in order):
 1. `TalkService/acquireEncryptedAccessToken` `[2]` → string (1287 chars): token for obs.
@@ -97,7 +97,7 @@ is not in the server configuration `function.file.extension.whitelist`
 a "Send compressed" dialog whose "always compress" checkbox defaults to on
 (`main.js`, `compressFile`).
 
-## Profiles and contacts (P6, U)
+## Profiles and contacts
 
 - Cover: `GET …/api/timeline/getCover?targetMid=<mid>&myMid=<mid>&myRegion=JP`
   → `{profileId, coverObsInfo:{obsNamespace:"c", serviceName, objectId}, isDefaultCover}`;
@@ -114,7 +114,7 @@ a "Send compressed" dialog whose "always compress" checkbox defaults to on
 Non-friends cannot be messaged from a profile in Chrome: the card offers
 Report, Block and Add friend only, with the fraud notice.
 
-## Groups (P5)
+## Groups
 
 - Mute (notification toggle) and other chat attributes: `TalkService/updateChat`
   `[{"reqSeq","chat":{full chat object incl. notificationDisabled, chatName, picturePath, extra.groupExtra}, …}]` → `{}`;
@@ -127,14 +127,14 @@ Report, Block and Add friend only, with the fraud notice.
 Request shapes read from the extension's call sites. Response handling is
 inferred.
 
-- Own profile (from main.js source, not captured): `POST /api/talk/thrift/Talk/TalkService/updateProfileAttributes` `[<reqSeq>, {"profileAttributes":{"2":{"value":"<display name>","meta":{}}}}]` or `[<reqSeq>, {"profileAttributes":{"16":{"value":"<status message>","meta":{}}}}]`. `fj = SD("talk/thrift/Talk/TalkService/updateProfileAttributes")`; enum `CU.DISPLAY_NAME = 2`, `CU.STATUS_MESSAGE = 16`. Name editor `K0` passes `maxLength:20` to `JJ`, which trims on submit, displays `(length/20)`, disables submission while loading; `K0` refuses whitespace-only names. Status editor `t0` uses `maxRawLength:500`, displays `(currentCount/500)`, permits empty text and submits the editor's text and metadata. For plain text, metadata is `{}`; 閃 edits plain text, without the extension's inline sticker picker. Limits/counts follow JavaScript UTF-16 string length. Operation `1` (`UPDATE_PROFILE`) invokes `jS`, which fetches the own profile again; no `param1` is required. These calls and limits were read from LINE Chrome 3.7.2's public source, never sent to a real account.
+- Own profile: `POST /api/talk/thrift/Talk/TalkService/updateProfileAttributes` `[<reqSeq>, {"profileAttributes":{"2":{"value":"<display name>","meta":{}}}}]` or `[<reqSeq>, {"profileAttributes":{"16":{"value":"<status message>","meta":{}}}}]`. `fj = SD("talk/thrift/Talk/TalkService/updateProfileAttributes")`; enum `CU.DISPLAY_NAME = 2`, `CU.STATUS_MESSAGE = 16`. Name editor `K0` passes `maxLength:20` to `JJ`, which trims on submit, displays `(length/20)`, disables submission while loading; `K0` refuses whitespace-only names. Status editor `t0` uses `maxRawLength:500`, displays `(currentCount/500)`, permits empty text and submits the editor's text and metadata. For plain text, metadata is `{}`; 閃 edits plain text, without the extension's inline sticker picker. Limits/counts follow JavaScript UTF-16 string length. Operation `1` (`UPDATE_PROFILE`) invokes `jS`, which fetches the own profile again; no `param1` is required.
 - React: `TalkService/react` `[{"reqSeq","messageId","reactionType":{"predefinedReactionType":N}}]`, with N one of 2 NICE, 3 LOVE, 4 FUN, 5 AMAZING, 6 SAD, 7 OMG. Picking the current reaction again cancels it: `TalkService/cancelReaction` `[{"reqSeq","messageId"}]`.
 - Update a chat: `TalkService/updateChat` `[{"reqSeq","chat":{…full chat with the one field changed},"updatedAttribute":N}]`, where N is one of 1 NAME, 2 PICTURE_STATUS, 4 PREVENTED_JOIN_BY_TICKET, 8 NOTIFICATION_SETTING (`notificationDisabled`), 16 INVITATION_TICKET, 32 FAVORITE_TIMESTAMP (`favoriteTimestamp` as a string, "0" to clear), 64 CHAT_TYPE.
 - Create a group or room: `TalkService/createChat` `[{"reqSeq","type":0 GROUP|1 ROOM,"name":"<trimmed or empty>","targetUserMids":[…without self]}]` → `{chat:{chatMid,…}}`. A 1:1 chat with a friend needs no call: the first `sendMessage` to the friend's MID creates it.
 
 ## Media upload, E2EE V2 (from `main.js` source)
 
-This complements the captured flow in "Image and file sending (P3)". The
+This complements the captured flow in "Image and file sending". The
 pieces the capture redacted come from the extension's upload code.
 
 1. The message's `contentMetadata.ENC_KM` holds the key material: random, base64-encoded 32 bytes. Both the file and its preview are encrypted with it, using the same scheme received media are decrypted with (`assets.rs`). It travels inside the sealed chunks, never in plaintext metadata.
@@ -156,7 +156,7 @@ for two own file messages). Live: operation 64 DESTROY_MESSAGE (`param1` chat,
 NOTIFIED_DESTROY_MESSAGE (inferred from the enum). Chrome replaces the message
 with a centred system pill "Message unsent." rather than a bubble.
 
-## Startup sequence (reference for D4/D5)
+## Startup sequence
 
 `getProfile`, `getEncryptedIdentityV3 []` (→ `wrappedNonce`, KDF parameters for
 local storage), `getServerTime`, `getLastOpRevision`, `getConfigurations`,
@@ -169,9 +169,9 @@ in parallel with `getAllContactIds`, `getAllChatMids`, `getMessageBoxes`,
 `getMessageReadRange`; link previews via
 `GET https://legy-jp.line-apps.com/sc/api/v2/pageinfo/get?url=…&caller=LINE_CHROME`.
 
-## Reference screenshots (U0)
+## Reference screenshots
 
-Local only. Friend profile (cover band, 96 px-class circular avatar overlapping
+Not in the repository. Friend profile (cover band, 96 px-class circular avatar overlapping
 it, name with rename pencil, status line, favourite star, bottom bar with a
 single chat action), non-friend profile (Report button, fraud notice, bottom bar
 Block and Add friend, no chat), group info popup (photo with camera badge, name
@@ -180,7 +180,7 @@ with pencil, member search, Invite friends, collapsible "Members N" with remove
 Friends N with checkboxes, selection pane, Invite). Profiles open in LINE's
 separate popup window; the main window keeps the chat.
 
-## Chat events (extension source, 2026-10-19)
+## Chat events (from main.js source)
 
 `main.js` defines `CHATEVENT = 18`. `contentMetadata.LOC_KEY` selects
 an event; `LOC_ARGS` splits on record separator U+001E into argument groups,
@@ -197,7 +197,7 @@ nothing (the extension also blanks keys when removing an event).
 | C_ML / A_ML | member MID | Member left |
 | C_GI / C_MI / A_MC / A_MI | actor MID; invitee MIDs | Invited/added members |
 | C_MR / A_MR | actor MID; member MID | Member removed |
-| C_IC / A_IC | actor MID; invitee MID | Invitation canceled |
+| C_IC / A_IC | actor MID; invitee MID | Invitation cancelled |
 | C_SP / C_SN | actor MID | Joining via link/QR allowed / disabled (as mapped by extension) |
 | C_BG | none | Chat upgraded to group |
 | pseudo_leave_chat | literal display name | Locally synthesized departure |
@@ -214,15 +214,12 @@ sentences. Synthetic example:
 `{"contentType":18,"contentMetadata":{"LOC_KEY":"C_PN","LOC_ARGS":"aoi\u001eWeekend plans"}}`.
 
 Unread count is message-box metadata, independent of history projection.
-Recent/older decoding retains unsupported types as `Content::Unknown`.
-Read exposure previously required a fully visible rendered row, so an empty
-or omitted tail had no marker target even with a server newest-ID hint.
-At the loaded history bottom the app now covers that hint; unknown event
-rows remain stored and unsupported content gets an explicit bubble.
-The offline “Official hidden events” chat reproduces two unread events
-with no visible message rows.
+Recent/older decoding keeps unsupported types as `Content::Unknown`, and they
+show as an unsupported-message bubble. Reaching the bottom of the loaded
+history also marks trailing events with no visible row as read, so their
+unread count clears; the demo chat "Official hidden events" reproduces this.
 
-## Replies, checked markers, reactions, and profile status (2026-10-19)
+## Replies, checked markers, reactions, and profile status
 
 Source inspection: installed LINE Chrome 3.7.2 `static/js/main.js`, offline;
 these are extension call shapes, not a live capture.
@@ -246,7 +243,7 @@ these are extension call shapes, not a live capture.
   merges these fields onto the `sendMessage` message object, outside
   `contentMetadata` and outside the encrypted text payload. They survive retries.
   The attachment enqueue callback receives only the files and no relation;
-  attachments therefore follow the extension's behavior without a reply.
+  attachments therefore follow the extension's behaviour without a reply.
 - Contacts/profile status use `statusMessage` with
   `statusMessageContentMetadata`. The extension passes both to `s1`, the same
   rich text renderer used for messages. `REPLACE.sticon.resources` has the same
@@ -254,9 +251,8 @@ these are extension call shapes, not a live capture.
   this metadata, parenthesized codes remain literal text. Status metadata is
   persisted with contacts and rendered through the existing emoji preview path.
 
-## Logout (2026-10-20; from main.js source, not captured)
+## Logout (from main.js source)
 
-Read only the installed LINE Chrome 3.7.2 manifest and `static/js/main.js`.
 The path table defines `sj = SD("talk/thrift/Talk/AuthService/logoutV2")`.
 The logout handler `xT` awaits `sj({ignoreTalkAuthException: true})` and
 performs local cleanup in `finally`. `SD(e,t)` returns `(n={}, ...r)`;
@@ -266,15 +262,13 @@ performs local cleanup in `finally`. `SD(e,t)` returns `(n={}, ...r)`;
 - Service: `AuthService` (under `Talk`)
 - Arguments: `[]`; `ignoreTalkAuthException` is not a wire argument.
 
-Sen uses the existing authenticated/signed request, with a three-second
-whole-request timeout and no refresh/retry. Server errors are logged and do
-not prevent local logout. Loopback tests verify the path and argument array;
-the real call remains live unverified.
+閃 sends it as one authenticated request with a three-second timeout and no
+token refresh or retry. Server errors are logged and do not prevent the local
+logout.
 
-## Flex messages (2026-10-21; from main.js source, not captured)
+## Flex messages (from main.js source)
 
-Read only LINE Chrome 3.7.2's public manifest and `static/js/main.js` in
-`ophjlpahpchlmihnnnihgmmeilfjmjjc/3.7.2_0`. The content-type enum maps
+The content-type enum maps
 `FLEX` to 22. `ZQ` reads `message.contentMetadata.FLEX_JSON` and passes it
 through `MR`, which JSON-parses strings and accepts an already parsed object.
 The history dispatcher routes `EU.FLEX` to `ZQ`; the preview/copy text paths
@@ -288,28 +282,23 @@ The parsed source is a `bubble` (header, hero, body, footer) or `carousel`
 renderer (including `flex-box`/`flex-text`, shadow DOM and carousel sizing).
 Its action callback handles `type: "uri"` using `action.uri`; message,
 postback and datetimepicker actions are converted to `linepostback:` URLs.
-Sen extracts readable text in section/contents order and URI action labels
+閃 extracts readable text in section/contents order and URI action labels
 and addresses; only HTTP(S) actions become desktop links. Unknown component
-types and non-URI actions are skipped. Text weight/layout/images are omitted;
-missing or blank alt text uses “Flex message”. With no extracted lines the
-bubble shows alt text and “Open on your phone”. Fixtures are synthetic.
+types and non-URI actions are skipped. Text weight, layout and images are
+omitted; missing or blank alt text uses "Flex message". With no extracted
+lines the bubble shows the alt text and "Open on your phone". Fixtures are
+synthetic.
 
-The store saves parsed `body_json`, not raw wire messages. Existing
-`{"Unknown":{"content_type":22}}` rows still load and show the generic
-unsupported card. A subsequent fetch of the same message replaces Unknown-22
-with Flex even at the same or an older fetch revision, preserving the stored
-revision and other metadata; this does not force a network fetch or change
-the store version. The history audit also found unknown/incomplete
-System events hidden by the presenter despite being eligible for unread
-counts. They now show the generic unsupported card when `skip_badge` is false;
-known service events retain their existing presentation. Unknown bodies
-already reached history and now use the same generic card styling.
+The store saves parsed `body_json`, not raw wire messages. Rows stored as
+`{"Unknown":{"content_type":22}}` are replaced with Flex the next time that
+message is fetched, even at the same or an older revision. Unknown or
+incomplete system events that count as unread show the generic unsupported
+card.
 
-## Reaction cancellation and artwork (2026-10-21)
+## Reaction cancellation and artwork (from main.js source)
 
-Source: installed LINE Chrome extension 3.7.2 public `static/js/main.js`
-(and its public `static/css` / `static/media` files), **from main.js source,
-not captured**. No account or network was used.
+Read from the extension's public `static/js/main.js`, `static/css` and
+`static/media` files.
 
 - `uU = SD("talk/thrift/Talk/TalkService/cancelReaction")`; the picker calls
   `j.mutate([{reqSeq:HO(), messageId:e.id}])` when the picked type equals
@@ -334,13 +323,12 @@ not captured**. No account or network was used.
   its CSS sets image width to 2.625em. Chips render `LX[type]` as `img`
   (image CSS: block, width 100%). Unknown fixed types use the extension's
   bundled fallback icon. Paid reactions take a separate `CD` URL path,
-  with animation reloads when applicable. Extension chips open the reactor
-  list; own-chip cancellation is sen's requested shortcut.
-- sen resolves the newest installed extension using the crypto discovery
-  path, then reads `static/media/icon_*_32x32.*.svg` directly at runtime.
-  Decision: share the chip SVG in both the picker and chips, at 20px, so
-  they use identical artwork. Missing or unreadable artwork shows the
-  existing emoji. No LINE images are copied into the repository or cache;
-  tests generate rectangles in synthetic package directories. Discovery is
-  skipped in unit tests; tests supply their own asset directory. Reinstall
-  or upgrade during a running session takes effect on the next launch.
+  with animation reloads when applicable. Chips open the reactor list.
+- 閃 resolves the newest installed extension through the crypto discovery
+  path and reads `static/media/icon_*_32x32.*.svg` at runtime. The picker and
+  the chips both use the chip SVG at 20 px, so their artwork is identical.
+  Missing or unreadable artwork falls back to an emoji. No LINE images are
+  copied into the repository or cache; tests use synthetic package
+  directories. A reinstall or upgrade takes effect on the next launch.
+  As in the extension, a chip opens the list of who reacted, with "Remove
+  your reaction" under your own reaction.

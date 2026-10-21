@@ -54,7 +54,7 @@ places. Bug reports with steps to reproduce are welcome.
 
 Not supported (yet): calls, blocking and reporting, group invitations and
 member management. Unsupported message types show as "This message type isn't
-supported yet". [docs/issues.md](docs/issues.md) tracks everything open.
+supported yet".
 
 ## How it works
 
@@ -70,8 +70,7 @@ the installed extension.
 
 The UI is Slint with the software renderer on winit (Wayland and X11). HTTP is
 hyper with rustls and WebPKI roots. SQLite holds the local history. See
-[docs/core-model.md](docs/core-model.md) and [HANDOFF.md](HANDOFF.md) for the
-architecture.
+[docs/core-model.md](docs/core-model.md) for the architecture.
 
 ## Data and privacy
 

@@ -1,31 +1,11 @@
 # Visual design
 
-Written 2026-10-18 by the coordinator from an audit of every screen (headless
-captures at 980×720, 1280×900 and 420×760, light and dark). It replaces the
-prototype look. Behaviour is [ux-model.md](ux-model.md); §10 there sets the type
-scale and spacing steps, and this file sets everything else. The reference is
-LINE's own client: quiet neutral surfaces, green for the brand, grey and green
-bubbles, icons rather than words in toolbars. Implementations follow this file
-literally. Anything it doesn't cover is asked about, not invented.
-
-## What the audit found
-
-- Fluent defaults instead of a design. The selected chat row is a solid blue
-  fill, inputs and buttons are boxed Fluent controls, and the accent is blue.
-- Text glyphs used as icons: `▶ Video`, `♫ Voice message`, `♙ Contact`,
-  `▤ File`, `◇ Unknown message`, `ⓘ`, `⊘`.
-- Full-width text buttons used for navigation ("Close profile", "Close
-  members", "Close photo", "Open chat", "Start sign-in"), and a viewer toolbar
-  made of a row of text buttons.
-- Black 10 px scrollbars, and a black-bordered box for the connection strip,
-  with its action button inline.
-- White pill badges containing "•" on every chat for stale unread.
-- A boxed composer with Send below it, plus a permanent caption ("Messages can
-  be sent when connected").
-- A header with no avatar and no actions. Profiles with no layout (see §3.4).
-- A sign-in screen made of paragraphs and implementation vocabulary ("Chrome
-  device slot", "encrypted drafts"), with full-width buttons and no visual
-  centre.
+The look of every 閃 screen: tokens, components and layouts. Behaviour is
+[ux-model.md](ux-model.md); §10 there sets the type scale and spacing steps,
+and this file sets everything else. The model is a messenger's own client:
+quiet neutral surfaces, one accent colour, grey and tinted bubbles, icons
+rather than words in toolbars. Implementations follow this file literally.
+Anything it doesn't cover is asked about, not invented.
 
 ## Tokens
 
@@ -42,10 +22,10 @@ except tokens.
 | `divider` | #E1E3E6 | #3A3C42 | 1 px lines |
 | `text` | #111111 | #ECECEC | |
 | `text-secondary` | #6B6F76 | #A3A7AE | times, previews, captions (≥4.5:1 on `bg` and `surface`) |
-| `accent` | #06C755 | #06C755 | badges, the selected rail icon, switches, the enabled Send icon |
-| `accent-strong` | #00873C | #3DDC84 | text buttons, links, focus ring, primary button fill (light) |
-| `on-accent` | #FFFFFF | #0B2614 | text on `accent` and `accent-strong` fills |
-| `bubble-out` | #C7F2A4 | #2F5D3A | outgoing bubble |
+| `accent` | #0050E6 | #70B7FF | badges, the selected rail icon, switches, the enabled Send icon |
+| `accent-strong` | #0045CC | #8AC5FF | text buttons, links, focus ring, primary button fill, text selection |
+| `on-accent` | #FFFFFF | #081C34 | text on `accent` and `accent-strong` fills |
+| `bubble-out` | #D6E6FF | #203C60 | outgoing bubble |
 | `danger` | #D93025 | #FF6B5E | errors, destructive buttons |
 | `warning-surface` | #FFF4D6 | #3A3220 | connection strip |
 | `scrim` | #00000066 | #00000099 | behind dialogs and sheets |
@@ -61,10 +41,7 @@ following the control's radius. Focus never uses a fill change alone.
 
 Icons: one SVG family (the existing `app/assets/icons`, extended), 20 px in
 toolbars, 24 px on the rail, recoloured by role. No Unicode glyph appears as
-an icon anywhere. Needed additions: video, voice, file, contact, location,
-info, withdrawn, unknown, sticker, attach, send, close, back, more, search,
-members, zoom-in, zoom-out, fit, actual-size, previous, next, save, check,
-check-double, clock, warning, error.
+an icon anywhere.
 
 ## Components
 
@@ -83,7 +60,7 @@ sheet. Disabled controls use 40 % opacity and are never styled like links.
 
 **Inputs.** `surface-2` fill, no border, radius 8 px, height 36 px, 12 px
 padding, and a leading 16 px search icon in search fields. Placeholders use
-`text-secondary` and hide while the field has focus (C6). On focus, the field
+`text-secondary` and hide while the field has focus. On focus, the field
 gets the focus ring.
 
 **Scrollbars.** An overlay thumb: 6 px wide (10 px while hovered or dragged),
@@ -97,9 +74,8 @@ borders.
 
 **Badges.**
 
-- Unread count: an `accent` pill, 20 px high, min width 20 px, bold small
-  `on-accent` text; above 999 it shows "999+".
-- Stale unread: an 8 px `accent` dot. Never a pill with a dot inside.
+- Unread count: an `accent` pill, 20 px high and 32 px wide, weight-600
+  small `on-accent` text; above 999 it shows "999+".
 - Muted chats show the count in `text-secondary` fill.
 - A failed send in a chat shows a 16 px `danger` error icon in place of the
   badge.
@@ -115,7 +91,7 @@ muted hues at text contrast), never the accent blue.
 destination gets an `accent` icon on a `surface-selected` rounded square. No
 left bar indicator. The badge sits on the Chats icon's top-right corner. The
 account avatar (32 px) is at the bottom above Settings and opens your own
-profile (U2).
+profile.
 
 **Browser pane** (`surface`).
 
@@ -200,19 +176,20 @@ bubble when time is absent. Keyboard focus and traversal remain unchanged.
   icon), a title (file name, "Video", "Voice message", contact name,
   location name) and a meta line ("2.0 KB", "2:05", "0:12").
   - Files get a Save icon button on the right.
-  - Unknown content: an unknown icon with "Unsupported message".
+  - Unknown content: an unknown icon with "This message type isn't supported
+    yet".
   - Undecryptable: a lock icon with "Couldn't decrypt this message".
 - Photos: radius 12, no bubble, reserved frame. Stickers: no bubble, 120 px
   box.
-- Failed send: under the bubble, one line of small `danger` text ("Not sent"
-  / "Maybe not sent") followed by text buttons on the same line: Retry (or
-  Resend) and Discard. Copy is in the context menu only.
+- Failed send: under the bubble, one line of small `danger` text ("Not sent:
+  <reason>") followed by text buttons on the same line: Retry (or "File
+  missing") and Delete. Copy is in the context menu only.
 - Latest button: a 36 px round `bg` button with a shadow, a down arrow and a
   count badge, 16 px above the composer and right-aligned.
 
 **Composer** (`bg`, 1 px `divider` top, 8 px padding).
 
-- Left: icon buttons for Sticker (P2), then Attach (only once P3 exists).
+- Left: icon buttons for Sticker, then Attach.
 - Centre: a field with `surface-2` fill, radius 18, no border, padding 8×12,
   growing from 1 to 6 lines.
 - Right: Send as an icon button. The icon is `accent` when enabled and
@@ -249,7 +226,7 @@ buttons, the cover band in a 25 % `accent` tint, and so on. Panel 320 px,
 **Sign-in** (full window, `bg`).
 
 - A centred column, 360 px wide:
-  - a "LINE" wordmark in `accent`, at heading + 8;
+  - a "閃" wordmark in `accent`, at heading + 8;
   - the title "Sign in";
   - one line in `text-secondary`: "Scan the code with LINE on your phone.";
   - the QR code at 220 px on white with a 16 px quiet zone and a 12 px radius
@@ -268,17 +245,20 @@ line in `text`, and optionally one line in `text-secondary`.
 - Chat with no messages: the 96 px avatar, the name and "No messages yet".
 - Friends empty: "No friends yet".
 
-## Flows added after the audit
+## Flows
 
 **Reactions.** Hovering or focusing a bubble shows a 28 px round
 reaction button beside the content-width time, and the context menu has React.
 Either opens a horizontal popover above the bubble: radius 20, `bg`, the menu
-border, six 32 px reaction buttons (NICE, LOVE, FUN, AMAZING, SAD, OMG) drawn
-as the existing Unicode substitutes until reaction images exist. The current
-own reaction gets a `surface-selected` circle. Picking it again cancels the
-reaction (`cancelReaction`). Reactions under a bubble are a pill (`bg`, 1 px
-`divider`) with up to three reaction icons and a total count. Own reactions
-are applied optimistically and reverted, with one transient danger line,
+border, six 32 px reaction buttons (NICE, LOVE, FUN, AMAZING, SAD, OMG) with
+20 px artwork from the installed extension, or emoji when it is missing. The
+current own reaction gets a `surface-selected` circle. Picking it again
+cancels the reaction (`cancelReaction`). Under the bubble each reaction type
+is a 28 px chip (`bg`, 1 px `divider`; own: selection fill and `accent`
+border) with its artwork and count. Activating a chip opens a "Who reacted"
+popup listing reactors with 28 px avatars, grouped by reaction, with a
+"Remove your reaction" text button under your own. Own reactions are applied
+optimistically and reverted, with "Couldn't react." in small `danger` text,
 when they fail.
 
 **Sticker picker.** The Sticker icon button in the composer opens a popover
@@ -306,18 +286,18 @@ the same height), radius 12, `bg` with the menu border.
   "Create group" (`createChat` type 0). Its progress label is "Creating…".
   Failure gives one danger line in the dialog. Success opens the new group.
 
-**Attachments (P3).** An Attach icon button (paperclip) after Sticker in
+**Attachments.** An Attach icon button (paperclip) after Sticker in
 the composer opens the system file chooser (XDG portal) for multiple files.
 Pasting an image (Ctrl+V with image data, or file URIs) or dropping files on
 the conversation does the same without the chooser. Nothing is transmitted
-on selection, paste or drop (CMP9). It opens the attachment dialog
+on selection, paste or drop. It opens the attachment dialog
 (Dialog, 480 px wide):
 
 - The title is "Send to <chat name>".
 - A list of the chosen items, each 64 px high: a 56 px thumbnail (photos) or
   the file-type icon tile, then the name and size, then a × remove icon
   button.
-- Photos over 10 MB, or files over the server limit, show one danger line
+- Photos over 10 MB, or files over 1 GiB, show one danger line
   in the row ("Too large") and are excluded.
 - Buttons: Cancel and primary "Send N", disabled when nothing sendable is
   left.
@@ -326,7 +306,7 @@ Sending creates one pending row per item, in order, through the normal send
 lifecycle. Photo rows show the local thumbnail with a thin progress bar
 (`accent`) along the bottom edge until the upload finishes. File rows show
 the file card with the same bar. Failure gives the usual "Not sent" line with
-Retry and Discard. Retry re-uploads from the original path. A file that no
+Retry and Delete. Retry re-uploads from the original path. A file that no
 longer exists turns Retry into "File missing".
 
 ## Not in scope here

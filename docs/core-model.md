@@ -1,9 +1,40 @@
 # Core model: store, worker, projection
 
-SQLite stores account data. `LineBackend` and `FakeBackend` run through the
-same engine, controller and presenter. Behavior is defined in
+How 閃's core is put together: crates, threads, the SQLite store, the engine
+and the UI projection. `LineBackend` and `FakeBackend` run through the same
+engine, controller and presenter. Behaviour is defined in
 [ux-model.md](ux-model.md); engineering constraints are in
 [app-design.md](app-design.md).
+
+## Crates and threads
+
+- `sen` (root crate, `src/`): `runtime.rs` hosts LINE's crypto WASM;
+  `crypto_module.rs` finds and validates the installed module; `client/`
+  implements pairing, signing, RPC, the SSE stream and media; `backend/`
+  provides `LineBackend` and the feature-gated `FakeBackend`; `store.rs`,
+  `engine.rs` and `controller.rs` are described below.
+- `sen-desktop` (`app/`, binary `sen`): startup, Slint callbacks, the presenter
+  (`app/src/presenter/`) and desktop integration (notifications, tray, portals,
+  autostart).
+- `sen-ui` (`ui/`): compiles the Slint sources in `app/ui/`, so Rust-only app
+  edits reuse the generated UI.
+
+| Thread | Owns |
+| --- | --- |
+| store thread | `Engine` and the only writable SQLite connection |
+| `sen-net` | backend, credentials, the WASM runtime and RPC execution |
+| `sen-sync` | the SSE operation stream |
+| `sen-asset-0..2` | media downloads, decryption, decoding and the thumbnail cache |
+| `sen-upload-0..1` | attachment uploads |
+| `sen-http` | the process-wide async executor that drives every HTTP connection |
+| `sen-emoji-font` | the once-per-start emoji font check and download |
+| UI thread | Slint, `AppState`, the presenter and text editing |
+
+Desktop D-Bus work (single instance, notifications, tray) runs on its own
+threads, never on the UI thread. Transport is hyper HTTP/1 over rustls (ring,
+WebPKI roots); RPC, SSE and media use separate clients and pools, and DNS uses
+async-net's system lookup. Limits and deadlines are in
+[app-design.md](app-design.md#transport).
 
 ## Ownership
 
@@ -45,8 +76,8 @@ them back. The 13 → 14 step drops the obsolete unread uncertainty column,
 keeping local history, drafts, pending sends and preferences. Future store
 changes add a step and bump the version; the local store must survive.
 Newer-than-known versions are refused before any schema or journal changes.
-Versions older than 13 retain the reset behavior: the database, WAL and
-shared-memory files are removed and the current schema is created.
+Versions older than 13 predate migrations: the database, WAL and shared-memory
+files are removed and the current schema is created.
 Fresh stores are created directly at 14. The saved session is stored separately.
 
 The tables in `src/store/schema.sql` are:
@@ -83,6 +114,8 @@ settings and last chat. Request sequences belong to the engine, not preferences.
 serialized into `body_json`. Its variants are:
 
 - `Text { text, spans }`, with inline emoji offsets in both UTF-16 and UTF-8;
+- `Flex { alt_text, lines, links }`, the readable text and links extracted from
+  a Flex message;
 - `Photo { asset, size, album_count, caption }`;
 - `Sticker { pkg, id, ver, asset, text }`;
 - `File { name, size, asset }`;
@@ -139,11 +172,10 @@ with the server's value.
 
 ## Worker
 
-The store thread serves local work without waiting for RPCs. The net thread
-owns backend initialization, credentials, WASM and RPC execution. Separate
-workers run uploads; the SSE thread owns its HTTP stream. Asset request handles
-queue work independently, and asset completions use the delta channel directly.
-Media authorization is scheduled through the engine's net thread.
+The store thread serves local work without waiting for RPCs. Asset request
+handles queue work independently of the engine, and asset completions use the
+delta channel directly. Media authorisation is scheduled through the net
+thread.
 
 The `Inbox` uses a mutex and condition variable. The store loop checks health
 expiry, then serves user intents, live events, job completions and eligible
@@ -176,15 +208,17 @@ enum Connection {
 ```
 
 `Connection` is presentation/transport status. The engine separately tracks
-account facts in `AccountSession`: opening, absent, unusable, ready or signing
-in with a saved previous state. Account-scoped intents use `account_allows`;
+account facts in `AccountSession`: opening, absent, logging out, unusable,
+ready, or signing in with a saved previous state. Probe results apply only to
+their opening epoch. Cancelling sign-in restores the previous state.
+Account-scoped intents use `account_allows`;
 local sends can queue while waiting for profile validation.
 
-Startup opens the local store before backend initialization. In account mode,
+Startup opens the local store before backend initialisation. In account mode,
 an explicit MID or the non-secret `auth/last-account` selects the database;
 without either, startup uses an in-memory store. The engine publishes cached
 profile, contacts, preferences, chats and last-chat window before probing the
-session. Chat unread freshness is marked stale while not Online.
+session.
 
 `Client::from_api` requires an access token and a nonempty saved `profile.mid`.
 `online_profile` rejects a different MID. Successful profile validation selects
@@ -194,8 +228,15 @@ account has no existing database.
 
 Native sign-in exposes four progress stages: Preparing, WaitingForPhone, SigningIn
 and Authenticated. QR, scanned and PIN events carry the phone interaction.
-Authenticated follows profile loading and key validation. The serialized saved
-`Session` format is independent of the disposable local-store schema.
+Authenticated follows profile loading and key validation. The serialised saved
+`Session` format is independent of the store schema.
+
+Logout (`src/logout.rs`) first writes a durable `auth/logout-pending` marker
+holding only identifiers and removes the saved session and
+`auth/last-account`; the engine then calls `AuthService/logoutV2`, whose errors
+do not stop the local logout. Finishing deletes the keyring key and, when
+asked, the account's store, cache and local previews. An unfinished logout is
+resumed from the marker at the next start.
 
 ### Errors and sync
 
@@ -210,7 +251,7 @@ late confirmations still reconcile with the stored row. Transport failures
 start the health clock; the default offline threshold is fifteen seconds.
 Successful network work and refusals clear it. Refresh failures are projected
 with `RefreshFailed` and cleared with `RefreshRecovered`. Store failures use
-`StorageFailed` or `InternalError`. `StorageFailed` sets the storage banner;
+`StorageFailed` or `InternalError`. `StorageFailed` sets the storage error line;
 `InternalError` is ignored by `AppState` and only shown by desktop debug
 instrumentation under `ui-debug`. Unexpected worker failure emits `Fatal`; normal
 shutdown does not.
@@ -258,6 +299,27 @@ Slint models. Decoded images live in its image cache, separate from stored rows.
 pending `slint::invoke_from_event_loop` callback. The callback drains the delta
 FIFO and applies the batch immediately, including during pointer interaction.
 There is no periodic delta-drain timer or deferred pointer-down queue.
+
+## Crypto boundary
+
+The app runs the unmodified `ltsm.wasm` of the installed LINE for Chrome
+extension through `src/runtime.rs`; nothing is copied into the repository.
+The net thread owns one runtime for signing, decryption, history and sends.
+`src/client/e2ee.rs` caches public-key responses (256 entries) and the client
+caches channels (64). A WASM exception poisons the runtime, which is then
+replaced, resetting channel pointers. A native replacement is blocked on the
+proprietary SKB token and private-key loading and opaque MID conversion, so
+there is no native signing or serialised-key fallback.
+
+Media file crypto is native (`src/client/desktop/assets.rs` and `upload.rs`):
+HKDF-SHA256 derives the AES-256-CTR and HMAC-SHA256 keys, and authentication
+precedes decryption. The synthetic `fixtures/media.json` comes from
+`tools/generate-media-fixture.go`. `examples/crypto-harness.rs` (feature
+`harness`) checks synthetic Letter Sealing and signing fixtures from
+`tools/generate-fixture.go` against the installed module, with an optional
+explicit WASM override. Fixtures never select the app's runtime module.
+
+## Test backends
 
 `FakeBackend` is available for unit tests and the `sen/demo` feature.
 Integration tests enable it through a self dev-dependency. Desktop `demo`

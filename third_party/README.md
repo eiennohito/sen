@@ -1,6 +1,7 @@
 # Colour emoji patches
 
-Local changes against `dac76c7` (pristine crates.io sources):
+Vendored Slint software renderer and parley crates, patched so colour emoji
+render. Local changes against `dac76c7` (pristine crates.io sources):
 
 - `i-slint-renderer-software` 1.18.1: render COLRv0 and colour bitmap glyphs as
   premultiplied RGBA, preserving text alpha and COLR foreground RGB. Fonts with

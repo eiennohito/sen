@@ -1,14 +1,14 @@
 # Deslop
 
-Every LLM session leaves some slop. It is removed on a schedule, not when
-someone trips over it.
+How slop left by LLM sessions is found and removed. It is removed on a
+schedule, not when someone trips over it.
 
 ## Cadence
 
-- After every feature phase merges: one deslop pass before the next feature
+- After each larger feature lands: one deslop pass before the next one
   starts. A read-only audit lists findings against the patterns below;
   a cleanup session deletes or replaces them; a review checks nothing broke.
-- Each feature brief links this file. New code must not add these patterns,
+- Each feature task links this file. New code must not add these patterns,
   and reviews flag them.
 - A deslop pass replaces, it does not patch: the bad thing is deleted and its
   callers changed in the same commit (see "No compatibility code" in
@@ -19,7 +19,7 @@ someone trips over it.
 Assume the session produced something that only looks like a program.
 
 - A session's own report ("fmt, clippy, tests, checks passed") proves
-  nothing about the design. The coordinator re-runs checks; the review judges
+  nothing about the design. Re-run the checks independently; the review judges
   the code.
 - Every new type, flag, layer, fallback, option, test and comment must
   justify itself: why does it exist, what breaks if it is deleted?
@@ -47,7 +47,7 @@ Sent (1). No "may not have been sent" state.
 
 Passing tests show only that tests and code agree. Tests are audited like
 product code, and every deslop pass covers them. Test names describe the
-behaviour, never the batch or issue that added them (`b1_…`).
+behaviour, never the task or issue that added them (`b1_…`).
 
 Keep a test only if it pins something a user or the protocol would notice:
 a user-visible flow, a protocol or crypto fact (fixtures, byte-exact
@@ -70,13 +70,14 @@ only tests of contact/group live operations and of pairing after a broken
 saved session). A replaced or new test must fail when the behaviour is
 broken; break it once and see.
 
-When a check fails, decide which side is wrong against the spec (the
-issue, docs/visual-design.md), not against the check. A UI layout moved
+When a check fails, decide which side is wrong against the spec
+([ux-model.md](ux-model.md), [visual-design.md](visual-design.md)), not
+against the check. A UI layout moved
 until a tightened geometry check passed put the message buttons over the
 previous bubble; screenshots, not the check, showed it. Never loosen an
 existing assertion (an `assert` turned into a wait, a widened
 tolerance) without the behaviour change that justifies it; the same
-draft check was loosened twice by unrelated batches and passed 10/10
+draft check was loosened twice by unrelated changes and passed 10/10
 strict both times.
 
 A whole-suite audit runs with the next deslop pass. Suite runtime is part

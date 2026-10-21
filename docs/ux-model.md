@@ -1,19 +1,15 @@
-# Native client UX model
+# UX model
 
-Status: normative. Written 2026-10-17 after auditing the Slint UI, controller,
-worker, tooling, and desktop integration as of commit `fc4c112`.
-
-This document defines how the native LINE client behaves as a desktop
-application. [ux-acceptance.md](ux-acceptance.md) turns it into checkable
-requirements and records what is verified. [ux-sessions.md](ux-sessions.md)
-is the register of open problems found by audit, ordered for fixing.
+Normative: how 閃 behaves as a desktop application.
+[visual-design.md](visual-design.md) sets the look;
 [app-design.md](app-design.md) owns engineering constraints (toolkit, threads,
-storage, crypto). [chromium-ui-map.md](chromium-ui-map.md) is reference
-evidence about LINE Chrome, not a specification for this app.
+storage, crypto). LINE Chrome's own behaviour, summarised in
+[protocol-traces.md](protocol-traces.md), is reference evidence, not a
+specification for this app.
 
-When a session has to choose between this model and an easier toolkit path,
-it follows the model or records the deviation in the acceptance document.
-A screenshot never proves a behaviour in this model.
+When a change has to choose between this model and an easier toolkit path, it
+follows the model or records the deviation here. A screenshot never proves a
+behaviour in this model.
 
 ## 1. Product stance
 
@@ -25,8 +21,8 @@ Priorities, in order. A lower priority never overrides a higher one.
 1. **Never lose what the user typed.** Drafts, caret, pending messages, and
    recovery text survive navigation, errors, restarts, and account recovery.
 2. **Never lie about delivery, reading, or freshness.** Pending, confirmed,
-   read, rejected, and uncertain are distinct. Stale content is marked stale.
-   A count that is unknown is not shown as zero.
+   read and not sent are distinct, and a successful send is not a read
+   receipt. Offline state is shown, not hidden.
 3. **Never move what the user is reading.** Asynchronous updates preserve the
    reading anchor; only the user's own actions scroll the view.
 4. **Interrupt only when the user is not already looking.** Attention
@@ -51,8 +47,8 @@ Priorities, in order. A lower priority never overrides a higher one.
 | Unread boundary | The position before the oldest message not yet exposed in this conversation, as known locally. |
 | Active window | The main window has keyboard focus according to the compositor. Occluded or minimised windows are inactive. Unknown is treated as inactive. |
 | Attention event | Something that may need the user: incoming message, mention, group event, send failure, authentication expiry, connection change. |
-| Definite failure | The server or transport rejected the request and the message certainly did not arrive. |
-| Uncertain result | No confirmation was received; the message may have arrived. |
+| Refusal | The server or transport rejected the request and the message certainly did not arrive. |
+| No answer | No confirmation was received; the message may have arrived. Shown as Not sent until our own echo says otherwise (§6). |
 | Loaded scope | Data already in memory. Searches over loaded scope must say so in the empty state, not as a permanent caption. |
 
 ## 3. Surface model
@@ -71,8 +67,8 @@ Priorities, in order. A lower priority never overrides a higher one.
 ```
 
 - **Rail**: fixed, icon-first destinations Chats, Friends, and (when
-  implemented) Add friend at the top; Settings at the bottom, including
-  account information in About.
+  implemented) Add friend at the top; your avatar (own profile) and Settings
+  at the bottom.
   The current destination is *selected*, never *disabled*. Unavailable
   destinations are omitted, not shown as apology pages.
 - **Browser pane**: one destination at a time. Each destination keeps its own
@@ -83,7 +79,7 @@ Priorities, in order. A lower priority never overrides a higher one.
   layout it is always visible. In narrow layout it replaces the browser pane
   and has a Back control in the header.
 - **Detail panel**: optional right-side, non-modal surface for a profile,
-  group members, or conversation search results. It never hides the history.
+  group info or group members. It never hides the history.
   At 740–1059 px a profile becomes a sheet over the conversation, preserving
   the browser and rail. Below 740 px it covers the whole shell. The 1060 px
   breakpoint adds a 320 px panel to the 740 px browser/conversation boundary;
@@ -96,16 +92,19 @@ Priorities, in order. A lower priority never overrides a higher one.
 | Layer | Use for | Modal | Dismiss | Example |
 | --- | --- | --- | --- | --- |
 | Base | Shell | no | — | Rail, panes |
-| Panel | Secondary content that complements the conversation | no | Close button, Escape when focused | Profile, members, in-chat search |
+| Panel | Secondary content that complements the conversation | no | Close button, Escape when focused | Profile, group info, members |
 | Dialog | A decision with consequences or a short form | yes, to the main window | Explicit buttons; Escape = cancel | Leave group, logout, send file confirmation |
 | Sheet | Takeover of the conversation or whole shell | to the covered surface | Back/Escape | Profile when panes cannot fit; sign-in, media viewer, panels/dialogs in narrow layout |
 | Menu | Actions on one target | transient | Click outside, Escape, activation | Message context menu, more actions |
-| Transient | Brief status not needing action | no | Timeout or next state | "Copied", "Reconnected" |
+| Transient | Brief status not needing action | no | Timeout or next state | A link that couldn't be opened |
 
 Rules:
 
 - Settings is a dialog in wide layout and a sheet in narrow layout. It never
-  blanks the conversation in wide layout.
+  blanks the conversation in wide layout. Its sections are Chats,
+  Notifications, Background, Shortcuts, About and Account; Account holds
+  Log out…, whose dialog offers (unchecked) deletion of this account's local
+  data.
 - A sheet may be used in wide layout for sign-in, the media viewer, and a
   profile over the conversation when the conversation and panel cannot fit.
 - At 740–1059 px the profile sheet is modal only to the covered conversation:
@@ -133,10 +132,10 @@ conversation shows the conversation pane and focuses the composer. The
 rail collapses to a bottom or top bar with the same destinations. Unread
 state must be reachable from the conversation pane (badge on Back or rail).
 
-### 3.4 Profile, member and group surfaces (U0, approved)
+### 3.4 Profile, member and group surfaces
 
-Reference: LINE Chrome's profile and group popups (local screenshots, summary in
-[protocol-traces.md](protocol-traces.md#reference-screenshots-u0)). LINE opens
+Reference: LINE Chrome's profile and group popups (summary in
+[protocol-traces.md](protocol-traces.md#reference-screenshots)). LINE opens
 them in a separate window; here they live in the detail panel (§3.1), so the
 conversation stays visible at ≥1060 px.
 
@@ -144,8 +143,7 @@ conversation stays visible at ≥1060 px.
 for example group info → Members → member profile. The header has a back
 arrow when the stack is deeper than one page, a title, and × to close. Escape
 and Back pop one page, and × closes the whole stack. The same stack is the
-sheet at 740–1059 px and the full-window sheet below 740 px. The binding rules
-of S2 apply to the stack as a whole.
+sheet at 740–1059 px and the full-window sheet below 740 px.
 
 **Entry points.**
 
@@ -156,13 +154,13 @@ of S2 apply to the stack as a whole.
 | Group message sender avatar or name | member profile |
 | Members row | member profile, pushed onto the stack |
 | Friends row, Profile action | friend profile; the group row opens that group's chat with group info |
-| Settings account row | own profile |
+| Rail avatar | own profile |
 
 **Profile page** (top to bottom; parts with no data collapse, never leaving
 gaps):
 
-- A 96 px cover band: the cover image when P6 provides it, otherwise a tint of
-  the accent colour.
+- A 96 px cover band in a tint of the accent colour (cover images are not
+  loaded).
 - A 96 px circular avatar centred on the band's lower edge. Activating it opens
   the viewer. Without a picture, an initial on a tinted circle, never a bar.
 - Name at heading size, through the rich-text path so emoji render, with at
@@ -178,7 +176,7 @@ gaps):
 | Friend | Chat, Rename | Rename opens a one-field dialog (`updateContactSetting`). Favourite is shown read-only (star after the name) until its write is traced. |
 | Non-friend member | Add friend | `addFriendByMid`. No Chat, as in LINE. A fraud notice from `getTargetProfileNotice` sits above the actions as an inline notice. Block and Report are absent until traced. |
 | Unknown member (no contact data) | none | Name "Unknown member", initial avatar, no status. |
-| Own | none | Read-only: name, status and avatar. Editing is out of scope. |
+| Own | none | Edit buttons beside the name and the status message open a one-field dialog (`updateProfileAttributes`; name up to 20, status up to 500 UTF-16 units). The avatar is read-only. |
 | Official account | Chat when a chat exists | No Add friend until traced for OAs. |
 
 - A More (⋯) header button with Copy name.
@@ -241,20 +239,19 @@ buttons share the width equally, with a maximum of 72 px each.
 
 draft text, caret and selection, composer scroll, reading anchor, at-latest
 flag, unread boundary, new-arrival count while away from latest, loaded
-message window and older-history cursor, in-chat search query and current
-match, pending/uncertain outgoing items (also persisted).
+message window and older-history cursor, pending and not-sent outgoing items
+(also persisted).
 
 ### 4.2 Per destination (session memory)
 
 query, category filters, expansion state, focused result identity, scroll
 offset, saved offset before a search began.
 
-### 4.3 Persistent (encrypted private state, see app-design)
+### 4.3 Persistent (the account store, see core-model)
 
-drafts, outbox with status and timestamps, selected conversation, text size,
-notification and composer preferences, mute overrides if the protocol does
-not supply them, last known unread counts for restart display (marked stale
-until synced).
+history, drafts, outbox with status and timestamps, selected conversation,
+text size, notification and composer preferences, and the last known unread
+count per chat for restart display.
 
 ### 4.4 What survives what
 
@@ -276,13 +273,11 @@ groups, system items, and an unread divider. These invariants hold for every
 mutation (append, prepend, in-place update, removal, media size change,
 font change, resize):
 
-1. If a drag, selection, or context menu is active, model changes are
-   deferred until it ends.
-2. If at latest, the view stays at the bottom after the change.
-3. Otherwise the reading anchor keeps its screen position. If the anchored
+1. If at latest, the view stays at the bottom after the change.
+2. Otherwise the reading anchor keeps its screen position. If the anchored
    message disappears, its nearest surviving neighbour takes its place.
-4. The view scrolls programmatically only on: first open of a chat, the
-   user activating Latest, the user activating a jump (reply, search match,
+3. The view scrolls programmatically only on: first open of a chat, the
+   user activating Latest, the user activating a jump (reply,
    notification), the user sending a message. Nothing else scrolls.
 
 First open shows the unread boundary with some context above it, or the
@@ -293,33 +288,34 @@ loaded messages below the viewport are not "new".
 
 Older history loads when the viewport approaches the top, one request per
 boundary at a time, with loading/end/error presented inside the history as
-items that do not shift content. Rows must be virtualised or windowed before
-the loaded window exceeds a few hundred messages.
+items that do not shift content. Long histories are virtualised.
 
 ## 6. Outgoing message lifecycle
 
 ```
-Composing ──submit──▶ Pending ──confirmed──▶ Confirmed ──receipt──▶ Read
-                        │                       ▲
-                        ├──definite rejection──▶ Rejected ──retry (safe)──┘
-                        └──no answer──────────▶ Uncertain ──user resend (duplicate warning)──▶ Pending
+Composing ──submit──▶ Pending ──confirmed──▶ Sent ──receipt──▶ Read
+                        │                     ▲
+                        └──refused or no answer──▶ Not sent ──retry──┘
+                                                   └──our echo arrives──▶ Sent
 ```
 
 - Submit creates a durable Pending item before any network call and clears
   the composer. The item keeps its local identity through confirmation and
   reconciliation with the server ID. Refresh, reconnect, and restart never
   duplicate it.
-- Confirmed means the server accepted it. It never implies Read. Read comes
-  from a receipt or watermark with the protocol's actual precision; group
-  reader counts appear only when the protocol supplies them.
-- Rejected offers Retry (safe) and Edit (moves text to the composer without
-  overwriting a newer draft). Uncertain offers Resend with a duplicate
-  warning and Edit. There is no automatic resend of an Uncertain item.
+- Sent means the server accepted it. It never implies Read. Read comes from a
+  receipt or watermark with the protocol's actual precision; group reader
+  counts appear only when the protocol supplies them.
+- A refusal and a send that got no answer are both Not sent, with the reason
+  ("Not sent: no answer received"). There is no separate "maybe sent" state:
+  if the message did reach LINE, our own echo later turns the row into Sent.
+  Not sent offers Retry and Delete, and Copy to composer in the context menu.
+  Nothing is resent automatically.
 - States are shown by a compact mark beside the time with an accessible
-  label, in a fixed slot that never changes the bubble geometry. Rejected
-  and Uncertain additionally show a one-line explanation with actions under
-  the bubble.
-- Restart turns Pending into Uncertain, never into a draft.
+  label, in a fixed slot that never changes the bubble geometry. Not sent
+  additionally shows a one-line explanation with actions under the bubble.
+- Restart turns Pending into Not sent ("app closed before sending"), never
+  into a draft.
 - A transport failure for one send never changes the connection state of the
   whole app; connection state comes from the sync channel (§7.4).
 
@@ -327,11 +323,11 @@ Composing ──submit──▶ Pending ──confirmed──▶ Confirmed ─�
 
 ### 7.1 Sources
 
-Unread counts come from the server chat list and live events. The inspected
-Chrome mute flag is private user storage (`messageBox[id].isMute`), not a
-server chat field; native mute remains unknown until a native private local
-override is available, and must not be presented as a known server preference.
-The protocol's `sendChatChecked(reqSeq, chat, messageId, 0)` advances a
+Unread counts come from the server chat list and live events; each chat has
+one count, shown as a number in every connection state. Chrome keeps its mute
+flag in private user storage (`messageBox[id].isMute`), not in a server chat
+field, so the chat list carries no mute state. The group Notifications switch
+writes `notificationDisabled` with `updateChat`. The protocol's `sendChatChecked(reqSeq, chat, messageId, 0)` advances a
 per-chat last-seen message-ID watermark; operation 40 carries chat in param1
 and that watermark in param2. It clears that chat's unread count. Receipt
 operation 55 instead advances one member's read-range endpoint (chat/member/end
@@ -345,7 +341,7 @@ decimal integers without converting them to floating point.
 
 Local exposure updates the local boundary immediately and sends the read
 marker when eligible. Reads on other devices arrive as events and clear
-local state. Counts that are unknown show as a dot, not as a number.
+local state.
 
 ### 7.2 Read eligibility
 
@@ -376,7 +372,7 @@ Routine reconnects are quiet header state and never an account alert.
 | Inactive (unfocused, occluded, minimised) | desktop notification, app badge, attention hint, sound | same, bypasses "mentions only" filter | notification if enabled | notification | notification once |
 | Muted conversation | badge only | badge only unless mention exception on | per pref | as above | — |
 | Do not disturb (desktop) | badge only; the daemon suppresses popups | same | same | same | same |
-| Reconnect or initial sync | reconcile counts; no notification burst, no sound | same | same | — | transient "Reconnected" |
+| Reconnect or initial sync | reconcile counts; no notification burst, no sound | same | same | — | strip clears |
 
 Rules:
 
@@ -388,12 +384,11 @@ Rules:
   notification marks nothing read.
 - Notifications are withdrawn when their conversation is exposed, when the
   messages are read elsewhere, or on logout.
-- Reconnecting is a quiet inline “Connecting…” header state. Recovery shows
-  “Reconnected” briefly below the headers. Neither produces desktop notification
-  or sound. Offline and AuthExpired show an overlaid one-line recovery strip
-  with Retry. An unavailable session at startup/connect failure also offers
-  Sign in again; so does AuthExpired, including after a failed Retry. Network
-  failure alone after opening a usable session offers Retry only.
+- Reconnecting is quiet: at most a "Connecting…" label in the narrow browser
+  header, never a desktop notification or sound. Offline shows an overlaid
+  one-line strip, "Offline. Reconnecting…"; reconnection is automatic, so it
+  has no action. An expired or unusable session shows its cause in the strip
+  with Sign in. The strip clears when the connection recovers.
 - The strip sits directly below the headers over history, or over the list in
   narrow browser layout. The scroll range gains a top inset equal to the strip
   height. Offset compensation preserves the visible content when feedback appears
@@ -405,7 +400,7 @@ Rules:
   its accessible label retains the full description.
   Rail, header, composer and profile controls are never covered.
   Profiles keep their position and can cover connection feedback as a modal
-  sheet. Retry shows “Retrying…” with actions disabled while it is pending.
+  sheet.
 - Own outgoing messages, receipts, reactions to old messages, and replayed
   history never produce incoming-message alerts.
 - Preview privacy levels: name and text; name only; "New message" only. The
@@ -423,8 +418,8 @@ Rules:
 | Enter | Newline (default); Send when the preference "Enter sends" is on and composition is inactive | composer |
 | Shift+Enter | Newline always | composer |
 | Escape | Close topmost layer; clear search; otherwise nothing | global |
-| Ctrl+F | Focus browser search, or in-chat search when the conversation has focus | global |
-| Ctrl+1 / Ctrl+2 / Ctrl+3 | Friends / Chats / Add friend (matches LINE Chrome) | global, not during composition |
+| Ctrl+F | Focus browser search | global |
+| Ctrl+1 / Ctrl+2 | Friends / Chats (matches LINE Chrome) | global, not during composition |
 | Alt+Up / Alt+Down | Previous / next conversation in the visible list | global |
 | Alt+Left or Back key | Back in narrow layout | conversation pane |
 | Up / Down / Home / End / PageUp / PageDown | Scroll history | history has focus |
@@ -443,7 +438,9 @@ not configurable in v1.
   within) → conversation header actions → visible connection recovery actions →
   history (one Tab stop) → Latest → Return to message (when visible) →
   composer → Stickers (when enabled) → Send.
-- Chats filter chips are one Tab stop after browser search (and Clear when present), then New chat, then the list; Left/Right moves between chips and Space/Enter activates.
+- In Chats, New chat comes before browser search (and Clear when present), and
+  the filter chips are one Tab stop after it, before the list; Left/Right
+  moves between chips and Space/Enter activates.
 - Friends category headers are rows in the friends list; arrow navigation reaches them and Enter/Space toggles collapse.
 - F6 enters the visible recovery strip. Without a layer, F6 or Tab after its
   last action moves to history, or the browser list in narrow browser layout. Shift+Tab before
@@ -465,12 +462,10 @@ not configurable in v1.
   Recovery feedback never changes the stack's position or focus cycle.
   Shift+Tab is the exact reverse of each cycle.
 - Messages are click-focusable for selection but not Tab stops. Slint 1.18
-  cannot style links or inline images inside a selectable TextInput. Messages
-  with those features use a measured flow: Select text in the context menu
-  exposes the original body for native selection. Dragging non-link text in
-  that flow does not select a range; dragging a link in a text-only message
-  selects the whole body. An emoji message enters fallback selection only
-  through its context menu. Cross-run drag selection remains a deviation.
+  cannot style links or inline images inside a selectable TextInput, so
+  messages with those features use a measured flow that selects inline:
+  dragging selects across runs, double-click selects a word, and Copy
+  selection copies from the original body.
 - Selection (which chat is open) and focus (which control receives keys)
   are visually distinct and independent.
 - Incoming data never moves focus. Completion of a send never moves focus.
@@ -483,12 +478,12 @@ not configurable in v1.
 - Wheel and touchpad scroll the pane under the pointer; nothing spills into
   neighbours at boundaries.
 - Scrollbar thumbs have a pointer target of at least 10 px and stay under the
-  pointer during a drag; content changes are deferred until release.
+  pointer during a drag.
 - Single click on a conversation opens it. Single click on a friend opens a
   profile panel; nothing sends on a single click.
 - Right click on a message selects it as the target and opens its menu
   without clearing an existing text selection.
-- Dragging across a link selects text; click without drag activates it.
+- Dragging across a link selects text; click without drag opens it.
 
 ## 9. Feedback and text
 
@@ -500,8 +495,8 @@ not configurable in v1.
 | History load | strip inside the conversation header area; does not push history | row above history that shifts content |
 | Older history load | item at the top of the history | banner |
 | Send | mark and explanation on the message | status line, connection banner |
-| Draft storage | caption under the composer with Retry; Send disabled | modal |
-| Connection, authentication | quiet inline header state; recovery strip below headers for Offline/AuthExpired or an unavailable session | per-chat subtitles |
+| Local storage | one danger line under the composer and in Settings; clears on the next successful write | modal |
+| Connection, authentication | recovery strip below the headers when offline, expired or unusable | per-chat subtitles |
 | Media | inside the media frame | row collapse |
 | Settings save | beside the control | toast only |
 
@@ -519,8 +514,7 @@ not belong in the shell.
 - No permanent captions that explain how a control works ("Enter inserts a
   line") and no implementation words (synthetic, loaded, server confirmed)
   in production UI. Shortcut help lives in Settings.
-- Delivery marks have accessible labels: Sending, Sent, Read, Not sent,
-  Unconfirmed.
+- Delivery marks have accessible labels: Sending, Sent, Read, Not sent.
 - Times: today → `HH:MM`; yesterday → "Yesterday"; this week → weekday; this
   year → `M/D`; older → `YYYY/M/D`. Date dividers: Today, Yesterday,
   weekday + date within a week, full date otherwise. Locale follows the
@@ -534,9 +528,10 @@ not belong in the shell.
   for text except the two minimums.
 - **Spacing** uses 4/8/12/16/24 px steps. Row heights derive from the type
   scale, not from fixed constants.
-- **Colour roles** come from the system palette (background, surface, text,
-  secondary text, accent, selection, danger) and follow the system light/dark
-  scheme. Brand green is used only for the accent role and outgoing bubbles.
+- **Colour roles** (background, surface, text, secondary text, accent,
+  selection, danger) are the tokens in [visual-design.md](visual-design.md)
+  and follow the system light/dark scheme. The accent colour is reserved for
+  accent roles; outgoing bubbles use its light tint.
 - **States** hover, selected, focused, pressed, and disabled are each
   visually distinct and do not rely on colour alone (focus ring, weight).
 - **Scrollbars** share one style across panes. In the software renderer a
@@ -567,7 +562,7 @@ not belong in the shell.
 | Background mode | Off by default: closing the window quits. When enabled in Settings, close hides to a tray item and sync continues | StatusNotifierItem (`org.kde.StatusNotifierItem`) with menu Open, Mute, Quit; preference explains that notifications continue |
 | Autostart | Off by default, explicit preference | `~/.config/autostart/org.senclient.Sen.desktop` |
 | Paths | No app state inside the repository | session → `$XDG_DATA_HOME/sen/auth/session.json`, drafts/outbox/prefs → `$XDG_DATA_HOME/sen/<mid>`, caches → `$XDG_CACHE_HOME/sen/<mid>`; `--state`/`--cache-dir` remain overrides |
-| Theme and scale | Follow system light/dark, accent, font, and per-monitor scale | Slint `Palette.color-scheme`, default font from fontconfig, no custom DPI handling |
+| Theme and scale | Follow system light/dark, font, and per-monitor scale | Slint `Palette.color-scheme`, default font from fontconfig, no custom DPI handling |
 | Input method | Fcitx5 composition works in every text field | Compositor `text-input-v3` through winit; app never intercepts composition keys |
 | Clipboard and links | Copy as text; open links with the default browser after deliberate activation; show the full URL on hover or in the menu | `xdg-open` via `open`-style helper off the UI thread |
 | Files | Attachment picking and drag-and-drop use the desktop file chooser | xdg-desktop-portal file chooser; `text/uri-list` drops |
@@ -577,28 +572,12 @@ not belong in the shell.
 
 ## 12. Deliberate deviations from LINE Chrome
 
-- Explicit Send with Ctrl+Enter is the default until Fcitx acceptance is
-  complete; "Enter sends" is an opt-in preference.
+- Enter inserts a newline and Ctrl+Enter sends by default, so IME commits
+  never send by accident; "Enter sends" is an opt-in preference.
 - Text selection is per message in v1; cross-message selection is not a
   goal. Copy message and Copy selection are both offered.
 - No tray and no background mode by default.
 - The Add friend destination and group management are absent until their
   protocol operations exist; they are not shown as placeholder pages.
-- Reactions are editable: hover/focus or React opens six choices (NICE, LOVE, FUN, AMAZING, SAD, OMG). The own choice is highlighted; choosing it again cancels. Changes are optimistic, revert on failure, and show one transient danger line.
 - Profiles and group info open in the detail panel or sheet (§3.4), not in a
   separate popup window.
-
-## 13. Dependencies on protocol work
-
-The following requirements depended on missing worker data at the initial
-2026-10-17 audit. Protocol sessions P1–P4 now provide sourced adapters; their
-handoffs and ux-acceptance.md distinguish implemented and synthetic-tested paths
-from account-verified behavior. Native mute remains unknown as described in §7.1.
-The consuming UX sessions retain these dependencies.
-
-- Live events (incoming messages, receipts, reads elsewhere, group events,
-  reconnect catch-up) with reconnect state.
-- Unread counts and mute flags per conversation; read marker submission.
-- Older history paging with a per-chat cursor.
-- Definite rejection versus uncertain result classification for sends.
-- Inline emoji spans, reply structure, file and system message types.
