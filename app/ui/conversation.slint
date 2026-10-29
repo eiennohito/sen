@@ -122,7 +122,9 @@ export component Conversation inherits FocusScope {
                 connection-dismissed => { history-focus.focus(); }
                 connection-feedback: (!ShellState.narrow || ShellState.show-conversation) && !(DetailState.detail-open && ShellState.profile-sheet);
                 focus-requested => { history-focus.focus(); }
-                changed extent => { if ConversationState.following && !self.dragging { self.jump(-self.extent); } }
+                // Arrivals while following jump through ConversationState.latest(); this keeps the
+                // bottom pinned as rows grow, but not against the user's own small scroll steps.
+                changed extent => { if ConversationState.following && !self.dragging && !self.user-scrolling { self.jump(-self.extent); } }
                 offset <=> ConversationState.history-y;
                 vertical-stretch: 1;
                 scrolled => { ConversationState.following = ConversationState.history-can-follow && self.visible-top == self.inset && !self.dragging && self.extent + ConversationState.history-y <= SettingsState.text-size * 1px; if ConversationState.following { ConversationState.new-count = 0; } ConversationState.history-scrolled(); }
@@ -154,7 +156,10 @@ export component Conversation inherits FocusScope {
                     horizontal-scrollbar-policy: always-off; accessible-role: none;
                 for message[i] in ConversationState.messages: Rectangle {
                     property <length> prefix: i == 0 ? 16px + (ConversationState.has-chat ? max(32px, Tokens.small * 1.8) : 0px) : 0px;
-                    height: self.prefix + item.preferred-height + (i == ConversationState.messages.length - 1 ? 16px + root.pill-height : 0px);
+                    // The list estimates its height from the delegates it shows, so the last one
+                    // always reserves the pill row: sizing it by pill visibility (which follows
+                    // scrolling) moved the estimated bottom and re-toggled following in a loop.
+                    height: self.prefix + item.preferred-height + (i == ConversationState.messages.length - 1 ? 16px + root.pill-space : 0px);
                     if i == 0: HorizontalLayout {
                         x: 16px; y: 16px; width: parent.width - 32px;
                         height: ConversationState.has-chat ? max(32px, Tokens.small * 1.8) : 0px;
@@ -230,5 +235,6 @@ export component Conversation inherits FocusScope {
     changed reading-viewport => { ConversationState.reading-viewport = root.reading-viewport; }
     init => { ConversationState.reading-viewport = root.reading-viewport; }
     // Pills plus the 8 px gap below them remain outside read exposure.
-    property <length> pill-height: root.latest-visible || ConversationState.return-visible ? history-surface.height - history-pills.y : 0px;
+    property <length> pill-space: history-surface.height - history-pills.y;
+    property <length> pill-height: root.latest-visible || ConversationState.return-visible ? root.pill-space : 0px;
 }

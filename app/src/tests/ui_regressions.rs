@@ -946,3 +946,116 @@ fn disabled_controls_keep_their_dimmed_colours() {
     .join()
     .unwrap();
 }
+
+
+#[test]
+fn virtual_history_extent_does_not_depend_on_following() {
+    std::thread::spawn(|| {
+        let _platform = crate::snapshot::install().unwrap();
+        let ui = window::create_app_window().unwrap();
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.global::<ConversationState>().set_history_virtual(true);
+        // Mixed heights make the list's height estimate sensitive to any row change.
+        ui.global::<ConversationState>().set_messages(
+            Rc::new(slint::VecModel::from(
+                (0..100_u64)
+                    .map(|i| MessageRow {
+                        id: i.to_string().into(),
+                        body: "word ".repeat(1 + (i as usize * 37) % 90).into(),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+            .into(),
+        );
+        let frame = || {
+            slint::platform::update_timers_and_animations();
+            let _ = ui.window().take_snapshot();
+        };
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(980., 720.));
+        for _ in 0..10 {
+            frame();
+        }
+        ui.invoke_history_jump(-100000.);
+        for _ in 0..10 {
+            frame();
+        }
+        let c = ui.global::<ConversationState>();
+        assert!(c.get_following());
+        let gap = |c: &ConversationState| c.get_reading_viewport().extent + c.get_history_y();
+        let before = gap(&c);
+        // Just past the follow threshold: the Latest pill appears.
+        ui.window().dispatch_event(WindowEvent::PointerMoved { position: slint::LogicalPosition::new(600., 400.) });
+        ui.window().dispatch_event(WindowEvent::PointerScrolled {
+            position: slint::LogicalPosition::new(600., 400.),
+            delta_x: 0.,
+            delta_y: 40.,
+        });
+        for _ in 0..5 {
+            frame();
+        }
+        assert!(!c.get_following());
+        let after = gap(&c);
+        assert!(
+            (after - before - 40.).abs() < 1.,
+            "a 40 px scroll left the bottom {after} px away (was {before})"
+        );
+    })
+    .join()
+    .unwrap();
+}
+
+#[test]
+fn small_wheel_steps_leave_the_bottom_of_a_virtual_history() {
+    std::thread::spawn(|| {
+        let _platform = crate::snapshot::install().unwrap();
+        let ui = window::create_app_window().unwrap();
+        ui.global::<ConversationState>().set_has_chat(true);
+        ui.global::<ShellState>().set_show_conversation(true);
+        ui.global::<ConversationState>().set_history_virtual(true);
+        ui.global::<ConversationState>().set_messages(
+            Rc::new(slint::VecModel::from(
+                (0..100_u64)
+                    .map(|i| MessageRow {
+                        id: i.to_string().into(),
+                        body: "word ".repeat(1 + (i as usize * 37) % 90).into(),
+                        ..Default::default()
+                    })
+                    .collect::<Vec<_>>(),
+            ))
+            .into(),
+        );
+        let frame = || {
+            slint::platform::update_timers_and_animations();
+            let _ = ui.window().take_snapshot();
+        };
+        ui.show().unwrap();
+        ui.window().set_size(slint::LogicalSize::new(980., 720.));
+        for _ in 0..10 {
+            frame();
+        }
+        ui.invoke_history_jump(-100000.);
+        for _ in 0..10 {
+            frame();
+        }
+        let c = ui.global::<ConversationState>();
+        assert!(c.get_following());
+        let gap = || c.get_reading_viewport().extent + c.get_history_y();
+        // Touchpads deliver many small deltas; each stays within the follow threshold.
+        ui.window().dispatch_event(WindowEvent::PointerMoved { position: slint::LogicalPosition::new(600., 400.) });
+        for _ in 0..10 {
+            ui.window().dispatch_event(WindowEvent::PointerScrolled {
+                position: slint::LogicalPosition::new(600., 400.),
+                delta_x: 0.,
+                delta_y: 3.,
+            });
+            frame();
+        }
+        assert!(gap() > 25., "small steps were pulled back to the bottom: {} px away", gap());
+        assert!(!c.get_following());
+    })
+    .join()
+    .unwrap();
+}

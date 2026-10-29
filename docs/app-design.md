@@ -181,7 +181,14 @@ no catch-all banner.
 
 Chats use a `ListView`. History uses one when the initial window has more than
 60 rows and keeps that mode while the conversation is open, so arrivals never
-swap delegates at the cutoff. Asset arrivals patch the affected rows and
+swap delegates at the cutoff. The `ListView` estimates its height from the
+delegates it shows, so no delegate's size may depend on scroll state: the last
+one always reserves the pill row. Sizing it by pill visibility made each
+follow toggle move the estimated bottom and toggle following again. For the
+same reason the follow pin ignores extent changes while the user is scrolling:
+small touchpad steps stay within the follow threshold, and re-estimation
+would otherwise pull each one back to the bottom. Arrivals still follow,
+because window updates call `latest()` from Rust. Asset arrivals patch the affected rows and
 nested runs in place, keeping row identity.
 
 Messages with inline images or links render as one measured flow broken at

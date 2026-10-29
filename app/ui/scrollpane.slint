@@ -28,6 +28,11 @@ export component Pane inherits Rectangle {
     property <bool> scrolling;
     changed offset => { root.scrolling = true; hide.restart(); if root.virtual && !root.seek-pending { root.scrolled(); } }
     hide := Timer { interval: 1s; running: root.scrolling; triggered => { root.scrolling = false; } }
+    // True while wheel, key or list scrolling is under way. A virtual list re-estimates its
+    // height as rows come into view; callers must not treat that as content growth.
+    out property <bool> user-scrolling;
+    user-idle := Timer { interval: 400ms; running: root.user-scrolling; triggered => { root.user-scrolling = false; } }
+    function user-moved() { root.user-scrolling = true; user-idle.restart(); }
     clip: true;
     property <length> seek-y;
     property <bool> seek-pending;
@@ -36,7 +41,7 @@ export component Pane inherits Rectangle {
         running: root.seek-pending;
         triggered => { root.offset = max(-root.extent, min(0px, root.seek-y)); root.seek-pending = false; }
     }
-    public function user-scroll() { root.seek-pending = false; root.scrolled(); }
+    public function user-scroll() { root.user-moved(); root.seek-pending = false; root.scrolled(); }
     public function jump(y: length) {
         root.residual = 0px;
         root.seek-y = max(-root.extent, min(0px, y));
@@ -51,6 +56,7 @@ export component Pane inherits Rectangle {
         root.jump(top + root.offset < 0px ? -top : bottom + root.offset > root.visible-height ? root.visible-height - bottom : root.offset);
     }
     public function scroll(delta: length) {
+        root.user-moved();
         if root.residual > 0px {
             if delta < 0px {
                 let remaining = root.residual + delta;
