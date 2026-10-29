@@ -663,6 +663,59 @@ impl Transport {
         );
         reader.capped(cap, true)
     }
+    /// Large media: the timeout applies to each idle gap, not the whole body.
+    pub(super) fn asset_stream(
+        &self,
+        url: &str,
+        headers: &[(&str, &str)],
+        cap: u64,
+        mut consume: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<()> {
+        ensure!(
+            self.allowed_asset_url(url),
+            super::desktop::assets::Failure::UnsupportedHost
+        );
+        let mut reader = self.send(
+            "GET",
+            url,
+            headers,
+            Bytes::new(),
+            SendOptions {
+                mode: SendMode::Stream,
+                ..SendOptions::request(self.config.asset_timeout, self.config.asset_connect)
+            },
+            None,
+        )?;
+        ensure!(
+            reader.status == 200,
+            super::desktop::assets::Failure::Http(reader.status)
+        );
+        if reader
+            .headers
+            .get("content-length")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .is_some_and(|n| n > cap)
+        {
+            return Err(super::desktop::assets::Failure::TooLarge.into());
+        }
+        let mut total = 0;
+        let mut buffer = vec![0; 64 * 1024];
+        loop {
+            let result = reader.read(&mut buffer);
+            if reader.cancel.as_ref().is_some_and(|c| c.is_cancelled()) {
+                return Err(super::error::Cancelled.into());
+            }
+            let n = result?;
+            if n == 0 {
+                return Ok(());
+            }
+            total += n as u64;
+            ensure!(total <= cap, super::desktop::assets::Failure::TooLarge);
+            reader.ping();
+            consume(&buffer[..n])?;
+        }
+    }
     pub(super) fn emoji_font(
         &self,
         url: &str,

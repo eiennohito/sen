@@ -136,6 +136,10 @@ pub enum Intent {
         asset: crate::client::desktop::assets::Asset,
         name: String,
     },
+    Media {
+        asset: crate::client::desktop::assets::Asset,
+        name: String,
+    },
     RetryAsset(String),
     Page {
         chat: ChatId,
@@ -197,6 +201,7 @@ impl Intent {
             Self::Asset(_) => "asset",
             Self::Original { .. } => "original",
             Self::File { .. } => "file",
+            Self::Media { .. } => "media",
             Self::RetryAsset(_) => "retry-asset",
             Self::Page { .. } => "page",
             Self::Send { .. } => "send",
@@ -233,6 +238,7 @@ fn account_allows(intent: &Intent, ready: bool, known: bool) -> bool {
         | Intent::Asset(_)
         | Intent::Original { .. }
         | Intent::File { .. }
+        | Intent::Media { .. }
         | Intent::Draft { .. }
         | Intent::Copy(_)
         | Intent::Discard(_)
@@ -346,6 +352,10 @@ pub enum Delta {
     File {
         name: String,
         bytes: Arc<Vec<u8>>,
+    },
+    Media {
+        key: String,
+        path: std::path::PathBuf,
     },
     Original {
         key: String,
@@ -1861,6 +1871,11 @@ impl Engine {
                 crate::client::desktop::assets::Purpose::File { name },
                 false,
             )?,
+            Intent::Media { asset, name } => self.asset(
+                asset,
+                crate::client::desktop::assets::Purpose::Media { name },
+                false,
+            )?,
             Intent::RetryAsset(key) => {
                 if let Some(media) = &self.media {
                     (media.retry)(key);
@@ -3138,6 +3153,7 @@ fn asset_delta(c: crate::client::desktop::assets::Completion) -> Delta {
             path,
             source,
         },
+        Ok(Payload::Media(path)) => Delta::Media { key: c.key, path },
         Ok(Payload::File(bytes)) => Delta::File {
             name: match c.purpose {
                 Purpose::File { name, .. } => name,

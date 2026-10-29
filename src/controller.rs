@@ -477,6 +477,7 @@ impl AppState {
             | Delta::Original { .. }
             | Delta::Asset { .. }
             | Delta::File { .. }
+            | Delta::Media { .. }
             | Delta::Pair(_)
             | Delta::PairFailed { .. }
             | Delta::MoreChats(_)

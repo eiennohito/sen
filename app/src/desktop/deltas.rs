@@ -58,6 +58,10 @@ impl Desktop {
                 ui.invoke_focus_profile_close();
             }
         }
+        if let Delta::Media { key, path } = &d {
+            self.media_ready(ui, key, path);
+            return (false, false, None);
+        }
         if let Delta::Original { key, path, source } = &d {
             if self.viewer_asset.as_ref() == Some(key) {
                 self.viewer_source = Some(source.clone());
@@ -251,6 +255,9 @@ impl Desktop {
         let viewer = ui.global::<ViewerState>();
         match d {
             Delta::MediaFailed { key, failure } => {
+                if self.media_failed(ui, key, *failure) {
+                    return;
+                }
                 self.presenter.images.failed(key.clone(), *failure);
                 self.presenter.patch_asset(ui, &self.state, key);
                 if self.viewer_asset.as_ref() == Some(key) {

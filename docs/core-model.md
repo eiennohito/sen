@@ -313,7 +313,15 @@ there is no native signing or serialised-key fallback.
 
 Media file crypto is native (`src/client/desktop/assets.rs` and `upload.rs`):
 HKDF-SHA256 derives the AES-256-CTR and HMAC-SHA256 keys, and authentication
-precedes decryption. The synthetic `fixtures/media.json` comes from
+precedes decryption. Videos are the exception: they are never held in memory.
+The `Media` asset purpose streams one to a private `.part` file under the
+account cache (`media/<key>/`) and renames it only after the tag verifies.
+Chrome authenticates an encrypted video by HMAC over the SHA-256 digests of its
+128 KiB ciphertext chunks; that rule is read from the extension, not observed
+on the wire, so the stream also accepts a tag over the raw ciphertext. A video
+asset is its preview's bare object (`Asset::video`), so rows stored before
+videos had an asset still play. Media copies older than a day are pruned when
+the cache opens. The synthetic `fixtures/media.json` comes from
 `tools/generate-media-fixture.go`. `examples/crypto-harness.rs` (feature
 `harness`) checks synthetic Letter Sealing and signing fixtures from
 `tools/generate-fixture.go` against the installed module, with an optional

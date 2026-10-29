@@ -6,11 +6,12 @@ use std::io::Cursor;
 const DISK_LIMIT: u64 = 128 * 1024 * 1024;
 const ORIGINAL_LIMIT: u64 = 32 * 1024 * 1024;
 const MAX_DOWNLOAD: usize = 16 * 1024 * 1024;
+const MAX_MEDIA: u64 = 1024 * 1024 * 1024;
 
 mod failure;
 pub use failure::Failure;
 mod fetchers;
-pub use fetchers::{Completion, Failures, Fetchers, Payload, Purpose};
+pub use fetchers::{Completion, Failures, Fetchers, Payload, Purpose, media_name};
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Asset {
@@ -29,6 +30,9 @@ pub struct Asset {
     failure: Option<Failure>,
     #[serde(default)]
     name: Option<String>,
+    /// Played by the system player: streamed to disk, never decoded here.
+    #[serde(default)]
+    video: bool,
 }
 
 impl std::hash::Hash for Asset {
@@ -40,6 +44,7 @@ impl std::hash::Hash for Asset {
                 self.private,
                 &self.key_material,
                 self.failure,
+                self.video,
             ),
             state,
         );
@@ -62,6 +67,7 @@ impl Asset {
             original_url: self.original_url.clone(),
             failure: self.failure,
             name: self.name.clone(),
+            video: self.video,
         }
     }
 
@@ -77,6 +83,7 @@ impl Asset {
             original_url: None,
             failure: None,
             name: None,
+            video: false,
         }
     }
 
@@ -100,6 +107,19 @@ impl Asset {
                 .unwrap_or("Photo")
         })
     }
+    /// The sender's own file name, never one derived from the object URL.
+    pub fn file_name(&self) -> Option<&str> {
+        self.name.as_deref().filter(|name| !name.is_empty())
+    }
+    /// Video bytes sit at the preview's bare object, like a file's.
+    pub fn video(preview: &Self) -> Option<Self> {
+        let mut video = preview.original()?;
+        video.video = true;
+        Some(video)
+    }
+    pub fn is_video(&self) -> bool {
+        self.video
+    }
     pub fn failure(&self) -> Option<Failure> {
         self.failure
     }
@@ -117,10 +137,11 @@ impl Asset {
     pub fn key(&self) -> String {
         let material = self.key_material.as_deref().unwrap_or("");
         let failure = self.failure.map(|f| format!(":{f:?}")).unwrap_or_default();
+        let video = if self.video { ":video" } else { "" };
         format!(
             "{:x}",
             Sha256::digest(format!(
-                "v2:{}:{}:{}:{}{failure}",
+                "v2:{}:{}:{}:{}{failure}{video}",
                 self.url, self.dimension, self.private, material
             ))
         )
@@ -198,6 +219,7 @@ impl Asset {
                         !http::Transport::production_asset_url(url, Some("manager.line-scdn.net"))
                     })
                     .then_some(Failure::UnsupportedHost),
+                name: file_name(meta),
                 ..Self::remote(url.into(), 384, false)
             });
         }
@@ -214,6 +236,7 @@ impl Asset {
             key_material: key,
             talk_meta: Some(talk_meta(id)),
             failure,
+            name: file_name(meta),
             original_suffix: Some(
                 if meta["MEDIA_CONTENT_INFO"]
                     .as_str()
@@ -323,6 +346,52 @@ impl Asset {
         if let Some(path) = self.url.strip_prefix("local:") {
             return fs::read(path).map_err(Into::into);
         }
+        let bytes =
+            self.with_headers(http, access_token, |headers| http.asset(&self.url, headers, MAX_DOWNLOAD))?;
+        if let Some(key) = &self.key_material {
+            decrypt_media(&bytes, &decode(key).map_err(|_| Failure::Decode)?)
+                .map_err(|_| Failure::Decode.into())
+        } else {
+            Ok(bytes)
+        }
+    }
+
+    /// Streams plaintext into `out` without holding the whole object in memory.
+    /// Encrypted bytes reach `out` before the tag is checked: callers keep the
+    /// output private and discard it unless this returns `Ok`.
+    pub(super) fn stream(
+        &self,
+        http: &http::Transport,
+        access_token: Option<&str>,
+        out: &mut impl std::io::Write,
+    ) -> Result<()> {
+        if let Some(path) = self.url.strip_prefix("local:") {
+            std::io::copy(&mut fs::File::open(path)?, out)?;
+            return Ok(());
+        }
+        let mut decryptor = self
+            .key_material
+            .as_ref()
+            .map(|key| MediaDecryptor::new(&decode(key).map_err(|_| Failure::Decode)?))
+            .transpose()?;
+        self.with_headers(http, access_token, |headers| {
+            http.asset_stream(&self.url, headers, MAX_MEDIA, |bytes| match &mut decryptor {
+                Some(decryptor) => decryptor.push(bytes, out),
+                None => out.write_all(bytes).map_err(Into::into),
+            })
+        })?;
+        match decryptor {
+            Some(decryptor) => decryptor.finish(out).map_err(|_| Failure::Decode.into()),
+            None => Ok(()),
+        }
+    }
+
+    fn with_headers<T>(
+        &self,
+        http: &http::Transport,
+        access_token: Option<&str>,
+        request: impl FnOnce(&[(&str, &str)]) -> Result<T>,
+    ) -> Result<T> {
         if let Some(failure) = self.failure {
             return Err(failure.into());
         }
@@ -338,13 +407,83 @@ impl Asset {
                 headers.push(("X-Talk-Meta", meta.as_str()));
             }
         }
-        let bytes = http.asset(&self.url, &headers, MAX_DOWNLOAD)?;
-        if let Some(key) = &self.key_material {
-            decrypt_media(&bytes, &decode(key).map_err(|_| Failure::Decode)?)
-                .map_err(|_| Failure::Decode.into())
-        } else {
-            Ok(bytes)
+        request(&headers)
+    }
+}
+
+/// Upload metadata names files; photos carry one only from some senders.
+fn file_name(meta: &Value) -> Option<String> {
+    meta["FILE_NAME"]
+        .as_str()
+        .filter(|name| !name.is_empty())
+        .map(str::to_owned)
+}
+
+/// Streaming form of `decrypt_media`. Chrome authenticates a video's
+/// ciphertext through SHA-256 digests of its 128 KiB chunks and everything
+/// else directly; both are tracked, since the video rule is read from code,
+/// not traffic.
+struct MediaDecryptor {
+    cipher: ctr::Ctr32BE<aes::Aes256>,
+    direct: hmac::Hmac<Sha256>,
+    chunked: hmac::Hmac<Sha256>,
+    chunk: Sha256,
+    chunk_len: usize,
+    held: Vec<u8>,
+}
+
+const MEDIA_CHUNK: usize = 128 * 1024;
+
+impl MediaDecryptor {
+    fn new(material: &[u8]) -> Result<Self> {
+        let (cipher, mac) = media_cipher(material)?;
+        Ok(Self {
+            cipher,
+            direct: mac.clone(),
+            chunked: mac,
+            chunk: Sha256::new(),
+            chunk_len: 0,
+            held: Vec::new(),
+        })
+    }
+    fn push(&mut self, bytes: &[u8], out: &mut impl std::io::Write) -> Result<()> {
+        use aes::cipher::StreamCipher;
+        use hmac::Mac;
+        // The trailing 32 bytes may be the tag, so they wait for the next push.
+        self.held.extend_from_slice(bytes);
+        let Some(ready) = self.held.len().checked_sub(32).filter(|n| *n > 0) else {
+            return Ok(());
+        };
+        let mut body: Vec<u8> = self.held.drain(..ready).collect();
+        self.direct.update(&body);
+        let mut rest = body.as_slice();
+        while !rest.is_empty() {
+            let take = rest.len().min(MEDIA_CHUNK - self.chunk_len);
+            self.chunk.update(&rest[..take]);
+            self.chunk_len += take;
+            rest = &rest[take..];
+            if self.chunk_len == MEDIA_CHUNK {
+                self.chunked.update(&std::mem::take(&mut self.chunk).finalize());
+                self.chunk_len = 0;
+            }
         }
+        self.cipher.apply_keystream(&mut body);
+        out.write_all(&body)?;
+        Ok(())
+    }
+    fn finish(mut self, out: &mut impl std::io::Write) -> Result<()> {
+        use hmac::Mac;
+        ensure!(self.held.len() == 32, "invalid encrypted media envelope");
+        if self.chunk_len > 0 {
+            self.chunked.update(&self.chunk.finalize());
+        }
+        let direct = self.direct.verify_slice(&self.held).is_ok();
+        ensure!(
+            direct || self.chunked.verify_slice(&self.held).is_ok(),
+            "media authentication failed"
+        );
+        out.flush()?;
+        Ok(())
     }
 }
 
@@ -458,7 +597,34 @@ impl ImageCache {
         };
         cache.index()?;
         cache.prune(0, false)?;
+        cache.prune_media();
         Ok(cache)
+    }
+    /// Files handed to other applications. Kept for a day so a reopened
+    /// video isn't fetched again; an open player keeps its own descriptor.
+    pub fn media_directory(&self, key: &str) -> Result<PathBuf> {
+        ensure!(segment(key).is_some(), Failure::RejectedPath);
+        let path = self.directory.join("media").join(key);
+        private_directory(&self.directory.join("media"))?;
+        private_directory(&path)?;
+        Ok(path)
+    }
+    fn prune_media(&self) {
+        let day = std::time::Duration::from_secs(24 * 60 * 60);
+        let Ok(entries) = fs::read_dir(self.directory.join("media")) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let stale = entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|m| m.elapsed().ok())
+                .is_none_or(|age| age > day);
+            if stale {
+                let _ = fs::remove_dir_all(entry.path());
+            }
+        }
     }
     fn cache_key(asset: &Asset) -> String {
         if asset.dimension == 8192 {

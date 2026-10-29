@@ -218,7 +218,9 @@ buttons, the cover band in a 25 % `accent` tint, and so on. Panel 320 px,
 
 - A top bar overlaid on the image with a black-to-transparent gradient. On
   the left, × Close, then the file name and dimensions in white small text. On
-  the right, icon buttons in white: zoom out, zoom in, fit, 1:1, Save.
+  the right, icon buttons in white: zoom out, zoom in, fit, 1:1, Save, Open
+  in default viewer. Save and Open use the sender's file name when the message
+  has one.
 - Previous and next are 40 px round icon buttons, vertically centred at the
   left and right edges, shown only when there is a target.
 - No text buttons and no debug outline.

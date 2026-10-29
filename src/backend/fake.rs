@@ -516,6 +516,14 @@ impl FakeBackend {
         self.activity.record();
         Ok(Some(match purpose {
             Purpose::File { .. } => Payload::File(Arc::new(b"Synthetic attachment\n".to_vec())),
+            Purpose::Media { name } => {
+                let mut state = self.state.lock().unwrap();
+                let directory = state.image_cache().media_directory(&asset.key()).unwrap();
+                let extension = if asset.is_video() { "mp4" } else { "png" };
+                let path = directory.join(crate::client::desktop::assets::media_name(&name, extension));
+                std::fs::write(&path, b"Synthetic media\n").unwrap();
+                Payload::Media(path)
+            }
             Purpose::Original => {
                 // EXIF fixture exercises both the original delta and display rotation.
                 let bytes = oriented_original(&image::RgbaImage::from_pixel(
@@ -731,7 +739,7 @@ impl Backend for FakeBackend {
                 .read_original(asset)
                 .map(|result| result.map(|(path, source)| Payload::Original { path, source })),
             Purpose::Thumbnail => cache.read(asset).map(|path| path.map(Payload::Image)),
-            Purpose::File { .. } => Ok(None),
+            Purpose::File { .. } | Purpose::Media { .. } => Ok(None),
         }
         .map_err(|error| Failure::Bug(error.to_string()))
     }

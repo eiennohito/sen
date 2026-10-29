@@ -460,7 +460,7 @@ impl Backend for LineBackend {
             Purpose::Original => cache
                 .read_original(asset)
                 .map(|paths| paths.map(|(path, source)| Payload::Original { path, source })),
-            Purpose::File { .. } => Ok(None),
+            Purpose::File { .. } | Purpose::Media { .. } => Ok(None),
         }
         .map_err(rpc)
     }

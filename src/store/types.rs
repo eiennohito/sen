@@ -127,6 +127,15 @@ impl Content {
             .or_else(|| self.attachment())
             .and_then(Asset::local_attachment)
     }
+    /// Rows stored before videos had an asset derive it from their preview.
+    pub fn video(&self) -> Option<Asset> {
+        match self {
+            Self::Video { asset, preview, .. } => asset
+                .clone()
+                .or_else(|| preview.as_ref().and_then(Asset::video)),
+            _ => None,
+        }
+    }
     pub fn attachment(&self) -> Option<&Asset> {
         match self {
             Self::File { asset, .. } | Self::Video { asset, .. } | Self::Voice { asset, .. } => {

@@ -34,6 +34,7 @@ component MessageMenu inherits FocusScope {
             if root.message.can-unsend: MenuItem { title: "Unsend"; activated => { ConversationState.recovery-id = root.message.id; ConversationState.recovery-kind = RecoveryKind.unsend; } }
             for link in (root.text-actions && !root.rich ? root.message.links : []): MenuItem { title: "Open link " + link.url; activated => { ContentState.open-link(link.url); } }
             if !root.rich && root.message.kind == MessageKind.photo: MenuItem { title: "Open photo"; activated => { ViewerState.open-photo(root.message.image-key); } }
+            if !root.rich && root.message.kind == MessageKind.video: MenuItem { title: "Play video"; activated => { ContentState.play-video(root.message.id); } }
         }
         Rectangle { width: 100%; height: 100%; @children }
     }
@@ -234,6 +235,7 @@ export component Message inherits TouchArea {
                                             card-meta := Text { text: root.message.detail; color: Tokens.secondary; font-size: Tokens.small; }
                                         }
                                         if root.message.kind == MessageKind.file && (root.message.delivery == DeliveryState.sent || root.message.delivery == DeliveryState.read): IconButton { focus-on-tab-navigation: false; label: "Save"; icon: @image-url("../assets/icons/save.svg"); enabled: !ContentState.file-saving && !root.message.local-media; activated => { ContentState.save-file(root.message.id); } }
+                                        if root.message.kind == MessageKind.video && !root.message.local-media: IconButton { focus-on-tab-navigation: false; label: "Play video"; icon: @image-url("../assets/icons/play.svg"); enabled: !ContentState.media-opening; activated => { ContentState.play-video(root.message.id); } }
                                     }
                                     if !root.card && root.message.detail != "": Rectangle {
                                         height: detail.preferred-height;
@@ -246,6 +248,10 @@ export component Message inherits TouchArea {
                                     if ContentState.file-save-id == root.message.id && ContentState.file-save-status != "": Rectangle {
                                         height: saved.preferred-height;
                                         saved := Text { x: 0px; y: 0px; width: parent.width; text: ContentState.file-save-status; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
+                                    }
+                                    if ContentState.media-open-id == root.message.id && ContentState.media-open-status != "": Rectangle {
+                                        height: media-status.preferred-height;
+                                        media-status := Text { x: 0px; y: 0px; width: parent.width; text: ContentState.media-open-status; font-size: Tokens.small; color: Tokens.secondary; wrap: word-wrap; }
                                     }
                                     if root.message.image-key != "" || root.message.kind == MessageKind.photo: Rectangle {
                                         // Geometry does not change when a thumbnail arrives or fails.
@@ -263,16 +269,21 @@ export component Message inherits TouchArea {
                                             Image { x: parent.width - 12px; y: parent.height - 12px; width: 12px; height: 12px; source: @image-url("../assets/photo-corner-2.svg"); colorize: Tokens.bg; }
                                             Image { x: 0px; y: parent.height - 12px; width: 12px; height: 12px; source: @image-url("../assets/photo-corner-3.svg"); colorize: Tokens.bg; }
                                         }
-                                        if (root.message.kind == MessageKind.photo || root.message.kind == MessageKind.sticker) && root.message.has-picture: FocusScope {
+                                        if root.message.kind == MessageKind.video && root.message.has-picture: Rectangle {
+                                            x: (parent.width - 48px) / 2; y: (parent.height - 48px) / 2; width: 48px; height: 48px; border-radius: 24px; background: #00000099;
+                                            Image { x: 14px; y: 12px; width: 24px; height: 24px; source: @image-url("../assets/icons/play.svg"); colorize: white; }
+                                        }
+                                        if (root.message.kind == MessageKind.photo || root.message.kind == MessageKind.sticker || root.message.kind == MessageKind.video) && root.message.has-picture: FocusScope {
                                             focus-on-tab-navigation: true;
                                             changed has-focus => { root.photo-focused = self.has-focus; }
-                                            accessible-role: button; accessible-label: "Open photo";
+                                            accessible-role: button; accessible-label: root.message.kind == MessageKind.video ? "Play video" : "Open photo";
+                                            function activate() { if root.message.kind == MessageKind.video { ContentState.play-video(root.message.id); } else { ViewerState.open-photo(root.message.image-key); } }
                                             property <bool> viewer-open: ViewerState.viewer-open;
                                             changed viewer-open => { if !self.viewer-open && root.message.image-key == ViewerState.viewer-key { self.focus(); } }
-                                            accessible-action-default => { self.focus(); ViewerState.open-photo(root.message.image-key); }
-                                            key-pressed(event) => { if root.history-key(event, !event.modifiers.shift && root.message.can-react) == accept { return accept; } if !ShellState.ime-active && (event.text == Key.Return || event.text == " ") { ViewerState.open-photo(root.message.image-key); return accept; } reject }
+                                            accessible-action-default => { self.focus(); self.activate(); }
+                                            key-pressed(event) => { if root.history-key(event, !event.modifiers.shift && root.message.can-react) == accept { return accept; } if !ShellState.ime-active && (event.text == Key.Return || event.text == " ") { self.activate(); return accept; } reject }
                                             TouchArea {
-                                                clicked => { parent.focus(); ViewerState.open-photo(root.message.image-key); }
+                                                clicked => { parent.focus(); parent.activate(); }
                                                 pointer-event(event) => { if event.kind == PointerEventKind.down && event.button == PointerEventButton.right { message-bubble.show({x: self.mouse-x, y: self.mouse-y}); } }
                                             }
                                             FocusRing { focused: parent.has-focus; border-radius: 0px; border-color: Tokens.accent; }

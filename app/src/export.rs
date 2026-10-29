@@ -17,7 +17,7 @@ pub(crate) fn save_bytes(
         .file_name()
         .and_then(|v| v.to_str())
         .filter(|name| !name.is_empty() && !name.contains(['\r', '\n']))
-        .unwrap_or("閃 attachment");
+        .unwrap_or("sen_file");
     save_dialog(bytes, name, title)
 }
 fn save_dialog(bytes: &[u8], name: &str, title: &str) -> Result<Option<PathBuf>, String> {
@@ -64,10 +64,10 @@ pub(crate) fn write_unique(directory: &Path, name: &str, bytes: &[u8]) -> Result
             let stem = name
                 .file_stem()
                 .and_then(|v| v.to_str())
-                .unwrap_or("閃 attachment");
+                .unwrap_or("sen_file");
             match name.extension().and_then(|v| v.to_str()) {
-                Some(extension) => format!("{stem} ({index}).{extension}"),
-                None => format!("{stem} ({index})"),
+                Some(extension) => format!("{stem}_{index}.{extension}"),
+                None => format!("{stem}_{index}"),
             }
         });
         match OpenOptions::new()
@@ -143,9 +143,10 @@ mod tests {
             .write_to(&mut jpeg, image::ImageFormat::Jpeg)
             .unwrap();
         let jpeg = jpeg.into_inner();
-        let first = write_unique(&root.0, "閃 photo.jpg", &jpeg).unwrap();
-        let second = write_unique(&root.0, "閃 photo.jpg", &jpeg).unwrap();
+        let first = write_unique(&root.0, "sen_photo.jpg", &jpeg).unwrap();
+        let second = write_unique(&root.0, "sen_photo.jpg", &jpeg).unwrap();
         assert_ne!(first, second);
+        assert_eq!(second.file_name().unwrap(), "sen_photo_1.jpg");
         assert_eq!(fs::read(&first).unwrap(), jpeg);
         use std::os::unix::fs::PermissionsExt;
         assert_eq!(
@@ -220,24 +221,24 @@ mod portal_tests {
             let _platform = crate::snapshot::install().unwrap();
             let ui = crate::window::create_app_window().unwrap();
             assert_eq!(
-                save_bytes(b"file bytes", "閃 attachment", "Save file").unwrap(),
+                save_bytes(b"file bytes", "sen_file", "Save file").unwrap(),
                 None
             );
             assert_eq!(
                 requests
                     .recv_timeout(std::time::Duration::from_secs(3))
                     .unwrap(),
-                ("Save file".to_owned(), "閃 attachment".to_owned())
+                ("Save file".to_owned(), "sen_file".to_owned())
             );
             let root = sen::test_support::TempDir::new("export-photo");
             let source = root.0.join("photo.png");
             fs::write(&source, b"original bytes").unwrap();
-            crate::viewer::save_photo(&ui, Some(source.clone()));
+            crate::viewer::save_photo(&ui, Some(source.clone()), "sen_photo".into());
             assert_eq!(
                 requests
                     .recv_timeout(std::time::Duration::from_secs(3))
                     .unwrap(),
-                ("Save photo".to_owned(), "閃 photo.png".to_owned())
+                ("Save photo".to_owned(), "sen_photo.png".to_owned())
             );
             fs::remove_file(source).unwrap();
             let _ = server.close();

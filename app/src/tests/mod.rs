@@ -95,6 +95,8 @@ pub(crate) fn desktop(sender: Sender) -> Desktop {
         reveal: None,
         viewer_asset: None,
         viewer_source: None,
+        viewer_file_name: String::new(),
+        media_open: None,
         viewer_name: String::new(),
         attachments: Default::default(),
         notifications: None,

@@ -4,7 +4,7 @@ use crate::ViewerState;
 use slint::ComponentHandle;
 use std::{fs, path::PathBuf};
 
-pub(crate) fn save_photo(ui: &AppWindow, source: Option<PathBuf>) {
+pub(crate) fn save_photo(ui: &AppWindow, source: Option<PathBuf>, name: String) {
     if ui.global::<ViewerState>().get_viewer_saving()
         || ui.global::<ViewerState>().get_viewer_loading()
         || !ui.global::<ViewerState>().get_viewer_error().is_empty()
@@ -25,7 +25,8 @@ pub(crate) fn save_photo(ui: &AppWindow, source: Option<PathBuf>) {
             .map_err(|_| "Could not read this photo.".to_string())
             .and_then(|bytes| {
                 let extension = source.extension().and_then(|s| s.to_str()).unwrap_or("img");
-                crate::export::save_bytes(&bytes, &format!("閃 photo.{extension}"), "Save photo")
+                let name = sen::client::desktop::assets::media_name(&name, extension);
+                crate::export::save_bytes(&bytes, &name, "Save photo")
             });
         let _ = weak.upgrade_in_event_loop(move |ui| {
             ui.global::<ViewerState>().set_viewer_saving(false);
@@ -62,15 +63,15 @@ mod tests {
                 >::new(1, 1)));
             let source = crate::tests::image_file(&ui.global::<ViewerState>().get_viewer_image());
             ui.global::<ViewerState>().set_viewer_loading(true);
-            save_photo(&ui, Some(source.clone()));
+            save_photo(&ui, Some(source.clone()), "sen_photo".into());
             assert!(!ui.global::<ViewerState>().get_viewer_saving());
             ui.global::<ViewerState>().set_viewer_loading(false);
             ui.global::<ViewerState>()
                 .set_viewer_error("Original unavailable".into());
-            save_photo(&ui, Some(source));
+            save_photo(&ui, Some(source), "sen_photo".into());
             assert!(!ui.global::<ViewerState>().get_viewer_saving());
             ui.global::<ViewerState>().set_viewer_error("".into());
-            save_photo(&ui, None);
+            save_photo(&ui, None, "sen_photo".into());
             assert_eq!(
                 ui.global::<ViewerState>().get_viewer_save_status(),
                 "Original unavailable"

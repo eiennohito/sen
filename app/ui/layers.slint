@@ -38,7 +38,7 @@ component SettingsSections inherits FocusScope {
 
 export component Layers inherits Rectangle {
     property <bool> cancel-confirm;
-    private property <bool> viewer-focused: viewer-close.has-focus || zoom-out.has-focus || zoom-in.has-focus || viewer-fit.has-focus || original-size.has-focus || viewer-save.has-focus || viewer-previous.has-focus || viewer-next.has-focus;
+    private property <bool> viewer-focused: viewer-close.has-focus || zoom-out.has-focus || zoom-in.has-focus || viewer-fit.has-focus || original-size.has-focus || viewer-save.has-focus || viewer-open-external.has-focus || viewer-previous.has-focus || viewer-next.has-focus;
     property <float> viewer-zoom: 1;
     property <int> detail-depth: DetailState.detail-depth;
     changed detail-depth => { if root.detail-depth == 0 { DetailState.detail-dialog = DetailAction.none; } }
@@ -250,6 +250,7 @@ export component Layers inherits Rectangle {
             viewer-fit := IconButton { label: "Fit"; icon: @image-url("../assets/icons/fit.svg"); icon-color: white; activated => { root.fit-photo(); } }
             original-size := IconButton { label: "Original size"; icon: @image-url("../assets/icons/actual-size.svg"); icon-color: white; activated => { root.original-photo(); } }
             viewer-save := IconButton { label: "Save photo"; icon: @image-url("../assets/icons/save.svg"); icon-color: white; enabled: !ViewerState.viewer-saving && !ViewerState.viewer-loading && ViewerState.viewer-error == "" && ViewerState.viewer-image.width > 0; activated => { ViewerState.save-photo(); } }
+            viewer-open-external := IconButton { label: "Open in default viewer"; icon: @image-url("../assets/icons/open-external.svg"); icon-color: white; enabled: !ViewerState.viewer-opening && !ViewerState.viewer-loading && ViewerState.viewer-error == "" && ViewerState.viewer-image.width > 0; activated => { ViewerState.open-photo-externally(); } }
         }
         viewer-previous := IconButton { x: 16px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Previous"; icon: @image-url("../assets/icons/previous.svg"); icon-color: white; visible: ViewerState.viewer-has-previous; enabled: self.visible; activated => { ViewerState.viewer-step(-1); root.focus-viewer(); } }
         viewer-next := IconButton { x: parent.width - 56px; y: (parent.height - 40px) / 2; width: 40px; height: 40px; border-radius: 20px; background: Tokens.surface-2; label: "Next"; icon: @image-url("../assets/icons/next.svg"); icon-color: white; visible: ViewerState.viewer-has-next; enabled: self.visible; activated => { ViewerState.viewer-step(1); root.focus-viewer(); } }

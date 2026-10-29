@@ -17,6 +17,21 @@ pub(crate) fn image_text(failure: Failure) -> &'static str {
     }
 }
 
+pub(crate) fn video_text(failure: Failure) -> &'static str {
+    match failure {
+        Failure::Timeout => "Video download stalled",
+        Failure::Network => "Couldn’t download this video",
+        Failure::Http(404 | 410) => "Video is no longer available",
+        Failure::Http(403) => "You don’t have access to this video",
+        Failure::Http(500..=599) => "Video is temporarily unavailable",
+        Failure::Http(_) | Failure::RejectedPath => "Video is unavailable",
+        Failure::UnsupportedHost => "Not available for this sender",
+        Failure::TooLarge => "Video too large",
+        Failure::Decode => "Couldn’t decrypt this video",
+        Failure::Cancelled => "Video download cancelled",
+    }
+}
+
 pub(crate) fn rejection(reason: &Refusal) -> String {
     match reason {
         Refusal::Server(sen::client::error::ServerRefusal::Http(code)) => {

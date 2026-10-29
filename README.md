@@ -52,6 +52,8 @@ places. Bug reports with steps to reproduce are welcome.
 - Chats, groups and friends, with search across kana and romaji.
 - Text, replies, mentions, LINE emoji, stickers, photos, files and Flex
   (rich) messages. Rich text is selectable.
+- Photos open in your default image viewer and videos play in your default
+  player (downloaded first; 閃 has no player of its own).
 - Sending text, stickers, photos and files, including paste and drag and drop.
 - Reactions (set, remove, see who reacted), read receipts and unread counts.
 - Editing your own display name and status message.

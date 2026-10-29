@@ -9,6 +9,8 @@ pub(crate) struct Desktop {
     pub(crate) attachments: callbacks::attachments::Selection,
     pub(crate) viewer_asset: Option<String>,
     pub(crate) viewer_source: Option<std::path::PathBuf>,
+    pub(crate) viewer_file_name: String,
+    pub(crate) media_open: Option<media::MediaOpen>,
     pub(crate) notifications: Option<notifications::Notifications>,
     pub(crate) background: desktop_env::background::Background,
     pub(crate) assets: assets::Assets,
@@ -18,6 +20,7 @@ pub(crate) struct Desktop {
     pub(crate) category: ChatCategory,
 }
 mod deltas;
+mod media;
 mod reading;
 mod viewer;
 

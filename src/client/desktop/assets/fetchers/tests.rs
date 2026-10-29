@@ -988,3 +988,116 @@ fn retrying_original_clears_only_its_retained_failure() {
     requests.recv_timeout(WAIT).unwrap();
     server.join().unwrap();
 }
+
+fn encrypted_video(plain: &[u8], material: &[u8; 32]) -> Vec<u8> {
+    use aes::cipher::StreamCipher;
+    use hmac::Mac;
+    let (mut cipher, mut mac) = super::super::media_cipher(material).unwrap();
+    let mut body = plain.to_vec();
+    cipher.apply_keystream(&mut body);
+    for chunk in body.chunks(128 * 1024) {
+        mac.update(&Sha256::digest(chunk));
+    }
+    body.extend(mac.finalize().into_bytes());
+    body
+}
+
+#[test]
+fn encrypted_video_streams_to_a_named_private_file_and_tampering_leaves_nothing() {
+    let material = [7_u8; 32];
+    let plain: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
+    let good = encrypted_video(&plain, &material);
+    let mut bad = good.clone();
+    bad[1000] ^= 1;
+    let responses = Mutex::new(vec![bad, good].into_iter());
+    let (base, http, requests, server) = local_server(2, move |headers, stream| {
+        assert!(headers.starts_with("GET /r/talk/emv/object "));
+        assert!(headers.to_ascii_lowercase().contains("x-talk-meta: "));
+        respond(stream, &responses.lock().unwrap().next().unwrap());
+    });
+    let preview = Asset::photo(&json!({"id":"42","contentType":2,"contentMetadata":{
+        "SID":"emv","OID":"object","ENC_KM":STANDARD.encode(material)}}))
+    .unwrap();
+    assert!(preview.url.ends_with("/r/talk/emv/object__ud-preview"));
+    let video = local_asset(&base, Asset::video(&preview).unwrap());
+    let (_root, cache) = Cache::new();
+    let job = Job {
+        bypass: false,
+        asset: video.clone(),
+        purpose: Purpose::Media {
+            name: "../clip".into(),
+        },
+    };
+    let directory = cache.lock().unwrap().media_directory(&video.key()).unwrap();
+    let error = fetch(&http, &cache, &job, |_| Ok(Some("token".into()))).err().unwrap();
+    assert_eq!(media_failure(&error), Failure::Decode);
+    assert_eq!(fs::read_dir(&directory).unwrap().count(), 0);
+    let Payload::Media(path) = fetch(&http, &cache, &job, |_| Ok(Some("token".into()))).unwrap()
+    else {
+        panic!("expected a media file");
+    };
+    assert_eq!(path, directory.join("clip.mp4"));
+    assert_eq!(fs::read(&path).unwrap(), plain);
+    assert_eq!(fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+    for _ in 0..2 {
+        requests.recv_timeout(WAIT).unwrap();
+    }
+    server.join().unwrap();
+    // A second open reuses the finished file without a request.
+    assert!(matches!(
+        fetch(&http, &cache, &job, |_| unreachable!()).unwrap(),
+        Payload::Media(again) if again == path
+    ));
+}
+
+#[test]
+fn photo_media_copies_the_cached_original_under_the_senders_name() {
+    let (base, http, _requests, server) = local_server(1, |_, stream| respond(stream, &png()));
+    let photo = Asset::photo(&json!({"id":"42","contentMetadata":{
+        "OID":"object","FILE_NAME":"holiday.JPG"}}))
+    .unwrap();
+    assert_eq!(photo.file_name(), Some("holiday.JPG"));
+    let original = local_asset(&base, photo.original().unwrap());
+    let (_root, cache) = Cache::new();
+    let job = Job {
+        bypass: false,
+        asset: original,
+        purpose: Purpose::Media {
+            name: photo.file_name().unwrap().into(),
+        },
+    };
+    let Payload::Media(path) = fetch(&http, &cache, &job, |_| Ok(Some("token".into()))).unwrap()
+    else {
+        panic!("expected a media file");
+    };
+    assert_eq!(path.file_name().unwrap(), "holiday.png");
+    assert_eq!(fs::read(&path).unwrap(), png());
+    server.join().unwrap();
+}
+
+#[test]
+fn media_names_keep_equivalent_extensions_and_stay_inside_their_directory() {
+    assert_eq!(media_name("IMG_1.jpeg", "jpg"), "IMG_1.jpeg");
+    assert_eq!(media_name("IMG_1.HEIC", "jpg"), "IMG_1.jpg");
+    assert_eq!(media_name("sen_video", "mp4"), "sen_video.mp4");
+    assert_eq!(media_name("clip.MP4", "mp4"), "clip.MP4");
+    assert_eq!(media_name("a/../../b.png", "png"), "b.png");
+    assert_eq!(media_name(".hidden", "png"), "sen_media.png");
+    assert_eq!(media_name("", "png"), "sen_media.png");
+}
+
+#[test]
+fn plain_and_external_videos_use_the_bare_object() {
+    let plain = Asset::photo(&json!({"id":"42","contentMetadata":{}})).unwrap();
+    let video = Asset::video(&plain).unwrap();
+    assert!(video.url.ends_with("/r/talk/m/42"));
+    assert!(video.is_video() && video.key() != plain.original().unwrap().key());
+    let external = Asset::photo(&json!({"id":"9","contentMetadata":{
+        "PREVIEW_URL":"https://manager.line-scdn.net/id/poster",
+        "DOWNLOAD_URL":"https://manager.line-scdn.net/id/video"}}))
+    .unwrap();
+    assert_eq!(
+        Asset::video(&external).unwrap().url,
+        "https://manager.line-scdn.net/id/video"
+    );
+}

@@ -165,6 +165,15 @@ pub(crate) fn day_label(timestamp: i64, now: i64) -> String {
     }
 }
 
+/// Names for media without a sender's file name: `sen_video_20261029_153012`.
+/// No spaces, so the files are easy to handle from a shell.
+pub(crate) fn generated_name(kind: &str, timestamp: i64) -> String {
+    match local_time(timestamp) {
+        Some(time) => format!("sen_{kind}_{}", time.format("%Y%m%d_%H%M%S")),
+        None => format!("sen_{kind}"),
+    }
+}
+
 pub(super) fn local_time(timestamp: i64) -> Option<chrono::DateTime<chrono::Local>> {
     if timestamp <= 0 || timestamp == i64::MAX {
         return None;

@@ -1,17 +1,19 @@
-//! Blocking XDG file chooser request; callers run this on a helper thread.
+//! Blocking XDG portal requests; callers run these on a helper thread.
 use std::{
     collections::HashMap,
+    path::Path,
     sync::atomic::{AtomicU64, Ordering},
 };
 use zbus::{
     blocking::{Connection, Proxy},
-    zvariant::{OwnedObjectPath, OwnedValue, Str},
+    zvariant::{Fd, OwnedObjectPath, OwnedValue, Str},
 };
-pub(crate) fn choose(
-    method: &str,
-    title: &str,
+type Response = (u32, HashMap<String, OwnedValue>);
+fn request(
+    interface: &str,
     mut options: HashMap<&str, OwnedValue>,
-) -> Result<Result<Vec<String>, u32>, Box<dyn std::error::Error>> {
+    call: impl FnOnce(&Proxy, HashMap<&str, OwnedValue>) -> zbus::Result<OwnedObjectPath>,
+) -> Result<Response, Box<dyn std::error::Error>> {
     #[cfg(test)]
     if std::env::var("SEN_TEST_BUS").as_deref() != Ok("1") {
         return Err("tests require a private dbus-run-session".into());
@@ -41,19 +43,38 @@ pub(crate) fn choose(
         &bus,
         "org.freedesktop.portal.Desktop",
         "/org/freedesktop/portal/desktop",
-        "org.freedesktop.portal.FileChooser",
+        interface,
     )?;
     options.insert("handle_token", Str::from(token).into());
-    options.insert("modal", true.into());
-    let returned: OwnedObjectPath = portal.call(method, &("", title, options))?;
+    let returned = call(&portal, options)?;
     if returned.as_str() != path {
         return Err("unexpected portal request path".into());
     }
-    let response = signals.next().ok_or("file chooser closed")?;
-    let (code, mut results): (u32, HashMap<String, OwnedValue>) = response.body().deserialize()?;
+    let response = signals.next().ok_or("portal request closed")?;
+    Ok(response.body().deserialize()?)
+}
+pub(crate) fn choose(
+    method: &str,
+    title: &str,
+    mut options: HashMap<&str, OwnedValue>,
+) -> Result<Result<Vec<String>, u32>, Box<dyn std::error::Error>> {
+    options.insert("modal", true.into());
+    let (code, mut results) = request("org.freedesktop.portal.FileChooser", options, |p, o| {
+        p.call(method, &("", title, o))
+    })?;
     if code != 0 {
         return Ok(Err(code));
     }
     let uris = Vec::<String>::try_from(results.remove("uris").ok_or("missing selection")?)?;
     Ok(Ok(uris))
+}
+/// Hands a read-only descriptor to the default application for its type.
+pub(crate) fn open_file(path: &Path) -> Result<Result<(), u32>, Box<dyn std::error::Error>> {
+    use std::os::fd::AsFd;
+    let file = std::fs::File::open(path)?;
+    let options = HashMap::from([("writable", false.into()), ("ask", false.into())]);
+    let (code, _) = request("org.freedesktop.portal.OpenURI", options, |p, o| {
+        p.call("OpenFile", &("", Fd::from(file.as_fd()), o))
+    })?;
+    Ok(if code == 0 { Ok(()) } else { Err(code) })
 }

@@ -621,7 +621,7 @@ impl Client {
                 },
                 2 => Content::Video {
                     duration: details.duration_ms,
-                    asset: Asset::attachment(&data),
+                    asset: Asset::photo(&data).as_ref().and_then(Asset::video),
                     preview: Asset::photo(&data),
                     album_count: details.album_count,
                     caption: details.caption,

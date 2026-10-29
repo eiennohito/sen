@@ -256,6 +256,8 @@ export global ViewerState {
     in-out property <bool> viewer-saving;
     callback viewer-step(int);
     callback save-photo();
+    in-out property <bool> viewer-opening;
+    callback open-photo-externally();
     callback open-photo(string);
     public function close-viewer() { ShellState.request-panel(PanelState.none); }
 }
@@ -322,6 +324,10 @@ export global ContentState {
     pure callback rich-word([RichRun], [RichRun], RichPoint) -> RichSelection;
     callback rich-copy([RichRun], [RichRun], RichSelection) -> string;
     callback save-file(string);
+    callback play-video(string);
+    in-out property <string> media-open-id;
+    in-out property <string> media-open-status;
+    in-out property <bool> media-opening;
     in-out property <string> file-save-id;
     in-out property <string> file-save-status;
     in-out property <bool> file-saving;

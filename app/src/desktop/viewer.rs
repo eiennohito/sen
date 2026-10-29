@@ -49,6 +49,7 @@ impl crate::Desktop {
             }
             .into(),
         );
+        self.viewer_file_name = presenter::format::generated_name("profile_photo", 0);
         self.viewer_source = None;
         self.viewer_asset = asset.as_ref().map(|a| a.key());
         if let Some(asset) = asset {
@@ -110,13 +111,17 @@ impl crate::Desktop {
     }
     pub(crate) fn open_photo(&mut self, ui: &AppWindow, key: &str) {
         let rows = self.state.rows();
-        let asset = rows.iter().find_map(|m| {
+        let found = rows.iter().find_map(|m| {
             let asset = m.body.image().filter(|a| a.key() == key)?;
-            asset.original()
+            Some((asset.original()?, m.sort.sort_ts))
         });
-        if let Some(asset) = asset {
+        if let Some((asset, sent)) = found {
             ui.global::<ViewerState>().set_viewer_retryable(false);
             self.viewer_name = asset.display_name().to_owned();
+            self.viewer_file_name = asset.file_name().map_or_else(
+                || presenter::format::generated_name("photo", sent),
+                str::to_owned,
+            );
             self.viewer_source = None;
             self.viewer_asset = Some(asset.key());
             if let Some(preview) = self.presenter.images.get(key) {

@@ -74,6 +74,8 @@ pub enum Purpose {
     Thumbnail,
     Original,
     File { name: String },
+    /// A named local copy for the system's default application.
+    Media { name: String },
 }
 
 #[derive(Clone)]
@@ -82,6 +84,7 @@ pub enum Payload {
     Image(PathBuf),
     Original { path: PathBuf, source: PathBuf },
     File(Arc<Vec<u8>>),
+    Media(PathBuf),
 }
 
 pub struct Completion {
@@ -275,7 +278,7 @@ impl Fetchers {
                                 publish(
                                     Completion {
                                         network,
-                                        key: key.clone(),
+                                        key: job.asset.key(),
                                         purpose,
                                         result: result.clone(),
                                     },
@@ -323,8 +326,8 @@ impl Fetchers {
 
     pub fn enqueue(&self, asset: Asset, purpose: Purpose) -> bool {
         let bypass = !matches!(purpose, Purpose::Thumbnail)
-            && self.shared.failures.retry_job(&asset.key()).is_some();
-        let key = asset.key();
+            && self.shared.failures.retry_job(&queue_key(&asset, &purpose)).is_some();
+        let key = queue_key(&asset, &purpose);
         let job = Job {
             asset,
             purpose,
@@ -344,7 +347,7 @@ impl Fetchers {
         if self.shared.stopped() {
             return false;
         }
-        let key = job.asset.key();
+        let key = queue_key(&job.asset, &job.purpose);
         let purpose = job.purpose.clone();
         if let Some(entry) = queue.entries.get_mut(&key) {
             if !matches!(purpose, Purpose::Thumbnail) {
@@ -456,6 +459,100 @@ fn fetch(
             Ok(Payload::Original { path, source })
         }
         Purpose::File { .. } => Ok(Payload::File(Arc::new(download()?))),
+        Purpose::Media { ref name } => {
+            let directory = cache.lock().unwrap().media_directory(&job.asset.key())?;
+            if !job.asset.video {
+                // Photos reuse the cached original and take its real extension.
+                let cached = cache.lock().unwrap().read_original(&job.asset)?;
+                let source = match cached {
+                    Some((_, source)) => source,
+                    None => {
+                        let bytes = download()?;
+                        cache.lock().unwrap().original(&job.asset, &bytes)?.1
+                    }
+                };
+                let extension = source.extension().and_then(|e| e.to_str()).unwrap_or("");
+                let path = directory.join(media_name(name, extension));
+                if !path.is_file() {
+                    publish_file(&path, |file| {
+                        std::io::copy(&mut fs::File::open(&source)?, file)?;
+                        Ok(())
+                    })?;
+                }
+                return Ok(Payload::Media(path));
+            }
+            let path = directory.join(media_name(name, "mp4"));
+            if job.bypass || !path.is_file() {
+                publish_file(&path, |file| {
+                    let mut out = std::io::BufWriter::new(file);
+                    let token = if job.asset.private { authorize(false)? } else { None };
+                    match job.asset.stream(http, token.as_deref(), &mut out) {
+                        Err(error)
+                            if job.asset.private
+                                && error.downcast_ref::<Failure>() == Some(&Failure::Http(401)) =>
+                        {
+                            out.get_mut().set_len(0)?;
+                            std::io::Seek::rewind(out.get_mut())?;
+                            job.asset.stream(http, authorize(true)?.as_deref(), &mut out)
+                        }
+                        result => result,
+                    }?;
+                    out.into_inner().map_err(|e| e.into_error())?;
+                    Ok(())
+                })?;
+            }
+            Ok(Payload::Media(path))
+        }
+    }
+}
+
+/// Listeners share one fetch per key, so a media copy must not join a pending
+/// thumbnail or original fetch of the same asset (it would get their payload).
+fn queue_key(asset: &Asset, purpose: &Purpose) -> String {
+    match purpose {
+        Purpose::Media { .. } => format!("media:{}", asset.key()),
+        _ => asset.key(),
+    }
+}
+
+/// Keeps the sender's name when it already has an equivalent extension.
+pub fn media_name(name: &str, extension: &str) -> String {
+    let name = Path::new(name)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .filter(|n| !n.starts_with('.') && !n.contains(['\r', '\n']))
+        .unwrap_or("sen_media");
+    let path = Path::new(name);
+    let current = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    let jpeg = |e: &str| e.eq_ignore_ascii_case("jpg") || e.eq_ignore_ascii_case("jpeg");
+    if extension.is_empty()
+        || current.eq_ignore_ascii_case(extension)
+        || (jpeg(current) && jpeg(extension))
+    {
+        return name.to_owned();
+    }
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or(name);
+    format!("{stem}.{extension}")
+}
+
+/// Writes privately beside `path` and renames only after `write` succeeds.
+fn publish_file(path: &Path, write: impl FnOnce(&mut fs::File) -> Result<()>) -> Result<()> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let name = path.file_name().context("media filename")?.to_string_lossy();
+    let part = path.with_file_name(format!(".{name}.{}.part", std::process::id()));
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(&part)?;
+    let result = write(&mut file).and_then(|()| Ok(file.sync_all()?));
+    match result.and_then(|()| Ok(fs::rename(&part, path)?)) {
+        Ok(()) => Ok(()),
+        Err(error) => {
+            let _ = fs::remove_file(&part);
+            Err(error)
+        }
     }
 }
 
